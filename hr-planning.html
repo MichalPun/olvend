@@ -713,6 +713,33 @@
       color: #ffe1aa;
     }
 
+    .planner-person-availability {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.07);
+      background: rgba(255,255,255,0.04);
+      color: #dfe2e9;
+    }
+
+    .planner-person-availability.warn {
+      background: rgba(255,91,102,0.12);
+      border-color: rgba(255,91,102,0.22);
+      color: #ffd1d5;
+    }
+
+    .planner-person-availability.info {
+      background: rgba(88,166,255,0.12);
+      border-color: rgba(88,166,255,0.22);
+      color: #d2e7ff;
+    }
+
     .planner-cell {
       min-height: 132px;
       padding: 10px;
@@ -1414,6 +1441,27 @@
       return planningAvailabilityRows.find((row) => String(row.employee_id) === String(employeeId) && row.available_date === date) || null;
     }
 
+    function getAvailabilitySummary(assignments) {
+      const unavailableCount = assignments.filter((item) => item.availability?.availability_status === 'unavailable').length;
+      const unknownCount = assignments.filter((item) => item.availability?.availability_status === 'unknown' && !item.day.isWeekend).length;
+
+      if (unavailableCount > 0) {
+        return {
+          cls: 'warn',
+          label: `${unavailableCount}x nemůže`
+        };
+      }
+
+      if (unknownCount > 0) {
+        return {
+          cls: 'info',
+          label: `${unknownCount}x nezadáno`
+        };
+      }
+
+      return null;
+    }
+
     function getFilteredPlanningEmployees() {
       const selectedRole = planningRoleFilter.value || '';
       const selectedEmployee = planningEmployeeFilter.value || '';
@@ -1509,12 +1557,13 @@
       const underCount = rows.filter((row) => row.diffMinutes < -120).length;
       const overCount = rows.filter((row) => row.diffMinutes > 120).length;
       const missingDays = rows.reduce((sum, row) => sum + row.assignments.filter((item) => !item.assignment && !item.day.isWeekend).length, 0);
+      const availabilityConflictCount = rows.reduce((sum, row) => sum + row.assignments.filter((item) => item.availability?.availability_status === 'unavailable').length, 0);
 
       const cards = [
         { label: 'Zaměstnanci v plánu', value: String(rows.length), note: 'Lidé zobrazení po aktuálních filtrech.' },
         { label: 'Naplánované směny', value: String(totalAssignments), note: 'Uložené směny pro zvolený měsíc.' },
         { label: 'Pod úvazkem', value: String(underCount), note: 'Lidé, kterým ještě chybí naplánovat hodiny.' },
-        { label: 'Nevyplněné pracovní dny', value: String(missingDays), note: 'Pracovní dny bez uložené směny.' }
+        { label: 'Konflikty dostupnosti', value: String(availabilityConflictCount), note: 'Dny označené jako „nemůžu“, se kterými planner teď koliduje nebo počítá.' }
       ];
 
       planningSummaryGrid.innerHTML = cards.map((card) => `
@@ -1579,13 +1628,19 @@
         return;
       }
       const assignment = findPlanningAssignment(planningSelectedCell.employeeId, planningSelectedCell.date);
+      const availability = findAvailabilityRow(planningSelectedCell.employeeId, planningSelectedCell.date);
       const shiftMeta = getShiftTypeMeta(assignment?.shift_type || 'operator');
       const diffHours = (row?.diffMinutes || 0) / 60;
+      const availabilityLabel = availability?.availability_status === 'available'
+        ? 'Dostupnost: může'
+        : availability?.availability_status === 'unavailable'
+          ? 'Dostupnost: nemůže'
+          : 'Dostupnost: nezadáno';
 
       planningSelectedLabel.textContent = `${formatDate(planningSelectedCell.date)} · ${employee?.name || 'Zaměstnanec'}`;
       planningSelectedNote.textContent = assignment
-        ? `${shiftMeta.title} · ${getShiftDisplayTime(assignment)} · ${getAssignmentLocationNote(assignment)}`
-        : 'Zatím tu není uložená směna. Vyplň typ, čas a případné doplňující informace.';
+        ? `${shiftMeta.title} · ${getShiftDisplayTime(assignment)} · ${getAssignmentLocationNote(assignment)} · ${availabilityLabel}`
+        : `Zatím tu není uložená směna. ${availabilityLabel}.`;
       planningSelectedEmployeeName.value = employee?.name || '';
       planningSelectedDate.value = formatDate(planningSelectedCell.date);
       planningShiftType.value = assignment?.shift_type || 'operator';
@@ -1659,6 +1714,7 @@
           : diffHours > 0
             ? `Nad plánem +${diffHours.toFixed(1).replace('.', ',')} h`
             : `Pod plánem ${diffHours.toFixed(1).replace('.', ',')} h`;
+        const availabilitySummary = getAvailabilitySummary(row.assignments);
 
         return `
           <tr>
@@ -1667,6 +1723,7 @@
                 <span class="planner-person-name">${escapeHtml(row.name)}</span>
                 <span class="planner-person-meta">${escapeHtml(row.role)} · ${escapeHtml(String(row.contracted_weekly_hours || 0))} h/týden<br />Naplánováno ${escapeHtml(formatHours(row.plannedMinutes))}</span>
                 <span class="planner-person-balance ${escapeHtml(balanceClass)}">${escapeHtml(balanceCopy)}</span>
+                ${availabilitySummary ? `<span class="planner-person-availability ${escapeHtml(availabilitySummary.cls)}">${escapeHtml(availabilitySummary.label)}</span>` : ''}
                 <div class="planner-person-actions">
                   <button class="row-action-btn" type="button" data-row-action="apply-weekdays" data-employee-id="${escapeHtml(row.id)}">Pracovní dny</button>
                   <button class="row-action-btn" type="button" data-row-action="mark-weekends" data-employee-id="${escapeHtml(row.id)}">Víkendy</button>

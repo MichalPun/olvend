@@ -382,6 +382,13 @@
       letter-spacing: 0.08em;
     }
 
+    .hr-nav-note {
+      margin: -4px 0 12px;
+      color: var(--soft);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
     .subnav {
       display: grid;
       gap: 8px;
@@ -398,6 +405,20 @@
       cursor: pointer;
       transition: var(--transition);
       font: inherit;
+    }
+
+    .subnav button[draggable="true"] {
+      cursor: grab;
+    }
+
+    .subnav button.dragging {
+      opacity: 0.58;
+      border-color: rgba(213, 16, 26, 0.24);
+    }
+
+    .subnav button.drag-target {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.12);
     }
 
     .subnav button:hover {
@@ -1425,6 +1446,7 @@
           <a href="#"><span class="nav-dot"></span><span>Automaty</span><span class="nav-status">Brzy</span></a>
           <a href="#"><span class="nav-dot"></span><span>Lokality</span><span class="nav-status">Brzy</span></a>
           <a href="#"><span class="nav-dot"></span><span>Trasy</span><span class="nav-status">Brzy</span></a>
+          <a href="vehicles.html"><span class="nav-dot"></span><span>Vozový park</span></a>
           <a href="warehouses.html"><span class="nav-dot"></span><span>Sklady</span></a>
           <a href="hr.html" class="active"><span class="nav-dot"></span><span>HR</span></a>
           <a href="settings.html"><span class="nav-dot"></span><span>Nastavení</span></a>
@@ -1433,9 +1455,8 @@
 
       <div class="sidebar-bottom">
         <div class="version-box">
-          <div class="version-label">Verze modulu</div>
-          <div class="version-value">HR 1.0</div>
-          <div class="version-note">Přehled směn, výjimek a pokynů dne pro práci s týmem i docházkou.</div>
+          <div class="version-label">Aktuální verze</div>
+          <div class="version-value">OLVEND 1.0</div>
         </div>
       </div>
     </aside>
@@ -1453,6 +1474,7 @@
         <nav class="mobile-nav-panel" id="mobileNavPanel" aria-label="Hlavní menu">
           <a href="dashboard.html">Dashboard</a>
           <a href="attendance.html">Moje směna</a>
+          <a href="vehicles.html">Vozový park</a>
           <a href="warehouses.html">Sklady</a>
           <a href="hr.html" class="active">HR</a>
           <a href="settings.html">Nastavení</a>
@@ -1462,12 +1484,14 @@
       <div class="topbar">
         <div class="title">
           <h1>HR</h1>
-          <p>Vstupní modul pro práci s lidmi a docházkou. Tady řešíš HR přehled směn, výjimky i manažerské pokyny, které se pak zobrazí lidem v Moje směna.</p>
+          <p>Pracovní centrum pro docházku, výjimky, pokyny dne a rychlý vstup do plánování směn.</p>
         </div>
 
         <div class="header-actions">
           <div class="role-badge" id="roleBadge">Role: Načítám...</div>
           <button class="btn secondary" id="refreshBtn" type="button">Obnovit</button>
+          <a class="btn secondary" href="hr-planning.html">Full planner</a>
+          <a class="btn secondary" href="report-shift-overview.html">Přehled směn</a>
           <button class="btn" id="exportBtn" type="button">Export CSV</button>
         </div>
       </div>
@@ -1475,6 +1499,7 @@
       <div class="hr-shell">
         <aside class="hr-nav">
           <h2 class="hr-nav-title">HR Sekce</h2>
+          <p class="hr-nav-note">Pořadí si můžeš přeskládat tahem podle toho, co řešíš nejčastěji.</p>
           <div class="subnav">
             <button class="hr-tab active" type="button" data-hr-view="overview">
               <span class="subnav-label">Přehled docházky</span>
@@ -1528,7 +1553,7 @@
                 <option value="pending_approval">Čeká na schválení</option>
               </select>
               <button class="btn secondary" id="clearFiltersBtn" type="button">Vyčistit filtry</button>
-              <button class="btn secondary" id="goDashboardBtn" type="button">Zpět na dashboard</button>
+              <button class="btn secondary" id="goDashboardBtn" type="button">Přehled směn</button>
             </div>
 
             <div class="kpi-grid" id="kpiGrid"></div>
@@ -1818,7 +1843,7 @@
   <script type="module">
     import { supabase } from './supabase.js'
 
-    const viewTabButtons = document.querySelectorAll('.hr-tab');
+    const hrSubnav = document.querySelector('.subnav');
     const viewSections = document.querySelectorAll('.hr-view-section');
     const hrContentTitle = document.getElementById('hrContentTitle');
     const hrContentDescription = document.getElementById('hrContentDescription');
@@ -1871,6 +1896,9 @@
     let instructionRows = [];
     let instructionAcknowledgements = [];
     let editingInstructionId = null;
+    let draggedHrTab = null;
+
+    const HR_TAB_ORDER_KEY = 'olvendHrTabOrder';
 
     const hrViewMeta = {
       overview: {
@@ -1890,8 +1918,12 @@
       }
     };
 
+    function getViewTabButtons() {
+      return [...document.querySelectorAll('.hr-tab')];
+    }
+
     function setActiveHrView(viewKey) {
-      viewTabButtons.forEach((button) => {
+      getViewTabButtons().forEach((button) => {
         button.classList.toggle('active', button.dataset.hrView === viewKey);
       });
 
@@ -1906,6 +1938,87 @@
         hrContentBadge.textContent = meta.badge;
       }
     }
+
+    function saveHrTabOrder() {
+      if (!hrSubnav) return;
+      const order = getViewTabButtons().map((button) => button.dataset.hrView);
+      localStorage.setItem(HR_TAB_ORDER_KEY, JSON.stringify(order));
+    }
+
+    function loadHrTabOrder() {
+      if (!hrSubnav) return;
+
+      const raw = localStorage.getItem(HR_TAB_ORDER_KEY);
+      if (!raw) return;
+
+      try {
+        const order = JSON.parse(raw);
+        if (!Array.isArray(order) || !order.length) return;
+
+        const byKey = new Map(getViewTabButtons().map((button) => [button.dataset.hrView, button]));
+        order.forEach((key) => {
+          const button = byKey.get(key);
+          if (button) hrSubnav.appendChild(button);
+        });
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function clearHrDragState() {
+      getViewTabButtons().forEach((button) => button.classList.remove('dragging', 'drag-target'));
+    }
+
+    function setupHrTabReordering() {
+      if (!hrSubnav) return;
+
+      getViewTabButtons().forEach((button) => {
+        button.setAttribute('draggable', 'true');
+
+        button.addEventListener('dragstart', () => {
+          draggedHrTab = button;
+          button.classList.add('dragging');
+        });
+
+        button.addEventListener('dragover', (event) => {
+          if (!draggedHrTab || draggedHrTab === button) return;
+          event.preventDefault();
+          getViewTabButtons().forEach((item) => item.classList.remove('drag-target'));
+          button.classList.add('drag-target');
+        });
+
+        button.addEventListener('drop', (event) => {
+          if (!draggedHrTab || draggedHrTab === button) return;
+          event.preventDefault();
+
+          const rect = button.getBoundingClientRect();
+          const shouldInsertAfter = event.clientY > rect.top + (rect.height / 2);
+
+          if (shouldInsertAfter) {
+            hrSubnav.insertBefore(draggedHrTab, button.nextSibling);
+          } else {
+            hrSubnav.insertBefore(draggedHrTab, button);
+          }
+
+          saveHrTabOrder();
+          clearHrDragState();
+        });
+
+        button.addEventListener('dragend', () => {
+          draggedHrTab = null;
+          clearHrDragState();
+        });
+      });
+
+      hrSubnav.addEventListener('dragover', (event) => {
+        if (draggedHrTab) {
+          event.preventDefault();
+        }
+      });
+    }
+
+    loadHrTabOrder();
+    setupHrTabReordering();
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -2753,7 +2866,7 @@
       return true;
     }
 
-    viewTabButtons.forEach((button) => {
+    getViewTabButtons().forEach((button) => {
       button.addEventListener('click', () => {
         setActiveHrView(button.dataset.hrView);
       });
@@ -2773,7 +2886,7 @@
     });
     exportBtn.addEventListener('click', exportCsv);
     goDashboardBtn.addEventListener('click', () => {
-      window.location.href = 'dashboard.html';
+      window.location.href = 'report-shift-overview.html';
     });
 
     targetTypeSelect.addEventListener('change', updateInstructionTargetFields);
