@@ -1,6 +1,6 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
-  const SIDEBAR_ORDER_KEY = "olvendSidebarOrder";
+  const SIDEBAR_ORDER_KEY = "olvendSidebarOrderV2";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const MIN_RELEASE_ANNOUNCEMENT = "1.1";
   const RELEASE_NOTES = {
