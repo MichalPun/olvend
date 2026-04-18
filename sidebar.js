@@ -46,6 +46,20 @@
       versionValue: "OLVEND 1.0",
       versionNote: ""
     },
+    "operations.html": {
+      currentLabel: "Provoz",
+      activeKey: "operations",
+      versionLabel: "Aktuální verze",
+      versionValue: "OLVEND 1.0",
+      versionNote: ""
+    },
+    "service-requests.html": {
+      currentLabel: "Servis",
+      activeKey: "service",
+      versionLabel: "Aktuální verze",
+      versionValue: "OLVEND 1.0",
+      versionNote: ""
+    },
     "hr-planning.html": {
       currentLabel: "Plán směn",
       activeKey: "hr",
@@ -61,6 +75,20 @@
       versionNote: ""
     },
     "report-attendance.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: "OLVEND 1.0",
+      versionNote: ""
+    },
+    "report-shift-overview.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: "OLVEND 1.0",
+      versionNote: ""
+    },
+    "manager-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
@@ -102,8 +130,8 @@
   const navItems = [
     { key: "dashboard", href: "dashboard.html", label: "Dashboard" },
     { key: "shift", href: "attendance.html", label: "Moje směna" },
-    { key: "service", href: "#", label: "Servis", soon: true },
-    { key: "operations", href: "#", label: "Provoz", soon: true },
+    { key: "service", href: "service-requests.html", label: "Servis" },
+    { key: "operations", href: "operations.html", label: "Provoz" },
     { key: "fleet", href: "vehicles.html", label: "Vozový park" },
     { key: "hr", href: "hr.html", label: "HR" },
     { key: "reporty", href: "reporty.html", label: "Reporty" },
@@ -118,22 +146,32 @@
       const order = JSON.parse(raw);
       if (!Array.isArray(order) || !order.length) return navItems;
 
-      const byKey = new Map(navItems.map((item) => [item.key, item]));
-      const ordered = [];
+      const defaultKeys = navItems.map((item) => item.key);
+      const knownKeys = order.filter((key) => defaultKeys.includes(key));
+      const normalizedKeys = [...knownKeys];
 
-      order.forEach((key) => {
-        const item = byKey.get(key);
-        if (item) {
-          ordered.push(item);
-          byKey.delete(key);
+      defaultKeys.forEach((key, defaultIndex) => {
+        if (normalizedKeys.includes(key)) return;
+
+        const nextKnownKey = defaultKeys
+          .slice(defaultIndex + 1)
+          .find((candidateKey) => normalizedKeys.includes(candidateKey));
+
+        if (!nextKnownKey) {
+          normalizedKeys.push(key);
+          return;
         }
+
+        const insertIndex = normalizedKeys.indexOf(nextKnownKey);
+        normalizedKeys.splice(insertIndex, 0, key);
       });
 
-      navItems.forEach((item) => {
-        if (byKey.has(item.key)) ordered.push(item);
-      });
+      if (JSON.stringify(order) !== JSON.stringify(normalizedKeys)) {
+        saveSidebarOrder(normalizedKeys);
+      }
 
-      return ordered;
+      const byKey = new Map(navItems.map((item) => [item.key, item]));
+      return normalizedKeys.map((key) => byKey.get(key)).filter(Boolean);
     } catch (error) {
       console.error(error);
       return navItems;
