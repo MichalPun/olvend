@@ -2032,6 +2032,8 @@
     let availabilityRows = [];
     let suggestedVehicleStartKm = null;
     let assignedServiceRequests = [];
+    let assignedServiceRequestIds = [];
+    let serviceRefreshTimer = null;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -2077,6 +2079,7 @@
       completionList.innerHTML = [
         payload.shift ? `<li>Směna: ${escapeHtml(payload.shift)}</li>` : '',
         payload.payable ? `<li>Započitatelný čas: ${escapeHtml(payload.payable)}</li>` : '',
+        payload.autoClosedBreak ? `<li>Pauza byla při ukončení dne automaticky uzavřena.</li>` : '',
         payload.vehicle ? `<li>Vozidlo: ${escapeHtml(payload.vehicle)}</li>` : '',
         payload.endKm ? `<li>Konečný stav km: ${escapeHtml(payload.endKm)}</li>` : ''
       ].filter(Boolean).join('');
@@ -3491,6 +3494,8 @@
     async function loadAssignedServiceRequests() {
       if (!currentUser?.id) return;
 
+      const previousIds = [...assignedServiceRequestIds];
+
       const { data, error } = await supabase
         .from('service_requests')
         .select('*')
@@ -3528,15 +3533,32 @@
           location_city: location?.city || null
         };
       });
+      assignedServiceRequestIds = assignedServiceRequests.map((item) => String(item.id));
 
       renderServiceRequests();
       renderAttendanceState();
+
+      const newIncoming = assignedServiceRequestIds.filter((id) => !previousIds.includes(id)).length;
       setServiceRequestsStatus(
-        assignedServiceRequests.length
+        newIncoming > 0
+          ? `Přibyl ${newIncoming} nový servisní požadavek.`
+          : assignedServiceRequests.length
           ? `Máš přiřazené ${assignedServiceRequests.length} otevřené servisní požadavky.`
           : 'Teď pro tebe není žádný otevřený servisní požadavek.',
         assignedServiceRequests.length ? 'success' : ''
       );
+    }
+
+    function startServiceRequestsAutoRefresh() {
+      if (serviceRefreshTimer) window.clearInterval(serviceRefreshTimer);
+      serviceRefreshTimer = window.setInterval(async () => {
+        if (document.hidden) return;
+        try {
+          await loadAssignedServiceRequests();
+        } catch (error) {
+          console.error(error);
+        }
+      }, 60000);
     }
 
     async function updateServiceRequestStatus(requestId, action) {
@@ -4013,10 +4035,67 @@
       if (eventError) throw eventError;
     }
 
+    async function closeOpenBreakIfNeeded(endIso) {
+      const breakState = getCurrentBreakState();
+      if (!breakState.isOnBreak || !breakState.lastBreakStart) {
+        return {
+          breakMinutesToAdd: 0,
+          closed: false
+        };
+      }
+
+      const breakStartTime = new Date(breakState.lastBreakStart.event_time).getTime();
+      const breakEndTime = new Date(endIso).getTime();
+      const breakDiffMinutes = Math.max(0, Math.round((breakEndTime - breakStartTime) / 60000));
+      const nextBreakMinutes = Number(todayAttendance.break_minutes || 0) + breakDiffMinutes;
+
+      const { error: updateError } = await supabase
+        .from('attendance_days')
+        .update({
+          break_minutes: nextBreakMinutes
+        })
+        .eq('id', todayAttendance.id);
+
+      if (updateError) throw updateError;
+
+      const { error: eventError } = await supabase
+        .from('attendance_events')
+        .insert([{
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'break_end',
+          event_time: endIso,
+          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${breakDiffMinutes} min.`
+        }]);
+
+      if (eventError) throw eventError;
+
+      todayAttendance = {
+        ...todayAttendance,
+        break_minutes: nextBreakMinutes
+      };
+      todayEvents = [
+        ...todayEvents,
+        {
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'break_end',
+          event_time: endIso,
+          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${breakDiffMinutes} min.`
+        }
+      ];
+
+      return {
+        breakMinutesToAdd: breakDiffMinutes,
+        closed: true
+      };
+    }
+
     async function endShift() {
       validateEndShiftReadiness();
 
       const endIso = new Date().toISOString();
+      const closedBreak = await closeOpenBreakIfNeeded(endIso);
       const nextDay = {
         ...todayAttendance,
         actual_end: endIso
@@ -4063,7 +4142,7 @@
           event_time: endIso,
           note: nextStatus === 'needs_review'
             ? 'Směna ukončena. Záznam čeká na schválení kvůli výjimce.'
-            : `Směna ukončena · započitatelně ${formatMinutesLabel(payableMinutes)}.`
+            : `Směna ukončena · započitatelně ${formatMinutesLabel(payableMinutes)}.${closedBreak.closed ? ` Pauza byla při ukončení dne automaticky uzavřena (${closedBreak.breakMinutesToAdd} min).` : ''}`
         }]);
 
       if (eventError) {
@@ -4074,6 +4153,7 @@
         needsApproval: nextStatus === 'needs_review',
         shift: `${formatClock(todayAttendance.actual_start)} → ${formatClock(endIso)}`,
         payable: formatHours(payableMinutes),
+        autoClosedBreak: closedBreak.closed,
         vehicle: todayAttendance.vehicle_label || null,
         endKm: todayAttendance.vehicle_id ? String(parseIntegerValue(endOdometerInput?.value) ?? '') : null
       };
@@ -4150,6 +4230,8 @@
       } catch (error) {
         console.error(error);
         setActionsStatus(`Nepodařilo se změnit stav pauzy: ${error.message}`, 'error');
+      } finally {
+        breakToggleBtn.disabled = false;
       }
     });
 
@@ -4331,6 +4413,7 @@
         updateLocationVisibility();
         await refreshPageData();
         renderProfileSummary();
+        startServiceRequestsAutoRefresh();
       } catch (error) {
         console.error(error);
         setStatus(`Nepodařilo se načíst obrazovku Moje směna: ${error.message}`, 'error');
