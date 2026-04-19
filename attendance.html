@@ -2552,6 +2552,39 @@
       };
     }
 
+    function getComputedBreakMinutesFromEvents(events, rangeEndIso = null) {
+      if (!Array.isArray(events) || !events.length) return 0;
+
+      const sortedEvents = [...events]
+        .filter((event) => event?.event_type === 'break_start' || event?.event_type === 'break_end')
+        .sort((a, b) => new Date(a.event_time).getTime() - new Date(b.event_time).getTime());
+
+      let openBreakStartIso = null;
+      let totalBreakMinutes = 0;
+
+      for (const event of sortedEvents) {
+        if (event.event_type === 'break_start') {
+          openBreakStartIso = event.event_time;
+          continue;
+        }
+
+        if (event.event_type === 'break_end' && openBreakStartIso) {
+          const startMs = new Date(openBreakStartIso).getTime();
+          const endMs = new Date(event.event_time).getTime();
+          totalBreakMinutes += Math.max(0, Math.round((endMs - startMs) / 60000));
+          openBreakStartIso = null;
+        }
+      }
+
+      if (openBreakStartIso && rangeEndIso) {
+        const startMs = new Date(openBreakStartIso).getTime();
+        const endMs = new Date(rangeEndIso).getTime();
+        totalBreakMinutes += Math.max(0, Math.round((endMs - startMs) / 60000));
+      }
+
+      return totalBreakMinutes;
+    }
+
     function getStandardPayableStartIso(day) {
       if (!day?.actual_start) return null;
       const actualStartDate = new Date(day.actual_start);
@@ -3997,6 +4030,16 @@
       const nowIso = new Date().toISOString();
 
       if (!breakState.isOnBreak) {
+        todayEvents = [
+          ...todayEvents,
+          {
+            attendance_day_id: todayAttendance.id,
+            employee_id: currentUser.id,
+            event_type: 'break_start',
+            event_time: nowIso,
+            note: 'Pauza zahájena z mobilní obrazovky Moje směna.'
+          }
+        ];
         const { error } = await supabase
           .from('attendance_events')
           .insert([{
@@ -4013,11 +4056,12 @@
       const breakStartTime = new Date(breakState.lastBreakStart.event_time).getTime();
       const breakEndTime = new Date(nowIso).getTime();
       const breakDiffMinutes = Math.max(0, Math.round((breakEndTime - breakStartTime) / 60000));
+      const nextBreakMinutes = Number(todayAttendance.break_minutes || 0) + breakDiffMinutes;
 
       const { error: updateError } = await supabase
         .from('attendance_days')
         .update({
-          break_minutes: Number(todayAttendance.break_minutes || 0) + breakDiffMinutes
+          break_minutes: nextBreakMinutes
         })
         .eq('id', todayAttendance.id);
 
@@ -4034,6 +4078,21 @@
         }]);
 
       if (eventError) throw eventError;
+
+      todayAttendance = {
+        ...todayAttendance,
+        break_minutes: nextBreakMinutes
+      };
+      todayEvents = [
+        ...todayEvents,
+        {
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'break_end',
+          event_time: nowIso,
+          note: `Pauza ukončena · přičteno ${breakDiffMinutes} min.`
+        }
+      ];
     }
 
     async function closeOpenBreakIfNeeded(endIso) {
@@ -4107,11 +4166,12 @@
       const payableEndIso = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
         ? todayAttendance.payable_end
         : getComputedPayableEndIso(nextDay);
+      const effectiveBreakMinutes = getComputedBreakMinutesFromEvents(todayEvents, endIso);
       const payableMinutes = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
         ? Number(todayAttendance.payable_minutes || 0)
         : getComputedPayableMinutes({
             ...nextDay,
-            break_minutes: Number(todayAttendance.break_minutes || 0),
+            break_minutes: effectiveBreakMinutes,
             adjustment_minutes: Number(todayAttendance.adjustment_minutes || 0)
           }, payableStartIso);
 
@@ -4128,11 +4188,22 @@
           payable_start: payableStartIso,
           payable_end: payableEndIso,
           payable_minutes: payableMinutes,
+          break_minutes: effectiveBreakMinutes,
           status: nextStatus
         })
         .eq('id', todayAttendance.id);
 
       if (updateError) throw updateError;
+
+      todayAttendance = {
+        ...todayAttendance,
+        actual_end: endIso,
+        payable_start: payableStartIso,
+        payable_end: payableEndIso,
+        payable_minutes: payableMinutes,
+        break_minutes: effectiveBreakMinutes,
+        status: nextStatus
+      };
 
       const { error: eventError } = await supabase
         .from('attendance_events')
