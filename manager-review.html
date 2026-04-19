@@ -140,6 +140,34 @@
     .queue-item.success { background: rgba(46,204,113,0.08); border-color: rgba(46,204,113,0.18); }
     .queue-item-title { font-size: 14px; font-weight: 800; margin-bottom: 4px; }
     .queue-item-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .queue-item-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .queue-action-btn {
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.05);
+      color: #fff;
+      padding: 9px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+      transition: var(--transition);
+    }
+    .queue-action-btn:hover { background: rgba(255,255,255,0.1); }
+    .queue-action-btn.approve {
+      background: rgba(46,204,113,0.12);
+      border-color: rgba(46,204,113,0.24);
+      color: #c6f7d9;
+    }
+    .queue-action-btn.reject {
+      background: rgba(255,91,102,0.12);
+      border-color: rgba(255,91,102,0.24);
+      color: #ffc7cc;
+    }
     .empty-state {
       padding: 18px; text-align: center; color: var(--muted);
       border: 1px dashed rgba(255,255,255,0.1); border-radius: 16px; background: rgba(255,255,255,0.02);
@@ -281,8 +309,119 @@
         <article class="queue-item ${escapeHtml(item.tone || '')}">
           <div class="queue-item-title">${escapeHtml(item.title)}</div>
           <div class="queue-item-note">${escapeHtml(item.note)}</div>
+          ${Array.isArray(item.actions) && item.actions.length ? `
+            <div class="queue-item-actions">
+              ${item.actions.map((action) => `
+                <button
+                  class="queue-action-btn ${escapeHtml(action.variant || '')}"
+                  type="button"
+                  data-action="${escapeHtml(action.type || '')}"
+                  data-day-id="${escapeHtml(String(action.dayId || ''))}"
+                >
+                  ${escapeHtml(action.label || 'Akce')}
+                </button>
+              `).join('')}
+            </div>
+          ` : ''}
         </article>
       `).join('')
+    }
+
+    function getLocalApprovalStamp() {
+      return new Date().toLocaleString('cs-CZ', {
+        day: 'numeric',
+        month: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    }
+
+    function getStandardPayableStartIso(day) {
+      if (!day?.actual_start) return null
+      const startDate = new Date(day.actual_start)
+      const shiftMinutes = Number(day.adjustment_minutes || 0)
+      startDate.setMinutes(startDate.getMinutes() + shiftMinutes)
+      return startDate.toISOString()
+    }
+
+    function getComputedPayableEndIso(day) {
+      return day?.actual_end || null
+    }
+
+    function getComputedPayableMinutes(day, payableStartIso, payableEndIso) {
+      if (!payableStartIso || !payableEndIso) return 0
+      const startTime = new Date(payableStartIso).getTime()
+      const endTime = new Date(payableEndIso).getTime()
+      const breakMinutes = Number(day.break_minutes || 0)
+      const durationMinutes = Math.max(0, Math.round((endTime - startTime) / 60000) - breakMinutes)
+      return durationMinutes
+    }
+
+    async function resolveHomeStartApproval(dayId, decision) {
+      const { data: day, error: dayError } = await supabase
+        .from('attendance_days')
+        .select(`
+          id,
+          employee_id,
+          status,
+          actual_start,
+          actual_end,
+          payable_start,
+          payable_end,
+          payable_minutes,
+          break_minutes,
+          adjustment_minutes,
+          requires_approval,
+          approval_status,
+          note
+        `)
+        .eq('id', dayId)
+        .single()
+
+      if (dayError) throw dayError
+
+      const payableStartIso = getStandardPayableStartIso(day)
+      const payableEndIso = getComputedPayableEndIso(day)
+      const payableMinutes = getComputedPayableMinutes(day, payableStartIso, payableEndIso)
+      const approvalStamp = getLocalApprovalStamp()
+      const isApproved = decision === 'approve'
+      const nextStatus = day.actual_end
+        ? (isApproved ? 'approved' : 'closed')
+        : 'open'
+      const suffix = isApproved
+        ? `[SCHVÁLENO ${approvalStamp}]`
+        : `[ZAMÍTNUTO ${approvalStamp}]`
+      const nextNote = [String(day.note || '').trim(), suffix].filter(Boolean).join(' ')
+
+      const { error: updateError } = await supabase
+        .from('attendance_days')
+        .update({
+          requires_approval: false,
+          approval_status: isApproved ? 'approved' : 'rejected',
+          payable_start: payableStartIso,
+          payable_end: payableEndIso,
+          payable_minutes: payableMinutes,
+          status: nextStatus,
+          note: nextNote
+        })
+        .eq('id', dayId)
+
+      if (updateError) throw updateError
+
+      const { error: eventError } = await supabase
+        .from('attendance_events')
+        .insert([{
+          attendance_day_id: day.id,
+          employee_id: day.employee_id,
+          event_type: 'approval',
+          event_time: new Date().toISOString(),
+          note: isApproved
+            ? 'Domácí start byl schválen v přehledu Ke kontrole.'
+            : 'Domácí start byl zamítnut v přehledu Ke kontrole.'
+        }])
+
+      if (eventError) throw eventError
     }
 
     function renderSummary(cards) {
@@ -347,10 +486,18 @@
       const { data: days, error } = await supabase
         .from('attendance_days')
         .select(`
+          id,
           attendance_date,
           employee_id,
           start_location_type,
           status,
+          actual_start,
+          actual_end,
+          payable_start,
+          payable_end,
+          payable_minutes,
+          break_minutes,
+          adjustment_minutes,
           requires_approval,
           approval_status,
           note,
@@ -384,7 +531,13 @@
             day.status === 'needs_review' ? 'Čeká na kontrolu' : '',
             day.start_location_type === 'home' ? 'Start doma' : '',
             day.adjustment_reason || day.note || ''
-          ].filter(Boolean).join(' · ')
+          ].filter(Boolean).join(' · '),
+          actions: day.requires_approval && day.approval_status === 'pending'
+            ? [
+                { type: 'approve-home-start', label: 'Schválit', dayId: day.id, variant: 'approve' },
+                { type: 'reject-home-start', label: 'Zamítnout', dayId: day.id, variant: 'reject' }
+              ]
+            : []
         }))
     }
 
@@ -636,6 +789,34 @@
     }
 
     refreshBtn.addEventListener('click', loadManagerReview)
+
+    attendanceQueue.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-action]')
+      if (!button) return
+
+      const action = button.dataset.action
+      const dayId = button.dataset.dayId
+      if (!dayId) return
+
+      if (action !== 'approve-home-start' && action !== 'reject-home-start') return
+
+      const isApprove = action === 'approve-home-start'
+      const originalLabel = button.textContent
+
+      try {
+        button.disabled = true
+        button.textContent = isApprove ? 'Schvaluji...' : 'Zamítám...'
+        setStatus(isApprove ? 'Ukládám schválení směny...' : 'Ukládám zamítnutí směny...')
+        await resolveHomeStartApproval(dayId, isApprove ? 'approve' : 'reject')
+        await loadManagerReview()
+        setStatus(isApprove ? 'Směna byla schválená.' : 'Směna byla zamítnutá.', 'success')
+      } catch (error) {
+        console.error(error)
+        setStatus(`Nepodařilo se uložit schválení: ${error.message}`, 'error')
+        button.disabled = false
+        button.textContent = originalLabel
+      }
+    })
 
     const shouldContinue = await hydrateCurrentUser()
     if (shouldContinue) {
