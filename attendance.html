@@ -2585,6 +2585,10 @@
       return totalBreakMinutes;
     }
 
+    function formatBreakAddedLabel(minutes) {
+      return minutes > 0 ? `${minutes} min.` : 'méně než 1 min.';
+    }
+
     function getStandardPayableStartIso(day) {
       if (!day?.actual_start) return null;
       const actualStartDate = new Date(day.actual_start);
@@ -2611,6 +2615,56 @@
       const shiftedMinutes = Number(day.adjustment_minutes || 0);
       const totalMinutes = Math.round((endBaseMs - startMs) / 60000) + shiftedMinutes - breakMinutes;
       return Math.max(0, totalMinutes);
+    }
+
+    async function normalizeClosedAttendanceFromEvents() {
+      if (!todayAttendance?.id || !todayAttendance.actual_end) return;
+
+      const computedBreakMinutes = getComputedBreakMinutesFromEvents(todayEvents, todayAttendance.actual_end);
+      const storedBreakMinutes = Number(todayAttendance.break_minutes || 0);
+      const payableStartIso = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+        ? todayAttendance.payable_start
+        : getStandardPayableStartIso(todayAttendance);
+      const payableEndIso = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+        ? todayAttendance.payable_end
+        : getComputedPayableEndIso(todayAttendance);
+      const computedPayableMinutes = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+        ? Number(todayAttendance.payable_minutes || 0)
+        : getComputedPayableMinutes({
+            ...todayAttendance,
+            break_minutes: computedBreakMinutes
+          }, payableStartIso);
+      const storedPayableMinutes = Number(todayAttendance.payable_minutes || 0);
+
+      const hasMismatch =
+        computedBreakMinutes !== storedBreakMinutes ||
+        computedPayableMinutes !== storedPayableMinutes ||
+        String(payableStartIso || '') !== String(todayAttendance.payable_start || '') ||
+        String(payableEndIso || '') !== String(todayAttendance.payable_end || '');
+
+      if (!hasMismatch) return;
+
+      const updatePayload = {
+        break_minutes: computedBreakMinutes
+      };
+
+      if (!(todayAttendance.requires_approval && todayAttendance.approval_status === 'pending')) {
+        updatePayload.payable_start = payableStartIso;
+        updatePayload.payable_end = payableEndIso;
+        updatePayload.payable_minutes = computedPayableMinutes;
+      }
+
+      const { error } = await supabase
+        .from('attendance_days')
+        .update(updatePayload)
+        .eq('id', todayAttendance.id);
+
+      if (error) throw error;
+
+      todayAttendance = decorateAttendanceDay({
+        ...todayAttendance,
+        ...updatePayload
+      });
     }
 
     function getShiftTypeMeta(shiftType) {
@@ -3383,6 +3437,7 @@
 
         if (eventsError) throw eventsError;
         todayEvents = events ?? [];
+        await normalizeClosedAttendanceFromEvents();
       } else {
         todayEvents = [];
       }
@@ -4056,6 +4111,15 @@
       const breakStartTime = new Date(breakState.lastBreakStart.event_time).getTime();
       const breakEndTime = new Date(nowIso).getTime();
       const breakDiffMinutes = Math.max(0, Math.round((breakEndTime - breakStartTime) / 60000));
+      const breakDurationMs = Math.max(0, breakEndTime - breakStartTime);
+
+      if (breakDurationMs > 0 && breakDurationMs < 60000) {
+        const shouldCloseShortBreak = window.confirm('Pauza běží kratší dobu než 1 minutu. Opravdu ji chceš ukončit?');
+        if (!shouldCloseShortBreak) {
+          return;
+        }
+      }
+
       const nextBreakMinutes = Number(todayAttendance.break_minutes || 0) + breakDiffMinutes;
 
       const { error: updateError } = await supabase
@@ -4074,7 +4138,7 @@
           employee_id: currentUser.id,
           event_type: 'break_end',
           event_time: nowIso,
-          note: `Pauza ukončena · přičteno ${breakDiffMinutes} min.`
+          note: `Pauza ukončena · přičteno ${formatBreakAddedLabel(breakDiffMinutes)}`
         }]);
 
       if (eventError) throw eventError;
@@ -4090,7 +4154,7 @@
           employee_id: currentUser.id,
           event_type: 'break_end',
           event_time: nowIso,
-          note: `Pauza ukončena · přičteno ${breakDiffMinutes} min.`
+          note: `Pauza ukončena · přičteno ${formatBreakAddedLabel(breakDiffMinutes)}`
         }
       ];
     }
@@ -4125,7 +4189,7 @@
           employee_id: currentUser.id,
           event_type: 'break_end',
           event_time: endIso,
-          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${breakDiffMinutes} min.`
+          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${formatBreakAddedLabel(breakDiffMinutes)}`
         }]);
 
       if (eventError) throw eventError;
@@ -4141,7 +4205,7 @@
           employee_id: currentUser.id,
           event_type: 'break_end',
           event_time: endIso,
-          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${breakDiffMinutes} min.`
+          note: `Pauza byla automaticky ukončena při uzavření směny · přičteno ${formatBreakAddedLabel(breakDiffMinutes)}`
         }
       ];
 
@@ -4214,7 +4278,7 @@
           event_time: endIso,
           note: nextStatus === 'needs_review'
             ? 'Směna ukončena. Záznam čeká na schválení kvůli výjimce.'
-            : `Směna ukončena · započitatelně ${formatMinutesLabel(payableMinutes)}.${closedBreak.closed ? ` Pauza byla při ukončení dne automaticky uzavřena (${closedBreak.breakMinutesToAdd} min).` : ''}`
+            : `Směna ukončena · započitatelně ${formatMinutesLabel(payableMinutes)}.${closedBreak.closed ? ` Pauza byla při ukončení dne automaticky uzavřena (${formatBreakAddedLabel(closedBreak.breakMinutesToAdd)}).` : ''}`
         }]);
 
       if (eventError) {
