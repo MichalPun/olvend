@@ -544,7 +544,7 @@
       .module-card-header { flex-direction: column; }
       .action-row { flex-direction: column; }
       .action-row .btn, .actions .btn { width: 100%; }
-      .modal-backdrop { padding: 0; align-items: flex-end; }
+      .modal-backdrop { padding: 0; align-items: flex-end; overflow: auto; }
       .modal { max-width: 100%; max-height: 92vh; border-radius: 24px 24px 0 0; }
       .modal-footer { flex-direction: column; }
       .modal-footer .btn { width: 100%; }
@@ -828,6 +828,7 @@
     let isEditMode = false
     let locationsMap = null
     let locationsMapLayer = null
+    let autoGeocodeAttempted = false
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -928,14 +929,16 @@
       return true
     }
 
-    async function geocodeVisibleLocations() {
+    async function geocodeVisibleLocations({ silent = false } = {}) {
       const targets = filteredLocationsData.filter((item) =>
         (!Number.isFinite(Number(item.latitude)) || !Number.isFinite(Number(item.longitude))) &&
         (item.address || item.city)
       )
 
       if (!targets.length) {
-        setStatus('Ve vybraném filtru teď není žádná lokalita, které by chyběly souřadnice.', 'success')
+        if (!silent) {
+          setStatus('Ve vybraném filtru teď není žádná lokalita, které by chyběly souřadnice.', 'success')
+        }
         return
       }
 
@@ -957,12 +960,14 @@
         }
 
         await loadLocations()
-        setStatus(
-          updated > 0
-            ? `Souřadnice byly doplněné u ${updated} lokalit.`
-            : 'Nepodařilo se dohledat žádné nové souřadnice. Zkus zpřesnit adresy u lokalit.',
-          updated > 0 ? 'success' : 'error'
-        )
+        if (!silent || updated > 0) {
+          setStatus(
+            updated > 0
+              ? `Souřadnice byly doplněné u ${updated} lokalit.`
+              : 'Nepodařilo se dohledat žádné nové souřadnice. Zkus zpřesnit adresy u lokalit.',
+            updated > 0 ? 'success' : 'error'
+          )
+        }
       } finally {
         geocodeVisibleBtn.disabled = false
         geocodeVisibleBtn.textContent = 'Doplnit souřadnice z adres'
@@ -1029,6 +1034,24 @@
       })
 
       locationsMap.fitBounds(bounds, { padding: [30, 30] })
+    }
+
+    async function maybeAutoGeocodeVisibleLocations() {
+      if (autoGeocodeAttempted) return
+      if (!filteredLocationsData.length) return
+
+      const validPoints = filteredLocationsData.filter((item) =>
+        Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude))
+      )
+      const missingCoords = filteredLocationsData.filter((item) =>
+        (!Number.isFinite(Number(item.latitude)) || !Number.isFinite(Number(item.longitude))) &&
+        (item.address || item.city)
+      )
+
+      if (validPoints.length > 0 || !missingCoords.length) return
+
+      autoGeocodeAttempted = true
+      await geocodeVisibleLocations({ silent: true })
     }
 
     function resetForm() {
@@ -1298,6 +1321,7 @@
       filteredLocationsData = filtered
       renderLocations(filtered)
       renderLocationsMap(filtered)
+      void maybeAutoGeocodeVisibleLocations()
     }
 
     async function loadLocations() {
