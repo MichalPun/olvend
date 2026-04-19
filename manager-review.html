@@ -106,6 +106,18 @@
     .status-line.success { color: #9be7b8; }
     .status-line.error { color: #ffb0b6; }
     .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .approval-strip {
+      display: none;
+      margin-bottom: 18px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255,182,72,0.08);
+      border: 1px solid rgba(255,182,72,0.2);
+    }
+    .approval-strip.show { display: block; }
+    .approval-strip h3 { margin: 0 0 6px; font-size: 20px; }
+    .approval-strip p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+    .approval-strip strong { color: #fff; }
     .summary-box {
       padding: 16px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
     }
@@ -169,6 +181,10 @@
         </div>
         <div class="panel-body">
           <div class="status-line" id="statusLine">Načítám manažerský přehled...</div>
+          <div class="approval-strip" id="approvalStrip">
+            <h3>Směny čekající na schválení</h3>
+            <p id="approvalStripText">Načítám schvalování...</p>
+          </div>
           <div class="summary-grid" id="summaryGrid"></div>
           <div class="queue-grid">
             <section class="queue-card">
@@ -204,6 +220,8 @@
     const roleBadge = document.getElementById('roleBadge')
     const refreshBtn = document.getElementById('refreshBtn')
     const statusLine = document.getElementById('statusLine')
+    const approvalStrip = document.getElementById('approvalStrip')
+    const approvalStripText = document.getElementById('approvalStripText')
     const summaryGrid = document.getElementById('summaryGrid')
     const attendanceQueue = document.getElementById('attendanceQueue')
     const planningQueue = document.getElementById('planningQueue')
@@ -277,6 +295,22 @@
       `).join('')
     }
 
+    function renderApprovalStrip(items) {
+      if (!approvalStrip || !approvalStripText) return
+
+      const approvalItems = items.filter((item) => item.kind === 'pending_approval')
+      if (!approvalItems.length) {
+        approvalStrip.classList.remove('show')
+        approvalStripText.textContent = ''
+        return
+      }
+
+      approvalStrip.classList.add('show')
+      approvalStripText.innerHTML = approvalItems.length === 1
+        ? `<strong>1 směna</strong> právě čeká na schválení. Najdeš ji níže v sekci Docházka a také v reportu docházky pod stavem <strong>Čeká na schválení</strong>.`
+        : `<strong>${approvalItems.length} směny</strong> právě čekají na schválení. Najdeš je níže v sekci Docházka a také v reportu docházky pod stavem <strong>Čeká na schválení</strong>.`
+    }
+
     async function hydrateCurrentUser() {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
       if (sessionError) throw sessionError
@@ -342,6 +376,7 @@
         .filter((day) => (day.requires_approval && day.approval_status === 'pending') || day.status === 'needs_review' || day.start_location_type === 'home')
         .slice(0, 10)
         .map((day) => ({
+          kind: day.requires_approval && day.approval_status === 'pending' ? 'pending_approval' : day.status === 'needs_review' ? 'needs_review' : 'home_start',
           tone: day.requires_approval && day.approval_status === 'pending' ? 'warning' : day.status === 'needs_review' ? 'danger' : 'warning',
           title: `${employeeMap.get(String(day.employee_id)) || 'Zaměstnanec'} · ${formatDate(day.attendance_date)}`,
           note: [
@@ -409,17 +444,27 @@
     }
 
     async function loadFleetReviewItems() {
-      const [{ data: vehicles, error: vehiclesError }, { data: logs, error: logsError }] = await Promise.all([
-        supabase
-          .from('vehicles')
-          .select('id, name, plate, stk_valid_until, insurance_valid_until, next_service_date, next_service_odometer_km, current_odometer_km, tolerated_consumption_l_100km')
-          .order('name', { ascending: true }),
-        supabase
-          .from('vehicle_operation_logs')
-          .select('vehicle_id, employee_id, log_date, distance_km, fuel_liters, status')
-          .order('log_date', { ascending: false })
-      ])
+      let vehiclesResult = await supabase
+        .from('vehicles')
+        .select('id, name, plate, stk_valid_until, insurance_valid_until, next_service_date, next_service_odometer_km, current_odometer_km, tolerated_consumption_l_100km')
+        .order('name', { ascending: true })
 
+      if (
+        vehiclesResult.error &&
+        /tolerated_consumption_l_100km|target_consumption_l_100km|stk_valid_until|insurance_valid_until|next_service_date|next_service_odometer_km/i.test(String(vehiclesResult.error.message || ''))
+      ) {
+        vehiclesResult = await supabase
+          .from('vehicles')
+          .select('id, name, plate, current_odometer_km')
+          .order('name', { ascending: true })
+      }
+
+      const { data: logs, error: logsError } = await supabase
+        .from('vehicle_operation_logs')
+        .select('vehicle_id, employee_id, log_date, distance_km, fuel_liters, status')
+        .order('log_date', { ascending: false })
+
+      const { data: vehicles, error: vehiclesError } = vehiclesResult
       if (vehiclesError) throw vehiclesError
       if (logsError) throw logsError
 
@@ -547,8 +592,19 @@
           loadServiceReviewItems()
         ])
 
+        renderApprovalStrip(attendanceItems)
+
         renderSummary([
-          { label: 'Docházka', value: attendanceItems.length, note: 'Schválení, domácí starty a dny ke kontrole.' },
+          {
+            label: 'Docházka',
+            value: attendanceItems.length,
+            note: (() => {
+              const pendingApprovals = attendanceItems.filter((item) => item.kind === 'pending_approval').length
+              return pendingApprovals
+                ? `${pendingApprovals} čeká na schválení, zbytek jsou kontrolní výjimky.`
+                : 'Schválení, domácí starty a dny ke kontrole.'
+            })()
+          },
           { label: 'Plán směn', value: planningItems.length, note: 'Konflikty plánování proti dostupnosti.' },
           { label: 'Vozidla', value: fleetItems.length, note: 'Spotřeba, km a blížící se termíny.' },
           { label: 'Servis', value: serviceItems.length, note: 'Nové, nepřiřazené a přetažené požadavky.' },
@@ -563,6 +619,7 @@
         setStatus('Manažerský přehled je načtený.', 'success')
       } catch (error) {
         console.error(error)
+        renderApprovalStrip([])
         renderSummary([
           { label: 'Docházka', value: '-', note: 'Nepodařilo se načíst.' },
           { label: 'Plán směn', value: '-', note: 'Nepodařilo se načíst.' },
