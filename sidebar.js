@@ -6,13 +6,13 @@
   const RELEASE_NOTES = {
     "1.1": {
       title: "Nová verze 1.1",
-      subtitle: "Dnes jsme posunuli OLVEND o kus dál. Tady je to hlavní, co je nově připravené.",
+      subtitle: "OLVEND je teď připravený pro pondělní provoz. Tohle je hlavní, co je v 1.1 nově k dispozici.",
       items: [
-        "Moje směna je nově čistší a lépe čitelná na telefonu.",
-        "HR má samostatný planner směn a rychlejší vstupy do práce s týmem.",
-        "Přibyl přehled směn s plánogramem, fondy a kontrolními upozorněními.",
-        "Můj profil nově obsahuje docházku a dostupnost na dalších 14 dní.",
-        "Sidebar i HR sekce si můžeš přeskládat podle toho, co používáš nejvíc."
+        "Moje směna má nový mobilní tok: dnes, start směny, průběh dne a ukončení.",
+        "HR má samostatný planner směn včetně kopírování směn, dostupnosti a kontrol konfliktů.",
+        "Přibyl Vozový park se spotřebou, náklady, detailem vozidla a kontrolními upozorněními.",
+        "Provoz a Servis mají lokality, servisní požadavky a manažerský přehled Ke kontrole.",
+        "Můj profil nově obsahuje docházku a dostupnost na dalších 14 dní."
       ]
     }
   };
@@ -22,105 +22,105 @@
       currentLabel: "Dashboard",
       activeKey: "dashboard",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "attendance.html": {
       currentLabel: "Moje směna",
       activeKey: "shift",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "warehouses.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "hr.html": {
       currentLabel: "HR",
       activeKey: "hr",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "operations.html": {
       currentLabel: "Provoz",
       activeKey: "operations",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "service-requests.html": {
       currentLabel: "Servis",
       activeKey: "service",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "hr-planning.html": {
       currentLabel: "Plán směn",
       activeKey: "hr",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "reporty.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "report-attendance.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "report-shift-overview.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "manager-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "settings.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "employees.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "vehicles.html": {
       currentLabel: "Vozový park",
       activeKey: "fleet",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     },
     "company.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.0",
+      versionValue: "OLVEND 1.1",
       versionNote: ""
     }
   };
@@ -360,6 +360,13 @@
         padding: 18px 22px 22px;
       }
 
+      .release-note {
+        margin-top: 14px;
+        color: #a5a8b2;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
       .release-list {
         display: grid;
         gap: 10px;
@@ -394,7 +401,6 @@
       .release-footer {
         display: flex;
         justify-content: flex-end;
-        gap: 10px;
         padding: 0 22px 22px;
       }
 
@@ -406,15 +412,6 @@
         font-size: 14px;
         font-weight: 800;
         transition: 0.2s ease;
-      }
-
-      .release-btn.secondary {
-        background: rgba(255,255,255,0.05);
-        color: #fff;
-      }
-
-      .release-btn.secondary:hover {
-        background: rgba(255,255,255,0.1);
       }
 
       .release-btn.primary {
@@ -520,10 +517,12 @@
             <ul class="release-list">
               ${notes.items.map((item) => `<li>${item}</li>`).join("")}
             </ul>
+            <div class="release-note">
+              Okno se zobrazí jen jednou na zařízení. Pak už můžeš rovnou pokračovat do práce.
+            </div>
           </div>
           <div class="release-footer">
-            <button class="release-btn secondary" type="button" id="releaseCloseLater">Zavřít</button>
-            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Rozumím</button>
+            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat 1.1</button>
           </div>
         </div>
       </div>
@@ -547,8 +546,7 @@
 
     const backdrop = document.getElementById("releaseBackdrop");
     const confirmBtn = document.getElementById("releaseConfirmBtn");
-    const closeBtn = document.getElementById("releaseCloseLater");
-    if (!backdrop || !confirmBtn || !closeBtn) return;
+    if (!backdrop || !confirmBtn) return;
 
     const closeModal = (markSeen) => {
       if (markSeen) {
@@ -562,7 +560,6 @@
     };
 
     confirmBtn.addEventListener("click", () => closeModal(true));
-    closeBtn.addEventListener("click", () => closeModal(true));
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) {
         closeModal(true);
