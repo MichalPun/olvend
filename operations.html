@@ -859,6 +859,48 @@
         .trim()
     }
 
+    async function fetchFirstGeocodeMatch(query) {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&countrycodes=cz&addressdetails=1&q=${encodeURIComponent(query)}`,
+        {
+          headers: {
+            'Accept-Language': 'cs'
+          }
+        }
+      )
+
+      if (!response.ok) throw new Error(`Geokódování selhalo (${response.status})`)
+
+      const results = await response.json()
+      return Array.isArray(results) ? results[0] : null
+    }
+
+    async function resolveLocationCoordinates({ name, customerName, address, city }) {
+      const queryVariants = [
+        [address, city, 'Česko'],
+        [address, city],
+        [customerName, address, city, 'Česko'],
+        [name, address, city, 'Česko'],
+        [address, 'Česko'],
+        [name, city, 'Česko']
+      ]
+        .map((parts) => parts.filter(Boolean).join(', '))
+        .filter(Boolean)
+
+      for (const query of queryVariants) {
+        const match = await fetchFirstGeocodeMatch(query)
+        if (match?.lat && match?.lon) {
+          return {
+            latitude: Number(match.lat),
+            longitude: Number(match.lon),
+            label: query
+          }
+        }
+      }
+
+      return null
+    }
+
     function renderSummary() {
       const activeCount = locationsData.filter((item) => item.active !== false).length
       const uniqueCities = new Set(locationsData.map((item) => normalizeText(item.city)).filter(Boolean)).size
@@ -873,9 +915,9 @@
 
     async function geocodeCurrentAddress() {
       const name = document.getElementById('name').value.trim()
+      const customerName = document.getElementById('customer_name').value.trim()
       const city = document.getElementById('city').value.trim()
       const address = document.getElementById('address').value.trim()
-      const query = [name, address, city, 'Česko'].filter(Boolean).join(', ')
 
       if (!address && !city) {
         setStatus('Pro dohledání souřadnic doplň aspoň adresu nebo město.', 'error')
@@ -885,21 +927,14 @@
       try {
         geocodeBtn.disabled = true
         geocodeBtn.textContent = 'Hledám souřadnice...'
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`, {
-          headers: {
-            'Accept-Language': 'cs'
-          }
-        })
-        if (!response.ok) throw new Error(`Geokódování selhalo (${response.status})`)
-        const results = await response.json()
-        const match = Array.isArray(results) ? results[0] : null
+        const match = await resolveLocationCoordinates({ name, customerName, address, city })
         if (!match) {
-          setStatus('Souřadnice se podle adresy nepodařilo najít. Zkus doplnit přesnější adresu.', 'error')
+          setStatus('Souřadnice se podle adresy nepodařilo najít. Zkus doplnit přesnější adresu, město nebo později i PSČ.', 'error')
           return
         }
-        document.getElementById('latitude').value = Number(match.lat).toFixed(7)
-        document.getElementById('longitude').value = Number(match.lon).toFixed(7)
-        setStatus('Souřadnice byly doplněné podle adresy. Před uložením je můžeš ještě zkontrolovat.', 'success')
+        document.getElementById('latitude').value = Number(match.latitude).toFixed(7)
+        document.getElementById('longitude').value = Number(match.longitude).toFixed(7)
+        setStatus(`Souřadnice byly doplněné podle adresy. Použitý dotaz: ${match.label}`, 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Souřadnice se nepodařilo dohledat: ${error.message}`, 'error')
@@ -910,24 +945,19 @@
     }
 
     async function geocodeLocationAddress(location) {
-      const query = [location.name, location.address, location.city, 'Česko'].filter(Boolean).join(', ')
-      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`, {
-        headers: {
-          'Accept-Language': 'cs'
-        }
+      const match = await resolveLocationCoordinates({
+        name: location.name,
+        customerName: location.customer_name,
+        address: location.address,
+        city: location.city
       })
-
-      if (!response.ok) throw new Error(`Geokódování selhalo (${response.status})`)
-
-      const results = await response.json()
-      const match = Array.isArray(results) ? results[0] : null
       if (!match) return false
 
       const { error } = await supabase
         .from('locations')
         .update({
-          latitude: Number(match.lat),
-          longitude: Number(match.lon)
+          latitude: Number(match.latitude),
+          longitude: Number(match.longitude)
         })
         .eq('id', location.id)
 
