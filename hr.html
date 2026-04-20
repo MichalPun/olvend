@@ -2090,6 +2090,10 @@
               <label for="adjustEndKm">Konečný stav km</label>
               <input id="adjustEndKm" type="number" min="0" step="1" placeholder="Např. 152418" />
             </div>
+            <div class="field">
+              <label for="adjustFuelKm">Km při tankování</label>
+              <input id="adjustFuelKm" type="number" min="0" step="1" placeholder="Např. 152401" />
+            </div>
             <div class="field full">
               <label for="adjustReason">Důvod úpravy</label>
               <textarea id="adjustReason" placeholder="Např. zaměstnanec zapomněl ukončit směnu, doplněný správný čas podle reality..." required></textarea>
@@ -2154,6 +2158,7 @@
     const adjustCorrectionMode = document.getElementById('adjustCorrectionMode');
     const adjustStartKm = document.getElementById('adjustStartKm');
     const adjustEndKm = document.getElementById('adjustEndKm');
+    const adjustFuelKm = document.getElementById('adjustFuelKm');
     const adjustReason = document.getElementById('adjustReason');
     const instructionsStatusLine = document.getElementById('instructionsStatusLine');
     const instructionForm = document.getElementById('instructionForm');
@@ -2409,6 +2414,7 @@
       if (adjustVehicleLabel) adjustVehicleLabel.textContent = 'Bez vozidla';
       if (adjustStartKm) adjustStartKm.disabled = false;
       if (adjustEndKm) adjustEndKm.disabled = false;
+      if (adjustFuelKm) adjustFuelKm.disabled = false;
       setAttendanceAdjustStatus('Vyber směnu, kterou chceš upravit.');
     }
 
@@ -2433,7 +2439,7 @@
     function openAttendanceAdjustModal(dayId) {
       const row = attendanceRows.find((item) => String(item.id) === String(dayId));
       if (!row) return;
-      if (String(row.employee_id) === String(currentUser?.id)) {
+      if (String(row.employee_id) === String(currentUser?.id) && !canSelfApproveAttendanceCorrection()) {
         setStatus('Vlastní směnu z HR teď neupravuj. Kvůli auditu ji musí opravit jiný oprávněný člověk.', 'error');
         return;
       }
@@ -2449,8 +2455,10 @@
       adjustCorrectionMode.value = canSelfApproveAttendanceCorrection() ? 'approved' : 'pending';
       adjustStartKm.value = row.vehicle_log_start_km != null ? String(row.vehicle_log_start_km) : '';
       adjustEndKm.value = row.vehicle_log_end_km != null ? String(row.vehicle_log_end_km) : '';
+      adjustFuelKm.value = row.vehicle_log_fuel_km != null ? String(row.vehicle_log_fuel_km) : '';
       adjustStartKm.disabled = !row.vehicle_id;
       adjustEndKm.disabled = !row.vehicle_id;
+      adjustFuelKm.disabled = !row.vehicle_id;
       adjustReason.value = row.adjustment_reason || '';
       setAttendanceAdjustStatus(
         row.vehicle_id
@@ -2540,6 +2548,7 @@
       const breakMinutes = Math.max(0, Number(adjustBreakMinutes.value || 0));
       const startKmValue = adjustStartKm.value.trim();
       const endKmValue = adjustEndKm.value.trim();
+      const fuelKmValue = adjustFuelKm.value.trim();
       const correctionReason = adjustReason.value.trim();
       const correctionMode = adjustCorrectionMode.value;
 
@@ -2551,12 +2560,13 @@
         throw new Error('Doplň důvod úpravy směny.');
       }
 
-      if (!row.vehicle_id && (startKmValue || endKmValue)) {
+      if (!row.vehicle_id && (startKmValue || endKmValue || fuelKmValue)) {
         throw new Error('Tahle směna je vedená bez vozidla, takže km tu teď nedává smysl upravovat.');
       }
 
       const parsedStartKm = startKmValue ? Number(startKmValue) : null;
       const parsedEndKm = endKmValue ? Number(endKmValue) : null;
+      const parsedFuelKm = fuelKmValue ? Number(fuelKmValue) : null;
 
       if (parsedStartKm != null && !Number.isFinite(parsedStartKm)) {
         throw new Error('Počáteční stav km není platné číslo.');
@@ -2566,8 +2576,20 @@
         throw new Error('Konečný stav km není platné číslo.');
       }
 
+      if (parsedFuelKm != null && !Number.isFinite(parsedFuelKm)) {
+        throw new Error('Km při tankování není platné číslo.');
+      }
+
       if (parsedStartKm != null && parsedEndKm != null && parsedEndKm < parsedStartKm) {
         throw new Error('Konečný stav km nemůže být menší než počáteční.');
+      }
+
+      if (parsedStartKm != null && parsedFuelKm != null && parsedFuelKm < parsedStartKm) {
+        throw new Error('Km při tankování nemůže být menší než počáteční stav km.');
+      }
+
+      if (parsedEndKm != null && parsedFuelKm != null && parsedFuelKm > parsedEndKm) {
+        throw new Error('Km při tankování nemůže být větší než konečný stav km.');
       }
 
       const actualStartIso = combineDateAndTimeToIso(row.attendance_date, startTime);
@@ -2621,6 +2643,7 @@
         const vehicleLogPayload = {
           start_odometer_km: parsedStartKm,
           end_odometer_km: parsedEndKm,
+          fuel_odometer_km: parsedFuelKm,
           started_at: actualStartIso,
           ended_at: actualEndIso,
           log_date: row.attendance_date,
@@ -2671,7 +2694,7 @@
           employee_id: row.employee_id,
           event_type: 'manual_adjustment',
           event_time: new Date().toISOString(),
-          note: `HR korekce směny · ${startTime} → ${endTime} · pauza ${breakMinutes} min${parsedStartKm != null || parsedEndKm != null ? ` · km ${parsedStartKm ?? '-'} → ${parsedEndKm ?? '-'}` : ''} · důvod: ${correctionReason}`
+          note: `HR korekce směny · ${startTime} → ${endTime} · pauza ${breakMinutes} min${parsedStartKm != null || parsedEndKm != null ? ` · km ${parsedStartKm ?? '-'} → ${parsedEndKm ?? '-'}` : ''}${parsedFuelKm != null ? ` · tankování při ${parsedFuelKm} km` : ''} · důvod: ${correctionReason}`
         }]);
 
       if (eventError) throw eventError;
@@ -2765,6 +2788,7 @@
           vehicle_log_id: primaryVehicleLog?.id || null,
           vehicle_log_start_km: primaryVehicleLog?.start_odometer_km ?? null,
           vehicle_log_end_km: primaryVehicleLog?.end_odometer_km ?? null,
+          vehicle_log_fuel_km: primaryVehicleLog?.fuel_odometer_km ?? null,
           vehicle_log_count: dayLogs.length
         };
       });
@@ -3115,7 +3139,7 @@
             </td>
             <td><span class="badge ${escapeHtml(status.cls)}">${escapeHtml(status.label)}</span></td>
             <td>
-              <button class="mini-btn" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}" ${row.employee_id === currentUser?.id ? 'disabled' : ''}>${row.employee_id === currentUser?.id ? 'Vlastní směna' : 'Upravit'}</button>
+              <button class="mini-btn" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}" ${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'disabled' : ''}>${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'Vlastní směna' : 'Upravit'}</button>
             </td>
           </tr>
         `;
@@ -3187,7 +3211,7 @@
         attendanceDayIds.length
           ? supabase
             .from('vehicle_operation_logs')
-            .select('id, attendance_day_id, vehicle_id, started_at, start_odometer_km, end_odometer_km')
+            .select('id, attendance_day_id, vehicle_id, started_at, start_odometer_km, end_odometer_km, fuel_odometer_km')
             .in('attendance_day_id', attendanceDayIds)
             .order('started_at', { ascending: false })
           : Promise.resolve({ data: [], error: null })
