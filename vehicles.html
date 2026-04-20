@@ -1718,6 +1718,60 @@
       return `${amount.toLocaleString('cs-CZ', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} Kč`
     }
 
+    function stripVehicleDetailFields(payload) {
+      const fallbackPayload = { ...payload }
+      ;[
+        'fuel_type',
+        'tank_capacity_l',
+        'assigned_employee_id',
+        'stk_valid_until',
+        'insurance_valid_until',
+        'next_service_date',
+        'next_service_odometer_km',
+        'target_consumption_l_100km',
+        'tolerated_consumption_l_100km'
+      ].forEach((key) => {
+        delete fallbackPayload[key]
+      })
+      return fallbackPayload
+    }
+
+    function buildFuelConsumptionSegments(vehicleLogs) {
+      const fuelLogs = [...(vehicleLogs || [])]
+        .filter((log) => Number(log.fuel_liters) > 0 && Number.isFinite(Number(log.fuel_odometer_km)))
+        .sort((a, b) => {
+          const aKm = Number(a.fuel_odometer_km || 0)
+          const bKm = Number(b.fuel_odometer_km || 0)
+          if (aKm !== bKm) return aKm - bKm
+          return new Date(a.log_date || 0).getTime() - new Date(b.log_date || 0).getTime()
+        })
+
+      const segments = []
+      for (let index = 1; index < fuelLogs.length; index += 1) {
+        const previous = fuelLogs[index - 1]
+        const current = fuelLogs[index]
+        const previousKm = Number(previous.fuel_odometer_km || 0)
+        const currentKm = Number(current.fuel_odometer_km || 0)
+        const liters = Number(current.fuel_liters || 0)
+        const distanceKm = currentKm - previousKm
+
+        if (distanceKm <= 0 || liters <= 0) continue
+
+        segments.push({
+          fromLog: previous,
+          toLog: current,
+          distanceKm,
+          fuelLiters: liters,
+          consumption: (liters / distanceKm) * 100
+        })
+      }
+
+      return {
+        fuelLogs,
+        segments
+      }
+    }
+
     function getDaysUntil(value) {
       if (!value) return null
       const today = new Date()
@@ -1897,8 +1951,16 @@
         <div class="detail-grid">
           <article class="detail-box">
             <div class="detail-box-label">Aktuální spotřeba</div>
-            <div class="detail-box-value">${escapeHtml(consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : 'Bez dat')}</div>
-            <div class="detail-box-note">${escapeHtml(vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null ? `Cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}` : 'Zatím není nastavený limit spotřeby.')}</div>
+            <div class="detail-box-value">${escapeHtml(consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dat'))}</div>
+            <div class="detail-box-note">${escapeHtml(
+              consumptionInsight.avgConsumption != null
+                ? (vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
+                  ? `Cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}`
+                  : 'Spotřeba se počítá mezi dvěma tankováními.')
+                : (consumptionInsight.fuelEventCount >= 1
+                  ? 'První tankování bereme jako bod 0. Spotřeba se dopočte až od dalšího tankování.'
+                  : 'Zatím není nastavený limit spotřeby.')
+            )}</div>
           </article>
           <article class="detail-box">
             <div class="detail-box-label">Náklady celkem</div>
@@ -2139,12 +2201,18 @@
             <span class="km-badge">${escapeHtml(odometerValue)}</span>
           </td>
           <td data-label="Spotřeba / náklady">
-            <strong>${escapeHtml(consumptionInsight?.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : 'Bez dopočtu')}</strong>
+            <strong>${escapeHtml(consumptionInsight?.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight?.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dopočtu'))}</strong>
             <span class="subtext">
               ${escapeHtml(
-                vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
-                  ? `cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}`
-                  : 'Zatím bez nastaveného limitu spotřeby'
+                consumptionInsight?.avgConsumption != null
+                  ? (
+                    vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
+                      ? `cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}`
+                      : 'Spotřeba se počítá mezi tankováními'
+                  )
+                  : (consumptionInsight?.fuelEventCount >= 1
+                    ? 'První tankování je bod 0'
+                    : 'Zatím bez nastaveného limitu spotřeby')
               )}
             </span>
             <span class="subtext">${escapeHtml(`Náklady celkem ${formatMoney(expenseInsight.totalAmount || 0)}`)}</span>
@@ -2384,15 +2452,15 @@
         const vehicleLogs = logsByVehicle.get(key) || []
         const vehicleExpenses = expensesByVehicle.get(key) || []
         const reviewItems = []
-        const validConsumptionLogs = vehicleLogs.filter((log) => Number(log.distance_km) > 0 && Number(log.fuel_liters) > 0)
-        const totalDistance = validConsumptionLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
-        const totalFuel = validConsumptionLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
+        const fuelTracking = buildFuelConsumptionSegments(vehicleLogs)
+        const validConsumptionSegments = fuelTracking.segments
+        const totalDistance = validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0)
+        const totalFuel = validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0)
         const avgConsumption = totalDistance > 0 ? (totalFuel / totalDistance) * 100 : null
         const toleratedLimit = vehicle.tolerated_consumption_l_100km != null ? Number(vehicle.tolerated_consumption_l_100km) : null
-        const overLimitLogs = validConsumptionLogs.filter((log) => {
+        const overLimitLogs = validConsumptionSegments.filter((segment) => {
           if (toleratedLimit == null) return false
-          const logConsumption = (Number(log.fuel_liters || 0) / Number(log.distance_km || 0)) * 100
-          return logConsumption > toleratedLimit
+          return Number(segment.consumption || 0) > toleratedLimit
         })
 
         let consumptionStatus = 'idle'
@@ -2407,8 +2475,7 @@
         }
 
         if (overLimitLogs.length >= 2) {
-          const employeeId = overLimitLogs[0]?.employee_id
-          const employee = employeesData.find((item) => String(item.id) === String(employeeId))
+          const employee = employeesData.find((item) => String(item.id) === String(overLimitLogs[0]?.toLog?.employee_id))
           const employeeLabel = employee
             ? [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Zaměstnanec'
             : 'řidič'
@@ -2473,6 +2540,8 @@
           avgConsumption,
           totalDistance,
           totalFuel,
+          fuelEventCount: fuelTracking.fuelLogs.length,
+          segmentCount: validConsumptionSegments.length,
           overLimitCount: overLimitLogs.length,
           status: consumptionStatus
         })
@@ -2630,9 +2699,21 @@
     async function createVehicle(formData) {
       const payload = getFormPayload(formData)
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('vehicles')
         .insert([payload])
+
+      if (error && vehicleDetailFieldsAvailable && /fuel_type|tank_capacity_l|assigned_employee_id|stk_valid_until|insurance_valid_until|next_service_date|next_service_odometer_km|target_consumption_l_100km|tolerated_consumption_l_100km/i.test(String(error.message || ''))) {
+        vehicleDetailFieldsAvailable = false
+        updateVehicleDetailAvailabilityNotice()
+        setVehicleDetailFieldsEnabled(false)
+
+        const { error: fallbackError } = await supabase
+          .from('vehicles')
+          .insert([stripVehicleDetailFields(payload)])
+
+        error = fallbackError
+      }
 
       if (error) throw error
     }
@@ -2641,10 +2722,23 @@
       const vehicleId = vehicleIdInput.value
       const payload = getFormPayload(formData)
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('vehicles')
         .update(payload)
         .eq('id', vehicleId)
+
+      if (error && vehicleDetailFieldsAvailable && /fuel_type|tank_capacity_l|assigned_employee_id|stk_valid_until|insurance_valid_until|next_service_date|next_service_odometer_km|target_consumption_l_100km|tolerated_consumption_l_100km/i.test(String(error.message || ''))) {
+        vehicleDetailFieldsAvailable = false
+        updateVehicleDetailAvailabilityNotice()
+        setVehicleDetailFieldsEnabled(false)
+
+        const { error: fallbackError } = await supabase
+          .from('vehicles')
+          .update(stripVehicleDetailFields(payload))
+          .eq('id', vehicleId)
+
+        error = fallbackError
+      }
 
       if (error) throw error
     }
