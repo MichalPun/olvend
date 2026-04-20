@@ -861,6 +861,7 @@
       justify-content: center;
       padding: 20px;
       z-index: 60;
+      overflow: auto;
     }
 
     .modal-backdrop.show {
@@ -914,6 +915,16 @@
     .modal-body {
       padding: 20px 22px;
       overflow: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    #attendanceAdjustForm,
+    #instructionForm {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
     }
 
     .modal-footer {
@@ -2034,6 +2045,7 @@
       </div>
       <form id="attendanceAdjustForm">
         <input type="hidden" id="adjustDayId" />
+        <input type="hidden" id="adjustVehicleLogId" />
         <div class="modal-body">
           <div class="modal-meta-grid">
             <div class="modal-meta-card">
@@ -2043,6 +2055,10 @@
             <div class="modal-meta-card">
               <span class="modal-meta-label">Datum</span>
               <span class="modal-meta-value" id="adjustDateLabel">-</span>
+            </div>
+            <div class="modal-meta-card">
+              <span class="modal-meta-label">Vozidlo</span>
+              <span class="modal-meta-value" id="adjustVehicleLabel">Bez vozidla</span>
             </div>
           </div>
 
@@ -2066,10 +2082,18 @@
                 <option value="approved">Uložit a rovnou schválit</option>
               </select>
             </div>
+            <div class="field">
+              <label for="adjustStartKm">Počáteční stav km</label>
+              <input id="adjustStartKm" type="number" min="0" step="1" placeholder="Např. 152340" />
+            </div>
+            <div class="field">
+              <label for="adjustEndKm">Konečný stav km</label>
+              <input id="adjustEndKm" type="number" min="0" step="1" placeholder="Např. 152418" />
+            </div>
             <div class="field full">
               <label for="adjustReason">Důvod úpravy</label>
               <textarea id="adjustReason" placeholder="Např. zaměstnanec zapomněl ukončit směnu, doplněný správný čas podle reality..." required></textarea>
-              <div class="form-help">Bez důvodu korekci nepustíme. Ať je jasné, proč ke změně došlo.</div>
+              <div class="form-help">Bez důvodu korekci nepustíme. Ať je jasné, proč ke změně došlo. Pokud směna jela bez auta, km nech prázdné.</div>
             </div>
           </div>
           <div id="attendanceAdjustStatus" class="status-line">Vyber směnu, kterou chceš upravit.</div>
@@ -2120,12 +2144,16 @@
     const attendanceAdjustSaveBtn = document.getElementById('attendanceAdjustSaveBtn');
     const attendanceAdjustStatus = document.getElementById('attendanceAdjustStatus');
     const adjustDayId = document.getElementById('adjustDayId');
+    const adjustVehicleLogId = document.getElementById('adjustVehicleLogId');
     const adjustEmployeeLabel = document.getElementById('adjustEmployeeLabel');
     const adjustDateLabel = document.getElementById('adjustDateLabel');
+    const adjustVehicleLabel = document.getElementById('adjustVehicleLabel');
     const adjustStartTime = document.getElementById('adjustStartTime');
     const adjustEndTime = document.getElementById('adjustEndTime');
     const adjustBreakMinutes = document.getElementById('adjustBreakMinutes');
     const adjustCorrectionMode = document.getElementById('adjustCorrectionMode');
+    const adjustStartKm = document.getElementById('adjustStartKm');
+    const adjustEndKm = document.getElementById('adjustEndKm');
     const adjustReason = document.getElementById('adjustReason');
     const instructionsStatusLine = document.getElementById('instructionsStatusLine');
     const instructionForm = document.getElementById('instructionForm');
@@ -2377,6 +2405,10 @@
       attendanceAdjustModal?.classList.remove('show');
       attendanceAdjustForm?.reset();
       adjustDayId.value = '';
+      adjustVehicleLogId.value = '';
+      if (adjustVehicleLabel) adjustVehicleLabel.textContent = 'Bez vozidla';
+      if (adjustStartKm) adjustStartKm.disabled = false;
+      if (adjustEndKm) adjustEndKm.disabled = false;
       setAttendanceAdjustStatus('Vyber směnu, kterou chceš upravit.');
     }
 
@@ -2407,14 +2439,26 @@
       }
 
       adjustDayId.value = String(row.id);
+      adjustVehicleLogId.value = row.vehicle_log_id ? String(row.vehicle_log_id) : '';
       adjustEmployeeLabel.textContent = row.employee_name || '-';
       adjustDateLabel.textContent = formatDate(row.attendance_date);
+      if (adjustVehicleLabel) adjustVehicleLabel.textContent = row.vehicle_label || 'Bez vozidla';
       adjustStartTime.value = formatTimeInput(row.actual_start);
       adjustEndTime.value = formatTimeInput(row.actual_end);
       adjustBreakMinutes.value = String(Number(row.break_minutes || 0));
       adjustCorrectionMode.value = canSelfApproveAttendanceCorrection() ? 'approved' : 'pending';
+      adjustStartKm.value = row.vehicle_log_start_km != null ? String(row.vehicle_log_start_km) : '';
+      adjustEndKm.value = row.vehicle_log_end_km != null ? String(row.vehicle_log_end_km) : '';
+      adjustStartKm.disabled = !row.vehicle_id;
+      adjustEndKm.disabled = !row.vehicle_id;
       adjustReason.value = row.adjustment_reason || '';
-      setAttendanceAdjustStatus('Uprav začátek, konec, pauzu a doplň důvod korekce.');
+      setAttendanceAdjustStatus(
+        row.vehicle_id
+          ? (row.vehicle_log_count > 1
+            ? 'Uprav začátek, konec, pauzu a případně km hlavního auta směny. Dnešní směna má víc jízd/aut, takže zkontroluj, že upravuješ správný záznam.'
+            : 'Uprav začátek, konec, pauzu a případně km vozidla. Korekce se propíše i do záznamu auta.')
+          : 'Uprav začátek, konec, pauzu a doplň důvod korekce.'
+      );
       attendanceAdjustModal?.classList.add('show');
     }
 
@@ -2494,6 +2538,8 @@
       const startTime = adjustStartTime.value;
       const endTime = adjustEndTime.value;
       const breakMinutes = Math.max(0, Number(adjustBreakMinutes.value || 0));
+      const startKmValue = adjustStartKm.value.trim();
+      const endKmValue = adjustEndKm.value.trim();
       const correctionReason = adjustReason.value.trim();
       const correctionMode = adjustCorrectionMode.value;
 
@@ -2503,6 +2549,25 @@
 
       if (!correctionReason) {
         throw new Error('Doplň důvod úpravy směny.');
+      }
+
+      if (!row.vehicle_id && (startKmValue || endKmValue)) {
+        throw new Error('Tahle směna je vedená bez vozidla, takže km tu teď nedává smysl upravovat.');
+      }
+
+      const parsedStartKm = startKmValue ? Number(startKmValue) : null;
+      const parsedEndKm = endKmValue ? Number(endKmValue) : null;
+
+      if (parsedStartKm != null && !Number.isFinite(parsedStartKm)) {
+        throw new Error('Počáteční stav km není platné číslo.');
+      }
+
+      if (parsedEndKm != null && !Number.isFinite(parsedEndKm)) {
+        throw new Error('Konečný stav km není platné číslo.');
+      }
+
+      if (parsedStartKm != null && parsedEndKm != null && parsedEndKm < parsedStartKm) {
+        throw new Error('Konečný stav km nemůže být menší než počáteční.');
       }
 
       const actualStartIso = combineDateAndTimeToIso(row.attendance_date, startTime);
@@ -2552,6 +2617,53 @@
 
       if (updateError) throw updateError;
 
+      if (row.vehicle_id && (parsedStartKm != null || parsedEndKm != null)) {
+        const vehicleLogPayload = {
+          start_odometer_km: parsedStartKm,
+          end_odometer_km: parsedEndKm,
+          started_at: actualStartIso,
+          ended_at: actualEndIso,
+          log_date: row.attendance_date,
+          status: 'closed'
+        };
+
+        const vehicleLogId = adjustVehicleLogId.value || row.vehicle_log_id;
+
+        if (vehicleLogId) {
+          const { error: vehicleLogError } = await supabase
+            .from('vehicle_operation_logs')
+            .update(vehicleLogPayload)
+            .eq('id', vehicleLogId);
+
+          if (vehicleLogError) throw vehicleLogError;
+        } else {
+          const { data: insertedLog, error: insertVehicleLogError } = await supabase
+            .from('vehicle_operation_logs')
+            .insert([{
+              attendance_day_id: row.id,
+              employee_id: row.employee_id,
+              vehicle_id: row.vehicle_id,
+              ...vehicleLogPayload
+            }])
+            .select('id')
+            .single();
+
+          if (insertVehicleLogError) throw insertVehicleLogError;
+          if (insertedLog?.id) {
+            adjustVehicleLogId.value = String(insertedLog.id);
+          }
+        }
+
+        if (parsedEndKm != null && row.attendance_date === getTodayDateString()) {
+          const { error: vehicleUpdateError } = await supabase
+            .from('vehicles')
+            .update({ current_odometer_km: parsedEndKm })
+            .eq('id', row.vehicle_id);
+
+          if (vehicleUpdateError) throw vehicleUpdateError;
+        }
+      }
+
       const { error: eventError } = await supabase
         .from('attendance_events')
         .insert([{
@@ -2559,7 +2671,7 @@
           employee_id: row.employee_id,
           event_type: 'manual_adjustment',
           event_time: new Date().toISOString(),
-          note: `HR korekce směny · ${startTime} → ${endTime} · pauza ${breakMinutes} min · důvod: ${correctionReason}`
+          note: `HR korekce směny · ${startTime} → ${endTime} · pauza ${breakMinutes} min${parsedStartKm != null || parsedEndKm != null ? ` · km ${parsedStartKm ?? '-'} → ${parsedEndKm ?? '-'}` : ''} · důvod: ${correctionReason}`
         }]);
 
       if (eventError) throw eventError;
@@ -2612,7 +2724,7 @@
       ].join(' '));
     }
 
-    function enrichRows(days, employees, warehouses, vehicles) {
+    function enrichRows(days, employees, warehouses, vehicles, vehicleLogs) {
       const employeeMap = new Map((employees ?? []).map((employee) => [String(employee.id), employee]));
       const warehouseMap = new Map((warehouses ?? []).map((warehouse) => [String(warehouse.id), warehouse.name]));
       const vehicleMap = new Map((vehicles ?? []).map((vehicle) => {
@@ -2620,6 +2732,13 @@
         const label = brandModel ? `${vehicle.plate} · ${brandModel}` : `${vehicle.plate} · ${vehicle.name}`;
         return [String(vehicle.id), label];
       }));
+      const vehicleLogsByDay = new Map();
+
+      (vehicleLogs ?? []).forEach((log) => {
+        const key = String(log.attendance_day_id);
+        if (!vehicleLogsByDay.has(key)) vehicleLogsByDay.set(key, []);
+        vehicleLogsByDay.get(key).push(log);
+      });
 
       return (days ?? []).map((day) => {
         const employee = employeeMap.get(String(day.employee_id));
@@ -2632,13 +2751,21 @@
         const vehicleLabel = day.vehicle_id
           ? vehicleMap.get(String(day.vehicle_id)) || 'Neznámé vozidlo'
           : 'Bez vozidla';
+        const dayLogs = vehicleLogsByDay.get(String(day.id)) || [];
+        const primaryVehicleLog = day.vehicle_id
+          ? dayLogs.find((log) => String(log.vehicle_id) === String(day.vehicle_id)) || dayLogs[0] || null
+          : dayLogs[0] || null;
 
         return {
           ...day,
           employee_name: employeeName,
           role: employee?.role || 'Neuvedeno',
           location_label: locationLabel,
-          vehicle_label: vehicleLabel
+          vehicle_label: vehicleLabel,
+          vehicle_log_id: primaryVehicleLog?.id || null,
+          vehicle_log_start_km: primaryVehicleLog?.start_odometer_km ?? null,
+          vehicle_log_end_km: primaryVehicleLog?.end_odometer_km ?? null,
+          vehicle_log_count: dayLogs.length
         };
       });
     }
@@ -3040,8 +3167,14 @@
       const employeeIds = [...new Set((days ?? []).map((day) => day.employee_id).filter(Boolean))];
       const warehouseIds = [...new Set((days ?? []).map((day) => day.start_warehouse_id).filter(Boolean))];
       const vehicleIds = [...new Set((days ?? []).map((day) => day.vehicle_id).filter(Boolean))];
+      const attendanceDayIds = [...new Set((days ?? []).map((day) => day.id).filter(Boolean))];
 
-      const [{ data: employees, error: employeesError }, { data: warehouses, error: warehousesError }, { data: vehicles, error: vehiclesError }] = await Promise.all([
+      const [
+        { data: employees, error: employeesError },
+        { data: warehouses, error: warehousesError },
+        { data: vehicles, error: vehiclesError },
+        { data: vehicleLogs, error: vehicleLogsError }
+      ] = await Promise.all([
         employeeIds.length
           ? supabase.from('employees').select('id, name, surname, role, email').in('id', employeeIds)
           : Promise.resolve({ data: [], error: null }),
@@ -3050,14 +3183,22 @@
           : Promise.resolve({ data: [], error: null }),
         vehicleIds.length
           ? supabase.from('vehicles').select('id, plate, brand, model, name').in('id', vehicleIds)
+          : Promise.resolve({ data: [], error: null }),
+        attendanceDayIds.length
+          ? supabase
+            .from('vehicle_operation_logs')
+            .select('id, attendance_day_id, vehicle_id, started_at, start_odometer_km, end_odometer_km')
+            .in('attendance_day_id', attendanceDayIds)
+            .order('started_at', { ascending: false })
           : Promise.resolve({ data: [], error: null })
       ]);
 
       if (employeesError) throw employeesError;
       if (warehousesError) throw warehousesError;
       if (vehiclesError) throw vehiclesError;
+      if (vehicleLogsError) throw vehicleLogsError;
 
-      attendanceRows = enrichRows(days, employees, warehouses, vehicles);
+      attendanceRows = enrichRows(days, employees, warehouses, vehicles, vehicleLogs);
       renderReports();
     }
 
