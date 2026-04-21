@@ -538,7 +538,7 @@
             </div>
           </div>
           <div class="release-footer">
-            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat ${currentVersion}</button>
+            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat ${version}</button>
           </div>
         </div>
       </div>
@@ -613,5 +613,10 @@
   }
 
   injectSidebarReorderStyles();
-  setupReleaseNotes();
+
+  try {
+    setupReleaseNotes();
+  } catch (error) {
+    console.error("Release notes init failed:", error);
+  }
 })();
