@@ -409,7 +409,7 @@
         <div class="topbar">
           <div class="title">
             <h1>Trasy</h1>
-            <p>Pilotní plánování pořadí zastávek pro technika. Teď to umí dát smysluplné pořadí z našich dat, uložit plán a připravit podklad pro pozdější živou dopravu.</p>
+            <p>Pilotní plánování pořadí zastávek pro technika. Primárně teď míří na Google Routes API a když backend nebo klíč ještě není nasazený, spadne bezpečně na lokální fallback.</p>
           </div>
           <div class="actions">
             <button class="btn secondary" id="refreshBtn" type="button">Obnovit</button>
@@ -421,12 +421,12 @@
 
         <section class="focus-strip">
           <div>
-            <h2>Pilot bez slepé uličky</h2>
-            <p>Pořadí zastávek počítáme hned teď nad lokalitami a servisem. Jakmile doplníme provider s live traffic, vymění se jen výpočetní motor a zbytek modulu zůstane stejný.</p>
+            <h2>Google-first pilot</h2>
+            <p>Nejdřív zkusíme Google Routes API přes serverovou funkci. Když ještě není nasazený klíč nebo edge function, modul pořád umí navrhnout rozumné pořadí nad OLVEND daty a neblokuje práci.</p>
           </div>
           <div class="focus-strip-meta">
-            <div class="focus-chip">Dnes: heuristika nad OLVEND daty</div>
-            <div class="focus-chip">Později: traffic-aware provider</div>
+            <div class="focus-chip">Primárně: Google Routes API</div>
+            <div class="focus-chip">Záloha: lokální heuristika</div>
           </div>
         </section>
 
@@ -500,7 +500,7 @@
             <div class="panel-header">
               <div>
                 <h2>Doporučené pořadí</h2>
-                <p>První verze je heuristika nad našimi daty. Živou dopravní situaci doplníme přes externí provider, až bude hotový klíč a billing.</p>
+                <p>První volba je Google Routes API. Pokud není připravené, zůstává k dispozici interní fallback nad lokalitami, prioritou a servisem.</p>
               </div>
               <div class="route-badge heuristic" id="engineBadge">Motor: heuristika</div>
             </div>
@@ -569,6 +569,7 @@
       map: null,
       mapLayer: null,
       routesTablesAvailable: true,
+      googleRoutesAvailable: true,
     }
 
     routeDateInput.value = new Date().toISOString().slice(0, 10)
@@ -848,6 +849,14 @@
       `
 
       openMapsBtn.disabled = !buildMultiStopMapsUrl(plan)
+    }
+
+    async function getAccessToken() {
+      const { data: sessionData, error } = await supabase.auth.getSession()
+      if (error) {
+        throw error
+      }
+      return sessionData?.session?.access_token || null
     }
 
     function renderCandidates() {
@@ -1188,6 +1197,81 @@
       }
     }
 
+    async function optimizeStopsWithGoogle() {
+      if (!state.googleRoutesAvailable) {
+        throw new Error('Google Routes edge function zatím není dostupná.')
+      }
+
+      const selectedStops = state.candidates.filter((candidate) => state.selectedKeys.has(candidate.key))
+
+      if (!selectedStops.length) {
+        throw new Error('Nejdřív vyber aspoň jednu zastávku.')
+      }
+
+      if (returnMode.value !== 'return') {
+        throw new Error('Google pilot zatím podporuje jen okruh se startem a cílem ve stejném bodě.')
+      }
+
+      const accessToken = await getAccessToken()
+
+      if (!accessToken) {
+        throw new Error('Pro Google trasování chybí přihlášená session. Přihlas se prosím znovu.')
+      }
+
+      const startPoint = determineStartPoint()
+      const departureTime = `${routeDateInput.value}T07:00:00+02:00`
+
+      const { data, error } = await supabase.functions.invoke('google-route-plan', {
+        body: {
+          origin: startPoint,
+          stops: selectedStops.map((stop) => ({
+            id: stop.id,
+            name: stop.name,
+            city: stop.city,
+            address: stop.address,
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            estimatedServiceMinutes: stop.estimatedServiceMinutes,
+            effectivePriority: stop.effectivePriority,
+            serviceWindow: stop.serviceWindow,
+            routeNote: stop.routeNote,
+            openRequestCount: stop.openRequestCount,
+          })),
+          returnToStart: true,
+          departureTime,
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      })
+
+      if (error) {
+        throw error
+      }
+
+      if (data?.error) {
+        throw new Error(data.error)
+      }
+
+      const orderedStops = (data?.orderedStops || []).map((stop) => ({
+        ...stop,
+        distanceFromPreviousKm: Number(stop.googleLegDistanceMeters || 0) / 1000,
+        estimatedServiceMinutes: estimateServiceMinutes(stop),
+      }))
+
+      return {
+        orderedStops,
+        startPoint,
+        returnToStart: true,
+        estimatedDistanceKm: Number(data?.route?.distanceMeters || 0) / 1000,
+        estimatedDriveMinutes: Math.round(Number(data?.route?.durationSeconds || 0) / 60),
+        estimatedServiceMinutes: orderedStops.reduce((sum, stop) => sum + stop.estimatedServiceMinutes, 0),
+        provider: 'google_routes',
+        createdAt: new Date().toISOString(),
+        google: data,
+      }
+    }
+
     async function fetchCurrentPosition() {
       if (!navigator.geolocation) {
         throw new Error('Tenhle prohlížeč geolokaci nepodporuje.')
@@ -1247,8 +1331,8 @@
         vehicle_id: selectedVehicleId || null,
         warehouse_id: selectedWarehouseId || null,
         planner_mode: startMode.value,
-        optimization_provider: 'heuristic',
-        provider_status: 'fallback',
+        optimization_provider: state.currentPlan.provider === 'google_routes' ? 'google_routes_matrix' : 'heuristic',
+        provider_status: state.currentPlan.provider === 'google_routes' ? 'ready' : 'fallback',
         start_latitude: state.currentPlan.startPoint.latitude,
         start_longitude: state.currentPlan.startPoint.longitude,
         end_latitude: state.currentPlan.returnToStart ? state.currentPlan.startPoint.latitude : lastStop?.latitude ?? null,
@@ -1263,6 +1347,8 @@
           source_filter: sourceFilter.value,
           generated_at: state.currentPlan.createdAt,
           current_position: state.currentPosition,
+          provider: state.currentPlan.provider,
+          google: state.currentPlan.google || null,
         },
         created_by: employeeId,
       }
@@ -1480,19 +1566,45 @@
       setStatus('Výběr zastávek jsem vyčistil.', 'warning')
     })
 
-    optimizeBtn.addEventListener('click', () => {
+    optimizeBtn.addEventListener('click', async () => {
       try {
-        const plan = optimizeStops()
+        optimizeBtn.disabled = true
+        optimizeBtn.textContent = 'Počítám trasu...'
+        let plan
+
+        try {
+          plan = await optimizeStopsWithGoogle()
+          engineBadge.textContent = 'Motor: Google Routes'
+          engineBadge.className = 'route-badge live'
+          setStatus('Pořadí je spočítané přes Google Routes API v režimu TRAFFIC_AWARE.', 'success')
+        } catch (googleError) {
+          console.warn('Google Routes fallback:', googleError)
+          const message = String(googleError?.message || googleError || '')
+          if (
+            message.includes('Failed to send a request to the Edge Function') ||
+            message.includes('non-2xx status code') ||
+            message.includes('Google Routes edge function') ||
+            message.includes('Missing GOOGLE_MAPS_API_KEY')
+          ) {
+            state.googleRoutesAvailable = false
+          }
+
+          plan = optimizeStops()
+          engineBadge.textContent = 'Motor: heuristika'
+          engineBadge.className = 'route-badge heuristic'
+          setStatus(`Google vrstva teď není dostupná, proto jsem použil fallback nad OLVEND daty: ${message}`, 'warning')
+        }
+
         state.currentPlan = plan
-        engineBadge.textContent = 'Motor: heuristika'
-        engineBadge.className = 'route-badge heuristic'
         renderRouteSummary(plan)
         renderRouteList(plan)
         renderMap(plan)
-        setStatus('Pořadí je spočítané. Ber to zatím jako pilotní návrh bez live traffic.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(error.message, 'error')
+      } finally {
+        optimizeBtn.disabled = false
+        optimizeBtn.textContent = 'Navrhnout pořadí'
       }
     })
 

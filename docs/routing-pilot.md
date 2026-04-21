@@ -25,6 +25,31 @@ Pilotne zapnout modul `Trasy`, ktery umi:
 - odhad km a casu je pilotni aproximace
 - poradi zastavek je smysluplne, ale ne finalni "matematicke optimum"
 
+## Aktualni smer
+
+Primarni provider pro OLVEND je ted:
+
+`Google Routes API`
+
+Konkretne:
+
+- `computeRoutes`
+- `optimizeWaypointOrder = true`
+- `routingPreference = TRAFFIC_AWARE`
+
+Duvod:
+
+- umi rovnou vratit poradi zastavek
+- umi ETA a vzdalenost
+- umi traffic-aware rezim
+- jde rychleji nasadit pro jeden servisni okruh nez plny fleet optimizer
+
+Pozor:
+
+- Google dokumentace uvadi, ze `optimizeWaypointOrder` neni kompatibilni s `TRAFFIC_AWARE_OPTIMAL`
+- proto je v pilotu zvoleno `TRAFFIC_AWARE`
+- to je porad live traffic rezim, jen ne ten nejexhaustivnejsi
+
 ## Doporuceny dalsi krok
 
 ### Faze A
@@ -47,33 +72,37 @@ Pilotne zapnout modul `Trasy`, ktery umi:
 
 ## Doporuceni pro produkcni provider
 
-### Preferovana varianta
+### Primarni produkcni varianta
+
+`Google Routes API`
+
+Pouziti v pilotu:
+
+- jedno vozidlo
+- jeden servisni okruh
+- poradi zastavek
+- ETA
+- traffic-aware route
+
+### Pozdejsi vyssi vrstva
 
 `Google Route Optimization API`
 
 Smysl:
 
-- umi optimalizaci pro jedno i vice vozidel
-- umi casova omezeni a pozdeji i kapacity
-- hodi se pro budouci rozsireni o servis, sklad i planovane navstevy
-
-### Prakticka fallback varianta
-
-`TomTom Waypoint Optimization API`
-
-Smysl:
-
-- rychly pilot pro mensi pocet zastavek
-- jednodussi use-case pro "v jakem poradi to objet"
-- vhodne, kdyz chceme nejdriv jen poradi zastavek a live traffic
+- vice vozidel
+- rozdeleni prace mezi techniky
+- casova omezeni
+- kapacity
+- robustnejsi dispatch
 
 ## Poznamka k implementaci
 
-Frontend modulu uz je pripraveny tak, aby slo jen vymenit vypocetni cast:
+Frontend modulu je pripraveny tak, aby slo menit vypocetni cast:
 
-- dnes `heuristic`
-- pozdeji `google_route_optimization`
-- pripadne `tomtom_waypoint_optimization`
+- primarne `google_routes`
+- fallback `heuristic`
+- pozdeji pripadne `google_route_optimization`
 
 Tedy:
 
