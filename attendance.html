@@ -2556,12 +2556,12 @@
         return 'Polohové sdílení je v aplikaci připravené, ale v databázi ještě chybí tabulka employee_location_logs.';
       }
       if (!todayAttendance?.id) {
-        return 'Po zahájení směny můžeš sdílet svou aktuální polohu pro provozní přehled.';
+        return 'Po zahájení směny se poloha zkusí posílat automaticky při startu, přesunech, servisu a práci s trasou.';
       }
       if (!latestLocationEntry?.event_at) {
         return todayAttendance.actual_end
           ? 'Dnešní směna je ukončená. Poslední poloha se uloží, až ji jednou zachytíme.'
-          : 'Směna běží, ale poloha ještě nebyla odeslaná. Klepni na tlačítko a povol přístup k poloze.';
+          : 'Směna běží, ale první poloha se ještě nepovedla zachytit. Aplikace to bude zkoušet automaticky při důležitých krocích dne.';
       }
       const coords = `${Number(latestLocationEntry.latitude).toFixed(5)}, ${Number(latestLocationEntry.longitude).toFixed(5)}`;
       const accuracy = latestLocationEntry.accuracy_m != null
@@ -2582,6 +2582,21 @@
         locationTrackingCard.hidden = false;
       }
       renderMobileShiftUI();
+    }
+
+    async function queueOperationalLocationCapture(sourceType = 'movement', options = {}) {
+      if (!locationTrackingAvailable || !todayAttendance?.id || todayAttendance?.actual_end) return null;
+      try {
+        return await captureAndStoreLocation(sourceType, {
+          enableHighAccuracy: true,
+          silent: true,
+          timeout: 10000,
+          ...options
+        });
+      } catch (error) {
+        console.warn(`Automatic ${sourceType} location capture failed`, error);
+        return null;
+      }
     }
 
     function showCompletionSummary(payload) {
@@ -3044,7 +3059,7 @@
           <h3 class="mobile-section-title">Sdílení pro provoz</h3>
           <p class="mobile-section-text">${escapeHtml(getLocationTrackingSummaryText())}</p>
           <div class="mobile-section-actions">
-            <button class="btn secondary" type="button" data-mobile-capture-location ${locationTrackingAvailable && todayAttendance?.id && !todayAttendance?.actual_end ? '' : 'disabled'}>Aktualizovat moji polohu</button>
+            <button class="btn secondary" type="button" data-mobile-capture-location ${locationTrackingAvailable && todayAttendance?.id && !todayAttendance?.actual_end ? '' : 'disabled'}>Zkusit polohu znovu</button>
           </div>
         </article>
         ${routeSummaryMarkup}
@@ -5871,11 +5886,7 @@
         setActionsStatus('Ukládám začátek směny...');
         await startShift();
         await refreshPageData();
-        try {
-          await captureAndStoreLocation('shift_start', { enableHighAccuracy: true, silent: true });
-        } catch (locationError) {
-          console.warn('Initial shift location capture failed', locationError);
-        }
+        await queueOperationalLocationCapture('shift_start');
         setActionsStatus('Směna byla zahájena a propsala se do dnešního přehledu.', 'success');
         if (isCompactMobileLayout()) {
           setMobileShiftSection('shift');
@@ -5907,11 +5918,7 @@
         departVehicleBtn.disabled = true;
         await registerMovement('depart');
         await refreshPageData();
-        try {
-          await captureAndStoreLocation('movement', { enableHighAccuracy: true, silent: true });
-        } catch (locationError) {
-          console.warn('Movement location capture failed', locationError);
-        }
+        await queueOperationalLocationCapture('movement');
         setActionsStatus('Výjezd autem byl zapsaný do dnešního průběhu.', 'success');
       } catch (error) {
         console.error(error);
@@ -5924,6 +5931,7 @@
         saveFuelBtn.disabled = true;
         await saveFuelProgress();
         await refreshPageData();
+        await queueOperationalLocationCapture('movement', { maximumAge: 120000 });
         setActionsStatus('Tankování bylo uložené do průběhu dne.', 'success');
       } catch (error) {
         console.error(error);
@@ -5936,11 +5944,7 @@
         returnBaseBtn.disabled = true;
         await registerMovement('return');
         await refreshPageData();
-        try {
-          await captureAndStoreLocation('movement', { enableHighAccuracy: true, silent: true });
-        } catch (locationError) {
-          console.warn('Base return location capture failed', locationError);
-        }
+        await queueOperationalLocationCapture('movement');
         setActionsStatus('Návrat na dílnu / sklad byl zapsaný do dnešního průběhu.', 'success');
       } catch (error) {
         console.error(error);
@@ -5981,11 +5985,7 @@
             : 'Směna je ukončená a bezpečně uložená.',
           'success'
         );
-        try {
-          await captureAndStoreLocation('shift_end', { enableHighAccuracy: true, silent: true });
-        } catch (locationError) {
-          console.warn('Shift end location capture failed', locationError);
-        }
+        await queueOperationalLocationCapture('shift_end');
         setActionsStatus('Směna byla ukončená a dnešní souhrn je přepočítaný.', 'success');
         showCompletionSummary(result);
       } catch (error) {
@@ -6157,6 +6157,7 @@
           button.disabled = true;
           await updateRouteStopStatus(button.dataset.routeStopId, routeStopAction);
           await loadAssignedRoutePlan();
+          await queueOperationalLocationCapture('movement', { maximumAge: 120000 });
           setActionsStatus(
             routeStopAction === 'done'
               ? 'Bod trasy je označený jako hotový.'
@@ -6283,6 +6284,7 @@
         const action = button.dataset.serviceAction;
         await updateServiceRequestStatus(button.dataset.serviceId, action);
         await loadAssignedServiceRequests();
+        await queueOperationalLocationCapture('movement', { maximumAge: 120000 });
         setActionsStatus(
           action === 'arrived'
             ? 'Příjezd na servis je zaznamenaný.'
