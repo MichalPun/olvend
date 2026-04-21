@@ -752,7 +752,9 @@
       candidates: [],
       filteredCandidates: [],
       selectedKeys: new Set(),
+      currentEmployeeId: null,
       currentPosition: null,
+      lastKnownPosition: null,
       currentPlan: null,
       savedPlans: [],
       map: null,
@@ -1388,6 +1390,18 @@
 
     function determineStartPoint() {
       if (startMode.value === 'browser_geolocation') {
+        if (!state.currentPosition && state.lastKnownPosition) {
+          setStatus('Aktuální poloha ze zařízení není dostupná, proto beru poslední známou provozní polohu zaměstnance.', 'warning')
+          return {
+            latitude: state.lastKnownPosition.latitude,
+            longitude: state.lastKnownPosition.longitude,
+            label: 'Poslední známá poloha technika',
+            note: state.lastKnownPosition.eventAt
+              ? `Poslední zachycení ${new Date(state.lastKnownPosition.eventAt).toLocaleString('cs-CZ')}.`
+              : 'Start převzatý z poslední známé provozní polohy.',
+          }
+        }
+
         if (!state.currentPosition) {
           const fallback = state.filteredCandidates.find((candidate) => state.selectedKeys.has(candidate.key))
           if (!fallback) {
@@ -1627,6 +1641,54 @@
           { enableHighAccuracy: true, timeout: 12000, maximumAge: 300000 }
         )
       })
+    }
+
+    async function loadLastKnownPosition() {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+      if (sessionError) throw sessionError
+
+      const authUser = sessionData?.session?.user
+      if (!authUser) {
+        state.currentEmployeeId = null
+        state.lastKnownPosition = null
+        return
+      }
+
+      const { data: employee, error: employeeError } = await supabase
+        .from('employees')
+        .select('id')
+        .eq('auth_user_id', authUser.id)
+        .maybeSingle()
+
+      if (employeeError) throw employeeError
+
+      state.currentEmployeeId = employee?.id || null
+      state.lastKnownPosition = null
+
+      if (!state.currentEmployeeId) return
+
+      const { data: log, error: logError } = await supabase
+        .from('employee_location_logs')
+        .select('latitude, longitude, accuracy_m, event_at')
+        .eq('employee_id', state.currentEmployeeId)
+        .order('event_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (logError) {
+        const message = String(logError.message || '').toLowerCase()
+        if (message.includes('employee_location_logs')) return
+        throw logError
+      }
+
+      if (log?.latitude == null || log?.longitude == null) return
+
+      state.lastKnownPosition = {
+        latitude: Number(log.latitude),
+        longitude: Number(log.longitude),
+        accuracyMeters: log.accuracy_m != null ? Math.round(Number(log.accuracy_m)) : null,
+        eventAt: log.event_at || null,
+      }
     }
 
     async function savePlan() {
@@ -1911,6 +1973,7 @@
           loadVehicles(),
           loadEmployees(),
           loadWarehouses(),
+          loadLastKnownPosition(),
         ])
 
         buildCandidateRows()
@@ -2028,7 +2091,14 @@
         setStatus(`Mám aktuální polohu s přesností cca ${formatNumber(position.accuracyMeters)} m.`, 'success')
       } catch (error) {
         console.error(error)
-        setStatus(`Polohu se zatím nepodařilo načíst. Můžeš pokračovat bez ní: ${error.message}`, 'warning')
+        if (state.lastKnownPosition) {
+          const capturedAt = state.lastKnownPosition.eventAt
+            ? new Date(state.lastKnownPosition.eventAt).toLocaleString('cs-CZ')
+            : 'bez času'
+          setStatus(`Aktuální poloha ze zařízení nešla načíst. Pro trasu ale použiju poslední známou provozní polohu z ${capturedAt}.`, 'warning')
+        } else {
+          setStatus(`Polohu se zatím nepodařilo načíst. Můžeš pokračovat bez ní: ${error.message}`, 'warning')
+        }
       } finally {
         locateBtn.disabled = false
         locateBtn.textContent = 'Načíst moji polohu'
