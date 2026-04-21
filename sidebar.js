@@ -2,17 +2,17 @@
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const SIDEBAR_ORDER_KEY = "olvendSidebarOrderV2";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.1";
+  const APP_VERSION = "OLVEND 1.2";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.2";
   const RELEASE_NOTES = {
-    "1.1": {
-      title: "Nová verze 1.1",
-      subtitle: "OLVEND je teď připravený pro pondělní provoz. Tohle je hlavní, co je v 1.1 nově k dispozici.",
+    "1.2": {
+      title: "Nová verze 1.2",
+      subtitle: "Rozhraní jsme pročistili tak, aby se dalo rychleji najít to důležité a jednotlivé moduly nepůsobily přehlceně.",
       items: [
-        "Moje směna má nový mobilní tok: dnes, start směny, průběh dne a ukončení.",
-        "HR má samostatný planner směn včetně kopírování směn, dostupnosti a kontrol konfliktů.",
-        "Přibyl Vozový park se spotřebou, náklady, detailem vozidla a kontrolními upozorněními.",
-        "Provoz a Servis mají lokality, servisní požadavky a manažerský přehled Ke kontrole.",
-        "Můj profil nově obsahuje docházku a dostupnost na dalších 14 dní."
+        "Stránky nově zvýrazňují hlavní akci a sekundární bloky se dají sbalit, takže nahoře zůstává méně rušivých prvků.",
+        "Provoz, Servis a Vozový park mají kompaktnější filtry a rozšířené přehledy až na druhé úrovni.",
+        "HR je víc task-first: rychlé ovládání je nahoře a doplňkové operace jsou méně rozptýlené.",
+        "Mobilní zobrazení zůstává zachované a sbalitelné sekce fungují i na menších displejích."
       ]
     }
   };
@@ -22,105 +22,119 @@
       currentLabel: "Dashboard",
       activeKey: "dashboard",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "attendance.html": {
       currentLabel: "Moje směna",
       activeKey: "shift",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "warehouses.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "hr.html": {
       currentLabel: "HR",
       activeKey: "hr",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "operations.html": {
       currentLabel: "Provoz",
       activeKey: "operations",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "service-requests.html": {
       currentLabel: "Servis",
       activeKey: "service",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "machines.html": {
+      currentLabel: "Stroje / Automaty",
+      activeKey: "machines",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "inventory.html": {
+      currentLabel: "Inventář / zásoby",
+      activeKey: "inventory",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "hr-planning.html": {
       currentLabel: "Plán směn",
       activeKey: "hr",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "reporty.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "report-attendance.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "report-shift-overview.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "manager-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "settings.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "employees.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "vehicles.html": {
       currentLabel: "Vozový park",
       activeKey: "fleet",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     },
     "company.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
       versionLabel: "Aktuální verze",
-      versionValue: "OLVEND 1.1",
+      versionValue: APP_VERSION,
       versionNote: ""
     }
   };
@@ -130,6 +144,8 @@
   const navItems = [
     { key: "dashboard", href: "dashboard.html", label: "Dashboard" },
     { key: "shift", href: "attendance.html", label: "Moje směna" },
+    { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
+    { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
     { key: "service", href: "service-requests.html", label: "Servis" },
     { key: "operations", href: "operations.html", label: "Provoz" },
     { key: "fleet", href: "vehicles.html", label: "Vozový park" },
@@ -216,7 +232,7 @@
 
   function renderMobileLinks() {
     return getOrderedNavItems()
-      .filter((item) => !item.soon || ["dashboard", "shift", "fleet", "hr", "settings"].includes(item.key))
+      .filter((item) => !item.soon || ["dashboard", "shift", "machines", "inventory", "service", "fleet", "hr", "settings"].includes(item.key))
       .map((item) => {
         const activeClass = item.key === meta.activeKey ? "active" : "";
         return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
@@ -522,7 +538,7 @@
             </div>
           </div>
           <div class="release-footer">
-            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat 1.1</button>
+            <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat ${currentVersion}</button>
           </div>
         </div>
       </div>
