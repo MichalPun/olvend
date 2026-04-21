@@ -1,5 +1,3 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
 type LatLngPoint = {
   latitude: number;
   longitude: number;
@@ -84,61 +82,10 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const googleMapsApiKey = Deno.env.get("GOOGLE_MAPS_API_KEY");
-
-    if (!supabaseUrl || !anonKey || !serviceRoleKey) {
-      return json({ error: "Missing Supabase environment variables." }, 500);
-    }
 
     if (!googleMapsApiKey) {
       return json({ error: "Missing GOOGLE_MAPS_API_KEY environment variable." }, 500);
-    }
-
-    const authHeader = req.headers.get("Authorization");
-
-    if (!authHeader) {
-      return json({ error: "Missing Authorization header." }, 401);
-    }
-
-    const userClient = createClient(supabaseUrl, anonKey, {
-      global: {
-        headers: {
-          Authorization: authHeader,
-        },
-      },
-    });
-
-    const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
-
-    const {
-      data: { user: currentUser },
-      error: currentUserError,
-    } = await userClient.auth.getUser();
-
-    if (currentUserError || !currentUser) {
-      return json({ error: "Unauthorized user." }, 401);
-    }
-
-    const { data: currentEmployee, error: currentEmployeeError } = await adminClient
-      .from("employees")
-      .select("id, active")
-      .eq("auth_user_id", currentUser.id)
-      .maybeSingle();
-
-    if (currentEmployeeError) {
-      return json({ error: currentEmployeeError.message }, 400);
-    }
-
-    if (!currentEmployee || currentEmployee.active === false) {
-      return json({ error: "Current user is not linked to an active employee." }, 403);
     }
 
     const payload = (await req.json()) as RoutePlanPayload;
