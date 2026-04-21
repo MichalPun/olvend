@@ -659,11 +659,12 @@
     crossorigin=""
   ></script>
   <script type="module">
-    import { supabase } from './supabase.js'
+    import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js'
 
     const ROAD_FACTOR = 1.23
     const AVG_SPEED_KMH = 52
     const LOCAL_STORAGE_KEY = 'olvendRoutePilotPlans'
+    const GOOGLE_ROUTE_FUNCTION_URL = `${supabaseUrl}/functions/v1/google-route-plan`
 
     const statusLine = document.getElementById('statusLine')
     const summaryGrid = document.getElementById('summaryGrid')
@@ -1398,30 +1399,66 @@
 
       const startPoint = determineStartPoint()
       const departureTime = `${routeDateInput.value}T07:00:00+02:00`
+      const payload = {
+        origin: startPoint,
+        stops: selectedStops.map((stop) => ({
+          id: stop.id,
+          name: stop.name,
+          city: stop.city,
+          address: stop.address,
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+          estimatedServiceMinutes: stop.estimatedServiceMinutes,
+          effectivePriority: stop.effectivePriority,
+          serviceWindow: stop.serviceWindow,
+          routeNote: stop.routeNote,
+          openRequestCount: stop.openRequestCount,
+        })),
+        returnToStart: true,
+        departureTime,
+      }
 
-      const { data, error } = await supabase.functions.invoke('google-route-plan', {
-        body: {
-          origin: startPoint,
-          stops: selectedStops.map((stop) => ({
-            id: stop.id,
-            name: stop.name,
-            city: stop.city,
-            address: stop.address,
-            latitude: stop.latitude,
-            longitude: stop.longitude,
-            estimatedServiceMinutes: stop.estimatedServiceMinutes,
-            effectivePriority: stop.effectivePriority,
-            serviceWindow: stop.serviceWindow,
-            routeNote: stop.routeNote,
-            openRequestCount: stop.openRequestCount,
-          })),
-          returnToStart: true,
-          departureTime,
-        },
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
+      let data
+      let error = null
+
+      try {
+        const response = await supabase.functions.invoke('google-route-plan', {
+          body: payload,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+
+        data = response.data
+        error = response.error
+      } catch (invokeError) {
+        error = invokeError
+      }
+
+      if (error) {
+        try {
+          const response = await fetch(GOOGLE_ROUTE_FUNCTION_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: supabaseAnonKey,
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify(payload),
+          })
+
+          const responseData = await response.json().catch(() => ({}))
+
+          if (!response.ok) {
+            throw new Error(responseData?.error || `HTTP ${response.status}`)
+          }
+
+          data = responseData
+          error = null
+        } catch (directError) {
+          throw new Error(`Google edge function není dostupná: ${directError.message || directError}`)
+        }
+      }
 
       if (error) {
         throw error
@@ -1713,11 +1750,11 @@
         ])
 
         buildCandidateRows()
-        applyFilters({ autoSelect: true })
+        applyFilters()
         renderRouteSummary()
         renderRouteList()
         renderMap()
-        setStatus('Pilot tras je připravený. Heuristika běží nad lokalitami se souřadnicemi.', 'success')
+        setStatus('Trasy jsou připravené. Vyber zastávky, které opravdu chceš objet, a pak spusť výpočet.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se načíst data pro trasy: ${error.message}. Ověř locations, service_requests, vehicles a warehouses.`, 'error')
@@ -1800,7 +1837,7 @@
           plan = optimizeStops()
           engineBadge.textContent = 'Motor: heuristika'
           engineBadge.className = 'route-badge heuristic'
-          setStatus(`Google vrstva teď není dostupná, proto jsem použil fallback nad OLVEND daty: ${message}`, 'warning')
+          setStatus(`Google vrstva teď neběží, takže se použil nouzový fallback. Proto může být pořadí slabší: ${message}`, 'warning')
         }
 
         state.currentPlan = plan
