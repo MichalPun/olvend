@@ -269,6 +269,16 @@
       margin-bottom: 18px;
     }
 
+    .primary-action {
+      margin-top: auto;
+      display: grid;
+      gap: 10px;
+    }
+
+    .primary-action .btn {
+      width: 100%;
+    }
+
     .secondary-grid {
       display: grid;
       grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
@@ -327,13 +337,15 @@
     }
 
     .candidate-list,
-    .route-list {
+    .route-list,
+    .saved-route-list {
       display: grid;
       gap: 12px;
     }
 
     .candidate-card,
-    .route-stop {
+    .route-stop,
+    .saved-route-card {
       border-radius: 18px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
@@ -402,6 +414,7 @@
     .route-badge.window { color: #bbd8ff; border-color: rgba(88,166,255,0.24); background: rgba(88,166,255,0.12); }
     .route-badge.heuristic { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
     .route-badge.live { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
+    .route-badge.saved { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
 
     .candidate-grid {
       display: grid;
@@ -427,6 +440,27 @@
     }
 
     .mini-stat-value { font-size: 15px; font-weight: 700; }
+
+    .saved-route-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+
+    .saved-route-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 800;
+    }
+
+    .saved-route-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
 
     .map-shell {
       height: 460px;
@@ -511,7 +545,6 @@
           <div class="actions">
             <button class="btn secondary" id="refreshBtn" type="button">Obnovit</button>
             <button class="btn secondary" id="clearSelectionBtn" type="button">Vyčistit</button>
-            <button class="btn" id="optimizeBtn" type="button">Navrhnout pořadí</button>
           </div>
         </div>
 
@@ -582,6 +615,9 @@
                     <option value="">Bez technika</option>
                   </select>
                 </div>
+                <div class="primary-action">
+                  <button class="btn" id="optimizeBtn" type="button">Navrhnout pořadí</button>
+                </div>
                 <div class="toolbar-actions">
                   <button class="btn secondary" id="savePlanBtn" type="button">Uložit plán</button>
                   <button class="btn secondary" id="openMapsBtn" type="button" disabled>Otevřít v Google Maps</button>
@@ -648,6 +684,19 @@
             </div>
           </section>
         </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Uložené trasy</h2>
+              <p>Tady hned uvidíš, co už je vytvořené, komu je to přiřazené a na jaký den.</p>
+            </div>
+            <div class="route-badge saved" id="savedPlansBadge">Načítám...</div>
+          </div>
+          <div class="panel-body">
+            <div class="saved-route-list" id="savedPlansList"></div>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -671,8 +720,10 @@
     const routeSummaryGrid = document.getElementById('routeSummaryGrid')
     const candidateList = document.getElementById('candidateList')
     const routeList = document.getElementById('routeList')
+    const savedPlansList = document.getElementById('savedPlansList')
     const selectionChip = document.getElementById('selectionChip')
     const engineBadge = document.getElementById('engineBadge')
+    const savedPlansBadge = document.getElementById('savedPlansBadge')
     const openMapsBtn = document.getElementById('openMapsBtn')
 
     const searchInput = document.getElementById('searchInput')
@@ -703,6 +754,7 @@
       selectedKeys: new Set(),
       currentPosition: null,
       currentPlan: null,
+      savedPlans: [],
       map: null,
       mapLayer: null,
       routesTablesAvailable: true,
@@ -1120,6 +1172,78 @@
       }).join('')
     }
 
+    function formatDateLabel(dateString) {
+      if (!dateString) return 'Bez data'
+      const date = new Date(`${dateString}T12:00:00`)
+      if (Number.isNaN(date.getTime())) return dateString
+      return date.toLocaleDateString('cs-CZ')
+    }
+
+    function getSavedPlanEmployeeLabel(plan) {
+      const payloadName = plan?.route_payload?.planned_employee_name
+      if (payloadName && payloadName !== 'Bez výběru') return payloadName
+
+      const employeeId = plan?.planned_employee_id
+      if (!employeeId) return 'Bez technika'
+
+      const employee = state.employees.find((item) => String(item.id) === String(employeeId))
+      return employee ? ([employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Bez technika') : 'Bez technika'
+    }
+
+    function renderSavedPlans() {
+      const plans = state.savedPlans || []
+      savedPlansBadge.textContent = plans.length ? `${plans.length} plánů` : 'Zatím nic'
+
+      if (!plans.length) {
+        savedPlansList.innerHTML = '<div class="empty-state">Jakmile uložíš první trasu, objeví se tady. Když DB tabulky ještě neběží, ukážu aspoň lokální návrhy z tohohle prohlížeče.</div>'
+        return
+      }
+
+      savedPlansList.innerHTML = plans.map((plan) => {
+        const employeeLabel = getSavedPlanEmployeeLabel(plan)
+        const vehicleLabel = plan.vehicle_label || 'Bez vozidla'
+        const providerLabel = plan.optimization_provider === 'google_routes_matrix' ? 'Google Routes' : 'Fallback'
+        const sourceLabel = plan.local_saved_at ? 'Jen v tomto prohlížeči' : 'Uloženo v OLVEND'
+        const title = plan.title || `Trasa ${formatDateLabel(plan.planning_date)}`
+        const stopCount = formatNumber(plan.stop_count || plan.ordered_stops?.length || 0)
+        const distanceKm = formatNumber(plan.estimated_distance_km ?? plan.estimatedDistanceKm ?? 0, 1)
+        const driveMinutes = formatNumber(plan.estimated_drive_minutes ?? plan.estimatedDriveMinutes ?? 0)
+
+        return `
+          <article class="saved-route-card">
+            <div class="saved-route-top">
+              <div>
+                <h3 class="saved-route-title">${escapeHtml(title)}</h3>
+                <span class="subtext">${escapeHtml(formatDateLabel(plan.planning_date))} · ${escapeHtml(employeeLabel)}</span>
+                <div class="saved-route-meta">
+                  <span class="route-badge saved">${escapeHtml(sourceLabel)}</span>
+                  <span class="route-badge ${plan.optimization_provider === 'google_routes_matrix' ? 'live' : 'heuristic'}">${escapeHtml(providerLabel)}</span>
+                </div>
+              </div>
+            </div>
+            <div class="candidate-grid">
+              <div class="mini-stat">
+                <div class="mini-stat-label">Komu</div>
+                <div class="mini-stat-value">${escapeHtml(employeeLabel)}</div>
+              </div>
+              <div class="mini-stat">
+                <div class="mini-stat-label">Vozidlo</div>
+                <div class="mini-stat-value">${escapeHtml(vehicleLabel)}</div>
+              </div>
+              <div class="mini-stat">
+                <div class="mini-stat-label">Zastávky</div>
+                <div class="mini-stat-value">${stopCount}</div>
+              </div>
+              <div class="mini-stat">
+                <div class="mini-stat-label">Km / jízda</div>
+                <div class="mini-stat-value">${distanceKm} km · ${driveMinutes} min</div>
+              </div>
+            </div>
+          </article>
+        `
+      }).join('')
+    }
+
     function populateVehicleOptions() {
       const currentValue = vehicleFilter.value
       vehicleFilter.innerHTML = '<option value="">Bez vozidla</option>' + state.vehicles.map((vehicle) => {
@@ -1393,10 +1517,6 @@
 
       const accessToken = await getAccessToken()
 
-      if (!accessToken) {
-        throw new Error('Pro Google trasování chybí přihlášená session. Přihlas se prosím znovu.')
-      }
-
       const startPoint = determineStartPoint()
       const departureTime = `${routeDateInput.value}T07:00:00+02:00`
       const payload = {
@@ -1442,7 +1562,7 @@
             headers: {
               'Content-Type': 'application/json',
               apikey: supabaseAnonKey,
-              Authorization: `Bearer ${accessToken}`,
+              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
             },
             body: JSON.stringify(payload),
           })
@@ -1605,6 +1725,7 @@
 
           if (!stopError) {
             setStatus(`Plán trasy byl uložen do route_plans pod ID ${insertedPlan.id}.`, 'success')
+            await loadSavedPlans()
             return
           }
 
@@ -1626,7 +1747,49 @@
         local_saved_at: new Date().toISOString(),
       })
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(existingLocal.slice(0, 20)))
+      await loadSavedPlans()
       setStatus('Route tables ještě neběží, takže plán je zatím uložený lokálně v prohlížeči. Pro DB uložení spusť database/routes_pilot.sql.', 'warning')
+    }
+
+    async function loadSavedPlans() {
+      const vehicleLabels = new Map(
+        state.vehicles.map((vehicle) => [
+          String(vehicle.id),
+          [vehicle.plate, vehicle.brand, vehicle.model, vehicle.name].filter(Boolean).join(' · ') || `Vozidlo ${vehicle.id}`,
+        ])
+      )
+
+      if (state.routesTablesAvailable) {
+        const { data, error } = await supabase
+          .from('route_plans')
+          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+          .order('planning_date', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(12)
+
+        if (!error) {
+          state.savedPlans = (data || []).map((plan) => ({
+            ...plan,
+            vehicle_label: plan.vehicle_id ? vehicleLabels.get(String(plan.vehicle_id)) || 'Bez vozidla' : 'Bez vozidla',
+          }))
+          renderSavedPlans()
+          return
+        }
+
+        const message = String(error.message || '')
+        if (message.includes('route_plans')) {
+          state.routesTablesAvailable = false
+        } else {
+          console.error('Saved plans load failed:', error)
+        }
+      }
+
+      const localPlans = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
+      state.savedPlans = localPlans.slice(0, 12).map((plan) => ({
+        ...plan,
+        vehicle_label: plan.vehicle_id ? vehicleLabels.get(String(plan.vehicle_id)) || 'Bez vozidla' : 'Bez vozidla',
+      }))
+      renderSavedPlans()
     }
 
     async function loadLocations() {
@@ -1752,6 +1915,7 @@
 
         buildCandidateRows()
         applyFilters()
+        await loadSavedPlans()
         renderRouteSummary()
         renderRouteList()
         renderMap()
