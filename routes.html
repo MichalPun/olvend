@@ -462,6 +462,51 @@
       margin-top: 8px;
     }
 
+    .saved-route-status-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .saved-route-progress {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .saved-route-details {
+      margin-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding-top: 14px;
+    }
+
+    .saved-route-details summary {
+      cursor: pointer;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+      list-style: none;
+    }
+
+    .saved-route-details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .saved-stop-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .saved-stop-row {
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
     .map-shell {
       height: 460px;
       border-radius: 18px;
@@ -651,6 +696,19 @@
           </div>
         </section>
 
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Vytvořené trasy</h2>
+              <p>Tady hned vidíš, co je vytvořené, komu je to přiřazené a jestli už je trasa hotová.</p>
+            </div>
+            <div class="route-badge saved" id="savedPlansBadge">Načítám...</div>
+          </div>
+          <div class="panel-body">
+            <div class="saved-route-list" id="savedPlansList"></div>
+          </div>
+        </section>
+
         <section class="secondary-grid">
           <section class="panel">
             <div class="panel-header">
@@ -685,18 +743,6 @@
           </section>
         </section>
 
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Uložené trasy</h2>
-              <p>Tady hned uvidíš, co už je vytvořené, komu je to přiřazené a na jaký den.</p>
-            </div>
-            <div class="route-badge saved" id="savedPlansBadge">Načítám...</div>
-          </div>
-          <div class="panel-body">
-            <div class="saved-route-list" id="savedPlansList"></div>
-          </div>
-        </section>
       </div>
     </main>
   </div>
@@ -1192,6 +1238,28 @@
       return employee ? ([employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Bez technika') : 'Bez technika'
     }
 
+    function getExecutionStatusMeta(status) {
+      const normalized = String(status || '').toLowerCase()
+      const map = {
+        draft: { label: 'Vytvořeno', cls: 'heuristic' },
+        assigned: { label: 'Přiřazeno', cls: 'window' },
+        in_progress: { label: 'V terénu', cls: 'live' },
+        done: { label: 'Hotovo', cls: 'saved' },
+        cancelled: { label: 'Zrušeno', cls: 'critical' },
+      }
+      return map[normalized] || map.draft
+    }
+
+    function formatDateTime(value) {
+      if (!value) return '—'
+      return new Date(value).toLocaleString('cs-CZ', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    }
+
     function renderSavedPlans() {
       const plans = state.savedPlans || []
       savedPlansBadge.textContent = plans.length ? `${plans.length} plánů` : 'Zatím nic'
@@ -1210,6 +1278,10 @@
         const stopCount = formatNumber(plan.stop_count || plan.ordered_stops?.length || 0)
         const distanceKm = formatNumber(plan.estimated_distance_km ?? plan.estimatedDistanceKm ?? 0, 1)
         const driveMinutes = formatNumber(plan.estimated_drive_minutes ?? plan.estimatedDriveMinutes ?? 0)
+        const statusMeta = getExecutionStatusMeta(plan.execution_status)
+        const stops = Array.isArray(plan.route_plan_stops) ? plan.route_plan_stops : []
+        const doneCount = stops.filter((stop) => stop.status === 'done').length
+        const skippedCount = stops.filter((stop) => stop.status === 'skipped').length
 
         return `
           <article class="saved-route-card">
@@ -1222,6 +1294,12 @@
                   <span class="route-badge ${plan.optimization_provider === 'google_routes_matrix' ? 'live' : 'heuristic'}">${escapeHtml(providerLabel)}</span>
                 </div>
               </div>
+            </div>
+            <div class="saved-route-status-row">
+              <span class="route-badge ${escapeHtml(statusMeta.cls)}">${escapeHtml(statusMeta.label)}</span>
+              ${plan.assigned_at ? `<span class="route-badge window">Přiřazeno ${escapeHtml(formatDateTime(plan.assigned_at))}</span>` : ''}
+              ${plan.started_at ? `<span class="route-badge live">Start ${escapeHtml(formatDateTime(plan.started_at))}</span>` : ''}
+              ${plan.completed_at ? `<span class="route-badge saved">Hotovo ${escapeHtml(formatDateTime(plan.completed_at))}</span>` : ''}
             </div>
             <div class="candidate-grid">
               <div class="mini-stat">
@@ -1241,6 +1319,28 @@
                 <div class="mini-stat-value">${distanceKm} km · ${driveMinutes} min</div>
               </div>
             </div>
+            <div class="saved-route-progress">
+              ${stops.length ? `${doneCount}/${stops.length} hotovo${skippedCount ? ` · ${skippedCount} přeskočeno` : ''}` : 'Čeká na první průjezd zastávek.'}
+            </div>
+            ${stops.length ? `
+              <details class="saved-route-details">
+                <summary>Rozkliknout průběh trasy</summary>
+                <div class="saved-stop-list">
+                  ${stops.map((stop) => `
+                    <article class="saved-stop-row">
+                      <strong>${escapeHtml(`${stop.stop_order}. ${stop.title || 'Zastávka'}`)}</strong><br />
+                      <span class="subtext">${escapeHtml([stop.address_snapshot, stop.city_snapshot].filter(Boolean).join(', ') || 'Bez adresy')}</span>
+                      <div class="saved-route-meta">
+                        <span class="route-badge ${escapeHtml(stop.status === 'done' ? 'saved' : stop.status === 'skipped' ? 'heuristic' : 'window')}">${escapeHtml(stop.status === 'done' ? 'Hotovo' : stop.status === 'skipped' ? 'Přeskočeno' : 'Čeká')}</span>
+                        ${stop.arrived_at ? `<span class="route-badge window">Příjezd ${escapeHtml(formatDateTime(stop.arrived_at))}</span>` : ''}
+                        ${stop.completed_at ? `<span class="route-badge saved">Hotovo ${escapeHtml(formatDateTime(stop.completed_at))}</span>` : ''}
+                        ${stop.skipped_at ? `<span class="route-badge heuristic">Přeskočeno ${escapeHtml(formatDateTime(stop.skipped_at))}</span>` : ''}
+                      </div>
+                    </article>
+                  `).join('')}
+                </div>
+              </details>
+            ` : ''}
           </article>
         `
       }).join('')
@@ -1773,6 +1873,8 @@
         title,
         vehicle_id: selectedVehicleId || null,
         planned_employee_id: selectedPlannedEmployeeId || null,
+        execution_status: selectedPlannedEmployeeId ? 'assigned' : 'draft',
+        assigned_at: selectedPlannedEmployeeId ? new Date().toISOString() : null,
         warehouse_id: selectedWarehouseId || null,
         planner_mode: startMode.value,
         optimization_provider: state.currentPlan.provider === 'google_routes' ? 'google_routes_matrix' : 'heuristic',
@@ -1800,11 +1902,34 @@
       }
 
       if (state.routesTablesAvailable) {
-        const { data: insertedPlan, error: planError } = await supabase
-          .from('route_plans')
-          .insert([planPayload])
-          .select('id')
-          .single()
+        const planAttempts = [
+          planPayload,
+          (() => {
+            const fallback = { ...planPayload }
+            delete fallback.execution_status
+            delete fallback.assigned_at
+            return fallback
+          })(),
+        ]
+
+        let insertedPlan = null
+        let planError = null
+
+        for (const candidate of planAttempts) {
+          const result = await supabase
+            .from('route_plans')
+            .insert([candidate])
+            .select('id')
+            .single()
+
+          if (!result.error) {
+            insertedPlan = result.data
+            planError = null
+            break
+          }
+
+          planError = result.error
+        }
 
         if (!planError && insertedPlan?.id) {
           const stopPayload = state.currentPlan.orderedStops.map((stop, index) => ({
@@ -1864,12 +1989,30 @@
       )
 
       if (state.routesTablesAvailable) {
-        const { data, error } = await supabase
+        let data = null
+        let error = null
+
+        const primary = await supabase
           .from('route_plans')
-          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot)')
           .order('planning_date', { ascending: false })
           .order('created_at', { ascending: false })
           .limit(12)
+
+        data = primary.data
+        error = primary.error
+
+        if (error) {
+          const fallback = await supabase
+            .from('route_plans')
+            .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+            .order('planning_date', { ascending: false })
+            .order('created_at', { ascending: false })
+            .limit(12)
+
+          data = fallback.data
+          error = fallback.error
+        }
 
         if (!error) {
           state.savedPlans = (data || []).map((plan) => ({

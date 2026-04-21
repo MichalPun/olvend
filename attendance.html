@@ -4981,13 +4981,32 @@
       if (!currentUser?.id) return;
 
       const today = getTodayDateString();
-      const { data: plans, error: planError } = await supabase
+      let plans = null;
+      let planError = null;
+
+      const primaryPlanResult = await supabase
         .from('route_plans')
-        .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+        .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
         .eq('planned_employee_id', currentUser.id)
         .eq('planning_date', today)
         .order('created_at', { ascending: false })
         .limit(1);
+
+      plans = primaryPlanResult.data;
+      planError = primaryPlanResult.error;
+
+      if (planError) {
+        const fallbackPlanResult = await supabase
+          .from('route_plans')
+          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+          .eq('planned_employee_id', currentUser.id)
+          .eq('planning_date', today)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        plans = fallbackPlanResult.data;
+        planError = fallbackPlanResult.error;
+      }
 
       if (planError) {
         const errorText = String(planError.message || '').toLowerCase();
@@ -5012,11 +5031,28 @@
         return;
       }
 
-      const { data: stops, error: stopError } = await supabase
+      let stops = null;
+      let stopError = null;
+
+      const primaryStopsResult = await supabase
         .from('route_plan_stops')
-        .select('id, route_plan_id, stop_order, status, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
+        .select('id, route_plan_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
         .eq('route_plan_id', routePlan.id)
         .order('stop_order', { ascending: true });
+
+      stops = primaryStopsResult.data;
+      stopError = primaryStopsResult.error;
+
+      if (stopError) {
+        const fallbackStopsResult = await supabase
+          .from('route_plan_stops')
+          .select('id, route_plan_id, stop_order, status, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
+          .eq('route_plan_id', routePlan.id)
+          .order('stop_order', { ascending: true });
+
+        stops = fallbackStopsResult.data;
+        stopError = fallbackStopsResult.error;
+      }
 
       if (stopError) {
         const errorText = String(stopError.message || '').toLowerCase();
@@ -5043,12 +5079,78 @@
     }
 
     async function updateRouteStopStatus(stopId, status) {
-      const { error } = await supabase
+      const now = new Date().toISOString();
+      const payload = { status };
+      if (status === 'done') {
+        payload.arrived_at = now;
+        payload.completed_at = now;
+        payload.skipped_at = null;
+      } else if (status === 'skipped') {
+        payload.skipped_at = now;
+        payload.completed_at = null;
+        payload.arrived_at = null;
+      }
+
+      let error = null;
+      const primaryUpdate = await supabase
         .from('route_plan_stops')
-        .update({ status })
+        .update(payload)
         .eq('id', stopId);
 
+      error = primaryUpdate.error;
+
+      if (error) {
+        const fallbackUpdate = await supabase
+          .from('route_plan_stops')
+          .update({ status })
+          .eq('id', stopId);
+
+        error = fallbackUpdate.error;
+      }
+
       if (error) throw error;
+
+      if (todayRoutePlan?.id) {
+        const openStops = todayRouteStops.filter((stop) =>
+          String(stop.id) !== String(stopId) && !['done', 'skipped'].includes(String(stop.status || 'planned'))
+        );
+
+        const planPayload = {};
+        if (!todayRoutePlan.started_at) {
+          planPayload.execution_status = 'in_progress';
+          planPayload.started_at = now;
+        }
+        if (!openStops.length) {
+          planPayload.execution_status = 'done';
+          planPayload.completed_at = now;
+        }
+
+        if (Object.keys(planPayload).length) {
+          let planError = null;
+          const primaryPlanUpdate = await supabase
+            .from('route_plans')
+            .update(planPayload)
+            .eq('id', todayRoutePlan.id);
+
+          planError = primaryPlanUpdate.error;
+
+          if (planError) {
+            const fallbackPlanPayload = {};
+            if (planPayload.execution_status) fallbackPlanPayload.provider_status = 'ready';
+
+            if (Object.keys(fallbackPlanPayload).length) {
+              const fallbackPlanUpdate = await supabase
+                .from('route_plans')
+                .update(fallbackPlanPayload)
+                .eq('id', todayRoutePlan.id);
+
+              planError = fallbackPlanUpdate.error;
+            }
+          }
+
+          if (planError) throw planError;
+        }
+      }
     }
 
     function startServiceRequestsAutoRefresh() {
