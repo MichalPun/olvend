@@ -780,6 +780,13 @@
                       <div class="setup-step"><span class="setup-step-number">2</span> Co chceš objet</div>
                       <h2 class="setup-title">Zastávky do trasy</h2>
                       <div class="compact-field">
+                        <label for="planningMode">Plánovat po</label>
+                        <select id="planningMode">
+                          <option value="location">Lokalitách</option>
+                          <option value="machine">Konkrétních strojích</option>
+                        </select>
+                      </div>
+                      <div class="compact-field">
                         <label for="searchInput">Hledat</label>
                         <input id="searchInput" type="text" placeholder="Lokalita, město nebo poznámka..." />
                       </div>
@@ -935,6 +942,7 @@
     const openMapsBtn = document.getElementById('openMapsBtn')
 
     const searchInput = document.getElementById('searchInput')
+    const planningMode = document.getElementById('planningMode')
     const routeDateInput = document.getElementById('routeDateInput')
     const sourceFilter = document.getElementById('sourceFilter')
     const priorityFilter = document.getElementById('priorityFilter')
@@ -957,6 +965,7 @@
       warehouses: [],
       vehicles: [],
       employees: [],
+      machines: [],
       requests: [],
       candidates: [],
       filteredCandidates: [],
@@ -1085,6 +1094,12 @@
 
     function effectivePriority(stop) {
       return stop.requestPriority || stop.locationPriority || 'normal'
+    }
+
+    function getMachineLabel(machineId) {
+      const machine = state.machines.find((item) => String(item.id) === String(machineId))
+      if (!machine) return 'Konkrétní stroj'
+      return machine.name || [machine.brand, machine.model].filter(Boolean).join(' ') || `Stroj ${machine.id}`
     }
 
     function calcPriorityBonus(stop, biasMode) {
@@ -1277,7 +1292,8 @@
     function renderCandidates() {
       selectionChip.textContent = `Vybráno ${state.selectedKeys.size}`
       if (selectionSummary) {
-        selectionSummary.textContent = `Zobrazuji ${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} aktivních lokalit se souřadnicemi. Když chceš plánovat celý den, nech nahoře „Všechny aktivní lokality“.`
+        const subjectLabel = planningMode.value === 'machine' ? 'strojů' : 'aktivních lokalit'
+        selectionSummary.textContent = `Zobrazuji ${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} ${subjectLabel} se souřadnicemi. Když chceš plánovat celý den, nech nahoře „Všechny aktivní lokality“.`
       }
 
       if (!state.filteredCandidates.length) {
@@ -1302,6 +1318,7 @@
                 <div>
                   <h3 class="candidate-title">${escapeHtml(candidate.name)}</h3>
                   <span class="subtext">${escapeHtml([candidate.address, candidate.city].filter(Boolean).join(', ') || 'Bez adresy')}</span>
+                  ${candidate.parentLocationName ? `<span class="subtext">Lokalita: ${escapeHtml(candidate.parentLocationName)}</span>` : ''}
                   <div class="candidate-meta">${reasons.join('')}</div>
                 </div>
               </label>
@@ -1321,6 +1338,7 @@
                 <div class="mini-stat-value">${escapeHtml(candidate.sourceNote)}</div>
               </div>
             </div>
+            ${candidate.machineLabel ? `<span class="subtext">Stroj: ${escapeHtml(candidate.machineLabel)}</span>` : ''}
             ${candidate.routeNote ? `<span class="subtext">${escapeHtml(candidate.routeNote)}</span>` : ''}
           </article>
         `
@@ -1358,6 +1376,7 @@
               <div>
                 <h3 class="route-stop-title">${escapeHtml(`${index + 1}. ${stop.name}`)}</h3>
                 <span class="subtext">${escapeHtml([stop.address, stop.city].filter(Boolean).join(', ') || 'Bez adresy')}</span>
+                ${stop.parentLocationName ? `<span class="subtext">Lokalita: ${escapeHtml(stop.parentLocationName)}</span>` : ''}
                 <div class="route-stop-meta">
                   <span class="route-badge ${escapeHtml(stop.effectivePriority)}">${escapeHtml(priorityLabel(stop.effectivePriority))}</span>
                   ${stop.openRequestCount ? `<span class="route-badge service">${stop.openRequestCount}× servis</span>` : ''}
@@ -1605,6 +1624,17 @@
 
     function buildCandidateRows() {
       const requestsByLocation = new Map()
+      const requestsByMachine = new Map()
+      const machinesByLocation = new Map()
+
+      state.machines
+        .filter((machine) => machine.active !== false)
+        .forEach((machine) => {
+          const locationKey = String(machine.location_id ?? '')
+          if (!locationKey) return
+          if (!machinesByLocation.has(locationKey)) machinesByLocation.set(locationKey, [])
+          machinesByLocation.get(locationKey).push(machine)
+        })
 
       state.requests
         .filter((request) => !['done', 'cancelled'].includes(request.status))
@@ -1613,9 +1643,14 @@
           if (!key) return
           if (!requestsByLocation.has(key)) requestsByLocation.set(key, [])
           requestsByLocation.get(key).push(request)
+
+          const machineKey = String(request.machine_id ?? '')
+          if (!machineKey) return
+          if (!requestsByMachine.has(machineKey)) requestsByMachine.set(machineKey, [])
+          requestsByMachine.get(machineKey).push(request)
         })
 
-      state.candidates = state.locations
+      const locationCandidates = state.locations
         .filter((location) => location.active !== false)
         .filter((location) => location.latitude != null && location.longitude != null)
         .map((location) => {
@@ -1623,10 +1658,14 @@
           const maxRequestPriority = relatedRequests.reduce((best, request) => {
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
+          const locationMachines = machinesByLocation.get(String(location.id)) || []
 
           const item = {
             key: `location-${location.id}`,
             id: location.id,
+            locationId: location.id,
+            machineId: null,
+            stopKind: 'location_check',
             name: location.name,
             city: location.city || '',
             address: location.address || '',
@@ -1645,11 +1684,60 @@
             ) || null,
             sourceNote: relatedRequests.length ? 'Servis' : matchesServiceWindow(location.service_window, routeDateInput.value) ? 'Okno' : 'Lokalita',
             requests: relatedRequests,
+            machineCount: locationMachines.length,
+            machineLabel: locationMachines.length ? `${locationMachines.length} strojů na místě` : '',
           }
 
           item.estimatedServiceMinutes = estimateServiceMinutes(item)
           return item
         })
+
+      const machineCandidates = state.machines
+        .filter((machine) => machine.active !== false)
+        .map((machine) => {
+          const location = state.locations.find((item) => String(item.id) === String(machine.location_id))
+          if (!location || location.latitude == null || location.longitude == null) return null
+
+          const relatedRequests = requestsByMachine.get(String(machine.id)) || []
+          const maxRequestPriority = relatedRequests.reduce((best, request) => {
+            return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
+          }, null)
+
+          const item = {
+            key: `machine-${machine.id}`,
+            id: machine.id,
+            locationId: location.id,
+            machineId: machine.id,
+            stopKind: relatedRequests.length ? 'service_request' : 'manual',
+            name: machine.name || `${location.name} · stroj`,
+            machineLabel: machine.name || '',
+            parentLocationName: location.name,
+            city: location.city || '',
+            address: location.address || '',
+            latitude: location.latitude,
+            longitude: location.longitude,
+            locationPriority: location.service_priority || null,
+            requestPriority: maxRequestPriority,
+            effectivePriority: maxRequestPriority || (machine.status === 'service_needed' ? 'high' : location.service_priority || 'normal'),
+            serviceWindow: location.service_window || '',
+            routeNote: machine.note || location.route_note || location.service_plan_note || '',
+            matchesSelectedDay: matchesServiceWindow(location.service_window, routeDateInput.value),
+            openRequestCount: relatedRequests.length,
+            estimatedServiceMinutes: Math.max(
+              relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
+              relatedRequests.length ? 20 : 15
+            ) || null,
+            sourceNote: relatedRequests.length ? 'Servis stroje' : 'Konkrétní stroj',
+            requests: relatedRequests,
+            machineType: machine.machine_type || '',
+          }
+
+          item.estimatedServiceMinutes = estimateServiceMinutes(item)
+          return item
+        })
+        .filter(Boolean)
+
+      state.candidates = planningMode.value === 'machine' ? machineCandidates : locationCandidates
     }
 
     function applyFilters({ autoSelect = false } = {}) {
@@ -1663,6 +1751,9 @@
         filtered = filtered.filter((candidate) => {
           const haystack = [
             candidate.name,
+            candidate.parentLocationName,
+            candidate.machineLabel,
+            candidate.machineType,
             candidate.city,
             candidate.address,
             candidate.routeNote,
@@ -2132,11 +2223,11 @@
         if (!planError && insertedPlan?.id) {
           const stopPayload = state.currentPlan.orderedStops.map((stop, index) => ({
             route_plan_id: insertedPlan.id,
-            location_id: stop.id,
+            location_id: stop.locationId || stop.id,
             service_request_id: stop.requests?.[0]?.id || null,
-            machine_id: stop.requests?.[0]?.machine_id || null,
+            machine_id: stop.machineId || stop.requests?.[0]?.machine_id || null,
             stop_order: index + 1,
-            stop_kind: stop.openRequestCount ? 'service_request' : 'location_check',
+            stop_kind: stop.stopKind || (stop.openRequestCount ? 'service_request' : 'location_check'),
             title: stop.openRequestCount ? stop.requests?.[0]?.title || stop.name : stop.name,
             address_snapshot: stop.address,
             city_snapshot: stop.city,
@@ -2301,6 +2392,17 @@
       populateVehicleOptions()
     }
 
+    async function loadMachines() {
+      const { data, error } = await supabase
+        .from('machines')
+        .select('id, location_id, name, machine_type, status, note, active')
+        .eq('active', true)
+        .order('name', { ascending: true })
+
+      if (error) throw error
+      state.machines = data || []
+    }
+
     async function loadEmployees() {
       const { data, error } = await supabase
         .from('employees')
@@ -2353,6 +2455,7 @@
         setStatus('Načítám lokality, servis, vozidla a sklady...')
         await Promise.all([
           loadLocations(),
+          loadMachines(),
           loadRequests(),
           loadVehicles(),
           loadEmployees(),
@@ -2379,6 +2482,18 @@
     }
 
     searchInput.addEventListener('input', () => applyFilters())
+    planningMode.addEventListener('change', () => {
+      state.selectedKeys.clear()
+      state.currentPlan = null
+      buildCandidateRows()
+      applyFilters()
+      renderRouteSummary()
+      renderRouteList()
+      renderMap()
+      setStatus(planningMode.value === 'machine'
+        ? 'Plánování je teď po konkrétních strojích. Když má lokalita víc automatů, můžeš vybrat jen ten správný.'
+        : 'Plánování je teď po lokalitách. Na jedné adrese řešíš místo jako celek.', 'success')
+    })
     routeDateInput.addEventListener('change', () => {
       buildCandidateRows()
       applyFilters()
