@@ -1842,18 +1842,65 @@
     async function loadLocations() {
       setStatus('Načítám lokality...')
 
-      const { data, error } = await supabase
+      const baseSelect = 'id, name, city, address, customer_name, contact_person, contact_phone, service_window, route_note, active, created_at'
+      const v12Select = `${baseSelect}, service_frequency, service_priority, service_plan_note, latitude, longitude`
+
+      let data = null
+      let error = null
+
+      const primaryResult = await supabase
         .from('locations')
-        .select('id, name, city, address, customer_name, contact_person, contact_phone, service_window, service_frequency, service_priority, service_plan_note, route_note, latitude, longitude, active, created_at')
+        .select(v12Select)
         .order('created_at', { ascending: false })
 
+      data = primaryResult.data
+      error = primaryResult.error
+
       if (error) {
+        const message = String(error.message || '').toLowerCase()
+        const missingV12Field = ['service_frequency', 'service_priority', 'service_plan_note', 'latitude', 'longitude']
+          .some((field) => message.includes(field))
+
+        if (!missingV12Field) {
+          locationsFieldsAvailable = false
+          locationsData = []
+          renderSummary()
+          renderLocations([])
+          renderLocationsMap([])
+          setStatus(`Nepodařilo se načíst lokality: ${error.message}.`, 'error')
+          return
+        }
+
+        const fallbackResult = await supabase
+          .from('locations')
+          .select(baseSelect)
+          .order('created_at', { ascending: false })
+
+        data = fallbackResult.data
+        error = fallbackResult.error
+
+        if (error) {
+          locationsFieldsAvailable = false
+          locationsData = []
+          renderSummary()
+          renderLocations([])
+          renderLocationsMap([])
+          setStatus(`Nepodařilo se načíst lokality: ${error.message}.`, 'error')
+          return
+        }
+
         locationsFieldsAvailable = false
-        locationsData = []
+        locationsData = (data ?? []).map((item) => ({
+          ...item,
+          service_frequency: null,
+          service_priority: null,
+          service_plan_note: null,
+          latitude: null,
+          longitude: null
+        }))
         renderSummary()
-        renderLocations([])
-        renderLocationsMap([])
-        setStatus(`Nepodařilo se načíst lokality: ${error.message}. Pokud už běží základ, teď ještě prosím spusť i database/locations_v12_prep.sql.`, 'error')
+        applyFilters()
+        setStatus(`Načteno lokalit: ${locationsData.length}. Rozšíření 1.2 pro lokality ještě není nasazené.`, 'success')
         return
       }
 
