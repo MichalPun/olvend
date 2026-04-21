@@ -305,7 +305,8 @@
     .modal-backdrop.show { display: flex; }
     .modal {
       width: 100%; max-width: 920px; max-height: min(88vh, 940px); background: #111319; border: 1px solid var(--border); border-radius: 24px;
-      box-shadow: 0 30px 80px rgba(0,0,0,0.45); overflow: hidden; display: flex; flex-direction: column;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.45); overflow: visible; display: flex; flex-direction: column;
+      position: relative;
     }
     #requestForm {
       display: flex;
@@ -323,13 +324,14 @@
       background: transparent; border: 1px solid var(--border); color: white; border-radius: 10px;
       width: 40px; height: 40px; cursor: pointer; font-size: 20px;
     }
-    .modal-body { padding: 22px; overflow: auto; min-height: 0; flex: 1 1 auto; }
+    .modal-body { padding: 22px; overflow: visible; min-height: 0; flex: 1 1 auto; position: relative; }
     .modal-footer {
       padding: 20px 22px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px;
       background: rgba(17,19,25,0.98); flex-shrink: 0;
     }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-    .field { display: flex; flex-direction: column; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 8px; position: relative; z-index: 1; }
+    .field:focus-within { z-index: 20; }
     .field.full { grid-column: 1 / -1; }
     .field label { font-size: 13px; color: var(--muted); font-weight: 700; }
     textarea { resize: vertical; min-height: 110px; }
@@ -359,7 +361,8 @@
       .action-row { flex-direction: column; }
       .action-row .btn, .actions .btn { width: 100%; }
       .modal-backdrop { padding: 0; align-items: flex-end; overflow: auto; }
-      .modal { max-width: 100%; max-height: min(92vh, 920px); border-radius: 24px 24px 0 0; }
+      .modal { max-width: 100%; max-height: min(92vh, 920px); border-radius: 24px 24px 0 0; overflow: hidden; }
+      .modal-body { overflow: auto; }
       .modal-footer { flex-direction: column; }
       .modal-footer .btn { width: 100%; }
     }
@@ -950,13 +953,6 @@
       return true
     }
 
-    async function persistRequest(payload) {
-      if (isEditMode) {
-        return supabase.from('service_requests').update(payload).eq('id', requestId.value)
-      }
-      return supabase.from('service_requests').insert([payload])
-    }
-
     function isMissingOptionalColumnError(error) {
       const message = String(error?.message || '').toLowerCase()
       return [
@@ -972,12 +968,58 @@
       ].some((column) => message.includes(column))
     }
 
+    function extractMissingOptionalColumn(error) {
+      const message = String(error?.message || '').toLowerCase()
+      const optionalColumns = [
+        'estimated_duration_minutes',
+        'actual_duration_minutes',
+        'service_started_at',
+        'service_finished_at',
+        'service_arrived_at',
+        'service_departed_at',
+        'machine_id',
+        'last_service_result',
+        'created_by'
+      ]
+
+      return optionalColumns.find((column) => message.includes(column)) || null
+    }
+
+    async function persistRequest(payload) {
+      const request = isEditMode
+        ? () => supabase.from('service_requests').update(payload).eq('id', requestId.value)
+        : () => supabase.from('service_requests').insert([payload])
+
+      return request()
+    }
+
     async function saveRequest() {
       const payload = getPayload()
-      let result = await persistRequest(payload)
+      let activePayload = { ...payload }
+      let result = await persistRequest(activePayload)
 
       if (result.error && isMissingOptionalColumnError(result.error)) {
-        result = await persistRequest(getFallbackPayload(payload))
+        const fallbackPayload = getFallbackPayload(payload)
+        let missingColumn = extractMissingOptionalColumn(result.error)
+
+        while (missingColumn && Object.prototype.hasOwnProperty.call(activePayload, missingColumn)) {
+          delete activePayload[missingColumn]
+          result = await persistRequest(activePayload)
+          if (!result.error) break
+          missingColumn = isMissingOptionalColumnError(result.error) ? extractMissingOptionalColumn(result.error) : null
+        }
+
+        if (result.error && isMissingOptionalColumnError(result.error)) {
+          activePayload = { ...fallbackPayload }
+          result = await persistRequest(activePayload)
+
+          while (result.error && isMissingOptionalColumnError(result.error)) {
+            const fallbackMissingColumn = extractMissingOptionalColumn(result.error)
+            if (!fallbackMissingColumn || !Object.prototype.hasOwnProperty.call(activePayload, fallbackMissingColumn)) break
+            delete activePayload[fallbackMissingColumn]
+            result = await persistRequest(activePayload)
+          }
+        }
       }
 
       if (result.error) throw result.error
