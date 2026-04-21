@@ -576,6 +576,12 @@
                     <option value="">Bez vozidla</option>
                   </select>
                 </div>
+                <div class="compact-field">
+                  <label for="employeeFilter">Komu trasu chystám</label>
+                  <select id="employeeFilter">
+                    <option value="">Bez technika</option>
+                  </select>
+                </div>
                 <div class="toolbar-actions">
                   <button class="btn secondary" id="savePlanBtn" type="button">Uložit plán</button>
                   <button class="btn secondary" id="openMapsBtn" type="button" disabled>Otevřít v Google Maps</button>
@@ -673,6 +679,7 @@
     const sourceFilter = document.getElementById('sourceFilter')
     const priorityFilter = document.getElementById('priorityFilter')
     const vehicleFilter = document.getElementById('vehicleFilter')
+    const employeeFilter = document.getElementById('employeeFilter')
     const warehouseFilter = document.getElementById('warehouseFilter')
     const startMode = document.getElementById('startMode')
     const returnMode = document.getElementById('returnMode')
@@ -688,6 +695,7 @@
       locations: [],
       warehouses: [],
       vehicles: [],
+      employees: [],
       requests: [],
       candidates: [],
       filteredCandidates: [],
@@ -937,6 +945,11 @@
           <div class="summary-box-value">${formatNumber(state.selectedKeys.size)}</div>
           <div class="summary-box-note">Zastávky, se kterými teď počítá návrh pořadí.</div>
         </div>
+        <div class="summary-box">
+          <div class="summary-box-label">Komu</div>
+          <div class="summary-box-value">${escapeHtml(getSelectedEmployeeLabel())}</div>
+          <div class="summary-box-note">Pro koho se právě plán skládá.</div>
+        </div>
       `
     }
 
@@ -947,6 +960,11 @@
             <div class="summary-box-label">Stav</div>
             <div class="summary-box-value">Ještě nic</div>
             <div class="summary-box-note">Vyber zastávky a klikni na Navrhnout pořadí.</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-box-label">Komu</div>
+            <div class="summary-box-value">${escapeHtml(getSelectedEmployeeLabel())}</div>
+            <div class="summary-box-note">Technik nebo obecný plán bez přiřazení.</div>
           </div>
         `
         openMapsBtn.disabled = true
@@ -973,6 +991,11 @@
           <div class="summary-box-label">Servisní čas</div>
           <div class="summary-box-value">${formatNumber(plan.estimatedServiceMinutes)}</div>
           <div class="summary-box-note">Součet odhadů zásahu na zastávkách.</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-box-label">Komu</div>
+          <div class="summary-box-value">${escapeHtml(getSelectedEmployeeLabel())}</div>
+          <div class="summary-box-note">Vybraný technik pro tenhle plán.</div>
         </div>
       `
 
@@ -1103,6 +1126,22 @@
         return `<option value="${escapeHtml(vehicle.id)}">${escapeHtml(label)}</option>`
       }).join('')
       vehicleFilter.value = currentValue
+    }
+
+    function populateEmployeeOptions() {
+      const currentValue = employeeFilter.value
+      employeeFilter.innerHTML = '<option value="">Bez technika</option>' + state.employees.map((employee) => {
+        const fullName = [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || `Technik ${employee.id}`
+        return `<option value="${escapeHtml(employee.id)}">${escapeHtml(fullName)}</option>`
+      }).join('')
+      employeeFilter.value = currentValue
+    }
+
+    function getSelectedEmployeeLabel() {
+      if (!employeeFilter.value) return 'Bez výběru'
+      const employee = state.employees.find((item) => String(item.id) === String(employeeFilter.value))
+      if (!employee) return 'Bez výběru'
+      return [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Bez jména'
     }
 
     function populateWarehouseOptions() {
@@ -1430,7 +1469,11 @@
 
       const selectedVehicleId = vehicleFilter.value || null
       const selectedWarehouseId = warehouseFilter.value || null
-      const title = `Pilotní trasa ${routeDateInput.value}`
+      const selectedPlannedEmployeeId = employeeFilter.value || null
+      const selectedEmployeeName = getSelectedEmployeeLabel()
+      const title = selectedPlannedEmployeeId
+        ? `Trasa ${routeDateInput.value} · ${selectedEmployeeName}`
+        : `Pilotní trasa ${routeDateInput.value}`
 
       let employeeId = null
 
@@ -1471,6 +1514,8 @@
         estimated_drive_minutes: state.currentPlan.estimatedDriveMinutes,
         estimated_service_minutes: state.currentPlan.estimatedServiceMinutes,
         route_payload: {
+          planned_employee_id: selectedPlannedEmployeeId,
+          planned_employee_name: selectedEmployeeName,
           sort_bias: sortBias.value,
           source_filter: sourceFilter.value,
           generated_at: state.currentPlan.createdAt,
@@ -1590,13 +1635,25 @@
     async function loadVehicles() {
       const { data, error } = await supabase
         .from('vehicles')
-        .select('id, plate, brand, model, name, active')
+        .select('id, plate, brand, model, name, active, assigned_employee_id')
         .eq('active', true)
         .order('plate', { ascending: true })
 
       if (error) throw error
       state.vehicles = data || []
       populateVehicleOptions()
+    }
+
+    async function loadEmployees() {
+      const { data, error } = await supabase
+        .from('employees')
+        .select('id, name, surname, email, active')
+        .order('surname', { ascending: true })
+
+      if (error) throw error
+
+      state.employees = (data || []).filter((employee) => employee.active !== false)
+      populateEmployeeOptions()
     }
 
     async function loadWarehouses() {
@@ -1640,6 +1697,7 @@
           loadLocations(),
           loadRequests(),
           loadVehicles(),
+          loadEmployees(),
           loadWarehouses(),
         ])
 
@@ -1671,7 +1729,18 @@
     })
     sourceFilter.addEventListener('change', () => applyFilters())
     priorityFilter.addEventListener('change', () => applyFilters())
-    vehicleFilter.addEventListener('change', () => {})
+    vehicleFilter.addEventListener('change', () => {
+      const selectedVehicle = state.vehicles.find((item) => String(item.id) === String(vehicleFilter.value))
+      if (selectedVehicle?.assigned_employee_id) {
+        employeeFilter.value = String(selectedVehicle.assigned_employee_id)
+      }
+      renderSummary()
+      renderRouteSummary(state.currentPlan)
+    })
+    employeeFilter.addEventListener('change', () => {
+      renderSummary()
+      renderRouteSummary(state.currentPlan)
+    })
     warehouseFilter.addEventListener('change', () => {})
 
     refreshBtn.addEventListener('click', () => {
