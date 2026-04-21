@@ -53,6 +53,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "routes.html": {
+      currentLabel: "Trasy",
+      activeKey: "routes",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "service-requests.html": {
       currentLabel: "Servis",
       activeKey: "service",
@@ -148,6 +155,7 @@
     { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
     { key: "service", href: "service-requests.html", label: "Servis" },
     { key: "operations", href: "operations.html", label: "Provoz" },
+    { key: "routes", href: "routes.html", label: "Trasy" },
     { key: "fleet", href: "vehicles.html", label: "Vozový park" },
     { key: "hr", href: "hr.html", label: "HR" },
     { key: "reporty", href: "reporty.html", label: "Reporty" },
