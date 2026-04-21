@@ -467,6 +467,30 @@
       padding: 16px; border-radius: 16px; border: 1px dashed rgba(255,255,255,0.12);
       background: rgba(255,255,255,0.02); color: var(--muted); font-size: 13px; line-height: 1.55;
     }
+    .picker-map-shell {
+      display: grid;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .picker-map {
+      height: 260px;
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        radial-gradient(circle at top left, rgba(213,16,26,0.08), transparent 30%),
+        linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+    }
+    .picker-map-help {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .picker-map-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .detail-actions {
       display: flex;
       gap: 8px;
@@ -924,6 +948,16 @@
               <button class="btn secondary" id="geocodeBtn" type="button">Dohledat souřadnice podle adresy</button>
             </div>
             <div class="field full">
+              <div class="picker-map-shell">
+                <div id="locationPickerMap" class="picker-map"></div>
+                <div class="picker-map-actions">
+                  <button class="btn secondary" id="centerPickerBtn" type="button">Zobrazit zadané souřadnice</button>
+                  <button class="btn secondary" id="dropPinBtn" type="button">Dát špendlík do středu mapy</button>
+                </div>
+                <div class="picker-map-help">Když adresa sedí špatně, chyť špendlík a přetáhni ho na správné místo. Pole šířka a délka se přepíšou automaticky.</div>
+              </div>
+            </div>
+            <div class="field full">
               <div class="checkbox-row">
                 <input id="active" name="active" type="checkbox" checked />
                 <label for="active">Aktivní lokalita</label>
@@ -997,10 +1031,15 @@
     const mobileNavShell = document.getElementById('mobileNavShell')
     const mobileNavToggle = document.getElementById('mobileNavToggle')
     const geocodeBtn = document.getElementById('geocodeBtn')
+    const centerPickerBtn = document.getElementById('centerPickerBtn')
+    const dropPinBtn = document.getElementById('dropPinBtn')
     const geocodeVisibleBtn = document.getElementById('geocodeVisibleBtn')
     const locationsMapEl = document.getElementById('locationsMap')
     const mapVisibleCount = document.getElementById('mapVisibleCount')
     const mapMissingCoordsCount = document.getElementById('mapMissingCoordsCount')
+    const latitudeInput = document.getElementById('latitude')
+    const longitudeInput = document.getElementById('longitude')
+    const locationPickerMapEl = document.getElementById('locationPickerMap')
 
     let locationsData = []
     let filteredLocationsData = []
@@ -1010,6 +1049,8 @@
     let isEditMode = false
     let locationsMap = null
     let locationsMapLayer = null
+    let locationPickerMap = null
+    let locationPickerMarker = null
     let autoGeocodeAttempted = false
     const defaultCzechMapView = {
       center: [49.8175, 15.4730],
@@ -1064,6 +1105,81 @@
         hour: '2-digit',
         minute: '2-digit'
       })
+    }
+
+    function getPickerCoordinates() {
+      const latitude = Number(latitudeInput?.value)
+      const longitude = Number(longitudeInput?.value)
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+      return { latitude, longitude }
+    }
+
+    function writePickerCoordinates(latitude, longitude) {
+      if (latitudeInput) latitudeInput.value = Number(latitude).toFixed(7)
+      if (longitudeInput) longitudeInput.value = Number(longitude).toFixed(7)
+    }
+
+    function ensureLocationPickerMap() {
+      if (!locationPickerMapEl || !window.L) return null
+
+      if (!locationPickerMap) {
+        locationPickerMap = window.L.map(locationPickerMapEl, {
+          zoomControl: true,
+          scrollWheelZoom: false
+        }).setView(defaultCzechMapView.center, 7)
+
+        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap'
+        }).addTo(locationPickerMap)
+      }
+
+      window.setTimeout(() => {
+        locationPickerMap?.invalidateSize()
+      }, 0)
+
+      return locationPickerMap
+    }
+
+    function syncLocationPickerMap({ center = true, createMarkerFromCenter = false } = {}) {
+      const map = ensureLocationPickerMap()
+      if (!map) return
+
+      const coords = getPickerCoordinates()
+
+      if (!coords) {
+        if (locationPickerMarker) {
+          locationPickerMarker.remove()
+          locationPickerMarker = null
+        }
+        map.setView(defaultCzechMapView.center, defaultCzechMapView.zoom)
+        return
+      }
+
+      const latLng = [coords.latitude, coords.longitude]
+
+      if (!locationPickerMarker) {
+        locationPickerMarker = window.L.marker(latLng, {
+          draggable: true
+        }).addTo(map)
+
+        locationPickerMarker.on('dragend', () => {
+          const next = locationPickerMarker.getLatLng()
+          writePickerCoordinates(next.lat, next.lng)
+        })
+      } else {
+        locationPickerMarker.setLatLng(latLng)
+      }
+
+      if (createMarkerFromCenter && !coords) {
+        const currentCenter = map.getCenter()
+        writePickerCoordinates(currentCenter.lat, currentCenter.lng)
+        locationPickerMarker.setLatLng(currentCenter)
+      }
+
+      if (center) {
+        map.setView(latLng, Math.max(map.getZoom(), 16))
+      }
     }
 
     async function fetchFirstGeocodeMatch(query) {
@@ -1314,6 +1430,7 @@
         }
         document.getElementById('latitude').value = Number(match.latitude).toFixed(7)
         document.getElementById('longitude').value = Number(match.longitude).toFixed(7)
+        syncLocationPickerMap()
         setStatus(`Souřadnice byly doplněné podle adresy. Použitý dotaz: ${match.label}`, 'success')
       } catch (error) {
         console.error(error)
@@ -1503,10 +1620,12 @@
       modalTitle.textContent = 'Přidat lokalitu'
       saveBtn.textContent = 'Uložit lokalitu'
       isEditMode = false
+      window.setTimeout(() => syncLocationPickerMap({ center: false }), 0)
     }
 
     function openModal() {
       modalBackdrop.classList.add('show')
+      window.setTimeout(() => syncLocationPickerMap({ center: false }), 0)
     }
 
     function closeModal() {
@@ -1570,6 +1689,7 @@
       modalTitle.textContent = 'Upravit lokalitu'
       saveBtn.textContent = 'Uložit změny'
       openModal()
+      window.setTimeout(() => syncLocationPickerMap(), 0)
     }
 
     function priorityLabel(value) {
@@ -1955,6 +2075,17 @@
       await initializePage({ silent: false })
     })
     geocodeBtn.addEventListener('click', geocodeCurrentAddress)
+    centerPickerBtn?.addEventListener('click', () => {
+      syncLocationPickerMap()
+    })
+    dropPinBtn?.addEventListener('click', () => {
+      const map = ensureLocationPickerMap()
+      if (!map) return
+      const center = map.getCenter()
+      writePickerCoordinates(center.lat, center.lng)
+      syncLocationPickerMap({ center: false })
+      setStatus('Špendlík jsem přesunul do středu mapy a souřadnice přepsal.', 'success')
+    })
     geocodeVisibleBtn?.addEventListener('click', geocodeVisibleLocations)
     openLocationModalBtn.addEventListener('click', () => {
       resetForm()
@@ -1984,6 +2115,13 @@
         closeModal()
         closeDetailModal()
       }
+    })
+
+    latitudeInput?.addEventListener('change', () => {
+      syncLocationPickerMap()
+    })
+    longitudeInput?.addEventListener('change', () => {
+      syncLocationPickerMap()
     })
 
     locationsTableBody.addEventListener('click', async (e) => {
