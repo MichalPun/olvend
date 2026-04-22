@@ -88,6 +88,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "machine-qr-print.html": {
+      currentLabel: "QR štítky",
+      activeKey: "machines",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "inventory.html": {
       currentLabel: "Inventář / zásoby",
       activeKey: "inventory",
