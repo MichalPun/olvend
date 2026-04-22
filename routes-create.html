@@ -1083,9 +1083,84 @@
       mapLayer: null,
       routesTablesAvailable: true,
       googleRoutesAvailable: true,
+      editingPlanKey: null,
     }
 
     routeDateInput.value = new Date().toISOString().slice(0, 10)
+
+    function getPlanKey(plan) {
+      return String(plan?.id || plan?.local_saved_at || plan?.title || '')
+    }
+
+    function syncEditUi() {
+      const isEditing = Boolean(state.editingPlanKey)
+      savePlanBtn.textContent = isEditing ? 'Uložit změny' : 'Uložit plán'
+      selectionChip.textContent = isEditing
+        ? `Úprava · ${state.selectedKeys.size}`
+        : `Vybráno ${state.selectedKeys.size}`
+    }
+
+    function hydrateEditorFromPlan(plan) {
+      if (!plan) return
+
+      const builtPlan = buildPlanFromSavedPlan(plan)
+      const payload = plan.route_payload || {}
+      const dbStops = Array.isArray(plan.route_plan_stops) ? plan.route_plan_stops : []
+      const rawStops = dbStops.length ? dbStops : (Array.isArray(payload.orderedStops) ? payload.orderedStops : [])
+      const mode = rawStops.some((stop) => stop.machine_id || stop.machineId) ? 'machine' : 'location'
+
+      state.editingPlanKey = getPlanKey(plan)
+      routeDateInput.value = plan.planning_date || routeDateInput.value
+      employeeFilter.value = plan.planned_employee_id ? String(plan.planned_employee_id) : ''
+      vehicleFilter.value = plan.vehicle_id ? String(plan.vehicle_id) : ''
+      planningMode.value = mode
+      startMode.value = plan.planner_mode || 'warehouse'
+      warehouseFilter.value = plan.warehouse_id ? String(plan.warehouse_id) : warehouseFilter.value
+      sourceFilter.value = payload.source_filter || 'all_active'
+      sortBias.value = payload.sort_bias || 'balanced'
+      returnMode.value = plan.return_to_start === false ? 'one_way' : 'return'
+
+      buildCandidateRows()
+      state.selectedKeys.clear()
+
+      rawStops.forEach((stop) => {
+        const key = mode === 'machine'
+          ? `machine-${stop.machine_id || stop.machineId || stop.id}`
+          : `location-${stop.location_id || stop.locationId || stop.id}`
+        if (key && !key.endsWith('undefined')) {
+          state.selectedKeys.add(String(key))
+        }
+      })
+
+      const validKeys = new Set(state.candidates.map((candidate) => candidate.key))
+      state.selectedKeys = new Set([...state.selectedKeys].filter((key) => validKeys.has(key)))
+
+      applyFilters()
+      state.currentPlan = builtPlan
+      renderRouteSummary(state.currentPlan)
+      renderRouteList(state.currentPlan)
+      renderMap(state.currentPlan)
+      syncEditUi()
+      setStatus(`Upravuji trasu ${plan.title || formatDateLabel(plan.planning_date)}.`, 'success')
+    }
+
+    async function hydrateEditorFromQuery() {
+      const params = new URLSearchParams(window.location.search)
+      const editKey = params.get('edit')
+      if (!editKey) {
+        syncEditUi()
+        return
+      }
+
+      const plan = state.savedPlans.find((item) => getPlanKey(item) === String(editKey))
+      if (!plan) {
+        syncEditUi()
+        setStatus('Vybraná trasa už nejde otevřít do úprav. Možná byla smazaná nebo tu ještě není načtená.', 'warning')
+        return
+      }
+
+      hydrateEditorFromPlan(plan)
+    }
 
     function openSelectionDrawer(mode = planningMode.value) {
       planningMode.value = mode
@@ -1408,7 +1483,7 @@
     }
 
     function renderCandidates() {
-      selectionChip.textContent = `Vybráno ${state.selectedKeys.size}`
+      syncEditUi()
       if (selectionSummary) {
         const subjectLabel = planningMode.value === 'machine' ? 'strojů' : 'aktivních lokalit'
         selectionSummary.textContent = `Zobrazuji ${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} ${subjectLabel} se souřadnicemi. Když chceš plánovat celý den, nech nahoře „Všechny aktivní lokality“.`
@@ -2227,6 +2302,7 @@
       const title = selectedPlannedEmployeeId
         ? `Trasa ${routeDateInput.value} · ${selectedEmployeeName}`
         : `Pilotní trasa ${routeDateInput.value}`
+      const existingPlan = state.savedPlans.find((plan) => getPlanKey(plan) === String(state.editingPlanKey || '')) || null
 
       let employeeId = null
 
@@ -2282,6 +2358,96 @@
         created_by: employeeId,
       }
 
+      const stopPayloadBase = (planId) => state.currentPlan.orderedStops.map((stop, index) => ({
+        route_plan_id: planId,
+        location_id: stop.locationId || stop.id,
+        service_request_id: stop.requests?.[0]?.id || null,
+        machine_id: stop.machineId || stop.requests?.[0]?.machine_id || null,
+        stop_order: index + 1,
+        stop_kind: stop.stopKind || (stop.openRequestCount ? 'service_request' : 'location_check'),
+        title: stop.openRequestCount ? stop.requests?.[0]?.title || stop.name : stop.name,
+        address_snapshot: stop.address,
+        city_snapshot: stop.city,
+        latitude: stop.latitude,
+        longitude: stop.longitude,
+        priority_snapshot: stop.effectivePriority,
+        service_window_snapshot: stop.serviceWindow,
+        estimated_service_minutes: stop.estimatedServiceMinutes,
+        note: stop.routeNote || null,
+      }))
+
+      if (existingPlan?.id && state.routesTablesAvailable) {
+        const previousStatus = String(existingPlan.execution_status || 'draft')
+        const nextStatus = ['draft', 'assigned', 'cancelled'].includes(previousStatus)
+          ? (selectedPlannedEmployeeId ? 'assigned' : 'draft')
+          : previousStatus
+
+        const updatePayload = {
+          ...planPayload,
+          execution_status: nextStatus,
+          assigned_at: nextStatus === 'assigned'
+            ? (existingPlan.assigned_at || new Date().toISOString())
+            : null,
+          created_by: existingPlan.created_by || employeeId,
+        }
+
+        const updateAttempts = [
+          updatePayload,
+          (() => {
+            const fallback = { ...updatePayload }
+            delete fallback.execution_status
+            delete fallback.assigned_at
+            return fallback
+          })(),
+        ]
+
+        let updatedPlan = null
+        let updateError = null
+
+        for (const candidate of updateAttempts) {
+          const result = await supabase
+            .from('route_plans')
+            .update(candidate)
+            .eq('id', existingPlan.id)
+            .select('id')
+            .single()
+
+          if (!result.error) {
+            updatedPlan = result.data
+            updateError = null
+            break
+          }
+
+          updateError = result.error
+        }
+
+        if (!updateError && updatedPlan?.id) {
+          const { error: deleteStopsError } = await supabase
+            .from('route_plan_stops')
+            .delete()
+            .eq('route_plan_id', updatedPlan.id)
+
+          if (!deleteStopsError) {
+            const { error: stopError } = await supabase
+              .from('route_plan_stops')
+              .insert(stopPayloadBase(updatedPlan.id))
+
+            if (!stopError) {
+              setStatus(`Změny v trase ${title} jsou uložené.`, 'success')
+              await loadSavedPlans()
+              state.editingPlanKey = String(updatedPlan.id)
+              syncEditUi()
+              return
+            }
+            console.error('Route plan stops update failed:', stopError)
+          } else {
+            console.error('Route plan stop delete failed:', deleteStopsError)
+          }
+        } else if (updateError) {
+          console.error('Route plan update failed:', updateError)
+        }
+      }
+
       if (state.routesTablesAvailable) {
         const planAttempts = [
           planPayload,
@@ -2313,28 +2479,12 @@
         }
 
         if (!planError && insertedPlan?.id) {
-          const stopPayload = state.currentPlan.orderedStops.map((stop, index) => ({
-            route_plan_id: insertedPlan.id,
-            location_id: stop.locationId || stop.id,
-            service_request_id: stop.requests?.[0]?.id || null,
-            machine_id: stop.machineId || stop.requests?.[0]?.machine_id || null,
-            stop_order: index + 1,
-            stop_kind: stop.stopKind || (stop.openRequestCount ? 'service_request' : 'location_check'),
-            title: stop.openRequestCount ? stop.requests?.[0]?.title || stop.name : stop.name,
-            address_snapshot: stop.address,
-            city_snapshot: stop.city,
-            latitude: stop.latitude,
-            longitude: stop.longitude,
-            priority_snapshot: stop.effectivePriority,
-            service_window_snapshot: stop.serviceWindow,
-            estimated_service_minutes: stop.estimatedServiceMinutes,
-            note: stop.routeNote || null,
-          }))
-
-          const { error: stopError } = await supabase.from('route_plan_stops').insert(stopPayload)
+          const { error: stopError } = await supabase.from('route_plan_stops').insert(stopPayloadBase(insertedPlan.id))
 
           if (!stopError) {
             setStatus(`Plán trasy byl uložen do route_plans pod ID ${insertedPlan.id}.`, 'success')
+            state.editingPlanKey = String(insertedPlan.id)
+            syncEditUi()
             await loadSavedPlans()
             return
           }
@@ -2351,12 +2501,17 @@
       }
 
       const existingLocal = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
-      existingLocal.unshift({
+      const localKey = existingPlan?.local_saved_at || new Date().toISOString()
+      const localRecord = {
         ...planPayload,
         ordered_stops: state.currentPlan.orderedStops,
-        local_saved_at: new Date().toISOString(),
-      })
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(existingLocal.slice(0, 20)))
+        local_saved_at: localKey,
+      }
+      const nextLocal = existingLocal.filter((plan) => String(plan.local_saved_at || '') !== String(localKey))
+      nextLocal.unshift(localRecord)
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(nextLocal.slice(0, 20)))
+      state.editingPlanKey = String(localKey)
+      syncEditUi()
       await loadSavedPlans()
       setStatus('Route tables ještě neběží, takže plán je zatím uložený lokálně v prohlížeči. Pro DB uložení spusť database/routes_pilot.sql.', 'warning')
     }
@@ -2560,10 +2715,19 @@
         buildCandidateRows()
         applyFilters()
         await loadSavedPlans()
-        renderRouteSummary()
-        renderRouteList()
-        renderMap()
-        setStatus('Trasy jsou připravené. Vyber zastávky, které opravdu chceš objet, a pak spusť výpočet.', 'success')
+        await hydrateEditorFromQuery()
+        if (state.currentPlan) {
+          renderRouteSummary(state.currentPlan)
+          renderRouteList(state.currentPlan)
+          renderMap(state.currentPlan)
+        } else {
+          renderRouteSummary()
+          renderRouteList()
+          renderMap()
+        }
+        if (!state.editingPlanKey) {
+          setStatus('Trasy jsou připravené. Vyber zastávky, které opravdu chceš objet, a pak spusť výpočet.', 'success')
+        }
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se načíst data pro trasy: ${error.message}. Ověř locations, service_requests, vehicles a warehouses.`, 'error')
@@ -2590,6 +2754,8 @@
     routeDateInput.addEventListener('change', () => {
       buildCandidateRows()
       applyFilters()
+      state.editingPlanKey = null
+      syncEditUi()
       if (state.currentPlan) {
         state.currentPlan = null
         renderRouteSummary()
@@ -2632,7 +2798,9 @@
     clearSelectionBtn.addEventListener('click', () => {
       state.selectedKeys.clear()
       state.currentPlan = null
+      state.editingPlanKey = null
       renderCandidates()
+      syncEditUi()
       renderRouteSummary()
       renderRouteList()
       renderMap()
@@ -2659,9 +2827,11 @@
         if (!selectedPlan) return
 
         state.currentPlan = buildPlanFromSavedPlan(selectedPlan)
+        state.editingPlanKey = getPlanKey(selectedPlan)
         renderRouteSummary(state.currentPlan)
         renderRouteList(state.currentPlan)
         renderMap(state.currentPlan)
+        syncEditUi()
         openRouteDrawer()
         setStatus(`Načetl jsem detail trasy ${selectedPlan.title || formatDateLabel(selectedPlan.planning_date)}.`, 'success')
         routeList?.scrollIntoView({ behavior: 'smooth', block: 'start' })
