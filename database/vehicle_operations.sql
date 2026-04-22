@@ -115,18 +115,21 @@ execute function public.set_vehicle_expenses_updated_at();
 alter table public.vehicle_operation_logs enable row level security;
 alter table public.vehicle_expenses enable row level security;
 
+drop policy if exists "Allow read vehicle operation logs" on public.vehicle_operation_logs;
 create policy "Allow read vehicle operation logs"
 on public.vehicle_operation_logs
 for select
 to authenticated, anon
 using (true);
 
+drop policy if exists "Allow insert vehicle operation logs" on public.vehicle_operation_logs;
 create policy "Allow insert vehicle operation logs"
 on public.vehicle_operation_logs
 for insert
 to authenticated, anon
 with check (true);
 
+drop policy if exists "Allow update vehicle operation logs" on public.vehicle_operation_logs;
 create policy "Allow update vehicle operation logs"
 on public.vehicle_operation_logs
 for update
@@ -134,18 +137,21 @@ to authenticated, anon
 using (true)
 with check (true);
 
+drop policy if exists "Allow read vehicle expenses" on public.vehicle_expenses;
 create policy "Allow read vehicle expenses"
 on public.vehicle_expenses
 for select
 to authenticated, anon
 using (true);
 
+drop policy if exists "Allow insert vehicle expenses" on public.vehicle_expenses;
 create policy "Allow insert vehicle expenses"
 on public.vehicle_expenses
 for insert
 to authenticated, anon
 with check (true);
 
+drop policy if exists "Allow update vehicle expenses" on public.vehicle_expenses;
 create policy "Allow update vehicle expenses"
 on public.vehicle_expenses
 for update
