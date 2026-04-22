@@ -3046,8 +3046,9 @@
         </article>
         <div class="route-stop-list">
           ${todayRouteStops.map((stop) => {
-            const statusMeta = getRouteStopStatusMeta(stop.status);
+            const statusMeta = getRouteStopDisplayMeta(stop);
             const isOpen = !['done', 'skipped'].includes(String(stop.status || 'planned'));
+            const linkedService = assignedServiceRequests.find((request) => String(request.id) === String(stop.service_request_id || ''));
             return `
               <article class="route-stop-card ${isOpen && String(nextRouteStop?.id || '') === String(stop.id) ? 'active' : ''}">
                 <div class="log-head">
@@ -3061,11 +3062,17 @@
                   ${stop.estimated_service_minutes ? `<span class="meta-chip">Plán ${escapeHtml(formatMinutesLabel(stop.estimated_service_minutes))}</span>` : ''}
                   ${stop.priority_snapshot ? `<span class="meta-chip">Priorita ${escapeHtml(stop.priority_snapshot)}</span>` : ''}
                   ${stop.service_window_snapshot ? `<span class="meta-chip">Okno ${escapeHtml(stop.service_window_snapshot)}</span>` : ''}
+                  ${stop.arrived_at ? `<span class="meta-chip">Začátek ${escapeHtml(formatClock(stop.arrived_at))}</span>` : ''}
+                  ${stop.completed_at ? `<span class="meta-chip">Konec ${escapeHtml(formatClock(stop.completed_at))}</span>` : ''}
                 </div>
                 ${stop.note ? `<div class="log-text" style="margin-top:10px;">${escapeHtml(stop.note)}</div>` : ''}
                 <div class="instruction-actions">
                   <a class="btn secondary" href="${escapeHtml(buildRouteStopMapsUrl(stop))}" target="_blank" rel="noopener noreferrer">Navigovat</a>
-                  ${isOpen ? `<button class="btn success" type="button" data-route-stop-action="done" data-route-stop-id="${stop.id}">Hotovo</button>` : ''}
+                  ${linkedService && (linkedService.status === 'assigned' || linkedService.status === 'new') ? `<button class="btn secondary" type="button" data-service-action="arrived" data-service-id="${linkedService.id}">Začít servis</button>` : ''}
+                  ${linkedService && linkedService.status === 'in_progress' ? `<button class="btn success" type="button" data-service-action="fixed" data-service-id="${linkedService.id}">Servis hotovo</button>` : ''}
+                  ${linkedService && linkedService.status === 'in_progress' ? `<button class="btn secondary" type="button" data-service-action="return_with_part" data-service-id="${linkedService.id}">Vrátím se</button>` : ''}
+                  ${isOpen && !stop.arrived_at ? `<button class="btn secondary" type="button" data-route-stop-action="arrived" data-route-stop-id="${stop.id}">Na místě</button>` : ''}
+                  ${isOpen && !linkedService ? `<button class="btn success" type="button" data-route-stop-action="done" data-route-stop-id="${stop.id}">Hotovo</button>` : ''}
                   ${isOpen ? `<button class="btn secondary" type="button" data-route-stop-action="skipped" data-route-stop-id="${stop.id}">Přeskočit</button>` : ''}
                 </div>
               </article>
@@ -3170,9 +3177,17 @@
         ${!todayAttendance.actual_end ? `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Akce</p>
+            ${todayAttendance.vehicle_id && parseIntegerValue(endOdometerInput?.value) == null ? `
+              <div class="mobile-inline-warning" style="margin-bottom:12px;">
+                <strong>Nejdřív doplň konečný stav km</strong>
+                <span class="mobile-section-text">Pro ukončení dne přejdi do záložky Vozidlo a doplň poslední km.</span>
+              </div>
+            ` : ''}
             <div class="mobile-section-actions">
               <button class="btn warn" type="button" data-mobile-break ${breakToggleBtn.disabled ? 'disabled' : ''}>${escapeHtml(breakToggleBtn.textContent || 'Začít pauzu')}</button>
-              <button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>
+              ${todayAttendance.vehicle_id && parseIntegerValue(endOdometerInput?.value) == null
+                ? `<button class="btn success" type="button" data-mobile-open-vehicle-end>Doplnit km ve vozidle</button>`
+                : `<button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>`}
             </div>
           </article>
         ` : `
@@ -3405,6 +3420,22 @@
 
       finishDayBlock?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       endOdometerInput?.focus();
+    }
+
+    function syncEndShiftRequirementUI() {
+      if (!todayAttendance || todayAttendance.actual_end) return;
+
+      const hasEndKm = parseIntegerValue(endOdometerInput?.value) != null;
+
+      if (endShiftBtn) {
+        endShiftBtn.disabled = Boolean(todayAttendance.vehicle_id && !hasEndKm);
+      }
+
+      if (endOdometerHelp) {
+        endOdometerHelp.textContent = todayAttendance.vehicle_id && !hasEndKm
+          ? 'Pro ukončení dne nejdřív doplň konečný stav km.'
+          : 'Konečný stav km je připravený. Směnu můžeš ukončit.';
+      }
     }
 
     function renderProfileSummary() {
@@ -3818,6 +3849,13 @@
         skipped: { label: 'Přeskočeno', cls: 'orange' }
       };
       return map[String(status || '').toLowerCase()] || map.planned;
+    }
+
+    function getRouteStopDisplayMeta(stop) {
+      if (stop?.status === 'done') return { label: 'Hotovo', cls: 'green' };
+      if (stop?.status === 'skipped') return { label: 'Přeskočeno', cls: 'orange' };
+      if (stop?.arrived_at) return { label: 'Na místě', cls: 'orange' };
+      return getRouteStopStatusMeta(stop?.status);
     }
 
     function buildRouteStopMapsUrl(stop) {
@@ -5175,7 +5213,7 @@
 
       const primaryStopsResult = await supabase
         .from('route_plan_stops')
-        .select('id, route_plan_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
+        .select('id, route_plan_id, location_id, service_request_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
         .eq('route_plan_id', routePlan.id)
         .order('stop_order', { ascending: true });
 
@@ -5185,7 +5223,7 @@
       if (stopError) {
         const fallbackStopsResult = await supabase
           .from('route_plan_stops')
-          .select('id, route_plan_id, stop_order, status, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
+          .select('id, route_plan_id, location_id, service_request_id, machine_id, stop_order, status, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note')
           .eq('route_plan_id', routePlan.id)
           .order('stop_order', { ascending: true });
 
@@ -5219,12 +5257,18 @@
 
     async function updateRouteStopStatus(stopId, status) {
       const now = new Date().toISOString();
-      const payload = { status };
-      if (status === 'done') {
+      const payload = {};
+      if (status === 'arrived') {
+        payload.arrived_at = now;
+        payload.completed_at = null;
+        payload.skipped_at = null;
+      } else if (status === 'done') {
+        payload.status = 'done';
         payload.arrived_at = now;
         payload.completed_at = now;
         payload.skipped_at = null;
       } else if (status === 'skipped') {
+        payload.status = 'skipped';
         payload.skipped_at = now;
         payload.completed_at = null;
         payload.arrived_at = null;
@@ -5241,7 +5285,7 @@
       if (error) {
         const fallbackUpdate = await supabase
           .from('route_plan_stops')
-          .update({ status })
+          .update(status === 'arrived' ? { arrived_at: now } : { status })
           .eq('id', stopId);
 
         error = fallbackUpdate.error;
@@ -5255,11 +5299,13 @@
         );
 
         const planPayload = {};
-        if (!todayRoutePlan.started_at) {
+        if (!todayRoutePlan.started_at || status === 'arrived') {
           planPayload.execution_status = 'in_progress';
-          planPayload.started_at = now;
+          if (!todayRoutePlan.started_at) {
+            planPayload.started_at = now;
+          }
         }
-        if (!openStops.length) {
+        if (status !== 'arrived' && !openStops.length) {
           planPayload.execution_status = 'done';
           planPayload.completed_at = now;
         }
@@ -5356,6 +5402,20 @@
       }
 
       throw lastError || new Error('Servisní požadavek se nepodařilo upravit.');
+    }
+
+    async function syncRouteStopWithServiceAction(requestId, action) {
+      const relatedStop = todayRouteStops.find((stop) => String(stop.service_request_id || '') === String(requestId));
+      if (!relatedStop) return;
+
+      if (action === 'arrived') {
+        await updateRouteStopStatus(relatedStop.id, 'arrived');
+        return;
+      }
+
+      if (action === 'fixed' || action === 'return_with_part') {
+        await updateRouteStopStatus(relatedStop.id, 'done');
+      }
     }
 
     async function hydrateCurrentUserFromSession() {
@@ -6238,7 +6298,7 @@
     startKmReviewConfirm?.addEventListener('change', syncStartKmReviewUI);
     startKmReviewNote?.addEventListener('input', syncStartKmReviewUI);
     endOdometerInput?.addEventListener('input', () => {
-      renderAttendanceState();
+      syncEndShiftRequirementUI();
     });
     quickStartBtn?.addEventListener('click', () => {
       startActionCard?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -6374,6 +6434,9 @@
         console.error(error);
         if (String(error.message || '').includes('konečný stav km')) {
           revealEndOdometerField();
+          setFinishStatus('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
+          setActionsStatus('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
+          return;
         }
         setFinishStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
         setActionsStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
@@ -6492,7 +6555,7 @@
 
       if (target.id === 'mobileEndKmInput') {
         endOdometerInput.value = target.value;
-        renderAttendanceState();
+        syncEndShiftRequirementUI();
         return;
       }
 
@@ -6580,6 +6643,12 @@
 
         if (button.hasAttribute('data-mobile-end-shift')) {
           endShiftBtn.click();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-open-vehicle-end')) {
+          revealEndOdometerField();
+          setActionsStatus('Doplň ve Vozidle konečný stav km a pak směnu ukonči.', 'warning');
           return;
         }
 
@@ -6677,6 +6746,8 @@
         button.disabled = true;
         const action = button.dataset.serviceAction;
         await updateServiceRequestStatus(button.dataset.serviceId, action);
+        await syncRouteStopWithServiceAction(button.dataset.serviceId, action);
+        await loadAssignedRoutePlan();
         await loadAssignedServiceRequests();
         await queueOperationalLocationCapture('movement', { maximumAge: 120000 });
         setActionsStatus(
