@@ -1012,6 +1012,37 @@
       return request()
     }
 
+    async function updateRequestWithFallback(id, payload) {
+      let activePayload = { ...payload }
+      let result = await supabase.from('service_requests').update(activePayload).eq('id', id)
+
+      if (result.error && isMissingOptionalColumnError(result.error)) {
+        let missingColumn = extractMissingOptionalColumn(result.error)
+
+        while (missingColumn && Object.prototype.hasOwnProperty.call(activePayload, missingColumn)) {
+          delete activePayload[missingColumn]
+          result = await supabase.from('service_requests').update(activePayload).eq('id', id)
+          if (!result.error) break
+          missingColumn = isMissingOptionalColumnError(result.error) ? extractMissingOptionalColumn(result.error) : null
+        }
+
+        if (result.error && isMissingOptionalColumnError(result.error)) {
+          activePayload = getFallbackPayload({ ...payload, location_id: null, machine_id: null, title: null, description: null, priority: null, due_date: null, assigned_employee_id: null, resolution_note: payload.resolution_note ?? null })
+          if (Object.prototype.hasOwnProperty.call(payload, 'status')) activePayload.status = payload.status
+          result = await supabase.from('service_requests').update(activePayload).eq('id', id)
+
+          while (result.error && isMissingOptionalColumnError(result.error)) {
+            const fallbackMissingColumn = extractMissingOptionalColumn(result.error)
+            if (!fallbackMissingColumn || !Object.prototype.hasOwnProperty.call(activePayload, fallbackMissingColumn)) break
+            delete activePayload[fallbackMissingColumn]
+            result = await supabase.from('service_requests').update(activePayload).eq('id', id)
+          }
+        }
+      }
+
+      if (result.error) throw result.error
+    }
+
     async function saveRequest() {
       const payload = getPayload()
       let activePayload = { ...payload }
@@ -1045,8 +1076,15 @@
     }
 
     async function markDone(id) {
-      const { error } = await supabase.from('service_requests').update({ status: 'done' }).eq('id', id)
-      if (error) throw error
+      await updateRequestWithFallback(id, { status: 'done' })
+    }
+
+    function getServiceCompatibilityHint(error) {
+      const message = String(error?.message || '').toLowerCase()
+      if (message.includes('service_started_at') || message.includes('service_finished_at') || message.includes('actual_duration_minutes') || message.includes('service_arrived_at') || message.includes('service_departed_at')) {
+        return ' V databázi ještě chybí novější servisní pole nebo trigger. Prosím spusť database/service_requests_duration.sql a database/service_requests_v12.sql.'
+      }
+      return ''
     }
 
     searchInput.addEventListener('input', applyFilters)
@@ -1083,7 +1121,7 @@
         }
       } catch (error) {
         console.error(error)
-        setStatus(`Nepodařilo se upravit požadavek: ${error.message}`, 'error')
+        setStatus(`Nepodařilo se upravit požadavek: ${error.message}.${getServiceCompatibilityHint(error)}`, 'error')
       }
     })
 
@@ -1098,7 +1136,7 @@
         setStatus(isEditMode ? 'Servisní požadavek byl upraven.' : 'Servisní požadavek byl založen.', 'success')
       } catch (error) {
         console.error(error)
-        setStatus(`Nepodařilo se uložit požadavek: ${error.message}`, 'error')
+        setStatus(`Nepodařilo se uložit požadavek: ${error.message}.${getServiceCompatibilityHint(error)}`, 'error')
       } finally {
         saveBtn.disabled = false
         saveBtn.textContent = isEditMode ? 'Uložit změny' : 'Uložit požadavek'
