@@ -1272,7 +1272,10 @@
     function buildMultiStopMapsUrl(plan) {
       if (!plan?.orderedStops?.length || !plan?.startPoint) return null
 
-      const points = plan.orderedStops.map((stop) => `${stop.latitude},${stop.longitude}`)
+      const validStops = plan.orderedStops.filter((stop) => stop?.latitude != null && stop?.longitude != null)
+      if (!validStops.length) return null
+
+      const points = validStops.map((stop) => `${stop.latitude},${stop.longitude}`)
       const origin = `${plan.startPoint.latitude},${plan.startPoint.longitude}`
       const destination = plan.returnToStart
         ? origin
@@ -1385,6 +1388,7 @@
       }
 
       plan.orderedStops.forEach((stop, index) => {
+        if (stop?.latitude == null || stop?.longitude == null) return
         routePoints.push([stop.latitude, stop.longitude])
         L.marker([stop.latitude, stop.longitude], {
           icon: createNumberedIcon(String(index + 1)),
@@ -1405,8 +1409,10 @@
         }).addTo(state.mapLayer)
       }
 
-      const bounds = L.latLngBounds(routePoints)
-      state.map.fitBounds(bounds.pad(0.15), { maxZoom: 12 })
+      if (routePoints.length) {
+        const bounds = L.latLngBounds(routePoints)
+        state.map.fitBounds(bounds.pad(0.15), { maxZoom: 12 })
+      }
     }
 
     function renderSummary() {
@@ -1615,20 +1621,43 @@
       const payload = plan.route_payload || {}
       const payloadStops = Array.isArray(payload.orderedStops) ? payload.orderedStops : []
       const dbStops = Array.isArray(plan.route_plan_stops) ? plan.route_plan_stops : []
+      const hydrateStop = (stop, index) => {
+        const locationId = stop.location_id || stop.locationId || null
+        const machineId = stop.machine_id || stop.machineId || null
+        const machine = machineId ? state.machines.find((item) => String(item.id) === String(machineId)) : null
+        const location = state.locations.find((item) => String(item.id) === String(locationId || machine?.location_id || '')) || null
+        const serviceWindow = stop.serviceWindow || stop.service_window_snapshot || location?.service_window || ''
+        const requests = machineId
+          ? state.requests.filter((request) => String(request.machine_id || '') === String(machineId) && !['done', 'cancelled'].includes(request.status))
+          : state.requests.filter((request) => String(request.location_id || '') === String(locationId || '') && !['done', 'cancelled'].includes(request.status))
+
+        return {
+          ...stop,
+          locationId,
+          machineId,
+          name: stop.name || stop.title || machine?.name || location?.name || `Zastávka ${index + 1}`,
+          title: stop.title || stop.name || machine?.name || location?.name || `Zastávka ${index + 1}`,
+          address: stop.address || stop.address_snapshot || location?.address || '',
+          city: stop.city || stop.city_snapshot || location?.city || '',
+          latitude: stop.latitude != null ? Number(stop.latitude) : (location?.latitude != null ? Number(location.latitude) : null),
+          longitude: stop.longitude != null ? Number(stop.longitude) : (location?.longitude != null ? Number(location.longitude) : null),
+          estimatedServiceMinutes: Number(stop.estimatedServiceMinutes ?? stop.estimated_service_minutes ?? 0),
+          distanceFromPreviousKm: Number(stop.distanceFromPreviousKm ?? 0),
+          parentLocationName: stop.parentLocationName || (machine ? location?.name || '' : ''),
+          machineLabel: stop.machineLabel || (machine ? machine.name || getMachineLabel(machine.id) : ''),
+          machineType: stop.machineType || machine?.machine_type || '',
+          routeNote: stop.routeNote || stop.note || machine?.note || location?.route_note || location?.service_plan_note || '',
+          serviceWindow,
+          matchesSelectedDay: matchesServiceWindow(serviceWindow, plan.planning_date || routeDateInput.value),
+          openRequestCount: stop.openRequestCount != null ? Number(stop.openRequestCount) : requests.length,
+          requests,
+          effectivePriority: stop.effectivePriority || stop.priority_snapshot || location?.service_priority || 'normal',
+        }
+      }
       const orderedStops = (dbStops.length ? dbStops : payloadStops)
         .slice()
         .sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
-        .map((stop, index) => ({
-          ...stop,
-          name: stop.name || stop.title || `Zastávka ${index + 1}`,
-          title: stop.title || stop.name || `Zastávka ${index + 1}`,
-          address: stop.address || stop.address_snapshot || '',
-          city: stop.city || stop.city_snapshot || '',
-          latitude: stop.latitude != null ? Number(stop.latitude) : null,
-          longitude: stop.longitude != null ? Number(stop.longitude) : null,
-          estimatedServiceMinutes: stop.estimatedServiceMinutes ?? stop.estimated_service_minutes ?? 0,
-          distanceFromPreviousKm: stop.distanceFromPreviousKm ?? 0,
-        }))
+        .map(hydrateStop)
 
       return {
         ...payload,
@@ -2530,7 +2559,7 @@
 
         const primary = await supabase
           .from('route_plans')
-          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
           .order('planning_date', { ascending: false })
           .order('created_at', { ascending: false })
           .limit(12)
