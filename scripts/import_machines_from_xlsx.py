@@ -73,6 +73,7 @@ def convert_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         converted.append(
             {
                 "source_code": row.get("Kód", ""),
+                "evidence_number": row.get("Kód", ""),
                 "name": name,
                 "machine_type": row.get("Typ", ""),
                 "brand": row.get("Model", ""),

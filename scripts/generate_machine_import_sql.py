@@ -69,6 +69,7 @@ def build_sql(rows):
   brand,
   model,
   serial_number,
+  evidence_number,
   status,
   active,
   note,
@@ -81,6 +82,7 @@ values (
   {sql_literal((row.get("brand") or "").strip())},
   {sql_literal((row.get("model") or "").strip())},
   {sql_literal((row.get("serial_number") or "").strip())},
+  {sql_literal((row.get("evidence_number") or source_code).strip())},
   {sql_literal((row.get("status") or "").strip() or "ok")},
   {sql_bool(row.get("active", "true"))},
   {sql_literal(build_note(row))},
@@ -94,6 +96,7 @@ set
   brand = excluded.brand,
   model = excluded.model,
   serial_number = excluded.serial_number,
+  evidence_number = excluded.evidence_number,
   status = excluded.status,
   active = excluded.active,
   note = excluded.note;"""
