@@ -396,6 +396,10 @@
     }
     .badge.active { background: rgba(46,204,113,0.12); color: #baf3cf; border-color: rgba(46,204,113,0.22); }
     .badge.inactive { background: rgba(255,91,102,0.12); color: #ffc5ca; border-color: rgba(255,91,102,0.22); }
+    .badge.priority-a { background: rgba(255,91,102,0.12); color: #ffc5ca; border-color: rgba(255,91,102,0.22); }
+    .badge.priority-b { background: rgba(255,182,72,0.12); color: #ffdba4; border-color: rgba(255,182,72,0.22); }
+    .badge.priority-c { background: rgba(88,166,255,0.12); color: #c8ddff; border-color: rgba(88,166,255,0.24); }
+    .badge.priority-review { background: rgba(255,255,255,0.06); color: #e1e3e8; border-color: rgba(255,255,255,0.10); }
     .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .empty-state {
       padding: 24px; text-align: center; color: var(--muted);
@@ -830,6 +834,13 @@
                 <option value="normal">Normální</option>
                 <option value="low">Nízká</option>
               </select>
+              <select id="locationPriorityFilter">
+                <option value="">Všechny ABC priority</option>
+                <option value="A">A priorita</option>
+                <option value="B">B priorita</option>
+                <option value="C">C priorita</option>
+                <option value="review">Jen k prověření</option>
+              </select>
             </div>
 
             <details class="secondary-toggle">
@@ -927,6 +938,36 @@
               <textarea id="service_plan_note" name="service_plan_note" placeholder="Např. místo je vhodné spojovat s pondělní trasou, klíče jsou na recepci, servis jen dopoledne..."></textarea>
             </div>
             <div class="field full">
+              <span class="section-divider">Priorita lokality</span>
+            </div>
+            <div class="field">
+              <label for="location_priority">Aktuální priorita</label>
+              <select id="location_priority" name="location_priority">
+                <option value="">Bez priority</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+                <option value="C">C</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="recommended_priority">Doporučená priorita</label>
+              <select id="recommended_priority" name="recommended_priority">
+                <option value="">Bez doporučení</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+                <option value="C">C</option>
+                <option value="review">Prověřit ručně</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="priority_reviewed_at">Poslední přepočet</label>
+              <input id="priority_reviewed_at" name="priority_reviewed_at" type="date" />
+            </div>
+            <div class="field full">
+              <label for="priority_note">Poznámka k prioritě</label>
+              <textarea id="priority_note" name="priority_note" placeholder="Např. vysoká priorita kvůli počtu prodejů, RIGUM je nový a zatím jen sledovat..."></textarea>
+            </div>
+            <div class="field full">
               <span class="section-divider">Provozní poznámky</span>
             </div>
             <div class="field full">
@@ -1008,6 +1049,7 @@
     const searchInput = document.getElementById('searchInput')
     const statusFilter = document.getElementById('statusFilter')
     const priorityFilter = document.getElementById('priorityFilter')
+    const locationPriorityFilter = document.getElementById('locationPriorityFilter')
     const nameFilter = document.getElementById('nameFilter')
     const cityFilter = document.getElementById('cityFilter')
     const addressFilter = document.getElementById('addressFilter')
@@ -1085,6 +1127,81 @@
         .replace(/[\u0300-\u036f]/g, '')
         .toLowerCase()
         .trim()
+    }
+
+    function sanitizeLocationRouteNote(value) {
+      if (!value) return ''
+
+      const legacyPrefixes = [
+        'zdrojove kody',
+        'zdrojove nazvy',
+        'trasy',
+        'operator',
+        'servisni dny',
+        'kategorie servisu',
+        'sektor',
+        'pocet automatu ve zdroji'
+      ]
+
+      return String(value)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => {
+          const normalized = normalizeText(line)
+          return !legacyPrefixes.some((prefix) => normalized.startsWith(`${prefix}:`))
+        })
+        .join('\n')
+        .trim()
+    }
+
+    function sanitizeLocationRecord(location) {
+      return {
+        ...location,
+        route_note: sanitizeLocationRouteNote(location?.route_note)
+      }
+    }
+
+    function isLegacyImportedServiceWindow(value) {
+      if (!value) return false
+      const raw = String(value).trim()
+      if (!raw) return false
+      const normalized = normalizeText(raw)
+      const looksLikeVendsoftDays = /(mo|tu|we|th|fr|sa|su)/.test(normalized)
+      const hasOnlyCompactCodes = /^[A-Za-z0-9,\-|/ .]+$/.test(raw)
+      const lacksClockTime = !/\d{1,2}:\d{2}/.test(raw)
+      return looksLikeVendsoftDays && hasOnlyCompactCodes && lacksClockTime
+    }
+
+    function getDisplayedServiceWindow(location) {
+      return isLegacyImportedServiceWindow(location?.service_window) ? '' : (location?.service_window || '')
+    }
+
+    function getLegacyServiceWindowHint(location) {
+      return isLegacyImportedServiceWindow(location?.service_window) ? String(location.service_window || '').trim() : ''
+    }
+
+    async function cleanupLegacyLocationNotes(rows) {
+      const dirtyRows = (rows ?? []).filter((row) => {
+        const original = String(row?.route_note || '').trim()
+        const cleaned = sanitizeLocationRouteNote(row?.route_note)
+        return original !== cleaned
+      })
+
+      if (!dirtyRows.length) return 0
+
+      let cleanedCount = 0
+      for (const row of dirtyRows) {
+        const cleaned = sanitizeLocationRouteNote(row?.route_note)
+        const { error } = await supabase
+          .from('locations')
+          .update({ route_note: cleaned || null })
+          .eq('id', row.id)
+
+        if (!error) cleanedCount += 1
+      }
+
+      return cleanedCount
     }
 
     function formatRelativeMinutes(value) {
@@ -1246,7 +1363,7 @@
       const activeCount = baseData.length
       const uniqueCities = new Set(baseData.map((item) => normalizeText(item.city)).filter(Boolean)).size
       const missingContactCount = baseData.filter((item) => !item.contact_person && !item.contact_phone).length
-      const missingWindowCount = baseData.filter((item) => !item.service_window).length
+      const missingWindowCount = baseData.filter((item) => !getDisplayedServiceWindow(item)).length
 
       activeLocationsValue.textContent = String(activeCount)
       citiesValue.textContent = String(uniqueCities)
@@ -1662,7 +1779,11 @@
         service_frequency: formData.get('service_frequency')?.trim() || null,
         service_priority: formData.get('service_priority')?.trim() || null,
         service_plan_note: formData.get('service_plan_note')?.trim() || null,
-        route_note: formData.get('route_note')?.trim() || null,
+        location_priority: formData.get('location_priority')?.trim() || null,
+        recommended_priority: formData.get('recommended_priority')?.trim() || null,
+        priority_reviewed_at: formData.get('priority_reviewed_at')?.trim() || null,
+        priority_note: formData.get('priority_note')?.trim() || null,
+        route_note: sanitizeLocationRouteNote(formData.get('route_note')?.trim()) || null,
         latitude: formData.get('latitude')?.trim() ? Number(formData.get('latitude')) : null,
         longitude: formData.get('longitude')?.trim() ? Number(formData.get('longitude')) : null,
         active: document.getElementById('active').checked
@@ -1694,11 +1815,15 @@
       document.getElementById('customer_name').value = location.customer_name || ''
       document.getElementById('contact_person').value = location.contact_person || ''
       document.getElementById('contact_phone').value = location.contact_phone || ''
-      document.getElementById('service_window').value = location.service_window || ''
+      document.getElementById('service_window').value = getDisplayedServiceWindow(location) || ''
       document.getElementById('service_frequency').value = location.service_frequency || ''
       document.getElementById('service_priority').value = location.service_priority || ''
       document.getElementById('service_plan_note').value = location.service_plan_note || ''
-      document.getElementById('route_note').value = location.route_note || ''
+      document.getElementById('location_priority').value = location.location_priority || ''
+      document.getElementById('recommended_priority').value = location.recommended_priority || ''
+      document.getElementById('priority_reviewed_at').value = location.priority_reviewed_at || ''
+      document.getElementById('priority_note').value = location.priority_note || ''
+      document.getElementById('route_note').value = sanitizeLocationRouteNote(location.route_note) || ''
       document.getElementById('latitude').value = location.latitude ?? ''
       document.getElementById('longitude').value = location.longitude ?? ''
       document.getElementById('active').checked = location.active === true
@@ -1717,6 +1842,26 @@
         low: 'Nízká'
       }
       return map[value] || 'Bez priority'
+    }
+
+    function locationPriorityLabel(value) {
+      const map = {
+        A: 'A priorita',
+        B: 'B priorita',
+        C: 'C priorita',
+        review: 'Prověřit'
+      }
+      return map[value] || 'Bez priority'
+    }
+
+    function locationPriorityBadgeClass(value) {
+      const map = {
+        A: 'priority-a',
+        B: 'priority-b',
+        C: 'priority-c',
+        review: 'priority-review'
+      }
+      return map[value] || ''
     }
 
     function buildMapQuery(location) {
@@ -1750,7 +1895,13 @@
       const hasCoords = location.latitude !== null && location.latitude !== undefined && location.longitude !== null && location.longitude !== undefined
       const placeLabel = [location.city, location.address].filter(Boolean).join(', ') || 'Bez zadaného místa'
       const servicePlanNote = location.service_plan_note || ''
-      const routeNote = location.route_note || ''
+      const routeNote = sanitizeLocationRouteNote(location.route_note) || ''
+      const displayedServiceWindow = getDisplayedServiceWindow(location)
+      const legacyServiceWindowHint = getLegacyServiceWindowHint(location)
+      const locationPriority = location.location_priority || ''
+      const recommendedPriority = location.recommended_priority || ''
+      const priorityReviewedAt = location.priority_reviewed_at || ''
+      const priorityNote = location.priority_note || ''
       const coordsLabel = hasCoords
         ? `${String(location.latitude)}, ${String(location.longitude)}`
         : 'Souřadnice zatím nejsou doplněné'
@@ -1833,6 +1984,14 @@
                 <span class="detail-summary-label">Stav</span>
                 <span class="detail-summary-value">${location.active === true ? 'Aktivní lokalita' : 'Neaktivní lokalita'}</span>
               </div>
+              <div class="detail-summary-card">
+                <span class="detail-summary-label">ABC priorita</span>
+                <span class="detail-summary-value">${escapeHtml(locationPriorityLabel(locationPriority))}</span>
+              </div>
+              <div class="detail-summary-card">
+                <span class="detail-summary-label">Doporučeno z dat</span>
+                <span class="detail-summary-value">${escapeHtml(locationPriorityLabel(recommendedPriority))}</span>
+              </div>
             </div>
           </section>
 
@@ -1857,7 +2016,7 @@
               </div>
               <div class="detail-item">
                 <span class="detail-item-label">Servisní okno</span>
-                <span class="detail-item-value">${escapeHtml(location.service_window || 'Bez servisního okna')}</span>
+                <span class="detail-item-value">${escapeHtml(displayedServiceWindow || 'Bez servisního okna')}</span>
               </div>
               <div class="detail-item">
                 <span class="detail-item-label">Frekvence</span>
@@ -1877,6 +2036,26 @@
           <section class="detail-box">
             <h4>Servisní poznámka</h4>
             <div class="detail-note-box">${escapeHtml(servicePlanNote || 'Zatím bez poznámky k plánu servisu.')}</div>
+            ${legacyServiceWindowHint ? `<div class="detail-note-box compact" style="margin-top:12px;">Historický návrh trasy z importu: ${escapeHtml(legacyServiceWindowHint)}</div>` : ''}
+          </section>
+
+          <section class="detail-box">
+            <h4>Priorita lokality</h4>
+            <div class="detail-grid">
+              <div class="detail-item">
+                <span class="detail-item-label">Aktuální priorita</span>
+                <span class="detail-item-value">${escapeHtml(locationPriorityLabel(locationPriority))}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-item-label">Doporučená priorita</span>
+                <span class="detail-item-value">${escapeHtml(locationPriorityLabel(recommendedPriority))}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-item-label">Poslední přepočet</span>
+                <span class="detail-item-value">${escapeHtml(priorityReviewedAt || 'Zatím bez přepočtu')}</span>
+              </div>
+            </div>
+            <div class="detail-note-box" style="margin-top:12px;">${escapeHtml(priorityNote || 'Zatím bez interní poznámky k prioritě.')}</div>
           </section>
 
           <section class="detail-box">
@@ -1929,11 +2108,25 @@
       emptyState.style.display = 'none'
 
       data.forEach((location) => {
+        const displayedServiceWindow = getDisplayedServiceWindow(location)
+        const legacyServiceWindowHint = getLegacyServiceWindowHint(location)
+        const locationPriorityMarkup = location.location_priority
+          ? `<span class="badge ${locationPriorityBadgeClass(location.location_priority)}">${escapeHtml(locationPriorityLabel(location.location_priority))}</span>`
+          : '<span class="subtext">Bez ABC priority</span>'
+        const recommendationMarkup = location.recommended_priority
+          ? `<span class="subtext">Doporučeno: ${escapeHtml(locationPriorityLabel(location.recommended_priority))}${location.priority_reviewed_at ? ` · ${escapeHtml(location.priority_reviewed_at)}` : ''}</span>`
+          : (location.priority_reviewed_at ? `<span class="subtext">Poslední přepočet ${escapeHtml(location.priority_reviewed_at)}</span>` : '')
+        const serviceSubtext = displayedServiceWindow
+          ? `${escapeHtml(displayedServiceWindow)} · ${escapeHtml(priorityLabel(location.service_priority))}`
+          : `${legacyServiceWindowHint ? `Historický návrh: ${escapeHtml(legacyServiceWindowHint)}` : 'Bez servisního okna'} · ${escapeHtml(priorityLabel(location.service_priority))}`
+
         const tr = document.createElement('tr')
         tr.innerHTML = `
           <td data-label="Lokalita">
             <span class="name-strong">${escapeHtml(location.name || '-')}</span>
             <span class="subtext">${escapeHtml(location.customer_name || 'Bez zákazníka')}</span>
+            ${locationPriorityMarkup}
+            ${recommendationMarkup}
           </td>
           <td data-label="Místo">
             <span class="name-strong">${escapeHtml(location.city || '-')}</span>
@@ -1945,7 +2138,7 @@
           </td>
           <td data-label="Servis">
             <span class="name-strong">${escapeHtml(location.service_frequency || 'Zatím bez frekvence')}</span>
-            <span class="subtext">${escapeHtml(location.service_window || 'Bez servisního okna')} · ${escapeHtml(priorityLabel(location.service_priority))}</span>
+            <span class="subtext">${serviceSubtext}</span>
           </td>
           <td data-label="Stav">
             <span class="badge ${location.active === true ? 'active' : 'inactive'}">${location.active === true ? 'Aktivní' : 'Neaktivní'}</span>
@@ -1967,6 +2160,7 @@
       const query = normalizeText(searchInput.value)
       const filter = statusFilter.value
       const priority = priorityFilter.value
+      const locationPriority = locationPriorityFilter.value
       const nameQuery = normalizeText(nameFilter.value)
       const cityQuery = normalizeText(cityFilter.value)
       const addressQuery = normalizeText(addressFilter.value)
@@ -1982,15 +2176,23 @@
           location.customer_name,
           location.contact_person,
           location.contact_phone,
-          location.route_note
+          location.route_note,
+          location.priority_note,
+          location.location_priority,
+          location.recommended_priority
         ].join(' ')).includes(query))
       }
 
       if (filter === 'active') filtered = filtered.filter((item) => item.active === true)
       if (filter === 'inactive') filtered = filtered.filter((item) => item.active !== true)
       if (filter === 'missing_contact') filtered = filtered.filter((item) => !item.contact_person && !item.contact_phone)
-      if (filter === 'service_missing') filtered = filtered.filter((item) => !item.service_frequency && !item.service_priority && !item.service_plan_note)
+      if (filter === 'service_missing') filtered = filtered.filter((item) => !item.service_frequency && !item.service_priority && !item.service_plan_note && !getDisplayedServiceWindow(item))
       if (priority) filtered = filtered.filter((item) => item.service_priority === priority)
+      if (locationPriority === 'review') {
+        filtered = filtered.filter((item) => item.recommended_priority === 'review')
+      } else if (locationPriority) {
+        filtered = filtered.filter((item) => item.location_priority === locationPriority)
+      }
       if (nameQuery) filtered = filtered.filter((item) => normalizeText(item.name).includes(nameQuery))
       if (cityQuery) filtered = filtered.filter((item) => normalizeText(item.city).includes(cityQuery))
       if (addressQuery) filtered = filtered.filter((item) => normalizeText(item.address).includes(addressQuery))
@@ -2013,7 +2215,7 @@
       setStatus('Načítám lokality...')
 
       const baseSelect = 'id, name, city, address, customer_name, contact_person, contact_phone, service_window, route_note, active, created_at'
-      const v12Select = `${baseSelect}, service_frequency, service_priority, service_plan_note, latitude, longitude`
+      const v12Select = `${baseSelect}, service_frequency, service_priority, service_plan_note, latitude, longitude, location_priority, recommended_priority, priority_reviewed_at, priority_note`
 
       let data = null
       let error = null
@@ -2028,7 +2230,7 @@
 
       if (error) {
         const message = String(error.message || '').toLowerCase()
-        const missingV12Field = ['service_frequency', 'service_priority', 'service_plan_note', 'latitude', 'longitude']
+        const missingV12Field = ['service_frequency', 'service_priority', 'service_plan_note', 'latitude', 'longitude', 'location_priority', 'recommended_priority', 'priority_reviewed_at', 'priority_note']
           .some((field) => message.includes(field))
 
         if (!missingV12Field) {
@@ -2061,12 +2263,16 @@
 
         locationsFieldsAvailable = false
         locationsData = (data ?? []).map((item) => ({
-          ...item,
+          ...sanitizeLocationRecord(item),
           service_frequency: null,
           service_priority: null,
           service_plan_note: null,
           latitude: null,
-          longitude: null
+          longitude: null,
+          location_priority: null,
+          recommended_priority: null,
+          priority_reviewed_at: null,
+          priority_note: null
         }))
         renderSummary()
         applyFilters()
@@ -2075,15 +2281,23 @@
       }
 
       locationsFieldsAvailable = true
-      locationsData = data ?? []
+      const rawLocations = data ?? []
+      const cleanedLegacyNotes = await cleanupLegacyLocationNotes(rawLocations)
+      locationsData = rawLocations.map((item) => sanitizeLocationRecord(item))
       renderSummary()
       applyFilters()
-      setStatus(`Načteno lokalit: ${locationsData.length}`, 'success')
+      setStatus(
+        cleanedLegacyNotes > 0
+          ? `Načteno lokalit: ${locationsData.length}. Zároveň jsem vyčistil ${cleanedLegacyNotes} starých importních poznámek.`
+          : `Načteno lokalit: ${locationsData.length}`,
+        'success'
+      )
     }
 
     searchInput.addEventListener('input', applyFilters)
     statusFilter.addEventListener('change', applyFilters)
     priorityFilter.addEventListener('change', applyFilters)
+    locationPriorityFilter.addEventListener('change', applyFilters)
     nameFilter.addEventListener('input', applyFilters)
     cityFilter.addEventListener('input', applyFilters)
     addressFilter.addEventListener('input', applyFilters)

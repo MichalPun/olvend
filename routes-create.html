@@ -1240,6 +1240,33 @@
       return String(serviceWindow).toUpperCase().includes(weekdayToken(dateString))
     }
 
+    function normalizeText(value) {
+      return String(value ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim()
+    }
+
+    function isLegacyImportedServiceWindow(value) {
+      if (!value) return false
+      const raw = String(value).trim()
+      if (!raw) return false
+      const normalized = normalizeText(raw)
+      const looksLikeVendsoftDays = /(mo|tu|we|th|fr|sa|su)/.test(normalized)
+      const hasOnlyCompactCodes = /^[A-Za-z0-9,\-|/ .]+$/.test(raw)
+      const lacksClockTime = !/\d{1,2}:\d{2}/.test(raw)
+      return looksLikeVendsoftDays && hasOnlyCompactCodes && lacksClockTime
+    }
+
+    function getPlanningServiceWindow(location) {
+      return isLegacyImportedServiceWindow(location?.service_window) ? '' : (location?.service_window || '')
+    }
+
+    function getHistoricalRouteWindowHint(location) {
+      return isLegacyImportedServiceWindow(location?.service_window) ? String(location.service_window || '').trim() : ''
+    }
+
     function haversineKm(a, b) {
       const toRad = (deg) => (deg * Math.PI) / 180
       const lat1 = Number(a.latitude)
@@ -1626,7 +1653,12 @@
         const machineId = stop.machine_id || stop.machineId || null
         const machine = machineId ? state.machines.find((item) => String(item.id) === String(machineId)) : null
         const location = state.locations.find((item) => String(item.id) === String(locationId || machine?.location_id || '')) || null
-        const serviceWindow = stop.serviceWindow || stop.service_window_snapshot || location?.service_window || ''
+        const serviceWindow =
+          stop.serviceWindow ||
+          stop.service_window_snapshot ||
+          getPlanningServiceWindow(location) ||
+          location?.route_window_hint ||
+          ''
         const requests = machineId
           ? state.requests.filter((request) => String(request.machine_id || '') === String(machineId) && !['done', 'cancelled'].includes(request.status))
           : state.requests.filter((request) => String(request.location_id || '') === String(locationId || '') && !['done', 'cancelled'].includes(request.status))
@@ -1855,6 +1887,8 @@
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
           const locationMachines = machinesByLocation.get(String(location.id)) || []
+          const planningWindow = getPlanningServiceWindow(location)
+          const historicalWindowHint = location.route_window_hint || ''
 
           const item = {
             key: `location-${location.id}`,
@@ -1870,15 +1904,21 @@
             locationPriority: location.service_priority || null,
             requestPriority: maxRequestPriority,
             effectivePriority: maxRequestPriority || location.service_priority || 'normal',
-            serviceWindow: location.service_window || '',
+            serviceWindow: planningWindow || historicalWindowHint || '',
             routeNote: location.route_note || location.service_plan_note || '',
-            matchesSelectedDay: matchesServiceWindow(location.service_window, routeDateInput.value),
+            matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
             openRequestCount: relatedRequests.length,
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
               relatedRequests.length ? 20 : 0
             ) || null,
-            sourceNote: relatedRequests.length ? 'Servis' : matchesServiceWindow(location.service_window, routeDateInput.value) ? 'Okno' : 'Lokalita',
+            sourceNote: relatedRequests.length
+              ? 'Servis'
+              : planningWindow && matchesServiceWindow(planningWindow, routeDateInput.value)
+                ? 'Okno'
+                : historicalWindowHint && matchesServiceWindow(historicalWindowHint, routeDateInput.value)
+                  ? 'Historický návrh'
+                  : 'Lokalita',
             requests: relatedRequests,
             machineCount: locationMachines.length,
             machineLabel: locationMachines.length ? `${locationMachines.length} strojů na místě` : '',
@@ -1898,6 +1938,8 @@
           const maxRequestPriority = relatedRequests.reduce((best, request) => {
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
+          const planningWindow = getPlanningServiceWindow(location)
+          const historicalWindowHint = location.route_window_hint || ''
 
           const item = {
             key: `machine-${machine.id}`,
@@ -1915,15 +1957,21 @@
             locationPriority: location.service_priority || null,
             requestPriority: maxRequestPriority,
             effectivePriority: maxRequestPriority || (machine.status === 'service_needed' ? 'high' : location.service_priority || 'normal'),
-            serviceWindow: location.service_window || '',
+            serviceWindow: planningWindow || historicalWindowHint || '',
             routeNote: machine.note || location.route_note || location.service_plan_note || '',
-            matchesSelectedDay: matchesServiceWindow(location.service_window, routeDateInput.value),
+            matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
             openRequestCount: relatedRequests.length,
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
               relatedRequests.length ? 20 : 15
             ) || null,
-            sourceNote: relatedRequests.length ? 'Servis stroje' : 'Konkrétní stroj',
+            sourceNote: relatedRequests.length
+              ? 'Servis stroje'
+              : planningWindow && matchesServiceWindow(planningWindow, routeDateInput.value)
+                ? 'Okno stroje'
+                : historicalWindowHint && matchesServiceWindow(historicalWindowHint, routeDateInput.value)
+                  ? 'Historický návrh'
+                  : 'Konkrétní stroj',
             requests: relatedRequests,
             machineType: machine.machine_type || '',
           }
@@ -2640,6 +2688,8 @@
 
       state.locations = (data || []).map((item) => ({
         ...item,
+        route_window_hint: getHistoricalRouteWindowHint(item),
+        service_window: getPlanningServiceWindow(item),
         latitude: item.latitude != null ? Number(item.latitude) : null,
         longitude: item.longitude != null ? Number(item.longitude) : null,
       }))
