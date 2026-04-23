@@ -130,6 +130,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "report-vehicles.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "manager-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
