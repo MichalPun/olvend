@@ -3019,7 +3019,8 @@
             </div>
           </div>
           <div class="mobile-section-actions">
-            <button class="btn" type="button" data-mobile-switch-vehicle ${mobileSwitchVehicleId ? '' : 'disabled'}>${todayAttendance.vehicle_id ? 'Převzít jiné auto' : 'Připojit auto'}</button>
+            ${todayAttendance.actual_end && todayAttendance.vehicle_id ? '' : `<button class="btn" type="button" data-mobile-switch-vehicle ${mobileSwitchVehicleId ? '' : 'disabled'}>${todayAttendance.vehicle_id ? 'Převzít jiné auto' : 'Připojit auto'}</button>`}
+            ${todayAttendance.vehicle_id ? `<button class="btn secondary" type="button" data-mobile-correct-vehicle ${mobileSwitchVehicleId ? '' : 'disabled'}>Opravit omyl</button>` : ''}
           </div>
         </article>
       `;
@@ -5967,6 +5968,135 @@
       mobileSwitchVehicleSource = '';
     }
 
+    async function updateVehicleCurrentOdometerFromLatestLog(vehicleId, { ignoreLogId = null, fallbackKm = null, clearWhenMissing = false } = {}) {
+      if (!vehicleId) return;
+
+      let query = supabase
+        .from('vehicle_operation_logs')
+        .select('id, start_odometer_km, end_odometer_km, fuel_odometer_km, updated_at')
+        .eq('vehicle_id', Number(vehicleId))
+        .order('log_date', { ascending: false })
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (ignoreLogId) {
+        query = query.neq('id', Number(ignoreLogId));
+      }
+
+      const { data: latestLog, error } = await query.maybeSingle();
+      if (error) throw error;
+
+      const nextKm = parseIntegerValue(
+        latestLog?.end_odometer_km
+          ?? latestLog?.fuel_odometer_km
+          ?? latestLog?.start_odometer_km
+          ?? fallbackKm
+      );
+
+      if (nextKm == null && !clearWhenMissing) return;
+
+      const { error: vehicleUpdateError } = await supabase
+        .from('vehicles')
+        .update({ current_odometer_km: nextKm })
+        .eq('id', Number(vehicleId));
+
+      if (vehicleUpdateError) throw vehicleUpdateError;
+    }
+
+    async function correctShiftVehicle(nextVehicleId, nextStartKm) {
+      if (!todayAttendance?.id || !todayAttendance.actual_start) {
+        throw new Error('Auto jde opravit až u založené směny.');
+      }
+
+      if (!nextVehicleId) {
+        throw new Error('Vyber správné vozidlo.');
+      }
+
+      if (String(todayAttendance.vehicle_id || '') === String(nextVehicleId)) {
+        throw new Error('Tohle auto už je u směny vybrané.');
+      }
+
+      const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
+      const parsedStartKm = parseIntegerValue(nextStartKm);
+      const startOdometerKm = parsedStartKm ?? parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
+      if (startOdometerKm == null) {
+        throw new Error('Doplň počáteční km správného auta.');
+      }
+
+      const nextVehicle = vehiclesDirectory.find((vehicle) => String(vehicle.id) === String(nextVehicleId));
+      const nextVehicleLabel = nextVehicle ? getVehicleDisplayLabel(nextVehicle.id) : `Vozidlo ${nextVehicleId}`;
+      const correctionIso = new Date().toISOString();
+      const correctionNote = `Oprava špatně vybraného vozidla · ${nextVehicleLabel} · start ${startOdometerKm} km`;
+      const previousVehicleId = todayAttendance.vehicle_id;
+      let correctedLogId = currentLog?.id || null;
+
+      const { error: dayUpdateError } = await supabase
+        .from('attendance_days')
+        .update({
+          vehicle_id: Number(nextVehicleId)
+        })
+        .eq('id', todayAttendance.id);
+
+      if (dayUpdateError) throw dayUpdateError;
+
+      if (currentLog?.id) {
+        const { error: updateLogError } = await supabase
+          .from('vehicle_operation_logs')
+          .update({
+            vehicle_id: Number(nextVehicleId),
+            start_odometer_km: startOdometerKm,
+            trip_note: [currentLog.trip_note, correctionNote].filter(Boolean).join(' · ') || correctionNote
+          })
+          .eq('id', currentLog.id);
+
+        if (updateLogError) throw updateLogError;
+      } else {
+        const { data: insertedLog, error: insertLogError } = await supabase
+          .from('vehicle_operation_logs')
+          .insert([{
+            vehicle_id: Number(nextVehicleId),
+            employee_id: currentUser.id,
+            attendance_day_id: todayAttendance.id,
+            log_date: todayAttendance.attendance_date,
+            started_at: todayAttendance.actual_start || correctionIso,
+            start_odometer_km: startOdometerKm,
+            trip_note: correctionNote,
+            status: todayAttendance.actual_end ? 'closed' : 'open'
+          }])
+          .select('id')
+          .single();
+
+        if (insertLogError) throw insertLogError;
+        correctedLogId = insertedLog?.id || null;
+      }
+
+      const { error: eventError } = await supabase
+        .from('attendance_events')
+        .insert([{
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'manual_adjustment',
+          event_time: correctionIso,
+          note: correctionNote
+        }]);
+
+      if (eventError) throw eventError;
+
+      const latestKnownKm = parseIntegerValue(currentLog?.end_odometer_km ?? currentLog?.fuel_odometer_km ?? startOdometerKm);
+      await updateVehicleCurrentOdometerFromLatestLog(nextVehicleId, { fallbackKm: latestKnownKm });
+      if (previousVehicleId && correctedLogId) {
+        const previousVehicleWasTouched = currentLog?.end_odometer_km != null || currentLog?.fuel_odometer_km != null;
+        await updateVehicleCurrentOdometerFromLatestLog(previousVehicleId, {
+          ignoreLogId: correctedLogId,
+          clearWhenMissing: previousVehicleWasTouched
+        });
+      }
+
+      mobileSwitchVehicleId = '';
+      mobileSwitchVehicleStartKm = '';
+      mobileSwitchVehicleSource = '';
+    }
+
     async function saveEmployeeRequest(message) {
       if (!todayAttendance?.id) {
         throw new Error('Požadavek lze poslat až po založení dnešní směny.');
@@ -6617,6 +6747,7 @@
         || button.hasAttribute('data-mobile-save-fuel')
         || button.hasAttribute('data-mobile-save-km')
         || button.hasAttribute('data-mobile-switch-vehicle')
+        || button.hasAttribute('data-mobile-correct-vehicle')
         || button.hasAttribute('data-mobile-capture-location');
 
       if (button.hasAttribute('data-mobile-home')) {
@@ -6702,6 +6833,15 @@
           button.disabled = true;
           await switchVehicleDuringShift(mobileSwitchVehicleId, mobileSwitchVehicleStartKm);
           setActionsStatus('Vozidlo bylo během směny změněné a nové auto je připravené.', 'success');
+          await refreshPageData();
+          setMobileShiftSection('vehicle');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-correct-vehicle')) {
+          button.disabled = true;
+          await correctShiftVehicle(mobileSwitchVehicleId, mobileSwitchVehicleStartKm);
+          setActionsStatus('Vozidlo u dnešní směny bylo opravené.', 'success');
           await refreshPageData();
           setMobileShiftSection('vehicle');
           return;
