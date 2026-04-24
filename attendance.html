@@ -2566,6 +2566,9 @@
     let latestLocationEntry = null;
     let locationTrackingTimer = null;
     let locationTrackingInFlight = false;
+    const VEHICLE_KM_REVIEW_THRESHOLD = 5;
+    const VEHICLE_KM_DANGER_THRESHOLD = 1000;
+    const VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD = 600;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -3130,8 +3133,8 @@
               ${reviewState?.requiresReviewConfirmation ? `
                 <div class="field full">
                   <div class="mobile-inline-warning">
-                    <strong>Nesoulad počátečních km</strong>
-                    <span class="mobile-section-text">Poslední známý stav je ${escapeHtml(String(reviewState.expectedStartKm))} km, ale zadal/a jsi ${escapeHtml(String(reviewState.startOdometerKm))} km.</span>
+                    <strong>${reviewState.reviewSeverity === 'danger' ? 'Velký nesoulad km' : 'Nesoulad počátečních km'}</strong>
+                    <span class="mobile-section-text">Poslední známý stav je ${escapeHtml(String(reviewState.expectedStartKm))} km, zadáno ${escapeHtml(String(reviewState.startOdometerKm))} km. Záznam půjde ke kontrole.</span>
                     <label class="review-checkline" for="mobileStartReviewConfirm">
                       <input id="mobileStartReviewConfirm" type="checkbox" ${startKmReviewConfirm?.checked ? 'checked' : ''} />
                       <span>Potvrzuji fyzickou kontrolu vozidla.</span>
@@ -3802,7 +3805,11 @@
 
     function parseIntegerValue(value) {
       if (value === null || value === undefined || value === '') return null;
-      const parsed = Number(String(value).replace(',', '.').trim());
+      const normalized = String(value)
+        .replace(/\s+/g, '')
+        .replace(',', '.')
+        .trim();
+      const parsed = Number(normalized);
       if (!Number.isFinite(parsed)) return null;
       return Math.round(parsed);
     }
@@ -3811,6 +3818,27 @@
       if (value === null || value === undefined || value === '') return null;
       const parsed = Number(String(value).replace(',', '.').trim());
       return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function getKmReviewSeverity(expectedKm, actualKm) {
+      if (expectedKm == null || actualKm == null) return null;
+      const diffKm = Math.abs(Number(actualKm) - Number(expectedKm));
+      if (diffKm < VEHICLE_KM_REVIEW_THRESHOLD) return null;
+      if (
+        diffKm >= VEHICLE_KM_DANGER_THRESHOLD
+        || (Number(expectedKm) < 1000 && Number(actualKm) > 10000)
+        || (Number(expectedKm) > 10000 && Number(actualKm) < 1000)
+      ) {
+        return 'danger';
+      }
+      return 'warning';
+    }
+
+    function buildKmReviewNote(expectedKm, actualKm, contextLabel = 'Stav km') {
+      const diffKm = expectedKm != null && actualKm != null
+        ? Math.abs(Number(actualKm) - Number(expectedKm))
+        : null;
+      return `${contextLabel} nesedí: očekáváno ${expectedKm} km, zadáno ${actualKm} km${diffKm != null ? `, rozdíl ${diffKm} km` : ''}.`;
     }
 
     function getPriorityMeta(priority) {
@@ -4163,10 +4191,20 @@
       return '';
     }
 
+    function isOfficeStartWithoutVehicle() {
+      return !todayAttendance?.actual_start && startDayMode?.value === 'office';
+    }
+
     function applySuggestedVehicle(force = false) {
       if (!startVehicleSelect) return;
       if (todayAttendance?.actual_start) {
         startVehicleSelect.value = todayAttendance.vehicle_id ? String(todayAttendance.vehicle_id) : '';
+        return;
+      }
+
+      if (isOfficeStartWithoutVehicle()) {
+        startVehicleSelect.value = '';
+        resetVehicleOperationInputs();
         return;
       }
 
@@ -5497,15 +5535,17 @@
       }
 
       const expectedStartKm = parseIntegerValue(suggestedVehicleStartKm);
-      const needsReview = expectedStartKm != null && startOdometerKm !== expectedStartKm;
+      const reviewSeverity = getKmReviewSeverity(expectedStartKm, startOdometerKm);
+      const needsReview = Boolean(reviewSeverity);
 
       return {
         vehicleId: selectedVehicleId,
         startOdometerKm,
         expectedStartKm,
         needsReview,
+        reviewSeverity,
         reviewNote: needsReview
-          ? `Start km nesedí s posledním známým stavem (${expectedStartKm} km).`
+          ? buildKmReviewNote(expectedStartKm, startOdometerKm, 'Start km')
           : null
       };
     }
@@ -5540,7 +5580,7 @@
       if (startKmReviewField) startKmReviewField.hidden = !showReview;
       if (startKmReviewSummary) {
         startKmReviewSummary.textContent = showReview
-          ? `Poslední známý stav je ${reviewState.expectedStartKm} km, ale zadal/a jsi ${reviewState.startOdometerKm} km. Bez potvrzení a poznámky směnu nespustíš.`
+          ? `${reviewState.reviewSeverity === 'danger' ? 'Pozor, rozdíl je extrémní. ' : ''}Poslední známý stav je ${reviewState.expectedStartKm} km, ale zadal/a jsi ${reviewState.startOdometerKm} km. Bez potvrzení a poznámky směnu nespustíš a záznam půjde ke kontrole.`
           : 'Když stav nesedí s posledním známým záznamem, musíš potvrdit kontrolu a přidat krátkou poznámku.';
       }
 
@@ -5581,6 +5621,7 @@
         startOdometerKm: reviewState.startOdometerKm,
         expectedStartKm: reviewState.expectedStartKm,
         needsReview: reviewState.needsReview,
+        reviewSeverity: reviewState.reviewSeverity,
         reviewNote: reviewState.note
           ? `${reviewState.reviewNote} · ${reviewState.note}`
           : reviewState.reviewNote
@@ -5607,6 +5648,7 @@
       }
 
       const requiresApproval = startLocationType.value === 'home';
+      const requiresKmReview = Boolean(vehicleStartData.needsReview);
       const payableStartIso = requiresApproval
         ? null
         : adjustmentMinutes > 0
@@ -5630,9 +5672,9 @@
         break_minutes: 0,
         adjustment_minutes: adjustmentMinutes,
         adjustment_reason: adjustmentMinutes > 0 ? 'Start před 06:00 přesunutý na konec směny.' : null,
-        requires_approval: requiresApproval,
-        approval_status: requiresApproval ? 'pending' : 'not_required',
-        status: requiresApproval ? 'needs_review' : 'open',
+        requires_approval: requiresApproval || requiresKmReview,
+        approval_status: requiresApproval || requiresKmReview ? 'pending' : 'not_required',
+        status: requiresApproval || requiresKmReview ? 'needs_review' : 'open',
         note: buildDayNote(startNoteInput.value)
       };
 
@@ -5687,6 +5729,33 @@
       return createdLog?.id || null;
     }
 
+    async function markAttendanceForVehicleKmReview(note) {
+      if (!todayAttendance?.id) return;
+
+      const { error: dayError } = await supabase
+        .from('attendance_days')
+        .update({
+          requires_approval: true,
+          approval_status: 'pending',
+          status: 'needs_review'
+        })
+        .eq('id', todayAttendance.id);
+
+      if (dayError) throw dayError;
+
+      const { error: eventError } = await supabase
+        .from('attendance_events')
+        .insert([{
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'manual_adjustment',
+          event_time: new Date().toISOString(),
+          note: `Kontrola km · ${note}`
+        }]);
+
+      if (eventError) throw eventError;
+    }
+
     async function saveVehicleOperationEnd(endedAtIso) {
       if (!todayAttendance?.id || !todayAttendance.vehicle_id) return;
       const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
@@ -5705,6 +5774,11 @@
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
       const isReview = currentLog?.status === 'review';
+      const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
+      const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
+      const distanceReviewNote = needsDistanceReview
+        ? `Denní nájezd ${distanceKm} km je nezvykle vysoký.`
+        : null;
 
       const payload = {
         vehicle_id: Number(todayAttendance.vehicle_id),
@@ -5718,10 +5792,12 @@
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
         fuel_note: operationNote,
-        trip_note: isReview
-          ? [currentLog?.trip_note, 'Zkontrolovat rozdíl start km proti poslednímu stavu vozidla.'].filter(Boolean).join(' · ')
-          : currentLog?.trip_note || null,
-        status: isReview ? 'review' : 'closed'
+        trip_note: [
+          currentLog?.trip_note,
+          isReview ? 'Zkontrolovat rozdíl start km proti poslednímu stavu vozidla.' : null,
+          distanceReviewNote
+        ].filter(Boolean).join(' · ') || null,
+        status: isReview || needsDistanceReview ? 'review' : 'closed'
       };
 
       if (currentLog?.id) {
@@ -5745,6 +5821,10 @@
         .eq('id', Number(todayAttendance.vehicle_id));
 
       if (vehicleUpdateError) throw vehicleUpdateError;
+
+      if (needsDistanceReview) {
+        await markAttendanceForVehicleKmReview(distanceReviewNote);
+      }
     }
 
     async function saveVehicleKilometersProgress({ closeCurrent = false } = {}) {
@@ -5769,6 +5849,11 @@
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
       const isReview = currentLog?.status === 'review';
       const eventTime = new Date().toISOString();
+      const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
+      const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
+      const distanceReviewNote = needsDistanceReview
+        ? `Aktuální nájezd ${distanceKm} km je nezvykle vysoký.`
+        : null;
 
       const payload = {
         vehicle_id: Number(todayAttendance.vehicle_id),
@@ -5783,8 +5868,10 @@
         fuel_cost: fuelCost,
         fuel_odometer_km: fuelOdometerKm,
         fuel_note: operationNote,
-        trip_note: currentLog?.trip_note || null,
-        status: closeCurrent ? (isReview ? 'review' : 'closed') : (isReview ? 'review' : 'open')
+        trip_note: [currentLog?.trip_note, distanceReviewNote].filter(Boolean).join(' · ') || null,
+        status: closeCurrent
+          ? (isReview || needsDistanceReview ? 'review' : 'closed')
+          : (isReview || needsDistanceReview ? 'review' : 'open')
       };
 
       if (currentLog?.id) {
@@ -5822,6 +5909,20 @@
         }]);
 
       if (eventError) throw eventError;
+
+      if (vehicleStartData.needsReview) {
+        const { error: reviewEventError } = await supabase
+          .from('attendance_events')
+          .insert([{
+            attendance_day_id: upsertedDay.id,
+            employee_id: currentUser.id,
+            event_type: 'manual_adjustment',
+            event_time: attendancePayload.actual_start,
+            note: `Kontrola km při startu · ${vehicleStartData.reviewNote || 'nesoulad počátečního stavu km'}`
+          }]);
+
+        if (reviewEventError) throw reviewEventError;
+      }
     }
 
     function validateEndShiftReadiness() {
@@ -5899,6 +6000,10 @@
         }]);
 
       if (eventError) throw eventError;
+
+      if (needsDistanceReview) {
+        await markAttendanceForVehicleKmReview(distanceReviewNote);
+      }
     }
 
     async function switchVehicleDuringShift(nextVehicleId, nextStartKm) {
@@ -6425,6 +6530,24 @@
     startLocationType.addEventListener('change', updateLocationVisibility);
     startDayMode.addEventListener('change', () => {
       startDayModeTouched = true;
+      if (!todayAttendance?.actual_start) {
+        if (startDayMode.value === 'office') {
+          startVehicleSelect.value = '';
+          resetVehicleOperationInputs();
+        } else {
+          applySuggestedVehicle(true);
+          if (startVehicleSelect.value) {
+            loadVehicleStartSuggestion(startVehicleSelect.value, { force: !startOdometerTouched })
+              .then(() => renderMobileShiftUI())
+              .catch((error) => {
+                console.error(error);
+                setActionsStatus(`Nepodařilo se načíst stav vozidla: ${error.message}`, 'error');
+              });
+            return;
+          }
+        }
+      }
+      renderMobileShiftUI();
     });
     startVehicleSelect.addEventListener('change', async () => {
       try {
