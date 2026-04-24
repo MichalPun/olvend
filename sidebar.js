@@ -1,6 +1,5 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
-  const SIDEBAR_ORDER_KEY = "olvendSidebarOrderV2";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_VERSION = "OLVEND 1.2";
   const MIN_RELEASE_ANNOUNCEMENT = "1.2";
@@ -19,8 +18,8 @@
 
   const pageMeta = {
     "dashboard.html": {
-      currentLabel: "Dashboard",
-      activeKey: "dashboard",
+      currentLabel: "Nástěnka",
+      activeKey: "home",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -34,7 +33,7 @@
     },
     "noticeboard.html": {
       currentLabel: "Nástěnka",
-      activeKey: "noticeboard",
+      activeKey: "home",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -190,65 +189,40 @@
 
   const meta = pageMeta[currentPath] || pageMeta["dashboard.html"];
 
-  const navItems = [
-    { key: "dashboard", href: "dashboard.html", label: "Dashboard" },
-    { key: "shift", href: "attendance.html", label: "Moje směna" },
-    { key: "noticeboard", href: "noticeboard.html", label: "Nástěnka" },
-    { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
-    { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
-    { key: "service", href: "service-requests.html", label: "Servis" },
-    { key: "operations", href: "operations.html", label: "Provoz" },
-    { key: "routes", href: "routes.html", label: "Trasy" },
-    { key: "fleet", href: "vehicles.html", label: "Vozový park" },
-    { key: "hr", href: "hr.html", label: "HR" },
-    { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
-    { key: "reporty", href: "reporty.html", label: "Reporty" },
-    { key: "settings", href: "settings.html", label: "Nastavení" }
+  const navGroups = [
+    {
+      key: "today",
+      title: "Dnes",
+      items: [
+        { key: "home", href: "dashboard.html", label: "Nástěnka" },
+        { key: "shift", href: "attendance.html", label: "Moje směna" }
+      ]
+    },
+    {
+      key: "operations",
+      title: "Provoz",
+      items: [
+        { key: "service", href: "service-requests.html", label: "Servis" },
+        { key: "operations", href: "operations.html", label: "Lokality" },
+        { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
+        { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
+        { key: "routes", href: "routes.html", label: "Trasy" },
+        { key: "fleet", href: "vehicles.html", label: "Vozový park" }
+      ]
+    },
+    {
+      key: "management",
+      title: "Řízení",
+      items: [
+        { key: "hr", href: "hr.html", label: "HR" },
+        { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
+        { key: "reporty", href: "reporty.html", label: "Reporty" },
+        { key: "settings", href: "settings.html", label: "Nastavení" }
+      ]
+    }
   ];
 
-  function getOrderedNavItems() {
-    const raw = localStorage.getItem(SIDEBAR_ORDER_KEY);
-    if (!raw) return navItems;
-
-    try {
-      const order = JSON.parse(raw);
-      if (!Array.isArray(order) || !order.length) return navItems;
-
-      const defaultKeys = navItems.map((item) => item.key);
-      const knownKeys = order.filter((key) => defaultKeys.includes(key));
-      const normalizedKeys = [...knownKeys];
-
-      defaultKeys.forEach((key, defaultIndex) => {
-        if (normalizedKeys.includes(key)) return;
-
-        const nextKnownKey = defaultKeys
-          .slice(defaultIndex + 1)
-          .find((candidateKey) => normalizedKeys.includes(candidateKey));
-
-        if (!nextKnownKey) {
-          normalizedKeys.push(key);
-          return;
-        }
-
-        const insertIndex = normalizedKeys.indexOf(nextKnownKey);
-        normalizedKeys.splice(insertIndex, 0, key);
-      });
-
-      if (JSON.stringify(order) !== JSON.stringify(normalizedKeys)) {
-        saveSidebarOrder(normalizedKeys);
-      }
-
-      const byKey = new Map(navItems.map((item) => [item.key, item]));
-      return normalizedKeys.map((key) => byKey.get(key)).filter(Boolean);
-    } catch (error) {
-      console.error(error);
-      return navItems;
-    }
-  }
-
-  function saveSidebarOrder(keys) {
-    localStorage.setItem(SIDEBAR_ORDER_KEY, JSON.stringify(keys));
-  }
+  const navItems = navGroups.flatMap((group) => group.items);
 
   function extractVersionNumber(value) {
     const match = String(value || "").match(/(\d+\.\d+)/);
@@ -268,12 +242,12 @@
     return 0;
   }
 
-  function renderDesktopNav() {
-    return getOrderedNavItems().map((item) => {
+  function renderNavLinks(items) {
+    return items.map((item) => {
       const activeClass = item.key === meta.activeKey ? "active" : "";
       const status = item.soon ? '<span class="nav-status">Brzy</span>' : "";
       return `
-        <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}" draggable="true">
+        <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
           <span class="nav-dot"></span>
           <span>${item.label}</span>
           ${status}
@@ -282,14 +256,34 @@
     }).join("");
   }
 
+  function renderDesktopNav() {
+    return navGroups.map((group) => `
+      <div class="nav-group">
+        <div class="nav-title">${group.title}</div>
+        <nav class="nav">
+          ${renderNavLinks(group.items)}
+        </nav>
+      </div>
+    `).join("");
+  }
+
   function renderMobileLinks() {
-    return getOrderedNavItems()
-      .filter((item) => !item.soon || ["dashboard", "shift", "machines", "inventory", "service", "fleet", "hr", "settings"].includes(item.key))
-      .map((item) => {
-        const activeClass = item.key === meta.activeKey ? "active" : "";
-        return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
-      })
-      .join("");
+    return navGroups.map((group) => {
+      const filteredItems = group.items.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "service", "fleet", "hr", "settings"].includes(item.key));
+      if (!filteredItems.length) return "";
+
+      return `
+        <div class="mobile-nav-section">
+          <div class="mobile-nav-section-title">${group.title}</div>
+          <div class="mobile-nav-section-links">
+            ${filteredItems.map((item) => {
+              const activeClass = item.key === meta.activeKey ? "active" : "";
+              return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
+            }).join("")}
+          </div>
+        </div>
+      `;
+    }).join("");
   }
 
   function renderSidebar() {
@@ -301,10 +295,8 @@
 
       <div class="nav-group global-nav-group">
         <div class="nav-title global-nav-title">Hlavní menu</div>
-        <div class="global-nav-note">Pořadí si můžeš přeskládat tahem.</div>
-        <nav class="nav">
-          ${renderDesktopNav()}
-        </nav>
+        <div class="global-nav-note">Struktura je nově rozdělená podle toho, co řešíš dnes, v provozu a v řízení.</div>
+        ${renderDesktopNav()}
       </div>
 
       <div class="sidebar-bottom">
@@ -334,7 +326,10 @@
   }
 
   function renderMobileGlobalNav() {
-    return renderMobileLinks();
+    return navItems.map((item) => {
+      const activeClass = item.key === meta.activeKey ? "active" : "";
+      return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
+    }).join("");
   }
 
   function injectSidebarReorderStyles() {
@@ -536,7 +531,7 @@
 
       .mobile-nav-panel {
         display: none;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
         gap: 8px;
         margin-top: 8px;
         padding: 10px;
@@ -548,6 +543,26 @@
 
       .mobile-nav-shell.open .mobile-nav-panel {
         display: grid;
+      }
+
+      .mobile-nav-section {
+        display: grid;
+        gap: 8px;
+      }
+
+      .mobile-nav-section-title {
+        padding: 2px 4px 0;
+        color: #7d818c;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .mobile-nav-section-links {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
       }
 
       .mobile-nav-panel a {
@@ -576,20 +591,6 @@
         font-size: 12px;
         line-height: 1.45;
         padding: 0 10px;
-      }
-
-      .nav a[draggable="true"] {
-        cursor: grab;
-      }
-
-      .nav a.dragging {
-        opacity: 0.58;
-        border-color: rgba(213, 16, 26, 0.24);
-      }
-
-      .nav a.drag-target {
-        background: rgba(255,255,255,0.05);
-        border-color: rgba(255,255,255,0.14);
       }
 
       .release-backdrop {
@@ -760,59 +761,6 @@
     document.head.appendChild(style);
   }
 
-  function setupSidebarReordering() {
-    const nav = document.querySelector(".global-nav-group .nav");
-    if (!nav) return;
-
-    let draggedItem = null;
-    const items = [...nav.querySelectorAll("a[data-nav-key]")];
-
-    const clearDragState = () => {
-      items.forEach((item) => item.classList.remove("dragging", "drag-target"));
-    };
-
-    items.forEach((item) => {
-      item.addEventListener("dragstart", () => {
-        draggedItem = item;
-        item.classList.add("dragging");
-      });
-
-      item.addEventListener("dragover", (event) => {
-        if (!draggedItem || draggedItem === item) return;
-        event.preventDefault();
-        items.forEach((entry) => entry.classList.remove("drag-target"));
-        item.classList.add("drag-target");
-      });
-
-      item.addEventListener("drop", (event) => {
-        if (!draggedItem || draggedItem === item) return;
-        event.preventDefault();
-
-        const rect = item.getBoundingClientRect();
-        const shouldInsertAfter = event.clientY > rect.top + (rect.height / 2);
-
-        if (shouldInsertAfter) {
-          nav.insertBefore(draggedItem, item.nextSibling);
-        } else {
-          nav.insertBefore(draggedItem, item);
-        }
-
-        const nextOrder = [...nav.querySelectorAll("a[data-nav-key]")].map((entry) => entry.dataset.navKey);
-        saveSidebarOrder(nextOrder);
-        clearDragState();
-      });
-
-      item.addEventListener("dragend", () => {
-        draggedItem = null;
-        clearDragState();
-      });
-    });
-
-    nav.addEventListener("dragover", (event) => {
-      if (draggedItem) event.preventDefault();
-    });
-  }
-
   function renderReleaseModal(version, notes) {
     return `
       <div class="release-backdrop" id="releaseBackdrop" aria-hidden="true">
@@ -892,7 +840,6 @@
   if (sidebar) {
     injectSidebarReorderStyles();
     sidebar.innerHTML = renderSidebar();
-    setupSidebarReordering();
   }
 
   const mobileShell = document.querySelector(".mobile-nav-shell");
