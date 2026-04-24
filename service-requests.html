@@ -292,6 +292,27 @@
     .badge.done { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
     .badge.return_with_part { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
     .badge.cancelled { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
+    .badge.qr {
+      color: #ffd6db;
+      border-color: rgba(213,16,26,0.28);
+      background: rgba(213,16,26,0.16);
+    }
+    .request-origin {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .request-origin-note {
+      margin-top: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(213,16,26,0.16);
+      background: rgba(213,16,26,0.08);
+      color: #ffd5db;
+      font-size: 12px;
+      line-height: 1.5;
+    }
     .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .action-row .btn { padding: 10px 12px; font-size: 13px; }
     .empty-state {
@@ -639,6 +660,17 @@
       return map[value] || 'Nový'
     }
 
+    function isQrReportedRequest(item) {
+      const sourceText = [item?.title, item?.description, item?.resolution_note].filter(Boolean).join(' ').toLowerCase()
+      return sourceText.includes('nahlášeno přes qr automatu')
+    }
+
+    function getQrContactLine(item) {
+      const description = String(item?.description || '')
+      const match = description.match(/Kontakt:\s*([^·\n]+)/i)
+      return match ? match[1].trim() : ''
+    }
+
     function formatDateTimeInput(value) {
       if (!value) return ''
       const date = new Date(value)
@@ -692,6 +724,7 @@
 
     function renderSummary() {
       const newCount = requests.filter((item) => item.status === 'new').length
+      const qrNewCount = requests.filter((item) => item.status === 'new' && isQrReportedRequest(item)).length
       const assignedCount = requests.filter((item) => item.status === 'assigned').length
       const progressCount = requests.filter((item) => item.status === 'in_progress').length
       const onSiteCount = requests.filter((item) => item.status === 'on_site').length
@@ -700,6 +733,7 @@
 
       summaryGrid.innerHTML = [
         { label: 'Nové', value: newCount, note: 'Požadavky, které ještě čekají na první zpracování.' },
+        { label: 'Nové z QR', value: qrNewCount, note: 'Veřejná hlášení od zákazníků přes QR na automatu.' },
         { label: 'Přiřazené', value: assignedCount, note: 'U požadavku už víme, kdo ho má řešit.' },
         { label: 'Na místě', value: onSiteCount, note: 'Technik už je na místě a zásah běží.' },
         { label: 'V řešení', value: progressCount, note: 'Přiřazený člověk už má požadavek rozpracovaný.' },
@@ -723,11 +757,19 @@
       emptyState.style.display = 'none'
 
       items.forEach((item) => {
+        const isQrReported = isQrReportedRequest(item)
+        const qrContact = getQrContactLine(item)
         const tr = document.createElement('tr')
         tr.innerHTML = `
           <td data-label="Požadavek">
             <strong>${escapeHtml(item.title)}</strong>
             <span class="subtext">${escapeHtml(item.description || 'Bez doplňujícího popisu')}</span>
+            ${isQrReported ? `
+              <div class="request-origin">
+                <span class="badge qr">Nahlášeno přes QR</span>
+                ${qrContact ? `<span class="badge qr">Kontakt: ${escapeHtml(qrContact)}</span>` : ''}
+              </div>
+            ` : ''}
           </td>
           <td data-label="Lokalita">
             <strong>${escapeHtml(getLocationLabel(item.location_id))}</strong>
@@ -748,7 +790,7 @@
           </td>
           <td data-label="Termín">
             <strong>${escapeHtml(formatDate(item.due_date))}</strong>
-            <span class="subtext">${escapeHtml(item.resolution_note || '')}</span>
+            ${isQrReported ? '<div class="request-origin-note">Veřejné hlášení z QR automatu. Prověř a přiřaď co nejdřív.</div>' : `<span class="subtext">${escapeHtml(item.resolution_note || '')}</span>`}
           </td>
           <td data-label="Akce">
             <div class="action-row">
@@ -787,6 +829,10 @@
       if (assignment === 'assigned') filtered = filtered.filter((item) => !!item.assigned_employee_id)
 
       filtered.sort((a, b) => {
+        const aQrBoost = a.status === 'new' && isQrReportedRequest(a) ? 1 : 0
+        const bQrBoost = b.status === 'new' && isQrReportedRequest(b) ? 1 : 0
+        if (bQrBoost !== aQrBoost) return bQrBoost - aQrBoost
+
         const aTimestamp = new Date(a.created_at || a.updated_at || 0).getTime()
         const bTimestamp = new Date(b.created_at || b.updated_at || 0).getTime()
         if (bTimestamp !== aTimestamp) return bTimestamp - aTimestamp
