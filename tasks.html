@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
-  <title>OLVEND | Úkoly</title>
+  <title>OLVEND | Manažerský blok</title>
   <style>
     * { box-sizing: border-box; }
     :root {
@@ -268,6 +268,21 @@
       font-size: 13px;
       line-height: 1.55;
     }
+    .inline-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .inline-check input {
+      width: 18px;
+      min-height: 18px;
+      margin: 0;
+      padding: 0;
+    }
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -313,8 +328,8 @@
 
       <div class="topbar">
         <div class="title">
-          <h1>Úkoly</h1>
-          <p>Jednoduchý interní úkolníček pro malé věci, které nejsou servisní požadavek ani směna. Krátký text, termín, komu to patří a hotovo.</p>
+          <h1>Manažerský blok</h1>
+          <p>Krátké interní úkoly, delegování a follow-up věci, které nesmí zapadnout. Malé řízení dne, ne další velký systém.</p>
         </div>
         <div class="actions">
           <span class="role-badge" id="roleBadge">Role: Načítám...</span>
@@ -327,7 +342,7 @@
         <div class="panel-header">
           <div>
             <h2>Co teď nezapadnout</h2>
-            <p>Tady si držíme krátké interní úkoly a připomínky. Otevřené úkoly jsou nahoře, hotové zůstávají v přehledu pro dohledání.</p>
+            <p>Jedno místo pro krátké manažerské věci: komu co zadat, co si pohlídat dnes a co už je po termínu. Když je to servis nebo práce na lokalitě, patří to pořád do Servisu.</p>
           </div>
         </div>
         <div class="panel-body">
@@ -418,8 +433,12 @@
             </div>
           </div>
           <div class="helper-line">
-            Držme to jednoduché. Když je to práce na lokalitě nebo stroji, patří to spíš do Servisu. Tady řešíme krátké interní úkoly a připomínky.
+            Držme to jednoduché. Když je to práce na lokalitě nebo stroji, patří to spíš do Servisu. Tady řešíme krátké manažerské follow-upy, delegované drobnosti a připomínky.
           </div>
+          <label class="inline-check" for="taskEmailNotify">
+            <input id="taskEmailNotify" type="checkbox" />
+            <span>Poslat přiřazenému i email upozornění</span>
+          </label>
           <div class="status-line" id="modalStatusLine"></div>
         </div>
         <div class="modal-footer">
@@ -457,6 +476,7 @@
     const taskPriority = document.getElementById('taskPriority')
     const taskStatus = document.getElementById('taskStatus')
     const taskNote = document.getElementById('taskNote')
+    const taskEmailNotify = document.getElementById('taskEmailNotify')
 
     let currentUser = null
     let employeesDirectory = []
@@ -660,6 +680,7 @@
       taskPriority.value = task?.priority || 'normal'
       taskStatus.value = task?.status || 'new'
       taskNote.value = task?.note || ''
+      taskEmailNotify.checked = false
       setModalStatus('')
       taskModal.classList.add('show')
       taskTitle.focus()
@@ -701,7 +722,7 @@
     async function loadEmployees() {
       const { data, error } = await supabase
         .from('employees')
-        .select('id, name, surname, role, active')
+        .select('id, name, surname, role, active, email')
         .order('surname', { ascending: true })
 
       if (error) throw error
@@ -754,6 +775,31 @@
             .insert([{ ...payload, created_by: currentUser?.id || null }])
 
           if (error) throw error
+        }
+
+        if (taskEmailNotify.checked && payload.assigned_employee_id) {
+          const assignee = employeesDirectory.find((item) => String(item.id) === String(payload.assigned_employee_id))
+          if (assignee?.email) {
+            const { error: queueError } = await supabase
+              .from('email_notification_queue')
+              .insert([{
+                employee_id: payload.assigned_employee_id,
+                kind: 'task_assigned',
+                subject: `OLVEND: nový úkol${payload.due_date ? ` do ${formatDate(payload.due_date)}` : ''}`,
+                body: `${title}${payload.note ? `\n\n${payload.note}` : ''}\n\nOtevři Manažerský blok v OLVENDu.`,
+                action_url: `${window.location.origin}/tasks.html`,
+                metadata: {
+                  title,
+                  due_date: payload.due_date,
+                  priority: payload.priority
+                }
+              }])
+
+            if (queueError) {
+              console.error(queueError)
+              setStatus('Úkol byl uložený, ale email se nepodařilo přidat do fronty.', 'error')
+            }
+          }
         }
 
         closeModal()

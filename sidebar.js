@@ -32,6 +32,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "noticeboard.html": {
+      currentLabel: "Nástěnka",
+      activeKey: "noticeboard",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "warehouses.html": {
       currentLabel: "Nastavení",
       activeKey: "settings",
@@ -47,7 +54,7 @@
       versionNote: ""
     },
     "tasks.html": {
-      currentLabel: "Úkoly",
+      currentLabel: "Manažerský blok",
       activeKey: "tasks",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -186,6 +193,7 @@
   const navItems = [
     { key: "dashboard", href: "dashboard.html", label: "Dashboard" },
     { key: "shift", href: "attendance.html", label: "Moje směna" },
+    { key: "noticeboard", href: "noticeboard.html", label: "Nástěnka" },
     { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
     { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
     { key: "service", href: "service-requests.html", label: "Servis" },
@@ -193,7 +201,7 @@
     { key: "routes", href: "routes.html", label: "Trasy" },
     { key: "fleet", href: "vehicles.html", label: "Vozový park" },
     { key: "hr", href: "hr.html", label: "HR" },
-    { key: "tasks", href: "tasks.html", label: "Úkoly" },
+    { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
     { key: "reporty", href: "reporty.html", label: "Reporty" },
     { key: "settings", href: "settings.html", label: "Nastavení" }
   ];
