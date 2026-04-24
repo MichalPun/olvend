@@ -164,6 +164,24 @@
       opacity: 0;
       pointer-events: none;
     }
+    body.print-view {
+      background: #fff;
+      color: #111;
+    }
+    body.print-view .layout { display: none !important; }
+    body.print-view .print-root {
+      position: static;
+      left: auto;
+      top: auto;
+      width: auto;
+      height: auto;
+      overflow: visible;
+      opacity: 1;
+      pointer-events: auto;
+      display: block;
+      visibility: visible;
+      min-height: 100vh;
+    }
     .print-page { padding: 10mm; }
     .print-grid {
       display: grid;
@@ -475,6 +493,9 @@
   <script type="module">
     import { supabase } from './supabase.js'
 
+    const PRINT_JOB_KEY = 'olvend-machine-qr-print-job'
+    const params = new URLSearchParams(window.location.search)
+    const isPrintMode = params.get('mode') === 'print'
     const statusLine = document.getElementById('statusLine')
     const refreshBtn = document.getElementById('refreshBtn')
     const printBtn = document.getElementById('printBtn')
@@ -494,6 +515,7 @@
     let filteredMachines = []
     let selectedLabelType = 'compact'
     const selectedIds = new Set()
+    let printTriggered = false
 
     function escapeHtml(value) {
       return String(value ?? '')
@@ -539,6 +561,7 @@
     }
 
     function syncSelectionFromQuery() {
+      if (isPrintMode) return
       const params = new URLSearchParams(window.location.search)
       const machineId = params.get('machine')
       const qrToken = params.get('qr')
@@ -676,6 +699,34 @@
       `
     }
 
+    function persistPrintJob(selectedMachines) {
+      sessionStorage.setItem(PRINT_JOB_KEY, JSON.stringify({
+        ids: selectedMachines.map((machine) => String(machine.id)),
+        labelType: selectedLabelType || 'compact'
+      }))
+    }
+
+    function restorePrintJob() {
+      try {
+        const raw = sessionStorage.getItem(PRINT_JOB_KEY)
+        if (!raw) return false
+        const payload = JSON.parse(raw)
+        const ids = Array.isArray(payload?.ids) ? payload.ids.map((item) => String(item)) : []
+        selectedIds.clear()
+        ids.forEach((id) => selectedIds.add(id))
+        selectedLabelType = payload?.labelType || 'compact'
+        if (labelType) labelType.value = selectedLabelType
+        return ids.length > 0
+      } catch (error) {
+        console.error(error)
+        return false
+      }
+    }
+
+    function clearPrintJob() {
+      sessionStorage.removeItem(PRINT_JOB_KEY)
+    }
+
     function waitForImages(target = document) {
       const root = target?.querySelectorAll ? target : document
       const images = Array.from(root.querySelectorAll('img') || [])
@@ -710,16 +761,25 @@
       })
     }
 
-    async function openPrintWindow() {
+    function leavePrintMode() {
+      clearPrintJob()
+      window.location.replace('machine-qr-print.html')
+    }
+
+    async function runPrintMode() {
+      if (printTriggered) return
+      printTriggered = true
+
       const selectedMachines = getSelectedMachines()
       if (!selectedMachines.length) {
-        setStatus('Nejdřív vyber aspoň jeden štítek k tisku.', 'error')
+        setStatus('Pro tisk chybí vybrané štítky.', 'error')
+        window.setTimeout(leavePrintMode, 1200)
         return
       }
 
       setStatus('Připravuju tisk štítků...', 'muted')
       printRoot.innerHTML = buildPrintMarkup(selectedMachines)
-      document.body.classList.add('printing')
+      document.body.classList.add('printing', 'print-view')
 
       try {
         await waitForImages(printRoot)
@@ -732,9 +792,19 @@
         console.error(error)
         setStatus('Tisk štítků se nepodařilo připravit.', 'error')
       } finally {
-        document.body.classList.remove('printing')
-        printRoot.innerHTML = ''
+        document.body.classList.remove('printing', 'print-view')
+        leavePrintMode()
       }
+    }
+
+    function openPrintWindow() {
+      const selectedMachines = getSelectedMachines()
+      if (!selectedMachines.length) {
+        setStatus('Nejdřív vyber aspoň jeden štítek k tisku.', 'error')
+        return
+      }
+      persistPrintJob(selectedMachines)
+      window.location.href = 'machine-qr-print.html?mode=print'
     }
 
     function renderAll() {
@@ -763,8 +833,18 @@
       machines = machineData || []
       locations = locationData || []
       syncSelectionFromQuery()
+      if (isPrintMode && !restorePrintJob()) {
+        setStatus('Pro tisk se nepodařilo obnovit vybrané štítky. Otevírám běžný přehled.', 'error')
+        window.setTimeout(() => {
+          window.location.replace('machine-qr-print.html')
+        }, 1200)
+        return
+      }
       populateLocationFilter()
       renderAll()
+      if (isPrintMode) {
+        await runPrintMode()
+      }
     }
 
     selectionList.addEventListener('change', (event) => {
