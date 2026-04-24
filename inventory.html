@@ -136,6 +136,35 @@
         <section class="panel">
           <div class="panel-header">
             <div>
+              <h2>Bagety pilot</h2>
+              <p>První ruční ověření nákupního toku. Tady chceme vidět, co je na skladě, co přijde a jestli je potřeba doobjednat nebo ubrat.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="status-line" id="bagettePilotStatus">Načítám bagetový pilot...</div>
+            <div class="summary-grid" id="bagettePilotSummary"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Produkt</th>
+                    <th>Dodavatel</th>
+                    <th>Na skladě / ve vozech</th>
+                    <th>Spotřeba</th>
+                    <th>Další termíny</th>
+                    <th>Doporučení</th>
+                  </tr>
+                </thead>
+                <tbody id="bagettePilotBody"></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="bagettePilotEmpty" style="display:none;">Bagetový pilot zatím nemá profily. Po spuštění `database/purchases_pilot_v13.sql` a vyplnění prvních baget se to ukáže tady.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
               <h2>Skladová mapa 1.3</h2>
               <p>První přehled nad novým modelem umístění. Tady už chceme vidět, kolik kusů je ve skladu, ve vozidlech a v automatech.</p>
             </div>
@@ -295,6 +324,10 @@
     import { supabase } from './supabase.js'
 
     const statusLine = document.getElementById('statusLine')
+    const bagettePilotStatus = document.getElementById('bagettePilotStatus')
+    const bagettePilotSummary = document.getElementById('bagettePilotSummary')
+    const bagettePilotBody = document.getElementById('bagettePilotBody')
+    const bagettePilotEmpty = document.getElementById('bagettePilotEmpty')
     const summaryGrid = document.getElementById('summaryGrid')
     const stockV13Status = document.getElementById('stockV13Status')
     const stockV13Summary = document.getElementById('stockV13Summary')
@@ -339,12 +372,18 @@
     let stockBalancesV13 = []
     let replenishmentProfilesV13 = []
     let stockMovementsV13 = []
+    let bagettePilotRows = []
     let currentDetailContext = null
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
       statusLine.className = 'status-line'
       if (type) statusLine.classList.add(type)
+    }
+    function setBagettePilotStatus(message, type = '') {
+      bagettePilotStatus.textContent = message
+      bagettePilotStatus.className = 'status-line'
+      if (type) bagettePilotStatus.classList.add(type)
     }
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
@@ -386,6 +425,94 @@
       const movement = getLastMovement(itemId)
       if (!movement) return 'Zatím bez pohybu'
       return `${movement.movement_type} · ${Number(movement.quantity_delta || 0).toFixed(2)}${movement.planogram_slot_id ? ` · ${getSlotLabel(movement.planogram_slot_id)}` : ''} · ${new Date(movement.created_at).toLocaleString('cs-CZ')}`
+    }
+    function formatWeekdayList(days) {
+      const labels = { 1:'Po', 2:'Út', 3:'St', 4:'Čt', 5:'Pá', 6:'So', 7:'Ne' }
+      if (!Array.isArray(days) || !days.length) return 'Nenastaveno'
+      return days.map((day) => labels[day] || String(day)).join(', ')
+    }
+    function getNextWeekdayDate(days) {
+      if (!Array.isArray(days) || !days.length) return null
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const currentIsoDay = (() => {
+        const js = today.getDay()
+        return js === 0 ? 7 : js
+      })()
+      let best = null
+      days.forEach((day) => {
+        const offset = (day - currentIsoDay + 7) % 7
+        const candidate = new Date(today)
+        candidate.setDate(today.getDate() + offset)
+        if (!best || candidate < best) best = candidate
+      })
+      return best
+    }
+    function formatNextDateLabel(days) {
+      const date = getNextWeekdayDate(days)
+      if (!date) return 'Nenastaveno'
+      return date.toLocaleDateString('cs-CZ', { day:'2-digit', month:'2-digit' })
+    }
+    function renderBagettePilotSummary(rows) {
+      const totalAvailable = rows.reduce((sum, row) => sum + Number(row.available_qty || 0), 0)
+      const totalIncoming = rows.reduce((sum, row) => sum + Number(row.incoming_qty || 0), 0)
+      const totalRecommended = rows.reduce((sum, row) => sum + Number(row.recommended_order_qty || 0), 0)
+      const riskCount = rows.filter((row) => Number(row.recommended_order_qty || 0) > 0).length
+      bagettePilotSummary.innerHTML = [
+        { label:'Bagety v pilotu', value: rows.length, note:'Produkty, které teď budeme řídit ručně přes objednávky.' },
+        { label:'Na skladě + ve vozech', value: totalAvailable.toFixed(0), note:'Součet dostupných kusů před další dodávkou.' },
+        { label:'Příchozí objednávky', value: totalIncoming.toFixed(0), note:'Objednané kusy, které ještě nedorazily.' },
+        { label:'Doporučeno objednat', value: totalRecommended.toFixed(0), note:'Kolik kusů algoritmus navrhuje doobjednat.' },
+        { label:'Chce řešit', value: riskCount, note:'Počet položek, kde už doporučení něco navrhuje.' }
+      ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+    }
+    function renderBagettePilotRows() {
+      const rows = [...bagettePilotRows].sort((a, b) => Number(b.recommended_order_qty || 0) - Number(a.recommended_order_qty || 0) || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
+      bagettePilotBody.innerHTML = rows.map((row) => {
+        const recommended = Number(row.recommended_order_qty || 0)
+        const daysCover = row.estimated_days_cover == null ? '—' : `${Number(row.estimated_days_cover).toFixed(1)} dne`
+        const recommendationLabel = recommended > 0 ? `Objednat ${recommended.toFixed(0)} ${row.base_unit || 'ks'}` : 'Zatím bez zásahu'
+        const recommendationClass = recommended > 0 ? 'bad' : 'good'
+        return `
+          <tr>
+            <td data-label="Produkt"><strong>${escapeHtml(row.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')} · pilot ${escapeHtml(row.pilot_scope || 'general')}</span></td>
+            <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Bez dodavatele')}</strong><span class="subtext">Běžná objednávka ${escapeHtml(Number(row.base_order_quantity || 0).toFixed(0))} ${escapeHtml(row.base_unit || 'ks')}</span></td>
+            <td data-label="Na skladě / ve vozech"><strong>${escapeHtml(Number(row.warehouse_qty || 0).toFixed(0))} / ${escapeHtml(Number(row.vehicle_qty || 0).toFixed(0))}</strong><span class="subtext">Celkem dostupné ${escapeHtml(Number(row.available_qty || 0).toFixed(0))} · příchozí ${escapeHtml(Number(row.incoming_qty || 0).toFixed(0))}</span></td>
+            <td data-label="Spotřeba"><strong>${escapeHtml(Number(row.avg_daily_usage_14d || 0).toFixed(1))} / den</strong><span class="subtext">14 dní: ${escapeHtml(Number(row.estimated_usage_14d || 0).toFixed(0))} · krytí ${escapeHtml(daysCover)}</span></td>
+            <td data-label="Další termíny"><strong>Obj.: ${escapeHtml(formatWeekdayList(row.order_weekdays))}</strong><span class="subtext">Další objednávka ${escapeHtml(formatNextDateLabel(row.order_weekdays))} · závoz ${escapeHtml(formatWeekdayList(row.delivery_weekdays))}${row.next_delivery_date ? ` · nejbližší ${escapeHtml(new Date(row.next_delivery_date).toLocaleDateString('cs-CZ'))}` : ''}</span></td>
+            <td data-label="Doporučení"><span class="badge ${recommendationClass}">${escapeHtml(recommendationLabel)}</span><span class="subtext">Rezerva ${escapeHtml(Number(row.safety_stock_quantity || 0).toFixed(0))} · cíl ${escapeHtml(String(row.target_cover_days || 0))} dny</span></td>
+          </tr>
+        `
+      }).join('')
+      bagettePilotEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    async function loadBagettePilot() {
+      try {
+        setBagettePilotStatus('Načítám bagetový pilot...')
+        const { data, error } = await supabase
+          .from('purchase_product_recommendations_v13')
+          .select('*')
+          .eq('pilot_scope', 'bagette')
+          .order('product_name', { ascending: true })
+
+        if (error) throw error
+        bagettePilotRows = data ?? []
+        renderBagettePilotSummary(bagettePilotRows)
+        renderBagettePilotRows()
+        setBagettePilotStatus(
+          bagettePilotRows.length
+            ? `Načteno baget v pilotu: ${bagettePilotRows.length}`
+            : 'Bagetový pilot zatím nemá žádné profily. Jakmile doplníme první bagety a objednávkové dny, objeví se tady.',
+          bagettePilotRows.length ? 'success' : ''
+        )
+      } catch (error) {
+        console.error(error)
+        bagettePilotRows = []
+        bagettePilotSummary.innerHTML = ''
+        bagettePilotBody.innerHTML = ''
+        bagettePilotEmpty.style.display = 'block'
+        setBagettePilotStatus(`Bagetový pilot zatím neběží: ${error.message}. Pokud ho chceš zapnout, spusť database/purchases_pilot_v13.sql.`, 'error')
+      }
     }
     function populateReferenceOptions() {
       const warehouseOptions = '<option value="">Bez skladu</option>' + warehouses.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('')
@@ -943,6 +1070,7 @@
     slotFilter.addEventListener('change', applyFilters)
     riskFilter.addEventListener('change', applyFilters)
     refreshBtn.addEventListener('click', async () => {
+      await loadBagettePilot()
       await loadInventoryV13Overview()
       await loadInventory()
     })
@@ -1094,6 +1222,7 @@
           slotFilter.value = String(slotParam)
         }
         resetItemForm()
+        await loadBagettePilot()
         await loadInventoryV13Overview()
         await loadInventory()
       } catch (error) {
