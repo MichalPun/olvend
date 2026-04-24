@@ -103,15 +103,61 @@
         <section class="focus-strip">
           <div>
             <h2>Přehled zásob</h2>
-            <p>Položka může být ve skladu, na stroji i v konkrétním slotu.</p>
+            <p>Pro `1.3` připravujeme tok sklad -> vozidlo -> automat, aby bylo hned jasné, kde je kolik kusů čeho.</p>
           </div>
           <div class="focus-strip-meta">
-            <div class="focus-chip">Pohyb</div>
-            <div class="focus-chip">Slot</div>
+            <div class="focus-chip">Sklad</div>
+            <div class="focus-chip">Vozidlo</div>
+            <div class="focus-chip">Automat</div>
           </div>
         </section>
 
         <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Skladová mapa 1.3</h2>
+              <p>První přehled nad novým modelem umístění. Tady už chceme vidět, kolik kusů je ve skladu, ve vozidlech a v automatech.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="status-line" id="stockV13Status">Načítám skladovou mapu 1.3...</div>
+            <div class="summary-grid" id="stockV13Summary"></div>
+            <div class="toolbar">
+              <input id="stockV13Search" type="text" placeholder="Hledat podle produktu nebo umístění..." />
+              <select id="stockV13LocationTypeFilter">
+                <option value="">Všechna místa</option>
+                <option value="warehouse">Jen sklady</option>
+                <option value="vehicle">Jen vozidla</option>
+                <option value="machine">Jen automaty</option>
+                <option value="machine_slot">Jen sloty</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Produkt</th>
+                    <th>Umístění</th>
+                    <th>Typ místa</th>
+                    <th>Stav</th>
+                    <th>Min / cíl</th>
+                    <th>Poslední pohyb</th>
+                  </tr>
+                </thead>
+                <tbody id="stockV13Body"></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="stockV13Empty" style="display:none;">Nový skladový model zatím nemá data. Jakmile začneme naskladňovat do vozidel a automatů, ukáže se to tady.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Stávající ruční evidence</h2>
+              <p>Dočasná vrstva, kterou používáme, než úplně přepneme zásoby na nový tok skladu, vozidel a automatů.</p>
+            </div>
+          </div>
           <div class="panel-body">
             <div class="status-line" id="statusLine">Načítám inventář...</div>
             <div class="summary-grid" id="summaryGrid"></div>
@@ -212,6 +258,12 @@
 
     const statusLine = document.getElementById('statusLine')
     const summaryGrid = document.getElementById('summaryGrid')
+    const stockV13Status = document.getElementById('stockV13Status')
+    const stockV13Summary = document.getElementById('stockV13Summary')
+    const stockV13Search = document.getElementById('stockV13Search')
+    const stockV13LocationTypeFilter = document.getElementById('stockV13LocationTypeFilter')
+    const stockV13Body = document.getElementById('stockV13Body')
+    const stockV13Empty = document.getElementById('stockV13Empty')
     const searchInput = document.getElementById('searchInput')
     const warehouseFilter = document.getElementById('warehouseFilter')
     const machineFilter = document.getElementById('machineFilter')
@@ -239,6 +291,11 @@
     let planogramSlots = []
     let planogramAvailable = true
     let isEditMode = false
+    let productsV13 = []
+    let stockLocationsV13 = []
+    let stockBalancesV13 = []
+    let replenishmentProfilesV13 = []
+    let stockMovementsV13 = []
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -324,6 +381,142 @@
         { label:'Navázané na slot', value:slotItems, note:'Položky vedené až na konkrétní volbě automatu.' },
         { label:'Množství celkem', value:stockTotal.toFixed(2), note:'Součet evidovaného množství napříč položkami.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+    }
+    function setStockV13Status(message, type = '') {
+      stockV13Status.textContent = message
+      stockV13Status.className = 'status-line'
+      if (type) stockV13Status.classList.add(type)
+    }
+    function getLocationTypeLabel(type) {
+      if (type === 'warehouse') return 'Sklad'
+      if (type === 'vehicle') return 'Vozidlo'
+      if (type === 'machine') return 'Automat'
+      if (type === 'machine_slot') return 'Slot'
+      if (type === 'employee') return 'Zaměstnanec'
+      return 'Místo'
+    }
+    function getLocationRisk(balance, profile) {
+      const quantity = Number(balance.quantity_on_hand || 0)
+      const minimum = Number(profile?.min_quantity || 0)
+      if (minimum > 0 && quantity < minimum) return 'low'
+      return 'ok'
+    }
+    function formatLastV13Movement(row) {
+      if (!row.lastMovement) return 'Zatím bez pohybu'
+      const movement = row.lastMovement
+      return `${movement.movement_type} · ${Number(movement.quantity_base_units || 0).toFixed(2)} · ${new Date(movement.created_at).toLocaleString('cs-CZ')}`
+    }
+    function getV13Rows() {
+      const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
+      const locationMap = new Map(stockLocationsV13.map((location) => [String(location.id), location]))
+      const profileMap = new Map(replenishmentProfilesV13.map((profile) => [`${profile.stock_location_id}:${profile.product_id}`, profile]))
+      const movementMap = new Map()
+      stockMovementsV13.forEach((movement) => {
+        const fromKey = movement.from_stock_location_id ? `${movement.from_stock_location_id}:${movement.product_id}` : ''
+        const toKey = movement.to_stock_location_id ? `${movement.to_stock_location_id}:${movement.product_id}` : ''
+        if (fromKey && !movementMap.has(fromKey)) movementMap.set(fromKey, movement)
+        if (toKey && !movementMap.has(toKey)) movementMap.set(toKey, movement)
+      })
+
+      return stockBalancesV13.map((balance) => {
+        const product = productMap.get(String(balance.product_id))
+        const location = locationMap.get(String(balance.stock_location_id))
+        const profile = profileMap.get(`${balance.stock_location_id}:${balance.product_id}`) || null
+        return {
+          balance,
+          product,
+          location,
+          profile,
+          lastMovement: movementMap.get(`${balance.stock_location_id}:${balance.product_id}`) || null
+        }
+      }).filter((row) => row.product && row.location)
+    }
+    function renderStockV13Summary(rows) {
+      const totalQuantity = rows.reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
+      const warehouseQuantity = rows.filter((row) => row.location.location_type === 'warehouse').reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
+      const vehicleQuantity = rows.filter((row) => row.location.location_type === 'vehicle').reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
+      const machineQuantity = rows.filter((row) => ['machine', 'machine_slot'].includes(row.location.location_type)).reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
+      const lowCount = rows.filter((row) => getLocationRisk(row.balance, row.profile) === 'low').length
+      stockV13Summary.innerHTML = [
+        { label:'Ks celkem', value: totalQuantity.toFixed(2), note:'Součet napříč novým skladovým modelem.' },
+        { label:'Ve skladech', value: warehouseQuantity.toFixed(2), note:'Centrální a další sklady.' },
+        { label:'Ve vozidlech', value: vehicleQuantity.toFixed(2), note:'Naložené zásoby připravené na trasu.' },
+        { label:'V automatech', value: machineQuantity.toFixed(2), note:'Automaty a jejich sloty.' },
+        { label:'Pod minimem', value: lowCount, note:'Místa, kam bude potřeba doplnit.' }
+      ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+    }
+    function renderStockV13Rows() {
+      const query = normalizeText(stockV13Search.value)
+      const locationType = stockV13LocationTypeFilter.value
+      let rows = getV13Rows()
+      if (query) {
+        rows = rows.filter((row) => normalizeText([row.product?.name, row.location?.name, row.location?.note].join(' ')).includes(query))
+      }
+      if (locationType) {
+        rows = rows.filter((row) => row.location.location_type === locationType)
+      }
+      rows.sort((a, b) => {
+        const riskDiff = (getLocationRisk(a.balance, a.profile) === 'low' ? -1 : 0) - (getLocationRisk(b.balance, b.profile) === 'low' ? -1 : 0)
+        if (riskDiff !== 0) return riskDiff
+        return normalizeText(a.product?.name).localeCompare(normalizeText(b.product?.name), 'cs')
+      })
+      stockV13Body.innerHTML = rows.map((row) => {
+        const quantity = Number(row.balance.quantity_on_hand || 0)
+        const unit = row.product?.base_unit || 'ks'
+        const min = Number(row.profile?.min_quantity || 0)
+        const target = Number(row.profile?.target_quantity || 0)
+        const risk = getLocationRisk(row.balance, row.profile)
+        return `
+          <tr>
+            <td data-label="Produkt"><strong>${escapeHtml(row.product?.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(unit)}</span></td>
+            <td data-label="Umístění"><strong>${escapeHtml(row.location?.name || 'Místo')}</strong><span class="subtext">${escapeHtml(row.location?.note || '')}</span></td>
+            <td data-label="Typ místa"><span class="badge ${risk === 'low' ? 'bad' : 'good'}">${escapeHtml(getLocationTypeLabel(row.location?.location_type))}</span></td>
+            <td data-label="Stav"><strong>${escapeHtml(quantity.toFixed(2))} ${escapeHtml(unit)}</strong><span class="subtext">${risk === 'low' ? 'Pod minimem' : 'V pořádku'}</span></td>
+            <td data-label="Min / cíl"><strong>${escapeHtml(min.toFixed(2))} / ${escapeHtml(target.toFixed(2))}</strong><span class="subtext">Minimum / cílový stav</span></td>
+            <td data-label="Poslední pohyb"><strong>${escapeHtml(formatLastV13Movement(row))}</strong></td>
+          </tr>
+        `
+      }).join('')
+      stockV13Empty.style.display = rows.length ? 'none' : 'block'
+    }
+    async function loadInventoryV13Overview() {
+      try {
+        setStockV13Status('Načítám skladovou mapu 1.3...')
+        const [
+          productsResult,
+          locationsResult,
+          balancesResult,
+          profilesResult,
+          movementsResult
+        ] = await Promise.all([
+          supabase.from('products').select('id, name, base_unit').order('name', { ascending: true }),
+          supabase.from('stock_locations').select('id, name, location_type, note, active').eq('active', true).order('name', { ascending: true }),
+          supabase.from('stock_location_balances').select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity').order('updated_at', { ascending: false }),
+          supabase.from('replenishment_profiles').select('id, stock_location_id, product_id, min_quantity, target_quantity, active').eq('active', true),
+          supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, created_at').order('created_at', { ascending: false }).limit(500)
+        ])
+
+        if (productsResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error) {
+          throw productsResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error
+        }
+
+        productsV13 = productsResult.data ?? []
+        stockLocationsV13 = locationsResult.data ?? []
+        stockBalancesV13 = balancesResult.data ?? []
+        replenishmentProfilesV13 = profilesResult.data ?? []
+        stockMovementsV13 = movementsResult.data ?? []
+
+        const rows = getV13Rows()
+        renderStockV13Summary(rows)
+        renderStockV13Rows()
+        setStockV13Status(`Načteno skladových pozic 1.3: ${rows.length}`, 'success')
+      } catch (error) {
+        console.error(error)
+        stockV13Summary.innerHTML = ''
+        stockV13Body.innerHTML = ''
+        stockV13Empty.style.display = 'block'
+        setStockV13Status(`Skladová mapa 1.3 zatím neběží: ${error.message}. Pokud chceš nový skladový model používat, spusť database/inventory_replenishment_v13.sql.`, 'error')
+      }
     }
     function renderItems(data) {
       itemsTableBody.innerHTML = ''
@@ -481,11 +674,16 @@
     }
 
     searchInput.addEventListener('input', applyFilters)
+    stockV13Search.addEventListener('input', renderStockV13Rows)
+    stockV13LocationTypeFilter.addEventListener('change', renderStockV13Rows)
     warehouseFilter.addEventListener('change', applyFilters)
     machineFilter.addEventListener('change', applyFilters)
     slotFilter.addEventListener('change', applyFilters)
     riskFilter.addEventListener('change', applyFilters)
-    refreshBtn.addEventListener('click', loadInventory)
+    refreshBtn.addEventListener('click', async () => {
+      await loadInventoryV13Overview()
+      await loadInventory()
+    })
     openItemBtn.addEventListener('click', () => { resetItemForm(); openItemModal() })
     openMovementBtn.addEventListener('click', () => openMovementModal())
     document.getElementById('closeItemModalBtn').addEventListener('click', closeItemModal)
@@ -589,6 +787,7 @@
           slotFilter.value = String(slotParam)
         }
         resetItemForm()
+        await loadInventoryV13Overview()
         await loadInventory()
       } catch (error) {
         console.error(error)

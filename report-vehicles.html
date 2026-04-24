@@ -199,6 +199,43 @@
     }
     .summary-box-value { font-size: 24px; font-weight: 800; margin-bottom: 6px; }
     .summary-box-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .chart-card {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      min-height: 300px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .chart-card h3 { margin: 0; font-size: 18px; }
+    .chart-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .chart-frame {
+      flex: 1;
+      min-height: 220px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
+      padding: 10px;
+    }
+    .chart-frame svg { width: 100%; height: 100%; display: block; }
+    .chart-empty {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 24px;
+    }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 1180px; }
     th, td {
@@ -246,6 +283,7 @@
       .main { padding: 16px; }
       .topbar { flex-direction: column; }
       .filters { grid-template-columns: 1fr; }
+      .chart-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -287,6 +325,37 @@
 
           <div class="summary-grid" id="summaryGrid"></div>
 
+          <div class="chart-grid">
+            <article class="chart-card">
+              <div>
+                <h3>Najeté km v čase</h3>
+                <p>Souhrnný denní vývoj podle vybraného období a filtru vozidla.</p>
+              </div>
+              <div class="chart-frame" id="fleetKmChart"></div>
+            </article>
+            <article class="chart-card">
+              <div>
+                <h3>Km podle vozidla</h3>
+                <p>Která auta v období opravdu jezdila a kolik toho ujela.</p>
+              </div>
+              <div class="chart-frame" id="vehicleKmChart"></div>
+            </article>
+            <article class="chart-card">
+              <div>
+                <h3>Km podle zaměstnance</h3>
+                <p>Řidiči podle najetých km ve zvoleném období.</p>
+              </div>
+              <div class="chart-frame" id="employeeKmChart"></div>
+            </article>
+            <article class="chart-card">
+              <div>
+                <h3>Spotřeba podle vozidla</h3>
+                <p>První tankování je jen bod 0, spotřeba se počítá až mezi dvěma tankováními.</p>
+              </div>
+              <div class="chart-frame" id="consumptionChart"></div>
+            </article>
+          </div>
+
           <div class="table-wrap">
             <table>
               <thead>
@@ -326,10 +395,17 @@
     const summaryGrid = document.getElementById('summaryGrid')
     const reportBody = document.getElementById('reportBody')
     const reportEmpty = document.getElementById('reportEmpty')
+    const fleetKmChart = document.getElementById('fleetKmChart')
+    const vehicleKmChart = document.getElementById('vehicleKmChart')
+    const employeeKmChart = document.getElementById('employeeKmChart')
+    const consumptionChart = document.getElementById('consumptionChart')
 
     let currentUser = null
     let vehiclesDirectory = []
     let lastRows = []
+    let lastLogs = []
+    let lastEmployeeMap = new Map()
+    let lastVehicleMap = new Map()
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -404,6 +480,169 @@
           <div class="summary-box-note">${escapeHtml(card.note)}</div>
         </article>
       `).join('')
+    }
+
+    function renderEmptyChart(target, message) {
+      target.innerHTML = `<div class="chart-empty">${escapeHtml(message)}</div>`
+    }
+
+    function renderBarsChart(target, data, options = {}) {
+      if (!data.length) {
+        renderEmptyChart(target, options.emptyMessage || 'Zatím tu nejsou data pro graf.')
+        return
+      }
+      const width = 820
+      const leftPad = 170
+      const rightPad = 18
+      const topPad = 14
+      const bottomPad = 14
+      const chartWidth = width - leftPad - rightPad
+      const rowHeight = 28
+      const height = Math.max(220, topPad + bottomPad + data.length * rowHeight)
+      const maxValue = Math.max(...data.map((item) => Number(item.value || 0)), 1)
+      const rows = data.map((item, index) => {
+        const y = topPad + index * rowHeight
+        const barWidth = Math.max(2, (Number(item.value || 0) / maxValue) * chartWidth)
+        return `
+          <text x="${leftPad - 10}" y="${y + 16}" text-anchor="end" fill="#f4f4f6" font-size="12" font-weight="700">${escapeHtml(String(item.label || ''))}</text>
+          <rect x="${leftPad}" y="${y + 4}" width="${barWidth}" height="14" rx="7" fill="${options.barColor || '#d5101a'}"></rect>
+          <text x="${Math.min(leftPad + barWidth + 8, width - 4)}" y="${y + 16}" fill="#f4f4f6" font-size="12" font-weight="700">${escapeHtml(String(item.valueLabel ?? item.value))}</text>
+        `
+      }).join('')
+
+      target.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(options.ariaLabel || 'Sloupcový graf')}">
+          ${rows}
+        </svg>
+      `
+    }
+
+    function renderTimelineChart(target, data, options = {}) {
+      if (!data.length) {
+        renderEmptyChart(target, options.emptyMessage || 'Zatím tu nejsou data pro graf.')
+        return
+      }
+      const width = 820
+      const height = 240
+      const leftPad = 38
+      const rightPad = 12
+      const topPad = 18
+      const bottomPad = 42
+      const chartWidth = width - leftPad - rightPad
+      const chartHeight = height - topPad - bottomPad
+      const maxValue = Math.max(...data.map((item) => Number(item.value || 0)), 1)
+      const points = data.map((item, index) => {
+        const x = leftPad + (data.length === 1 ? chartWidth / 2 : (index * chartWidth) / (data.length - 1))
+        const y = topPad + chartHeight - ((Number(item.value || 0) / maxValue) * chartHeight)
+        return { ...item, x, y }
+      })
+      const polyline = points.map((point) => `${point.x},${point.y}`).join(' ')
+      const areaPoints = `${leftPad},${topPad + chartHeight} ${polyline} ${points[points.length - 1].x},${topPad + chartHeight}`
+      const grid = [0, 0.5, 1].map((ratio) => {
+        const y = topPad + chartHeight - chartHeight * ratio
+        const value = maxValue * ratio
+        return `
+          <line x1="${leftPad}" y1="${y}" x2="${width - rightPad}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1"></line>
+          <text x="0" y="${y + 4}" fill="#9ea3ae" font-size="11">${escapeHtml(options.formatTick ? options.formatTick(value) : String(Math.round(value)))}</text>
+        `
+      }).join('')
+      const labels = points.map((point) => `
+        <text x="${point.x}" y="${height - 14}" text-anchor="middle" fill="#9ea3ae" font-size="11">${escapeHtml(String(point.label || ''))}</text>
+      `).join('')
+      const dots = points.map((point) => `
+        <circle cx="${point.x}" cy="${point.y}" r="4" fill="#ffffff"></circle>
+        <circle cx="${point.x}" cy="${point.y}" r="2" fill="${options.lineColor || '#ff646e'}"></circle>
+      `).join('')
+
+      target.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(options.ariaLabel || 'Vývoj v čase')}">
+          ${grid}
+          <polygon points="${areaPoints}" fill="rgba(213,16,26,0.14)"></polygon>
+          <polyline points="${polyline}" fill="none" stroke="${options.lineColor || '#ff646e'}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          ${dots}
+          ${labels}
+        </svg>
+      `
+    }
+
+    function renderCharts() {
+      const logs = lastLogs || []
+      if (!logs.length) {
+        renderEmptyChart(fleetKmChart, 'Ve zvoleném období zatím nemáme provozní logy.')
+        renderEmptyChart(vehicleKmChart, 'Ve zvoleném období zatím nemáme provozní logy.')
+        renderEmptyChart(employeeKmChart, 'Ve zvoleném období zatím nemáme provozní logy.')
+        renderEmptyChart(consumptionChart, 'Spotřeba se ukáže, jakmile bude aspoň jedno auto po dvou tankováních.')
+        return
+      }
+
+      const dailyKmMap = new Map()
+      const vehicleKmMap = new Map()
+      const employeeKmMap = new Map()
+
+      logs.forEach((log) => {
+        const dateKey = String(log.log_date || '')
+        dailyKmMap.set(dateKey, (dailyKmMap.get(dateKey) || 0) + Number(log.distance_km || 0))
+
+        const vehicleKey = String(log.vehicle_id || '')
+        vehicleKmMap.set(vehicleKey, (vehicleKmMap.get(vehicleKey) || 0) + Number(log.distance_km || 0))
+
+        const employeeKey = String(log.employee_id || '')
+        if (employeeKey) employeeKmMap.set(employeeKey, (employeeKmMap.get(employeeKey) || 0) + Number(log.distance_km || 0))
+      })
+
+      const fleetTimelineRows = [...dailyKmMap.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0], 'cs'))
+        .map(([date, value]) => ({
+          label: new Date(`${date}T00:00:00`).toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' }),
+          value: Math.round(value)
+        }))
+
+      const vehicleRows = [...vehicleKmMap.entries()]
+        .map(([vehicleId, value]) => ({
+          label: lastVehicleMap.get(vehicleId) || 'Vozidlo',
+          value: Math.round(value),
+          valueLabel: `${Math.round(value).toLocaleString('cs-CZ')} km`
+        }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 8)
+
+      const employeeRows = [...employeeKmMap.entries()]
+        .map(([employeeId, value]) => ({
+          label: lastEmployeeMap.get(employeeId) || 'Bez jména',
+          value: Math.round(value),
+          valueLabel: `${Math.round(value).toLocaleString('cs-CZ')} km`
+        }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 8)
+
+      const consumptionRows = lastRows
+        .filter((row) => row.avgConsumption != null)
+        .map((row) => ({
+          label: row.vehicleLabel,
+          value: Number(row.avgConsumption || 0),
+          valueLabel: `${Number(row.avgConsumption || 0).toFixed(1).replace('.', ',')} l / 100 km`
+        }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 8)
+
+      renderTimelineChart(fleetKmChart, fleetTimelineRows, {
+        ariaLabel: 'Najeté kilometry v čase',
+        formatTick: (value) => `${Math.round(value)} km`
+      })
+      renderBarsChart(vehicleKmChart, vehicleRows, {
+        ariaLabel: 'Kilometry podle vozidla',
+        emptyMessage: 'Pro vybraný filtr zatím nemáme km podle vozidel.'
+      })
+      renderBarsChart(employeeKmChart, employeeRows, {
+        ariaLabel: 'Kilometry podle zaměstnance',
+        barColor: '#ff8a31',
+        emptyMessage: 'Ve zvoleném období zatím nemáme řidiče s km.'
+      })
+      renderBarsChart(consumptionChart, consumptionRows, {
+        ariaLabel: 'Spotřeba podle vozidla',
+        barColor: '#2ecc71',
+        emptyMessage: 'Spotřeba se ukáže, jakmile bude aspoň jedno vozidlo po dvou tankováních.'
+      })
     }
 
     function renderTable(rows) {
@@ -529,6 +768,9 @@
           String(vehicle.id),
           [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') || 'Vozidlo'
         ]))
+        lastLogs = logs || []
+        lastEmployeeMap = employeeMap
+        lastVehicleMap = vehicleMap
 
         const groupedLogs = new Map()
         ;(logs || []).forEach((log) => {
@@ -619,6 +861,7 @@
           { label: 'Ostatní náklady', value: formatCurrency(totalOtherCost), note: 'Servis, pojištění, STK, opravy a další ručně zadané náklady.' },
           { label: 'Náklady celkem', value: formatCurrency(totalFuelCost + totalOtherCost), note: avgFleetCostPerKm == null ? 'Bez dopočtu na km.' : `${avgFleetCostPerKm.toFixed(2).replace('.', ',')} Kč / km` }
         ])
+        renderCharts()
         renderTable(lastRows)
         setStatus('Report vozidel je načtený.', 'success')
       } catch (error) {
@@ -630,6 +873,10 @@
           { label: 'Ostatní náklady', value: '-', note: 'Nepodařilo se načíst.' },
           { label: 'Náklady celkem', value: '-', note: 'Nepodařilo se načíst.' }
         ])
+        renderEmptyChart(fleetKmChart, 'Nepodařilo se načíst data pro graf.')
+        renderEmptyChart(vehicleKmChart, 'Nepodařilo se načíst data pro graf.')
+        renderEmptyChart(employeeKmChart, 'Nepodařilo se načíst data pro graf.')
+        renderEmptyChart(consumptionChart, 'Nepodařilo se načíst data pro graf.')
         reportBody.innerHTML = ''
         reportEmpty.hidden = false
         setStatus(`Nepodařilo se načíst report vozidel: ${error.message}`, 'error')
