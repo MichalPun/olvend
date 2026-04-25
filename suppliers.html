@@ -279,6 +279,24 @@
       isEditMode = true
       openSupplierModal()
     }
+    async function saveSupplierWithRetry(payload, id) {
+      const saveOnce = async () => {
+        if (id) {
+          const { error } = await supabase.from('purchase_suppliers').update(payload).eq('id', id)
+          if (error) throw error
+          return
+        }
+        const { error } = await supabase.from('purchase_suppliers').insert([payload])
+        if (error) throw error
+      }
+      try {
+        await saveOnce()
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        await saveOnce()
+      }
+    }
     async function saveSupplier() {
       const payload = {
         name: document.getElementById('supplierName').value.trim(),
@@ -290,13 +308,7 @@
       }
       const id = document.getElementById('supplierId').value
       if (!payload.name) throw new Error('Dodavatel musí mít název.')
-      if (id) {
-        const { error } = await supabase.from('purchase_suppliers').update(payload).eq('id', id)
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('purchase_suppliers').insert([payload])
-        if (error) throw error
-      }
+      await saveSupplierWithRetry(payload, id)
     }
     async function loadSuppliers() {
       try {
@@ -338,16 +350,20 @@
     })
     supplierForm.addEventListener('submit', async (event) => {
       event.preventDefault()
+      const wasEditMode = isEditMode
       try {
         saveSupplierBtn.disabled = true
         saveSupplierBtn.textContent = 'Ukládám...'
         await saveSupplier()
         closeSupplierModal()
         await loadSuppliers()
-        setStatus(isEditMode ? 'Dodavatel byl upraven.' : 'Dodavatel byl založen.', 'success')
+        setStatus(wasEditMode ? 'Dodavatel byl upraven.' : 'Dodavatel byl založen.', 'success')
       } catch (error) {
         console.error(error)
-        setStatus(`Nepodařilo se uložit dodavatele: ${error.message}`, 'error')
+        const humanMessage = error instanceof TypeError
+          ? 'Spojení se při ukládání nepovedlo. Zkusil jsem to znovu, ale server teď neodpověděl.'
+          : error.message
+        setStatus(`Nepodařilo se uložit dodavatele: ${humanMessage}`, 'error')
       } finally {
         saveSupplierBtn.disabled = false
         saveSupplierBtn.textContent = isEditMode ? 'Uložit změny' : 'Uložit'

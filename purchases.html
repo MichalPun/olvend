@@ -132,11 +132,11 @@
         <section class="panel">
           <div class="panel-header">
             <div>
-              <h2>Pravidelné profily</h2>
-              <p>Tady je zdroj pravdy pro stálé objednávky. Odsud se generují návrhy podle dneška, zásob a doporučení.</p>
+              <h2>Pravidelné objednávky</h2>
+              <p>Tady držíme celé pravidelné dodávky. Jedna pravidelná objednávka má obsahovat víc druhů baget, dny objednání i dny závozu.</p>
             </div>
             <div class="action-row">
-              <button class="btn secondary small" id="openProfileBtn" type="button">+ Profil</button>
+              <button class="btn secondary small" id="openProfileBtn" type="button">+ Položka do pravidelné objednávky</button>
             </div>
           </div>
           <div class="panel-body">
@@ -144,10 +144,10 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Produkt</th>
+                    <th>Pravidelná objednávka</th>
                     <th>Dodavatel</th>
                     <th>Objednávka / závoz</th>
-                    <th>Stav zásoby</th>
+                    <th>Obsah</th>
                     <th>Doporučení</th>
                     <th>Akce</th>
                   </tr>
@@ -155,15 +155,15 @@
                 <tbody id="profilesBody"></tbody>
               </table>
             </div>
-            <div class="empty-state" id="profilesEmpty" style="display:none;">Zatím tu nejsou žádné stálé profily objednávek.</div>
+            <div class="empty-state" id="profilesEmpty" style="display:none;">Zatím tu nejsou žádné pravidelné objednávky.</div>
           </div>
         </section>
 
         <section class="panel">
           <div class="panel-header">
             <div>
-              <h2>Drafty k objednání</h2>
-              <p>Systém sem připraví návrhy. Člověk je zkontroluje a jedním klikem odešle jako objednané.</p>
+              <h2>Dnes ke schválení</h2>
+              <p>Když nastane objednávací den, systém sem připraví souhrnný návrh. Manažer jen zkontroluje množství a potvrdí objednávku.</p>
             </div>
           </div>
           <div class="panel-body">
@@ -181,15 +181,15 @@
                 <tbody id="draftOrdersBody"></tbody>
               </table>
             </div>
-            <div class="empty-state" id="draftOrdersEmpty" style="display:none;">Zatím tu nejsou žádné drafty k objednání.</div>
+            <div class="empty-state" id="draftOrdersEmpty" style="display:none;">Na dnešek tu teď není nic ke schválení.</div>
           </div>
         </section>
 
         <section class="panel">
           <div class="panel-header">
             <div>
-              <h2>Čeká na příjem</h2>
-              <p>Objednané dodávky, které jen čekají na potvrzení. Tady doplníš DL nebo fakturu, zkontroluješ množství a potvrdíš příjem.</p>
+              <h2>Dnešní dodávky k příjmu</h2>
+              <p>Sem mají ráno spadnout dnešní dodávky. Manažer doplní DL nebo fakturu, případně opraví množství a jedním potvrzením naskladní vše na sklad.</p>
             </div>
           </div>
           <div class="panel-body">
@@ -636,29 +636,83 @@
         return true
       })
     }
+    function groupProfiles(list) {
+      const groups = new Map()
+      list.forEach((row) => {
+        const key = [
+          row.supplier_id,
+          row.pilot_scope || 'general',
+          JSON.stringify(row.order_weekdays || []),
+          JSON.stringify(row.delivery_weekdays || [])
+        ].join(':')
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            supplier_id: row.supplier_id,
+            supplier_name: row.supplier_name || 'Dodavatel',
+            pilot_scope: row.pilot_scope || 'general',
+            order_weekdays: row.order_weekdays || [],
+            delivery_weekdays: row.delivery_weekdays || [],
+            rows: [],
+            recommended_total: 0,
+            base_total: 0,
+            available_total: 0
+          })
+        }
+        const group = groups.get(key)
+        group.rows.push(row)
+        group.recommended_total += Number(row.recommended_order_qty || 0)
+        group.base_total += Number(row.base_order_quantity || 0)
+        group.available_total += Number(row.available_qty || 0)
+      })
+      return Array.from(groups.values()).sort((a, b) => {
+        const dayDelta = (a.order_weekdays[0] || 9) - (b.order_weekdays[0] || 9)
+        if (dayDelta !== 0) return dayDelta
+        return normalizeText(a.supplier_name).localeCompare(normalizeText(b.supplier_name), 'cs')
+      })
+    }
+    function renderAll() {
+      renderSummary()
+      renderProfiles()
+      const drafts = orderRowsByFilters(orders.filter((order) => order.status === 'draft'))
+      const ordered = orderRowsByFilters(orders.filter((order) => order.status === 'ordered'))
+      renderOrderTable(
+        draftOrdersBody,
+        draftOrdersEmpty,
+        drafts,
+        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Schválit objednávku</button></div>`
+      )
+      renderOrderTable(
+        orderedOrdersBody,
+        orderedOrdersEmpty,
+        ordered,
+        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Potvrdit příjem</button></div>`
+      )
+    }
     function renderSummary() {
       const draftCount = orders.filter((order) => order.status === 'draft').length
       const orderedCount = orders.filter((order) => order.status === 'ordered').length
       const receivedCount = orders.filter((order) => order.status === 'received').length
-      const recommended = profiles.filter((row) => Number(row.recommended_order_qty || 0) > 0).length
+      const groupedProfiles = groupProfiles(profiles)
+      const recommended = groupedProfiles.filter((row) => row.recommended_total > 0).length
       summaryGrid.innerHTML = [
-        { label:'Profily', value: profiles.length, note:'Stálé produktové profily a doporučení.' },
-        { label:'Doporučit objednat', value: recommended, note:'Položky, kde algoritmus navrhuje zásah.' },
-        { label:'Drafty', value: draftCount, note:'Návrhy, které čekají na potvrzení objednávky.' },
-        { label:'Čeká na příjem', value: orderedCount, note:'Objednávky, které už byly odeslané.' },
+        { label:'Pravidelné objednávky', value: groupedProfiles.length, note:'Souhrnné pravidelné dodávky po dodavateli a dnech.' },
+        { label:'Doporučit zásah', value: recommended, note:'Pravidelné objednávky, kde systém navrhuje upravit množství.' },
+        { label:'Dnes ke schválení', value: draftCount, note:'Souhrnné návrhy, které čekají na potvrzení objednávky.' },
+        { label:'Dnešní příjmy', value: orderedCount, note:'Dodávky, které už jen čekají na potvrzení příjmu.' },
         { label:'Přijato', value: receivedCount, note:'Hotové příjmy v tomto pracovním toku.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
     function renderProfiles() {
-      const rows = orderRowsByFilters(profiles)
+      const rows = groupProfiles(orderRowsByFilters(profiles))
       profilesBody.innerHTML = rows.map((row) => `
         <tr>
-          <td data-label="Produkt"><strong>${escapeHtml(row.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')} · krytí ${escapeHtml(row.estimated_days_cover == null ? '—' : `${Number(row.estimated_days_cover).toFixed(1)} dne`)}</span></td>
-          <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">Scope ${escapeHtml(row.pilot_scope || 'general')}</span></td>
+          <td data-label="Pravidelná objednávka"><strong>${escapeHtml(row.pilot_scope === 'bagette' ? 'Bagety pilot' : 'Pravidelná dodávka')}</strong><span class="subtext">${escapeHtml(String(row.rows.length))} druhů v objednávce</span></td>
+          <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name)}</strong><span class="subtext">Scope ${escapeHtml(row.pilot_scope)}</span></td>
           <td data-label="Objednávka / závoz"><strong>${escapeHtml(formatWeekdays(row.order_weekdays))}</strong><span class="subtext">Závoz ${escapeHtml(formatWeekdays(row.delivery_weekdays))}</span></td>
-          <td data-label="Stav zásoby"><strong>${escapeHtml(Number(row.available_qty || 0).toFixed(0))}</strong><span class="subtext">Sklad ${escapeHtml(Number(row.warehouse_qty || 0).toFixed(0))} · vozy ${escapeHtml(Number(row.vehicle_qty || 0).toFixed(0))}</span></td>
-          <td data-label="Doporučení"><span class="badge ${Number(row.recommended_order_qty || 0) > 0 ? 'bad' : 'good'}">${escapeHtml(Number(row.recommended_order_qty || 0) > 0 ? `Objednat ${Number(row.recommended_order_qty || 0).toFixed(0)}` : 'Zatím bez zásahu')}</span><span class="subtext">Běžná objednávka ${escapeHtml(Number(row.base_order_quantity || 0).toFixed(0))}</span></td>
-          <td data-label="Akce"><div class="action-row"><button class="btn secondary small" type="button" data-action="edit-profile" data-id="${row.id}">Upravit</button><a class="btn secondary small" href="suppliers.html?supplier=${row.supplier_id}">Dodavatel</a></div></td>
+          <td data-label="Obsah"><strong>${escapeHtml(row.rows.slice(0, 3).map((item) => item.product_name || 'Produkt').join(' · '))}</strong><span class="subtext">${escapeHtml(row.rows.length > 3 ? `+ další ${row.rows.length - 3}` : `Dostupné ${Number(row.available_total || 0).toFixed(0)} ks`)}</span></td>
+          <td data-label="Doporučení"><span class="badge ${row.recommended_total > 0 ? 'bad' : 'good'}">${escapeHtml(row.recommended_total > 0 ? `Upravit o ${Number(row.recommended_total).toFixed(0)} ks` : 'Zatím bez zásahu')}</span><span class="subtext">Běžně ${escapeHtml(Number(row.base_total || 0).toFixed(0))} ks celkem</span></td>
+          <td data-label="Akce"><div class="action-row"><a class="btn secondary small" href="suppliers.html?supplier=${row.supplier_id}">Dodavatel</a><button class="btn secondary small" type="button" data-action="edit-profile" data-id="${row.rows[0]?.id || ''}">Upravit položky</button></div></td>
         </tr>
       `).join('')
       profilesEmpty.style.display = rows.length ? 'none' : 'block'
@@ -667,7 +721,7 @@
       targetBody.innerHTML = rows.map((row) => `
         <tr>
           <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">${escapeHtml(row.order_scope || 'general')} · ${escapeHtml(row.note || 'Bez poznámky')}</span></td>
-          <td data-label="Objednávka"><strong>${escapeHtml(new Date(row.order_date).toLocaleDateString('cs-CZ'))}</strong><span class="subtext">${escapeHtml(row.status)}</span></td>
+          <td data-label="Objednávka"><strong>${escapeHtml(new Date(row.order_date).toLocaleDateString('cs-CZ'))}</strong><span class="subtext">${escapeHtml(row.status === 'draft' ? 'Čeká na schválení' : row.status === 'ordered' ? 'Čeká na příjem' : row.status)}</span></td>
           <td data-label="Položky"><strong>${escapeHtml(String((row.items || []).length))} položek</strong><span class="subtext">${escapeHtml((row.items || []).map((item) => `${item.product_name} (${Number(item.ordered_quantity || 0).toFixed(0)})`).join(' · ') || 'Bez položek')}</span></td>
           <td data-label="Termíny"><strong>${escapeHtml(row.delivery_date ? new Date(row.delivery_date).toLocaleDateString('cs-CZ') : 'Bez termínu')}</strong><span class="subtext">DL ${escapeHtml(row.delivery_note_number || '—')} · FA ${escapeHtml(row.invoice_number || '—')}</span></td>
           <td data-label="Akce">${actionsForStatus(row)}</td>
@@ -753,12 +807,7 @@
         }))
         supplierFilter.innerHTML = '<option value="">Všichni dodavatelé</option>' + suppliers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('')
         if (preselectedSupplier) supplierFilter.value = preselectedSupplier
-        renderSummary()
-        renderProfiles()
-        const drafts = orderRowsByFilters(orders.filter((order) => order.status === 'draft'))
-        const ordered = orderRowsByFilters(orders.filter((order) => order.status === 'ordered'))
-        renderOrderTable(draftOrdersBody, draftOrdersEmpty, drafts, (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Označit objednáno</button></div>`)
-        renderOrderTable(orderedOrdersBody, orderedOrdersEmpty, ordered, (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Potvrdit příjem</button></div>`)
+        renderAll()
         setStatus(`Načteno profilů: ${profiles.length}, objednávek: ${orders.length}`, 'success')
       } catch (error) {
         console.error(error)
@@ -766,9 +815,9 @@
       }
     }
 
-    searchInput.addEventListener('input', loadPage)
-    supplierFilter.addEventListener('change', loadPage)
-    scopeFilter.addEventListener('change', loadPage)
+    searchInput.addEventListener('input', renderAll)
+    supplierFilter.addEventListener('change', renderAll)
+    scopeFilter.addEventListener('change', renderAll)
     refreshBtn.addEventListener('click', loadPage)
     generateBtn.addEventListener('click', async () => {
       try {
@@ -776,7 +825,7 @@
         generateBtn.textContent = 'Připravuji...'
         await generateTodayDrafts()
         await loadPage()
-        setStatus('Dnešní návrhy objednávek byly připravené.', 'success')
+        setStatus('Dnešní souhrnné objednávky byly připravené ke schválení.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se připravit dnešní návrhy: ${error.message}`, 'error')
@@ -791,7 +840,7 @@
       try {
         await setOrderStatus(button.dataset.id, 'ordered')
         await loadPage()
-        setStatus('Objednávka byla označena jako objednaná.', 'success')
+        setStatus('Souhrnná objednávka byla schválena jako objednaná.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se změnit stav objednávky: ${error.message}`, 'error')
