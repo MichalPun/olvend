@@ -914,28 +914,61 @@
         setStatus('Načítám nákupy...')
         const params = new URLSearchParams(window.location.search)
         const preselectedSupplier = params.get('supplier') || ''
-        const [profilesResult, rawProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, productsResult] = await Promise.all([
-          supabase.from('purchase_product_recommendations_v13').select('*').order('supplier_name', { ascending:true }),
-          supabase.from('purchase_product_profiles').select('id, order_quantity_by_weekday'),
+        const [recommendationsResult, profilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, productsResult] = await Promise.all([
+          supabase.from('purchase_product_recommendations_v13').select('*'),
+          supabase.from('purchase_product_profiles').select(`
+            id,
+            supplier_id,
+            product_id,
+            pilot_scope,
+            active,
+            reorder_enabled,
+            order_weekdays,
+            delivery_weekdays,
+            lead_time_days,
+            base_order_quantity,
+            min_order_quantity,
+            order_multiple_quantity,
+            safety_stock_quantity,
+            target_cover_days,
+            order_quantity_by_weekday,
+            note
+          `).order('id', { ascending:true }),
           supabase.from('purchase_suppliers').select('id, name').eq('active', true).order('name', { ascending:true }),
           supabase.from('purchase_orders').select('*').order('order_date', { ascending:false }),
           supabase.from('purchase_order_items').select('id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_cost, note, products(name)').order('id', { ascending:true }),
           supabase.from('warehouses').select('id, name, active').eq('active', true).order('name', { ascending:true }),
           supabase.from('products').select('id, name, active').eq('active', true).order('name', { ascending:true })
         ])
-        if (profilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error) throw profilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error
-        const rawProfilesById = new Map()
-        if (!rawProfilesResult.error) {
-          ;(rawProfilesResult.data || []).forEach((row) => rawProfilesById.set(String(row.id), row))
+        if (recommendationsResult.error || profilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error) {
+          throw recommendationsResult.error || profilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error
         }
-        profiles = (profilesResult.data || []).map((row) => ({
-          ...row,
-          product_name: row.product_name || row.name,
-          order_quantity_by_weekday: rawProfilesById.get(String(row.id))?.order_quantity_by_weekday || {}
-        }))
         suppliers = suppliersResult.data || []
         warehouses = warehousesResult.data || []
         products = productsResult.data || []
+        const recommendationMap = new Map()
+        ;(recommendationsResult.data || []).forEach((row) => {
+          const key = `${row.supplier_id}:${row.product_id}:${row.pilot_scope || 'general'}`
+          recommendationMap.set(key, row)
+        })
+        const productMap = new Map(products.map((item) => [String(item.id), item]))
+        const supplierMap = new Map(suppliers.map((item) => [String(item.id), item]))
+        profiles = (profilesResult.data || []).map((row) => {
+          const recommendation = recommendationMap.get(`${row.supplier_id}:${row.product_id}:${row.pilot_scope || 'general'}`) || {}
+          const product = productMap.get(String(row.product_id))
+          const supplier = supplierMap.get(String(row.supplier_id))
+          return {
+            ...row,
+            supplier_name: supplier?.name || recommendation.supplier_name || 'Dodavatel',
+            product_name: product?.name || recommendation.product_name || recommendation.name || 'Produkt',
+            order_quantity_by_weekday: row.order_quantity_by_weekday || {},
+            available_qty: recommendation.available_qty || 0,
+            warehouse_qty: recommendation.warehouse_qty || 0,
+            vehicle_qty: recommendation.vehicle_qty || 0,
+            recommended_order_qty: recommendation.recommended_order_qty || 0,
+            estimated_days_cover: recommendation.estimated_days_cover ?? null
+          }
+        })
         const itemMap = new Map()
         ;(itemsResult.data || []).forEach((item) => {
           if (!itemMap.has(item.purchase_order_id)) itemMap.set(item.purchase_order_id, [])
