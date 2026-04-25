@@ -115,6 +115,20 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "purchases.html": {
+      currentLabel: "Nákupy",
+      activeKey: "purchases",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "suppliers.html": {
+      currentLabel: "Dodavatelé",
+      activeKey: "suppliers",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "hr-planning.html": {
       currentLabel: "Plán směn",
       activeKey: "hr",
@@ -206,6 +220,8 @@
         { key: "operations", href: "operations.html", label: "Lokality" },
         { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
         { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
+        { key: "purchases", href: "purchases.html", label: "Nákupy" },
+        { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" },
         { key: "routes", href: "routes.html", label: "Trasy" },
         { key: "fleet", href: "vehicles.html", label: "Vozový park" }
       ]
