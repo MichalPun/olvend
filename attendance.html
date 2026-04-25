@@ -2598,6 +2598,7 @@
     let employeeProfile = null;
     let warehousesDirectory = [];
     let vehiclesDirectory = [];
+    let bagettePilotProducts = [];
     let todayAttendance = null;
     let todayEvents = [];
     let todayInstructions = [];
@@ -2986,6 +2987,7 @@
       const vehicleLogCount = todayVehicleOperationLogs.length;
       const currentVehicleLabel = escapeHtml(todayAttendance?.vehicle_label || 'Bez vozidla');
       const availableSwitchVehicles = vehiclesDirectory.filter((vehicle) => String(vehicle.id) !== String(todayAttendance?.vehicle_id || ''));
+      const defaultBagetteWarehouseId = getPreferredBagetteWarehouseId();
 
       if (!todayAttendance) {
         return `
@@ -3058,6 +3060,42 @@
               <button class="btn secondary" type="button" data-mobile-save-fuel>Uložit tankování</button>
               ${operatorAutoFlow ? '' : `<button class="btn secondary" type="button" data-mobile-depart ${departVehicleBtn.disabled ? 'disabled' : ''}>Vyjet autem</button>`}
               ${operatorAutoFlow ? '' : `<button class="btn secondary" type="button" data-mobile-return ${returnBaseBtn.disabled ? 'disabled' : ''}>Vrátit se</button>`}
+            </div>
+          </article>
+        ` : ''}
+        ${isOperatorRole() && todayAttendance.vehicle_id && bagettePilotProducts.length ? `
+          <article class="mobile-section-card">
+            <p class="mobile-section-label">Bagety pilot</p>
+            <h3 class="mobile-section-title">Nakládka a vratka</h3>
+            <p class="mobile-section-text">Příjem do skladu řeší manažer v Nákupy. Tady operátorka jen naloží bagety do auta a večer vrátí neprodané nebo odepisuje expiraci.</p>
+            <div class="form-grid" style="grid-template-columns:1fr;">
+              <div class="field full">
+                <label for="mobileBagetteProductSelect">Bageta</label>
+                <select id="mobileBagetteProductSelect">
+                  <option value="">Vyber bagetu</option>
+                  ${bagettePilotProducts.map((item) => `<option value="${escapeHtml(String(item.product_id))}">${escapeHtml(item.product_name || 'Bageta')} · ${escapeHtml(item.supplier_name || 'Dodavatel')}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field full">
+                <label for="mobileBagetteWarehouseSelect">Sklad</label>
+                <select id="mobileBagetteWarehouseSelect">
+                  <option value="">Vyber sklad</option>
+                  ${warehousesDirectory.map((warehouse) => `<option value="${escapeHtml(String(warehouse.id))}" ${String(defaultBagetteWarehouseId || '') === String(warehouse.id) ? 'selected' : ''}>${escapeHtml(warehouse.name)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field full">
+                <label for="mobileBagetteQtyInput">Množství</label>
+                <input id="mobileBagetteQtyInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="Např. 20" />
+              </div>
+              <div class="field full">
+                <label for="mobileBagetteNoteInput">Poznámka</label>
+                <textarea id="mobileBagetteNoteInput" placeholder="Volitelně: proč se vrací, co chybělo, co se neprodalo."></textarea>
+              </div>
+            </div>
+            <div class="mobile-section-actions">
+              <button class="btn secondary" type="button" data-mobile-bagette-load>Naložit do auta</button>
+              <button class="btn secondary" type="button" data-mobile-bagette-return>Vrátit neprodané</button>
+              <button class="btn danger" type="button" data-mobile-bagette-waste>Odepsat expiraci</button>
             </div>
           </article>
         ` : ''}
@@ -3446,8 +3484,8 @@
       mobileFocusBody.innerHTML = html;
       mobileFocusPanel.hidden = false;
       if (mobileShiftHub) {
-        mobileShiftHub.hidden = false;
-        mobileShiftHub.classList.add('compact');
+        mobileShiftHub.hidden = true;
+        mobileShiftHub.classList.remove('compact');
       }
     }
 
@@ -5218,9 +5256,10 @@
     }
 
     async function loadSupportData() {
-      const [warehousesResult, vehiclesResult] = await Promise.allSettled([
+      const [warehousesResult, vehiclesResult, bagetteProfilesResult] = await Promise.allSettled([
         supabase.from('warehouses').select('id, name').eq('active', true).order('name', { ascending: true }),
-        supabase.from('vehicles').select('id, plate, brand, model, name, current_odometer_km, assigned_employee_id').eq('active', true).order('plate', { ascending: true })
+        supabase.from('vehicles').select('id, plate, brand, model, name, current_odometer_km, assigned_employee_id').eq('active', true).order('plate', { ascending: true }),
+        supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true })
       ]);
 
       if (warehousesResult.status === 'fulfilled' && !warehousesResult.value.error) {
@@ -5233,6 +5272,12 @@
         vehiclesDirectory = vehiclesResult.value.data ?? [];
       } else {
         vehiclesDirectory = [];
+      }
+
+      if (bagetteProfilesResult.status === 'fulfilled' && !bagetteProfilesResult.value.error) {
+        bagettePilotProducts = bagetteProfilesResult.value.data ?? [];
+      } else {
+        bagettePilotProducts = [];
       }
 
       populateSupportOptions();
@@ -6315,6 +6360,163 @@
       if (vehicleUpdateError) throw vehicleUpdateError;
     }
 
+    function getPreferredBagetteWarehouseId() {
+      return (
+        todayAttendance?.start_warehouse_id
+        || todayPlannedShift?.warehouse_id
+        || (warehousesDirectory.length === 1 ? warehousesDirectory[0].id : null)
+      );
+    }
+
+    async function ensureStockLocationV13(locationType, warehouseId = null, vehicleId = null) {
+      let query = supabase
+        .from('stock_locations')
+        .select('id')
+        .eq('location_type', locationType)
+        .limit(1);
+
+      if (locationType === 'warehouse') query = query.eq('warehouse_id', Number(warehouseId));
+      if (locationType === 'vehicle') query = query.eq('vehicle_id', Number(vehicleId));
+
+      const { data: existing, error: existingError } = await query.maybeSingle();
+      if (existingError) throw existingError;
+      if (existing?.id) return existing.id;
+
+      const warehouse = warehouseId ? warehousesDirectory.find((item) => String(item.id) === String(warehouseId)) : null;
+      const vehicle = vehicleId ? vehiclesDirectory.find((item) => String(item.id) === String(vehicleId)) : null;
+      const payload = {
+        location_type: locationType,
+        name: locationType === 'warehouse'
+          ? (warehouse?.name || `Sklad ${warehouseId}`)
+          : (vehicle ? getVehicleDisplayLabel(vehicle.id) : `Vozidlo ${vehicleId}`),
+        warehouse_id: locationType === 'warehouse' ? Number(warehouseId) : null,
+        vehicle_id: locationType === 'vehicle' ? Number(vehicleId) : null,
+        active: true
+      };
+
+      const { data: created, error: createError } = await supabase
+        .from('stock_locations')
+        .insert([payload])
+        .select('id')
+        .single();
+      if (createError) throw createError;
+      return created.id;
+    }
+
+    async function applyStockBalanceDeltaV13(stockLocationId, productId, delta) {
+      const { data: existing, error: existingError } = await supabase
+        .from('stock_location_balances')
+        .select('id, quantity_on_hand')
+        .eq('stock_location_id', Number(stockLocationId))
+        .eq('product_id', Number(productId))
+        .is('batch_id', null)
+        .limit(1)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      const nextQuantity = Number((Number(existing?.quantity_on_hand || 0) + Number(delta || 0)).toFixed(3));
+      if (nextQuantity < 0) {
+        throw new Error('Na zvoleném místě není dost kusů pro tento pohyb.');
+      }
+
+      if (existing?.id) {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: nextQuantity, updated_at: new Date().toISOString() })
+          .eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .insert([{
+            stock_location_id: Number(stockLocationId),
+            product_id: Number(productId),
+            quantity_on_hand: nextQuantity,
+            reserved_quantity: 0
+          }]);
+        if (error) throw error;
+      }
+    }
+
+    async function saveBagetteVehicleMovement(mode) {
+      if (!todayAttendance?.id || !todayAttendance?.vehicle_id) {
+        throw new Error('Bagety můžeš zapsat jen ke dnešní směně s vozidlem.');
+      }
+
+      const productId = Number(document.getElementById('mobileBagetteProductSelect')?.value || 0);
+      const warehouseId = Number(document.getElementById('mobileBagetteWarehouseSelect')?.value || 0);
+      const quantity = parseIntegerValue(document.getElementById('mobileBagetteQtyInput')?.value);
+      const note = String(document.getElementById('mobileBagetteNoteInput')?.value || '').trim() || null;
+
+      if (!productId) throw new Error('Vyber bagetu.');
+      if (!warehouseId) throw new Error('Vyber sklad.');
+      if (quantity == null || quantity <= 0) throw new Error('Zadej množství baget.');
+      if (mode === 'load' && !todayAttendance.actual_start) throw new Error('Nakládku uděláš až po zahájení směny.');
+
+      const warehouseLocationId = await ensureStockLocationV13('warehouse', warehouseId, null);
+      const vehicleLocationId = await ensureStockLocationV13('vehicle', null, todayAttendance.vehicle_id);
+      const product = bagettePilotProducts.find((item) => String(item.product_id) === String(productId));
+      const referenceType = 'bagette_mobile';
+      const referenceId = `${todayAttendance.id}:${mode}:${Date.now()}`;
+
+      if (mode === 'load') {
+        await applyStockBalanceDeltaV13(warehouseLocationId, productId, -quantity);
+        await applyStockBalanceDeltaV13(vehicleLocationId, productId, quantity);
+        const { error } = await supabase
+          .from('stock_movements_v13')
+          .insert([{
+            product_id: productId,
+            from_stock_location_id: warehouseLocationId,
+            to_stock_location_id: vehicleLocationId,
+            movement_type: 'load_vehicle',
+            quantity_base_units: quantity,
+            reference_type: referenceType,
+            reference_id: referenceId,
+            note: note || 'Mobilní nakládka baget do vozidla.',
+            created_by: currentUser.id
+          }]);
+        if (error) throw error;
+        return;
+      }
+
+      if (mode === 'return') {
+        await applyStockBalanceDeltaV13(vehicleLocationId, productId, -quantity);
+        await applyStockBalanceDeltaV13(warehouseLocationId, productId, quantity);
+        const { error } = await supabase
+          .from('stock_movements_v13')
+          .insert([{
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            to_stock_location_id: warehouseLocationId,
+            movement_type: 'return',
+            quantity_base_units: quantity,
+            reference_type: referenceType,
+            reference_id: referenceId,
+            note: note || 'Mobilní vratka neprodaných baget.',
+            created_by: currentUser.id
+          }]);
+        if (error) throw error;
+        return;
+      }
+
+      if (mode === 'waste') {
+        await applyStockBalanceDeltaV13(vehicleLocationId, productId, -quantity);
+        const { error } = await supabase
+          .from('stock_movements_v13')
+          .insert([{
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            movement_type: 'waste',
+            quantity_base_units: quantity,
+            reference_type: referenceType,
+            reference_id: referenceId,
+            note: note || 'Mobilní odpis baget po expiraci.',
+            created_by: currentUser.id
+          }]);
+        if (error) throw error;
+      }
+    }
+
     async function correctShiftVehicle(nextVehicleId, nextStartKm) {
       if (!todayAttendance?.id || !todayAttendance.actual_start) {
         throw new Error('Auto jde opravit až u založené směny.');
@@ -7079,7 +7281,10 @@
         || button.hasAttribute('data-mobile-save-km')
         || button.hasAttribute('data-mobile-switch-vehicle')
         || button.hasAttribute('data-mobile-correct-vehicle')
-        || button.hasAttribute('data-mobile-capture-location');
+        || button.hasAttribute('data-mobile-capture-location')
+        || button.hasAttribute('data-mobile-bagette-load')
+        || button.hasAttribute('data-mobile-bagette-return')
+        || button.hasAttribute('data-mobile-bagette-waste');
 
       if (button.hasAttribute('data-mobile-home')) {
         setMobileShiftSection('home');
@@ -7186,6 +7391,30 @@
           setActionsStatus('Požadavek byl uložený a propsal se do dnešního dne.', 'success');
           await refreshPageData();
           setMobileShiftSection('home');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-bagette-load')) {
+          button.disabled = true;
+          await saveBagetteVehicleMovement('load');
+          setActionsStatus('Bagety byly naložené do vozidla.', 'success');
+          setMobileShiftSection('vehicle');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-bagette-return')) {
+          button.disabled = true;
+          await saveBagetteVehicleMovement('return');
+          setActionsStatus('Neprodané bagety byly vrácené zpět do skladu.', 'success');
+          setMobileShiftSection('vehicle');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-bagette-waste')) {
+          button.disabled = true;
+          await saveBagetteVehicleMovement('waste');
+          setActionsStatus('Bagety po expiraci byly odepsané.', 'success');
+          setMobileShiftSection('vehicle');
           return;
         }
 

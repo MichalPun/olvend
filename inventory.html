@@ -163,6 +163,33 @@
               </table>
             </div>
             <div class="empty-state" id="bagettePilotEmpty" style="display:none;">Bagetový pilot zatím nemá profily. Nejdřív založ dodavatele a stálé profily v `Dodavatelé` a `Nákupy`, pak se přehled ukáže tady.</div>
+            <div class="panel" style="margin-top:16px; background:rgba(255,255,255,0.02);">
+              <div class="panel-header">
+                <div>
+                  <h2 style="font-size:18px;">Vratka podle operátora</h2>
+                  <p>Sledujeme jednoduchý pilot: naloženo do vozidla vs. vráceno nebo odepsáno po expiraci. Limit dodavatele je 7 %.</p>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div class="summary-grid" id="bagetteOperatorSummary"></div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Operátor</th>
+                        <th>Naloženo</th>
+                        <th>Vráceno</th>
+                        <th>Expirace</th>
+                        <th>Vratka %</th>
+                        <th>Stav</th>
+                      </tr>
+                    </thead>
+                    <tbody id="bagetteOperatorBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty-state" id="bagetteOperatorEmpty" style="display:none;">Zatím nemáme žádnou pilotní nakládku nebo vratku baget od operátorek.</div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -384,6 +411,9 @@
     const bagettePilotSummary = document.getElementById('bagettePilotSummary')
     const bagettePilotBody = document.getElementById('bagettePilotBody')
     const bagettePilotEmpty = document.getElementById('bagettePilotEmpty')
+    const bagetteOperatorSummary = document.getElementById('bagetteOperatorSummary')
+    const bagetteOperatorBody = document.getElementById('bagetteOperatorBody')
+    const bagetteOperatorEmpty = document.getElementById('bagetteOperatorEmpty')
     const summaryGrid = document.getElementById('summaryGrid')
     const stockV13Status = document.getElementById('stockV13Status')
     const stockV13Summary = document.getElementById('stockV13Summary')
@@ -434,6 +464,7 @@
     let replenishmentProfilesV13 = []
     let stockMovementsV13 = []
     let bagettePilotRows = []
+    let bagetteOperatorStats = []
     let vehicles = []
     let purchaseSuppliers = []
     let purchaseProductProfiles = []
@@ -531,6 +562,38 @@
         { label:'Chce řešit', value: riskCount, note:'Počet položek, kde už doporučení něco navrhuje.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
+    function renderBagetteOperatorStats(rows) {
+      const totalLoaded = rows.reduce((sum, row) => sum + Number(row.loaded_qty || 0), 0)
+      const totalReturned = rows.reduce((sum, row) => sum + Number(row.return_qty || 0), 0)
+      const totalExpired = rows.reduce((sum, row) => sum + Number(row.expired_qty || 0), 0)
+      const overallRate = totalLoaded > 0 ? ((totalReturned + totalExpired) / totalLoaded) * 100 : 0
+      const riskyCount = rows.filter((row) => Number(row.return_rate_pct || 0) > 7).length
+      bagetteOperatorSummary.innerHTML = [
+        { label:'Operátorky v pilotu', value: rows.length, note:'Kolik lidí už má naloženo nebo vráceno.' },
+        { label:'Naloženo', value: totalLoaded.toFixed(0), note:'Součet baget naložených do vozidel.' },
+        { label:'Vráceno + expirace', value: (totalReturned + totalExpired).toFixed(0), note:'Neprodané kusy a expirace dohromady.' },
+        { label:'Celková vratka', value: `${overallRate.toFixed(1)} %`, note:'Jednoduchý pilotní ukazatel proti limitu dodavatele.' },
+        { label:'Nad limitem', value: riskyCount, note:'Počet operátorek nad tolerancí 7 %.' }
+      ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+
+      bagetteOperatorBody.innerHTML = rows.map((row) => {
+        const rate = Number(row.return_rate_pct || 0)
+        const expiryRate = Number(row.expiry_rate_pct || 0)
+        const statusClass = rate > 7 ? 'bad' : rate > 4 ? 'warn' : 'good'
+        const statusLabel = rate > 7 ? 'Nad 7 %' : rate > 4 ? 'Hlídáme' : 'V pořádku'
+        return `
+          <tr>
+            <td data-label="Operátor"><strong>${escapeHtml(row.employee_name || 'Bez jména')}</strong><span class="subtext">Posledních 30 dní pilotu</span></td>
+            <td data-label="Naloženo"><strong>${escapeHtml(Number(row.loaded_qty || 0).toFixed(0))}</strong><span class="subtext">Bagety do vozidla</span></td>
+            <td data-label="Vráceno"><strong>${escapeHtml(Number(row.return_qty || 0).toFixed(0))}</strong><span class="subtext">Neprodané / nevložené</span></td>
+            <td data-label="Expirace"><strong>${escapeHtml(Number(row.expired_qty || 0).toFixed(0))}</strong><span class="subtext">${escapeHtml(expiryRate.toFixed(1))} % z naloženého</span></td>
+            <td data-label="Vratka %"><strong>${escapeHtml(rate.toFixed(1))} %</strong><span class="subtext">Celkem vratka</span></td>
+            <td data-label="Stav"><span class="badge ${statusClass}">${escapeHtml(statusLabel)}</span><span class="subtext">Limit dodavatele 7 %</span></td>
+          </tr>
+        `
+      }).join('')
+      bagetteOperatorEmpty.style.display = rows.length ? 'none' : 'block'
+    }
     function renderBagettePilotRows() {
       const rows = [...bagettePilotRows].sort((a, b) => Number(b.recommended_order_qty || 0) - Number(a.recommended_order_qty || 0) || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
       bagettePilotBody.innerHTML = rows.map((row) => {
@@ -562,8 +625,65 @@
 
         if (error) throw error
         bagettePilotRows = data ?? []
+        const bagetteProductIds = [...new Set(bagettePilotRows.map((row) => Number(row.product_id)).filter(Boolean))]
+        bagetteOperatorStats = []
+        if (bagetteProductIds.length) {
+          const sinceIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+          const { data: movements, error: movementsError } = await supabase
+            .from('stock_movements_v13')
+            .select('product_id, movement_type, quantity_base_units, created_by, created_at')
+            .in('product_id', bagetteProductIds)
+            .in('movement_type', ['load_vehicle', 'return', 'waste'])
+            .gte('created_at', sinceIso)
+            .not('created_by', 'is', null)
+
+          if (movementsError) throw movementsError
+          const employeeIds = [...new Set((movements || []).map((movement) => movement.created_by).filter(Boolean))]
+          let employeeMap = new Map()
+          if (employeeIds.length) {
+            const { data: employees, error: employeesError } = await supabase
+              .from('employees')
+              .select('id, name, surname')
+              .in('id', employeeIds)
+            if (employeesError) throw employeesError
+            employeeMap = new Map((employees || []).map((employee) => [employee.id, [employee.name, employee.surname].filter(Boolean).join(' ').trim() || 'Zaměstnanec']))
+          }
+
+          const statsMap = new Map()
+          ;(movements || []).forEach((movement) => {
+            const key = String(movement.created_by)
+            if (!statsMap.has(key)) {
+              statsMap.set(key, {
+                employee_id: movement.created_by,
+                employee_name: employeeMap.get(movement.created_by) || 'Zaměstnanec',
+                loaded_qty: 0,
+                return_qty: 0,
+                expired_qty: 0
+              })
+            }
+            const row = statsMap.get(key)
+            if (movement.movement_type === 'load_vehicle') row.loaded_qty += Number(movement.quantity_base_units || 0)
+            if (movement.movement_type === 'return') row.return_qty += Number(movement.quantity_base_units || 0)
+            if (movement.movement_type === 'waste') row.expired_qty += Number(movement.quantity_base_units || 0)
+          })
+
+          bagetteOperatorStats = Array.from(statsMap.values())
+            .map((row) => {
+              const loaded = Number(row.loaded_qty || 0)
+              const returned = Number(row.return_qty || 0)
+              const expired = Number(row.expired_qty || 0)
+              const totalReturn = returned + expired
+              return {
+                ...row,
+                return_rate_pct: loaded > 0 ? (totalReturn / loaded) * 100 : 0,
+                expiry_rate_pct: loaded > 0 ? (expired / loaded) * 100 : 0
+              }
+            })
+            .sort((a, b) => Number(b.return_rate_pct || 0) - Number(a.return_rate_pct || 0) || normalizeText(a.employee_name).localeCompare(normalizeText(b.employee_name), 'cs'))
+        }
         renderBagettePilotSummary(bagettePilotRows)
         renderBagettePilotRows()
+        renderBagetteOperatorStats(bagetteOperatorStats)
         setBagettePilotStatus(
           bagettePilotRows.length
             ? `Načteno baget v pilotu: ${bagettePilotRows.length}`
@@ -573,8 +693,12 @@
       } catch (error) {
         console.error(error)
         bagettePilotRows = []
+        bagetteOperatorStats = []
         bagettePilotSummary.innerHTML = ''
         bagettePilotBody.innerHTML = ''
+        bagetteOperatorSummary.innerHTML = ''
+        bagetteOperatorBody.innerHTML = ''
+        bagetteOperatorEmpty.style.display = 'block'
         bagettePilotEmpty.style.display = 'block'
         setBagettePilotStatus(`Bagetový pilot zatím neběží: ${error.message}. Pokud ho chceš zapnout, spusť database/purchases_pilot_v13.sql.`, 'error')
       }
