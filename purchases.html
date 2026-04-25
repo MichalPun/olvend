@@ -625,12 +625,28 @@
       if (!payload.supplier_id || !payload.product_id) throw new Error('Vyber dodavatele i produkt.')
       if (!payload.order_weekdays.length) throw new Error('Vyber aspoň jeden objednávací den.')
       if (!payload.delivery_weekdays.length) throw new Error('Vyber aspoň jeden dodací den.')
-      if (id) {
-        const { error } = await supabase.from('purchase_product_profiles').update(payload).eq('id', id)
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('purchase_product_profiles').insert([payload])
-        if (error) throw error
+      const saveOnce = async (withWeekdayQuantities = true) => {
+        const finalPayload = withWeekdayQuantities
+          ? payload
+          : (() => {
+              const { order_quantity_by_weekday, ...rest } = payload
+              return rest
+            })()
+        if (id) {
+          const { error } = await supabase.from('purchase_product_profiles').update(finalPayload).eq('id', id)
+          if (error) throw error
+        } else {
+          const { error } = await supabase.from('purchase_product_profiles').insert([finalPayload])
+          if (error) throw error
+        }
+      }
+      try {
+        await saveOnce(true)
+        return { weekdayQuantitiesSaved: true }
+      } catch (error) {
+        if (error?.code !== '42703' && !String(error?.message || '').includes('order_quantity_by_weekday')) throw error
+        await saveOnce(false)
+        return { weekdayQuantitiesSaved: false }
       }
     }
     async function ensureWarehouseLocation(warehouseId) {
@@ -1017,10 +1033,15 @@
       try {
         saveProfileBtn.disabled = true
         saveProfileBtn.textContent = 'Ukládám...'
-        await saveProfile()
+        const result = await saveProfile()
         closeProfileModal()
         await loadPage()
-        setStatus('Profil objednávky byl uložený.', 'success')
+        setStatus(
+          result?.weekdayQuantitiesSaved === false
+            ? 'Položka se uložila, ale denní množství se zatím nepropsalo. Pro něj spusť database/purchases_weekday_quantities_patch_v13.sql.'
+            : 'Profil objednávky byl uložený.',
+          result?.weekdayQuantitiesSaved === false ? 'error' : 'success'
+        )
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se uložit profil: ${error.message}`, 'error')
