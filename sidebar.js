@@ -11,7 +11,8 @@
         "Nástěnka, menu a hlavní orientace jsou čistší a důležitější akce jsou blíž po ruce.",
         "Moje směna lépe hlídá práci s vozidlem, nesoulad kilometrů a starší otevřené směny posílá ke kontrole.",
         "Pokyny dne nově umí i PDF přílohu, takže důležité podklady můžeš otevřít přímo v aplikaci.",
-        "Přibyly základy pro dodavatele, pravidelné dodávky, nákupy a zásobování vozidel."
+        "Přibyly základy pro dodavatele, pravidelné dodávky, nákupy a zásobování vozidel.",
+        "Tankování nově vyžaduje odkaz na foto účtenky a záznam jde ke schválení, aby nešlo zkreslovat spotřebu."
       ]
     }
   };

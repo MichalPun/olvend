@@ -2273,7 +2273,7 @@
                   <section class="step-block" id="vehicleLogCard">
                     <div class="step-kicker">Tankování</div>
                     <h3 class="step-title">Průběžné tankování</h3>
-                    <p class="step-copy" id="vehicleLogNote">Tady zapisuj tankování během dne.</p>
+                    <p class="step-copy" id="vehicleLogNote">Tady zapisuj tankování během dne. Bez odkazu na foto účtenky se tankování neuzná.</p>
                     <div class="vehicle-log-head" style="margin-top:12px;">
                       <span class="badge blue" id="vehicleLogBadge">Bez vozidla</span>
                     </div>
@@ -2292,6 +2292,11 @@
                       <div class="field">
                         <label for="fuelOdometerKmInput">Stav km při tankování</label>
                         <input id="fuelOdometerKmInput" type="number" min="0" step="1" placeholder="Např. 152418" disabled />
+                      </div>
+
+                      <div class="field full">
+                        <label for="fuelReceiptUrlInput">Odkaz na foto účtenky</label>
+                        <input id="fuelReceiptUrlInput" type="url" placeholder="Např. https://... nebo odkaz na nahranou fotku" disabled />
                       </div>
 
                       <div class="field full">
@@ -2563,6 +2568,7 @@
     const fuelLitersInput = document.getElementById('fuelLitersInput');
     const fuelCostInput = document.getElementById('fuelCostInput');
     const fuelOdometerKmInput = document.getElementById('fuelOdometerKmInput');
+    const fuelReceiptUrlInput = document.getElementById('fuelReceiptUrlInput');
     const fuelNoteInput = document.getElementById('fuelNoteInput');
     const saveFuelBtn = document.getElementById('saveFuelBtn');
     const activeDaySummary = document.getElementById('activeDaySummary');
@@ -2631,6 +2637,10 @@
     const VEHICLE_KM_REVIEW_THRESHOLD = 5;
     const VEHICLE_KM_DANGER_THRESHOLD = 1000;
     const VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD = 600;
+    const FUEL_PRICE_PER_LITER_MIN = 20;
+    const FUEL_PRICE_PER_LITER_MAX = 60;
+    const FUEL_PRICE_PER_LITER_LPG_MIN = 8;
+    const FUEL_PRICE_PER_LITER_LPG_MAX = 35;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -3088,6 +3098,10 @@
               <div class="field full">
                 <label for="mobileFuelKmInput">Stav km při tankování</label>
                 <input id="mobileFuelKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(fuelOdometerKmInput?.value || '')}" placeholder="Např. 152418" />
+              </div>
+              <div class="field full">
+                <label for="mobileFuelReceiptUrlInput">Odkaz na foto účtenky</label>
+                <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Např. https://..." />
               </div>
               <div class="field full">
                 <label for="mobileFuelNoteInput">Poznámka</label>
@@ -4072,6 +4086,41 @@
       return `<a class="${escapeHtml(buttonClass)}" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít PDF')}</a>`;
     }
 
+    function getFuelReviewState({ fuelLiters, fuelCost, fuelReceiptUrl, vehicleId }) {
+      const hasFuelEntry = fuelLiters != null || fuelCost != null;
+      if (!hasFuelEntry) {
+        return { hasFuelEntry: false, requiresReview: false, reviewNote: null };
+      }
+
+      const reasons = ['Tankování čeká na kontrolu účtenky.'];
+      const vehicle = vehiclesDirectory.find((item) => String(item.id) === String(vehicleId));
+
+      if (fuelLiters != null && fuelCost != null && fuelLiters > 0 && fuelCost > 0) {
+        const unitPrice = Number(fuelCost) / Number(fuelLiters);
+        const isLpg = String(vehicle?.fuel_type || '').toLowerCase() === 'lpg';
+        const minPrice = isLpg ? FUEL_PRICE_PER_LITER_LPG_MIN : FUEL_PRICE_PER_LITER_MIN;
+        const maxPrice = isLpg ? FUEL_PRICE_PER_LITER_LPG_MAX : FUEL_PRICE_PER_LITER_MAX;
+        if (unitPrice < minPrice || unitPrice > maxPrice) {
+          reasons.push(`Cena za litr ${unitPrice.toFixed(2).replace('.', ',')} Kč je mimo obvyklé rozmezí.`);
+        }
+      }
+
+      const tankCapacity = parseDecimalValue(vehicle?.tank_capacity_l);
+      if (tankCapacity != null && fuelLiters != null && fuelLiters > tankCapacity + 5) {
+        reasons.push(`Zadané tankování ${fuelLiters} l je vyšší než rozumná kapacita nádrže.`);
+      }
+
+      if (!fuelReceiptUrl) {
+        reasons.push('Chybí odkaz na foto účtenky.');
+      }
+
+      return {
+        hasFuelEntry: true,
+        requiresReview: true,
+        reviewNote: reasons.join(' ')
+      };
+    }
+
     function getEndKmReviewState(vehicleId = todayAttendance?.vehicle_id) {
       if (!vehicleId) {
         return {
@@ -4490,6 +4539,7 @@
       if (fuelLitersInput) fuelLitersInput.disabled = !enabled;
       if (fuelCostInput) fuelCostInput.disabled = !enabled;
       if (fuelOdometerKmInput) fuelOdometerKmInput.disabled = !enabled;
+      if (fuelReceiptUrlInput) fuelReceiptUrlInput.disabled = !enabled;
       if (fuelNoteInput) fuelNoteInput.disabled = !enabled;
       if (saveFuelBtn) saveFuelBtn.disabled = !enabled;
     }
@@ -4498,6 +4548,7 @@
       if (fuelLitersInput) fuelLitersInput.disabled = !enabled;
       if (fuelCostInput) fuelCostInput.disabled = !enabled;
       if (fuelOdometerKmInput) fuelOdometerKmInput.disabled = !enabled;
+      if (fuelReceiptUrlInput) fuelReceiptUrlInput.disabled = !enabled;
       if (fuelNoteInput) fuelNoteInput.disabled = !enabled;
       if (saveFuelBtn) saveFuelBtn.disabled = !enabled;
     }
@@ -4527,6 +4578,7 @@
       if (fuelLitersInput) fuelLitersInput.value = '';
       if (fuelCostInput) fuelCostInput.value = '';
       if (fuelOdometerKmInput) fuelOdometerKmInput.value = '';
+      if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = '';
       if (fuelNoteInput) fuelNoteInput.value = '';
       if (vehicleLogCard) vehicleLogCard.classList.remove('review');
       if (startKmReviewConfirm) startKmReviewConfirm.checked = false;
@@ -4637,7 +4689,7 @@
 
       let query = supabase
         .from('vehicle_operation_logs')
-        .select('id, vehicle_id, employee_id, attendance_day_id, log_date, started_at, ended_at, start_odometer_km, end_odometer_km, distance_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_note, trip_note, status')
+        .select('id, vehicle_id, employee_id, attendance_day_id, log_date, started_at, ended_at, start_odometer_km, end_odometer_km, distance_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_receipt_url, fuel_note, trip_note, status')
         .eq('log_date', getTodayDateString())
         .order('started_at', { ascending: true });
 
@@ -4671,7 +4723,7 @@
       }
 
       if (!todayAttendance?.actual_start) {
-        if (vehicleLogNote) vehicleLogNote.textContent = 'Po zahájení směny se sem propíše jízda vozidla. Tankování můžeš ukládat průběžně, konečný stav km až při ukončení dne.';
+        if (vehicleLogNote) vehicleLogNote.textContent = 'Po zahájení směny se sem propíše jízda vozidla. Tankování můžeš ukládat průběžně, ale vždy s odkazem na foto účtenky.';
         if (vehicleLogCard) vehicleLogCard.classList.remove('review');
         setVehicleOperationInputsEnabled(false);
         return;
@@ -4703,6 +4755,7 @@
       if (fuelLitersInput && todayVehicleOperationLog?.fuel_liters != null) fuelLitersInput.value = String(todayVehicleOperationLog.fuel_liters);
       if (fuelCostInput && todayVehicleOperationLog?.fuel_cost != null) fuelCostInput.value = String(todayVehicleOperationLog.fuel_cost);
       if (fuelOdometerKmInput && todayVehicleOperationLog?.fuel_odometer_km != null) fuelOdometerKmInput.value = String(todayVehicleOperationLog.fuel_odometer_km);
+      if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = todayVehicleOperationLog?.fuel_receipt_url || '';
       if (fuelNoteInput && (todayVehicleOperationLog?.fuel_note || todayVehicleOperationLog?.trip_note)) {
         fuelNoteInput.value = [todayVehicleOperationLog.fuel_note, todayVehicleOperationLog.trip_note].filter(Boolean).join(' | ');
       }
@@ -4724,7 +4777,7 @@
           } else {
             vehicleLogNote.textContent = distanceKm != null
               ? `Start ${startKm} km · zatím ujeto ${distanceKm} km.${todayVehicleOperationLog?.fuel_odometer_km != null ? ` Poslední tankování při ${todayVehicleOperationLog.fuel_odometer_km} km.` : ''}${todayVehicleOperationLogs.length > 1 ? ` Dnes už proběhlo ${todayVehicleOperationLogs.length} jízd/aut.` : ''}`
-              : `Start ${startKm} km. Tankování můžeš uložit kdykoliv během směny, ale vždy doplň i stav km.${todayVehicleOperationLog?.fuel_odometer_km != null ? ` Poslední tankování při ${todayVehicleOperationLog.fuel_odometer_km} km.` : ''}${todayVehicleOperationLogs.length > 1 ? ` Dnes už proběhlo ${todayVehicleOperationLogs.length} jízd/aut.` : ''}`;
+              : `Start ${startKm} km. Tankování můžeš uložit kdykoliv během směny, ale vždy doplň i stav km a odkaz na foto účtenky.${todayVehicleOperationLog?.fuel_odometer_km != null ? ` Poslední tankování při ${todayVehicleOperationLog.fuel_odometer_km} km.` : ''}${todayVehicleOperationLogs.length > 1 ? ` Dnes už proběhlo ${todayVehicleOperationLogs.length} jízd/aut.` : ''}`;
           }
         } else {
           vehicleLogNote.textContent = todayAttendance.actual_end
@@ -6147,6 +6200,40 @@
       };
     }
 
+    async function markAttendanceForFuelReview(note) {
+      if (!todayAttendance?.id) return;
+
+      const { error: dayError } = await supabase
+        .from('attendance_days')
+        .update({
+          requires_approval: true,
+          approval_status: 'pending',
+          status: 'needs_review'
+        })
+        .eq('id', todayAttendance.id);
+
+      if (dayError) throw dayError;
+
+      const { error: eventError } = await supabase
+        .from('attendance_events')
+        .insert([{
+          attendance_day_id: todayAttendance.id,
+          employee_id: currentUser.id,
+          event_type: 'manual_adjustment',
+          event_time: new Date().toISOString(),
+          note: `Kontrola tankování · ${note}`
+        }]);
+
+      if (eventError) throw eventError;
+
+      todayAttendance = {
+        ...todayAttendance,
+        requires_approval: true,
+        approval_status: 'pending',
+        status: 'needs_review'
+      };
+    }
+
     async function saveVehicleOperationEnd(endedAtIso) {
       if (!todayAttendance?.id || !todayAttendance.vehicle_id) return;
       const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
@@ -6167,7 +6254,22 @@
 
       const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
+      const fuelReceiptUrl = String(fuelReceiptUrlInput?.value || '').trim() || null;
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
+      const fuelReview = getFuelReviewState({
+        fuelLiters,
+        fuelCost,
+        fuelReceiptUrl,
+        vehicleId: todayAttendance.vehicle_id
+      });
+      if (fuelReview.hasFuelEntry) {
+        if (fuelLiters == null || fuelCost == null) {
+          throw new Error('K tankování doplň litry i cenu z účtenky.');
+        }
+        if (!fuelReceiptUrl) {
+          throw new Error('K tankování doplň odkaz na foto účtenky.');
+        }
+      }
       const isReview = currentLog?.status === 'review';
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
       const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
@@ -6188,14 +6290,16 @@
         end_odometer_km: endOdometerKm,
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
+        fuel_receipt_url: fuelReceiptUrl,
         fuel_note: operationNote,
         trip_note: [
           currentLog?.trip_note,
           endKmReview.reviewNote,
+          fuelReview.reviewNote,
           isReview ? 'Zkontrolovat rozdíl start km proti poslednímu stavu vozidla.' : null,
           distanceReviewNote
         ].filter(Boolean).join(' · ') || null,
-        status: isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'closed'
+        status: isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'closed'
       };
 
       if (currentLog?.id) {
@@ -6219,6 +6323,10 @@
         .eq('id', Number(todayAttendance.vehicle_id));
 
       if (vehicleUpdateError) throw vehicleUpdateError;
+
+      if (fuelReview.requiresReview) {
+        await markAttendanceForFuelReview(fuelReview.reviewNote);
+      }
 
       if (needsDistanceReview || needsEndKmReview) {
         await markAttendanceForVehicleKmReview(
@@ -6251,10 +6359,25 @@
       const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
       const fuelOdometerKm = parseIntegerValue(fuelOdometerKmInput?.value);
+      const fuelReceiptUrl = String(fuelReceiptUrlInput?.value || '').trim() || null;
       if (fuelOdometerKm != null && endOdometerKm < fuelOdometerKm) {
         throw new Error(`Aktuální stav km nemůže být menší než poslední tankování při ${fuelOdometerKm} km.`);
       }
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
+      const fuelReview = getFuelReviewState({
+        fuelLiters,
+        fuelCost,
+        fuelReceiptUrl,
+        vehicleId: todayAttendance.vehicle_id
+      });
+      if (fuelReview.hasFuelEntry) {
+        if (fuelLiters == null || fuelCost == null) {
+          throw new Error('K tankování doplň litry i cenu z účtenky.');
+        }
+        if (!fuelReceiptUrl) {
+          throw new Error('K tankování doplň odkaz na foto účtenky.');
+        }
+      }
       const isReview = currentLog?.status === 'review';
       const eventTime = new Date().toISOString();
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
@@ -6277,11 +6400,12 @@
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
         fuel_odometer_km: fuelOdometerKm,
+        fuel_receipt_url: fuelReceiptUrl,
         fuel_note: operationNote,
-        trip_note: [currentLog?.trip_note, endKmReview.reviewNote, distanceReviewNote].filter(Boolean).join(' · ') || null,
+        trip_note: [currentLog?.trip_note, endKmReview.reviewNote, fuelReview.reviewNote, distanceReviewNote].filter(Boolean).join(' · ') || null,
         status: closeCurrent
-          ? (isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'closed')
-          : (isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'open')
+          ? (isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'closed')
+          : (isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'open')
       };
 
       if (currentLog?.id) {
@@ -6305,6 +6429,10 @@
         .eq('id', Number(todayAttendance.vehicle_id));
 
       if (vehicleUpdateError) throw vehicleUpdateError;
+
+      if (fuelReview.requiresReview) {
+        await markAttendanceForFuelReview(fuelReview.reviewNote);
+      }
 
       const { error: eventError } = await supabase
         .from('attendance_events')
@@ -6349,6 +6477,7 @@
       const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
       const fuelOdometerKm = parseIntegerValue(fuelOdometerKmInput?.value);
+      const fuelReceiptUrl = String(fuelReceiptUrlInput?.value || '').trim() || null;
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
 
       if (fuelLiters == null && fuelCost == null && fuelOdometerKm == null && !operationNote) {
@@ -6358,6 +6487,19 @@
       if ((fuelLiters != null || fuelCost != null) && fuelOdometerKm == null) {
         throw new Error('K tankování doplň i stav km v okamžiku tankování.');
       }
+      if ((fuelLiters != null || fuelCost != null) && (fuelLiters == null || fuelCost == null)) {
+        throw new Error('K tankování doplň litry i cenu z účtenky.');
+      }
+      if ((fuelLiters != null || fuelCost != null) && !fuelReceiptUrl) {
+        throw new Error('K tankování doplň odkaz na foto účtenky.');
+      }
+
+      const fuelReview = getFuelReviewState({
+        fuelLiters,
+        fuelCost,
+        fuelReceiptUrl,
+        vehicleId: todayAttendance.vehicle_id
+      });
 
       const startOdometerKm = parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
       const payload = {
@@ -6371,9 +6513,10 @@
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
         fuel_odometer_km: fuelOdometerKm,
+        fuel_receipt_url: fuelReceiptUrl,
         fuel_note: operationNote,
-        trip_note: currentLog?.trip_note || null,
-        status: currentLog?.status === 'review' ? 'review' : 'open'
+        trip_note: [currentLog?.trip_note, fuelReview.reviewNote].filter(Boolean).join(' · ') || null,
+        status: currentLog?.status === 'review' || fuelReview.requiresReview ? 'review' : 'open'
       };
 
       if (currentLog?.id) {
@@ -6398,13 +6541,13 @@
           employee_id: currentUser.id,
           event_type: 'manual_adjustment',
           event_time: new Date().toISOString(),
-          note: `Tankování${fuelOdometerKm != null ? ` · ${fuelOdometerKm} km` : ''} · ${fuelLiters != null ? `${String(fuelLiters).replace('.', ',')} l` : 'bez litrů'}${fuelCost != null ? ` · ${Number(fuelCost).toFixed(2).replace('.', ',')} Kč` : ''}${operationNote ? ` · ${operationNote}` : ''}`
+          note: `Tankování${fuelOdometerKm != null ? ` · ${fuelOdometerKm} km` : ''} · ${fuelLiters != null ? `${String(fuelLiters).replace('.', ',')} l` : 'bez litrů'}${fuelCost != null ? ` · ${Number(fuelCost).toFixed(2).replace('.', ',')} Kč` : ''}${fuelReceiptUrl ? ' · účtenka přiložená' : ''}${operationNote ? ` · ${operationNote}` : ''}`
         }]);
 
       if (eventError) throw eventError;
 
-      if (needsDistanceReview) {
-        await markAttendanceForVehicleKmReview(distanceReviewNote);
+      if (fuelReview.requiresReview) {
+        await markAttendanceForFuelReview(fuelReview.reviewNote);
       }
     }
 
@@ -7429,6 +7572,11 @@
 
       if (target.id === 'mobileFuelKmInput') {
         if (fuelOdometerKmInput) fuelOdometerKmInput.value = target.value;
+        return;
+      }
+
+      if (target.id === 'mobileFuelReceiptUrlInput') {
+        if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = target.value;
         return;
       }
 
