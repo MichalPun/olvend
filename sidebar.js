@@ -1,17 +1,17 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
-  const APP_VERSION = "OLVEND 1.2";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.2";
+  const APP_VERSION = "OLVEND 1.3";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.3";
   const RELEASE_NOTES = {
-    "1.2": {
-      title: "Nová verze 1.2",
-      subtitle: "Rozhraní jsme pročistili tak, aby se dalo rychleji najít to důležité a jednotlivé moduly nepůsobily přehlceně.",
+    "1.3": {
+      title: "Nová verze 1.3",
+      subtitle: "Do aplikace jsme přidali praktičtější provozní věci a srovnali orientaci tak, aby se dalo rychleji pokračovat v práci.",
       items: [
-        "Stránky nově zvýrazňují hlavní akci a sekundární bloky se dají sbalit, takže nahoře zůstává méně rušivých prvků.",
-        "Provoz, Servis a Vozový park mají kompaktnější filtry a rozšířené přehledy až na druhé úrovni.",
-        "HR je víc task-first: rychlé ovládání je nahoře a doplňkové operace jsou méně rozptýlené.",
-        "Mobilní zobrazení zůstává zachované a sbalitelné sekce fungují i na menších displejích."
+        "Nástěnka, menu a hlavní orientace jsou čistší a důležitější akce jsou blíž po ruce.",
+        "Moje směna lépe hlídá práci s vozidlem, nesoulad kilometrů a starší otevřené směny posílá ke kontrole.",
+        "Pokyny dne nově umí i PDF přílohu, takže důležité podklady můžeš otevřít přímo v aplikaci.",
+        "Přibyly základy pro dodavatele, pravidelné dodávky, nákupy a zásobování vozidel."
       ]
     }
   };
