@@ -912,13 +912,34 @@
       const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', orderId)
       if (error) throw error
     }
-    async function generateTodayDrafts() {
+    function resolveSourceOrderDay(recurringOrder, deliveryIsoDate) {
+      const orderDays = Array.isArray(recurringOrder.order_weekdays) ? recurringOrder.order_weekdays : []
+      const deliveryDays = Array.isArray(recurringOrder.delivery_weekdays) ? recurringOrder.delivery_weekdays : []
+      const deliveryDate = new Date(`${deliveryIsoDate}T00:00:00`)
+      const deliveryIsoDay = deliveryDate.getDay() === 0 ? 7 : deliveryDate.getDay()
+      const pairedIndex = deliveryDays.indexOf(deliveryIsoDay)
+      if (pairedIndex >= 0 && orderDays[pairedIndex] != null) return Number(orderDays[pairedIndex])
+      const sorted = [...orderDays].sort((a, b) => a - b)
+      const fallback = [...sorted].reverse().find((day) => day < deliveryIsoDay)
+      return Number(fallback || sorted[sorted.length - 1] || deliveryIsoDay)
+    }
+    function resolveOrderDateForDelivery(recurringOrder, deliveryIsoDate) {
+      const sourceOrderDay = resolveSourceOrderDay(recurringOrder, deliveryIsoDate)
+      const probe = new Date(`${deliveryIsoDate}T00:00:00`)
+      for (let offset = 0; offset < 8; offset += 1) {
+        const isoDay = probe.getDay() === 0 ? 7 : probe.getDay()
+        if (isoDay === sourceOrderDay) return probe.toISOString().slice(0, 10)
+        probe.setDate(probe.getDate() - 1)
+      }
+      return deliveryIsoDate
+    }
+    async function generateTodayDrafts({ silent = false } = {}) {
       const day = todayIsoDay()
       const today = new Date().toISOString().slice(0, 10)
       const dueOrders = recurringOrders.filter((row) => row.active !== false && Array.isArray(row.order_weekdays) && row.order_weekdays.includes(day))
       if (!dueOrders.length) {
-        setStatus('Dnes podle stálých dodávek nevychází žádný návrh objednávky.', 'success')
-        return
+        if (!silent) setStatus('Dnes podle stálých dodávek nevychází žádný návrh objednávky.', 'success')
+        return 0
       }
       const existingRecurringIds = new Set(
         orders
@@ -966,10 +987,62 @@
         createdCount += 1
       }
       if (!createdCount) {
-        setStatus('Dnešní návrhy už existují nebo nemají žádné množství k objednání.', 'success')
+        if (!silent) setStatus('Dnešní návrhy už existují nebo nemají žádné množství k objednání.', 'success')
       }
+      return createdCount
     }
-    async function loadPage() {
+    async function generateTodayReceipts({ silent = false } = {}) {
+      const today = new Date().toISOString().slice(0, 10)
+      const deliveryIsoDay = todayIsoDay()
+      const dueDeliveries = recurringOrders.filter((row) => row.active !== false && Array.isArray(row.delivery_weekdays) && row.delivery_weekdays.includes(deliveryIsoDay))
+      if (!dueDeliveries.length) return 0
+      const existingReceiptIds = new Set(
+        orders
+          .filter((order) => ['ordered', 'received'].includes(String(order.status || '')) && order.delivery_date === today && order.recurring_order_id != null)
+          .map((order) => String(order.recurring_order_id))
+      )
+      let createdCount = 0
+      for (const recurringOrder of dueDeliveries) {
+        if (existingReceiptIds.has(String(recurringOrder.id))) continue
+        const sourceOrderDay = resolveSourceOrderDay(recurringOrder, today)
+        const orderDate = resolveOrderDateForDelivery(recurringOrder, today)
+        const items = getRecurringItemsForOrder(recurringOrder.id).filter((item) => item.active !== false)
+        const payloadItems = items.map((item) => ({
+          recurring_order_item_id: item.id,
+          product_id: item.product_id,
+          ordered_quantity: getBaseOrderQuantityForDay(item, sourceOrderDay),
+          received_quantity: 0,
+          unit_cost: null,
+          note: 'Automaticky připravený příjem ze stálé dodávky.'
+        })).filter((item) => Number(item.ordered_quantity || 0) > 0)
+        if (!payloadItems.length) continue
+        const { data: order, error: orderError } = await supabase
+          .from('purchase_orders')
+          .insert([{
+            supplier_id: recurringOrder.supplier_id,
+            recurring_order_id: recurringOrder.id,
+            order_scope: recurringOrder.pilot_scope === 'bagette' ? 'bagette_pilot' : 'general',
+            status: 'ordered',
+            order_date: orderDate,
+            delivery_date: today,
+            note: 'Automaticky připravený příjem ze stálé dodávky.'
+          }])
+          .select('id')
+          .single()
+        if (orderError) throw orderError
+        const { error: itemsError } = await supabase.from('purchase_order_items').insert(payloadItems.map((item) => ({
+          purchase_order_id: order.id,
+          ...item
+        })))
+        if (itemsError) throw itemsError
+        createdCount += 1
+      }
+      if (!silent && !createdCount) {
+        setStatus('Dnešní příjmy už existují nebo dnešní závoz nemá žádné množství.', 'success')
+      }
+      return createdCount
+    }
+    async function loadPage({ allowAutoCreate = true } = {}) {
       try {
         setStatus('Načítám nákupy...')
         const params = new URLSearchParams(window.location.search)
@@ -1026,6 +1099,13 @@
           supplier_name: supplierMap.get(String(order.supplier_id))?.name || 'Dodavatel',
           items: orderItemMap.get(order.id) || []
         }))
+        if (allowAutoCreate) {
+          const createdDrafts = await generateTodayDrafts({ silent: true })
+          const createdReceipts = await generateTodayReceipts({ silent: true })
+          if (createdDrafts || createdReceipts) {
+            return await loadPage({ allowAutoCreate: false })
+          }
+        }
         supplierFilter.innerHTML = '<option value="">Všichni dodavatelé</option>' + suppliers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('')
         if (preselectedSupplier) supplierFilter.value = preselectedSupplier
         renderAll()
