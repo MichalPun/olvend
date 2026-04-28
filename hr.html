@@ -2036,6 +2036,16 @@
                   <label for="instructionMessage">Text pokynu</label>
                   <textarea id="instructionMessage" placeholder="Napiš, co má zaměstnanec vědět nebo udělat."></textarea>
                 </div>
+
+                <div class="field">
+                  <label for="instructionAttachmentUrl">PDF odkaz</label>
+                  <input id="instructionAttachmentUrl" type="url" placeholder="https://.../pokyn.pdf" />
+                </div>
+
+                <div class="field">
+                  <label for="instructionAttachmentLabel">Popisek PDF</label>
+                  <input id="instructionAttachmentLabel" type="text" placeholder="Např. Otevřít přílohu" />
+                </div>
               </div>
 
               <div class="check-grid">
@@ -2243,6 +2253,8 @@
     const instructionValidTo = document.getElementById('instructionValidTo');
     const instructionTitle = document.getElementById('instructionTitle');
     const instructionMessage = document.getElementById('instructionMessage');
+    const instructionAttachmentUrl = document.getElementById('instructionAttachmentUrl');
+    const instructionAttachmentLabel = document.getElementById('instructionAttachmentLabel');
     const instructionPersistent = document.getElementById('instructionPersistent');
     const instructionRequiresAck = document.getElementById('instructionRequiresAck');
     const instructionIsActive = document.getElementById('instructionIsActive');
@@ -2931,6 +2943,8 @@
       instructionRequiresAck.checked = true;
       targetTypeSelect.value = 'employee';
       instructionPrioritySelect.value = 'info';
+      if (instructionAttachmentUrl) instructionAttachmentUrl.value = '';
+      if (instructionAttachmentLabel) instructionAttachmentLabel.value = '';
       saveInstructionBtn.textContent = 'Uložit pokyn';
       updateInstructionTargetFields();
     }
@@ -2954,6 +2968,8 @@
       instructionValidTo.value = instruction.valid_to || '';
       instructionTitle.value = instruction.title || '';
       instructionMessage.value = instruction.message || '';
+      if (instructionAttachmentUrl) instructionAttachmentUrl.value = instruction.attachment_url || '';
+      if (instructionAttachmentLabel) instructionAttachmentLabel.value = instruction.attachment_label || '';
       instructionPersistent.checked = Boolean(instruction.is_persistent);
       instructionRequiresAck.checked = Boolean(instruction.requires_acknowledgement);
       instructionIsActive.checked = Boolean(instruction.is_active);
@@ -3298,7 +3314,7 @@
     }
 
     async function loadInstructions() {
-      const { data: instructions, error: instructionsError } = await supabase
+      let { data: instructions, error: instructionsError } = await supabase
         .from('daily_instructions')
         .select(`
           id,
@@ -3313,11 +3329,38 @@
           priority,
           requires_acknowledgement,
           is_active,
+          attachment_url,
+          attachment_label,
           created_by_employee_id,
           created_at,
           updated_at
         `)
         .order('created_at', { ascending: false });
+
+      if (instructionsError && /attachment_url|attachment_label/i.test(String(instructionsError.message || ''))) {
+        const fallback = await supabase
+          .from('daily_instructions')
+          .select(`
+            id,
+            title,
+            message,
+            target_type,
+            target_employee_id,
+            target_role,
+            valid_from,
+            valid_to,
+            is_persistent,
+            priority,
+            requires_acknowledgement,
+            is_active,
+            created_by_employee_id,
+            created_at,
+            updated_at
+          `)
+          .order('created_at', { ascending: false });
+        instructions = fallback.data;
+        instructionsError = fallback.error;
+      }
 
       if (instructionsError) throw instructionsError;
 
@@ -3390,6 +3433,7 @@
             </div>
 
             <div class="instruction-actions">
+              ${instruction.attachment_url ? `<a class="mini-btn" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít PDF')}</a>` : ''}
               <button
                 class="mini-btn"
                 type="button"
@@ -3421,6 +3465,7 @@
                 <div class="instruction-title">${escapeHtml(instruction.title || 'Trvalá informace')}</div>
                 <div class="list-text">${escapeHtml(instruction.message || '')}</div>
                 <div class="instruction-actions">
+                  ${instruction.attachment_url ? `<a class="mini-btn" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít PDF')}</a>` : ''}
                   <button
                     class="mini-btn"
                     type="button"
@@ -3452,6 +3497,8 @@
       const validToValue = instructionPersistent.checked ? null : (instructionValidTo.value || null);
       const targetEmployeeId = targetType === 'employee' ? targetEmployeeSelect.value : null;
       const targetRoleValue = targetType === 'role' ? targetRoleSelect.value : null;
+      const attachmentUrlValue = instructionAttachmentUrl?.value.trim() || null;
+      const attachmentLabelValue = instructionAttachmentLabel?.value.trim() || null;
 
       if (!messageValue) {
         throw new Error('Doplň prosím text pokynu.');
@@ -3481,6 +3528,8 @@
         priority: instructionPrioritySelect.value,
         requires_acknowledgement: instructionRequiresAck.checked,
         is_active: instructionIsActive.checked,
+        attachment_url: attachmentUrlValue,
+        attachment_label: attachmentUrlValue ? attachmentLabelValue : null,
         created_by_employee_id: currentUser?.id || null,
         updated_at: new Date().toISOString()
       };
@@ -3491,18 +3540,38 @@
         };
         delete updatePayload.created_by_employee_id;
 
-        const { error } = await supabase
+        let { error } = await supabase
           .from('daily_instructions')
           .update(updatePayload)
           .eq('id', editingInstructionId);
+
+        if (error && /attachment_url|attachment_label/i.test(String(error.message || ''))) {
+          delete updatePayload.attachment_url;
+          delete updatePayload.attachment_label;
+          const fallbackResult = await supabase
+            .from('daily_instructions')
+            .update(updatePayload)
+            .eq('id', editingInstructionId);
+          error = fallbackResult.error;
+        }
 
         if (error) throw error;
         return;
       }
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('daily_instructions')
         .insert([payload]);
+
+      if (error && /attachment_url|attachment_label/i.test(String(error.message || ''))) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.attachment_url;
+        delete fallbackPayload.attachment_label;
+        const fallbackResult = await supabase
+          .from('daily_instructions')
+          .insert([fallbackPayload]);
+        error = fallbackResult.error;
+      }
 
       if (error) throw error;
     }

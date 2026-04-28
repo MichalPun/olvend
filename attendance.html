@@ -2626,6 +2626,7 @@
     let latestLocationEntry = null;
     let locationTrackingTimer = null;
     let locationTrackingInFlight = false;
+    let staleOpenShiftCount = 0;
     const VEHICLE_KM_REVIEW_THRESHOLD = 5;
     const VEHICLE_KM_DANGER_THRESHOLD = 1000;
     const VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD = 600;
@@ -2640,6 +2641,41 @@
       instructionsStatusLine.textContent = message;
       instructionsStatusLine.className = 'status-line';
       if (type) instructionsStatusLine.classList.add(type);
+    }
+
+    async function flagStaleOpenShiftsForCurrentUser() {
+      if (!currentUser?.id) return 0;
+
+      const today = getTodayDateString();
+      const { data: staleRows, error } = await supabase
+        .from('attendance_days')
+        .select('id, note, status, requires_approval, approval_status')
+        .eq('employee_id', currentUser.id)
+        .is('actual_end', null)
+        .lt('attendance_date', today)
+        .in('status', ['open', 'needs_review', 'pending_approval']);
+
+      if (error) throw error;
+      if (!(staleRows?.length)) return 0;
+
+      for (const row of staleRows) {
+        const nextNote = [row.note, 'Směna zůstala otevřená do dalšího dne a čeká na manažerské uzavření.']
+          .filter(Boolean)
+          .join(' · ');
+        const { error: updateError } = await supabase
+          .from('attendance_days')
+          .update({
+            requires_approval: true,
+            approval_status: 'pending',
+            status: 'needs_review',
+            note: nextNote
+          })
+          .eq('id', row.id);
+
+        if (updateError) throw updateError;
+      }
+
+      return staleRows.length;
     }
 
     function setActionsStatus(message, type = '') {
@@ -2959,6 +2995,7 @@
             ${instruction.requires_acknowledgement && !isAcknowledged
               ? `<button class="btn" type="button" data-instruction-action="acknowledge" data-instruction-id="${instruction.id}">Potvrdit</button>`
               : `<button class="btn secondary" type="button" data-mobile-home>Hotovo</button>`}
+            ${buildInstructionAttachmentMarkup(instruction)}
           </div>
         </article>
         ${pendingItems.length > 1 ? `
@@ -3097,6 +3134,12 @@
               <button class="btn secondary" type="button" data-mobile-bagette-return>Vrátit do skladu</button>
               <button class="btn danger" type="button" data-mobile-bagette-waste>Odepsat expiraci</button>
             </div>
+          </article>
+        ` : !todayAttendance.vehicle_id ? `
+          <article class="mobile-section-card">
+            <p class="mobile-section-label">Nakládka vozidla</p>
+            <h3 class="mobile-section-title">Nejdřív připoj vozidlo</h3>
+            <p class="mobile-section-text">Nakládka zboží se odemkne až ve chvíli, kdy je ke směně připojené konkrétní vozidlo. Pak ji najdeš tady v záložce Vozidlo.</p>
           </article>
         ` : ''}
           <article class="mobile-section-card">
@@ -3443,8 +3486,10 @@
 
       if (!isCompactMobileLayout() || currentMobileView !== 'shift') {
         mobileFocusPanel.hidden = true;
+        mobileFocusPanel.style.display = 'none';
         if (mobileShiftHub) {
           mobileShiftHub.hidden = false;
+          mobileShiftHub.style.display = '';
           mobileShiftHub.classList.remove('compact');
         }
         return;
@@ -3454,8 +3499,10 @@
         const summaryHtml = buildMobileShiftHomeSummary();
         if (!summaryHtml) {
           mobileFocusPanel.hidden = true;
+          mobileFocusPanel.style.display = 'none';
           if (mobileShiftHub) {
             mobileShiftHub.hidden = false;
+            mobileShiftHub.style.display = '';
             mobileShiftHub.classList.remove('compact');
           }
           return;
@@ -3463,8 +3510,10 @@
 
         mobileFocusBody.innerHTML = summaryHtml;
         mobileFocusPanel.hidden = false;
+        mobileFocusPanel.style.display = 'block';
         if (mobileShiftHub) {
           mobileShiftHub.hidden = false;
+          mobileShiftHub.style.display = '';
           mobileShiftHub.classList.remove('compact');
         }
         return;
@@ -3483,8 +3532,10 @@
 
       mobileFocusBody.innerHTML = html;
       mobileFocusPanel.hidden = false;
+      mobileFocusPanel.style.display = 'block';
       if (mobileShiftHub) {
         mobileShiftHub.hidden = true;
+        mobileShiftHub.style.display = 'none';
         mobileShiftHub.classList.remove('compact');
       }
     }
@@ -4012,6 +4063,46 @@
         ? Math.abs(Number(actualKm) - Number(expectedKm))
         : null;
       return `${contextLabel} nesedí: očekáváno ${expectedKm} km, zadáno ${actualKm} km${diffKm != null ? `, rozdíl ${diffKm} km` : ''}.`;
+    }
+
+    function buildInstructionAttachmentMarkup(instruction, buttonClass = 'btn secondary') {
+      if (!instruction?.attachment_url) return '';
+      return `<a class="${escapeHtml(buttonClass)}" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít PDF')}</a>`;
+    }
+
+    function getEndKmReviewState(vehicleId = todayAttendance?.vehicle_id) {
+      if (!vehicleId) {
+        return {
+          expectedEndKm: null,
+          actualEndKm: parseIntegerValue(endOdometerInput?.value),
+          requiresReview: false,
+          reviewSeverity: null,
+          reviewNote: null
+        };
+      }
+
+      const currentLog = getCurrentVehicleOperationLog(vehicleId);
+      const actualEndKm = parseIntegerValue(endOdometerInput?.value);
+      const fuelKm = parseIntegerValue(currentLog?.fuel_odometer_km ?? fuelOdometerKmInput?.value);
+      const previousEndKm = parseIntegerValue(currentLog?.end_odometer_km);
+      const vehicle = vehiclesDirectory.find((item) => String(item.id) === String(vehicleId));
+      const vehicleCardKm = parseIntegerValue(vehicle?.current_odometer_km);
+      const startKm = parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
+
+      const expectedEndKm = [previousEndKm, fuelKm, vehicleCardKm]
+        .filter((value) => value != null && (startKm == null || value >= startKm))
+        .sort((a, b) => b - a)[0] ?? null;
+
+      const reviewSeverity = getKmReviewSeverity(expectedEndKm, actualEndKm);
+      return {
+        expectedEndKm,
+        actualEndKm,
+        requiresReview: Boolean(reviewSeverity),
+        reviewSeverity,
+        reviewNote: reviewSeverity
+          ? buildKmReviewNote(expectedEndKm, actualEndKm, previousEndKm != null ? 'Konečný stav km' : 'Průběžný stav km')
+          : null
+      };
     }
 
     function getPriorityMeta(priority) {
@@ -4807,14 +4898,17 @@
               <span class="meta-chip">${escapeHtml(instruction.is_persistent ? 'Trvalý pokyn' : `Platí ${formatDate(instruction.valid_from)}`)}</span>
               <span class="meta-chip">${isAcknowledged ? 'Potvrzeno' : 'Nepřečtené'}</span>
             </div>
-            ${instruction.requires_acknowledgement && !isAcknowledged ? `
+            ${instruction.requires_acknowledgement && !isAcknowledged || instruction.attachment_url ? `
               <div class="instruction-actions">
-                <button
-                  class="btn secondary"
-                  type="button"
-                  data-instruction-action="acknowledge"
-                  data-instruction-id="${instruction.id}"
-                >Potvrdit přečtení</button>
+                ${instruction.requires_acknowledgement && !isAcknowledged ? `
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    data-instruction-action="acknowledge"
+                    data-instruction-id="${instruction.id}"
+                  >Potvrdit přečtení</button>
+                ` : ''}
+                ${buildInstructionAttachmentMarkup(instruction)}
               </div>
             ` : ''}
           </article>
@@ -4832,6 +4926,7 @@
               <article class="instruction-compact-item">
                 <div class="instruction-title">${escapeHtml(instruction.title || 'Trvalá informace')}</div>
                 <div class="instruction-text">${escapeHtml(instruction.message || '')}</div>
+                ${instruction.attachment_url ? `<div class="instruction-actions">${buildInstructionAttachmentMarkup(instruction, 'mini-btn')}</div>` : ''}
               </article>
             `).join('')}
           </div>
@@ -5073,9 +5168,19 @@
       }
 
       if (todayAttendance?.actual_end) {
-        setStatus(`Dnešní směna je uzavřená. Tento měsíc máš zatím ${formatHours(monthMinutes)} započitatelně.`, 'success');
+        setStatus(
+          staleOpenShiftCount
+            ? `Našli jsme ${staleOpenShiftCount} starší otevřené směny ke schválení. Dnešní směna je uzavřená, tento měsíc máš zatím ${formatHours(monthMinutes)} započitatelně.`
+            : `Dnešní směna je uzavřená. Tento měsíc máš zatím ${formatHours(monthMinutes)} započitatelně.`,
+          staleOpenShiftCount ? 'warning' : 'success'
+        );
       } else {
-        setStatus(`Tento týden máš zatím ${formatHours(weekMinutes)} a tento měsíc ${formatHours(monthMinutes)}.`, 'success');
+        setStatus(
+          staleOpenShiftCount
+            ? `Našli jsme ${staleOpenShiftCount} starší otevřené směny ke schválení. Tento týden máš zatím ${formatHours(weekMinutes)} a tento měsíc ${formatHours(monthMinutes)}.`
+            : `Tento týden máš zatím ${formatHours(weekMinutes)} a tento měsíc ${formatHours(monthMinutes)}.`,
+          staleOpenShiftCount ? 'warning' : 'success'
+        );
       }
     }
 
@@ -5102,7 +5207,7 @@
     }
 
     async function loadInstructions() {
-      const { data: instructions, error: instructionsError } = await supabase
+      let { data: instructions, error: instructionsError } = await supabase
         .from('daily_instructions')
         .select(`
           id,
@@ -5116,9 +5221,33 @@
           is_persistent,
           priority,
           requires_acknowledgement,
-          is_active
+          is_active,
+          attachment_url,
+          attachment_label
         `)
         .order('created_at', { ascending: false });
+
+      if (instructionsError && /attachment_url|attachment_label/i.test(String(instructionsError.message || ''))) {
+        const fallback = await supabase
+          .from('daily_instructions')
+          .select(`
+            id,
+            title,
+            message,
+            target_type,
+            target_employee_id,
+            target_role,
+            valid_from,
+            valid_to,
+            is_persistent,
+            priority,
+            requires_acknowledgement,
+            is_active
+          `)
+          .order('created_at', { ascending: false });
+        instructions = fallback.data;
+        instructionsError = fallback.error;
+      }
 
       if (instructionsError) throw instructionsError;
       todayInstructions = instructions ?? [];
@@ -5141,6 +5270,7 @@
     }
 
     async function loadAttendance() {
+      staleOpenShiftCount = await flagStaleOpenShiftsForCurrentUser();
       const today = getTodayDateString();
       const { data: day, error: dayError } = await supabase
         .from('attendance_days')
@@ -6006,6 +6136,13 @@
         }]);
 
       if (eventError) throw eventError;
+
+      todayAttendance = {
+        ...todayAttendance,
+        requires_approval: true,
+        approval_status: 'pending',
+        status: 'needs_review'
+      };
     }
 
     async function saveVehicleOperationEnd(endedAtIso) {
@@ -6021,6 +6158,10 @@
       if (startOdometerKm != null && endOdometerKm < startOdometerKm) {
         throw new Error(`Konečný stav km nemůže být menší než start ${startOdometerKm} km.`);
       }
+      const currentFuelKm = parseIntegerValue(currentLog?.fuel_odometer_km ?? fuelOdometerKmInput?.value);
+      if (currentFuelKm != null && endOdometerKm < currentFuelKm) {
+        throw new Error(`Konečný stav km nemůže být menší než poslední tankování při ${currentFuelKm} km.`);
+      }
 
       const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
@@ -6028,6 +6169,8 @@
       const isReview = currentLog?.status === 'review';
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
       const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
+      const endKmReview = getEndKmReviewState(todayAttendance.vehicle_id);
+      const needsEndKmReview = Boolean(endKmReview.requiresReview);
       const distanceReviewNote = needsDistanceReview
         ? `Denní nájezd ${distanceKm} km je nezvykle vysoký.`
         : null;
@@ -6046,10 +6189,11 @@
         fuel_note: operationNote,
         trip_note: [
           currentLog?.trip_note,
+          endKmReview.reviewNote,
           isReview ? 'Zkontrolovat rozdíl start km proti poslednímu stavu vozidla.' : null,
           distanceReviewNote
         ].filter(Boolean).join(' · ') || null,
-        status: isReview || needsDistanceReview ? 'review' : 'closed'
+        status: isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'closed'
       };
 
       if (currentLog?.id) {
@@ -6074,9 +6218,16 @@
 
       if (vehicleUpdateError) throw vehicleUpdateError;
 
-      if (needsDistanceReview) {
-        await markAttendanceForVehicleKmReview(distanceReviewNote);
+      if (needsDistanceReview || needsEndKmReview) {
+        await markAttendanceForVehicleKmReview(
+          [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ')
+        );
       }
+
+      return {
+        needsReview: Boolean(needsDistanceReview || needsEndKmReview),
+        reviewNote: [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ') || null
+      };
     }
 
     async function saveVehicleKilometersProgress({ closeCurrent = false } = {}) {
@@ -6098,11 +6249,16 @@
       const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
       const fuelCost = parseDecimalValue(fuelCostInput?.value);
       const fuelOdometerKm = parseIntegerValue(fuelOdometerKmInput?.value);
+      if (fuelOdometerKm != null && endOdometerKm < fuelOdometerKm) {
+        throw new Error(`Aktuální stav km nemůže být menší než poslední tankování při ${fuelOdometerKm} km.`);
+      }
       const operationNote = String(fuelNoteInput?.value || '').trim() || null;
       const isReview = currentLog?.status === 'review';
       const eventTime = new Date().toISOString();
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
       const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
+      const endKmReview = getEndKmReviewState(todayAttendance.vehicle_id);
+      const needsEndKmReview = Boolean(endKmReview.requiresReview);
       const distanceReviewNote = needsDistanceReview
         ? `Aktuální nájezd ${distanceKm} km je nezvykle vysoký.`
         : null;
@@ -6120,10 +6276,10 @@
         fuel_cost: fuelCost,
         fuel_odometer_km: fuelOdometerKm,
         fuel_note: operationNote,
-        trip_note: [currentLog?.trip_note, distanceReviewNote].filter(Boolean).join(' · ') || null,
+        trip_note: [currentLog?.trip_note, endKmReview.reviewNote, distanceReviewNote].filter(Boolean).join(' · ') || null,
         status: closeCurrent
-          ? (isReview || needsDistanceReview ? 'review' : 'closed')
-          : (isReview || needsDistanceReview ? 'review' : 'open')
+          ? (isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'closed')
+          : (isReview || needsDistanceReview || needsEndKmReview ? 'review' : 'open')
       };
 
       if (currentLog?.id) {
@@ -6162,18 +6318,10 @@
 
       if (eventError) throw eventError;
 
-      if (vehicleStartData.needsReview) {
-        const { error: reviewEventError } = await supabase
-          .from('attendance_events')
-          .insert([{
-            attendance_day_id: upsertedDay.id,
-            employee_id: currentUser.id,
-            event_type: 'manual_adjustment',
-            event_time: attendancePayload.actual_start,
-            note: `Kontrola km při startu · ${vehicleStartData.reviewNote || 'nesoulad počátečního stavu km'}`
-          }]);
-
-        if (reviewEventError) throw reviewEventError;
+      if (needsDistanceReview || needsEndKmReview) {
+        await markAttendanceForVehicleKmReview(
+          [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ')
+        );
       }
     }
 
@@ -6662,6 +6810,20 @@
         }]);
 
       if (eventError) throw eventError;
+
+      if (vehicleStartData.needsReview) {
+        const { error: reviewEventError } = await supabase
+          .from('attendance_events')
+          .insert([{
+            attendance_day_id: upsertedDay.id,
+            employee_id: currentUser.id,
+            event_type: 'manual_adjustment',
+            event_time: attendancePayload.actual_start,
+            note: `Kontrola km při startu · ${vehicleStartData.reviewNote || 'nesoulad počátečního stavu km'}`
+          }]);
+
+        if (reviewEventError) throw reviewEventError;
+      }
     }
 
     async function acknowledgeInstruction(instructionId) {
@@ -6869,7 +7031,12 @@
         ? 'needs_review'
         : 'closed';
 
-      await saveVehicleOperationEnd(endIso);
+      const vehicleEndResult = await saveVehicleOperationEnd(endIso);
+      const shouldRequireApproval = Boolean(
+        (todayAttendance.requires_approval && todayAttendance.approval_status === 'pending')
+        || vehicleEndResult?.needsReview
+      );
+      const finalStatus = shouldRequireApproval ? 'needs_review' : nextStatus;
 
       const { error: updateError } = await supabase
         .from('attendance_days')
@@ -6879,7 +7046,9 @@
           payable_end: payableEndIso,
           payable_minutes: payableMinutes,
           break_minutes: effectiveBreakMinutes,
-          status: nextStatus
+          requires_approval: shouldRequireApproval,
+          approval_status: shouldRequireApproval ? 'pending' : (todayAttendance.approval_status || 'not_required'),
+          status: finalStatus
         })
         .eq('id', todayAttendance.id);
 
@@ -6892,7 +7061,9 @@
         payable_end: payableEndIso,
         payable_minutes: payableMinutes,
         break_minutes: effectiveBreakMinutes,
-        status: nextStatus
+        requires_approval: shouldRequireApproval,
+        approval_status: shouldRequireApproval ? 'pending' : (todayAttendance.approval_status || 'not_required'),
+        status: finalStatus
       };
 
       const { error: eventError } = await supabase
@@ -6902,8 +7073,8 @@
           employee_id: currentUser.id,
           event_type: 'shift_end',
           event_time: endIso,
-          note: nextStatus === 'needs_review'
-            ? 'Směna ukončena. Záznam čeká na schválení kvůli výjimce.'
+          note: finalStatus === 'needs_review'
+            ? `Směna ukončena. Záznam čeká na schválení kvůli výjimce${vehicleEndResult?.reviewNote ? ` · ${vehicleEndResult.reviewNote}` : ''}.`
             : `Směna ukončena · započitatelně ${formatMinutesLabel(payableMinutes)}.${closedBreak.closed ? ` Pauza byla při ukončení dne automaticky uzavřena (${formatBreakAddedLabel(closedBreak.breakMinutesToAdd)}).` : ''}`
         }]);
 
@@ -6912,7 +7083,7 @@
       }
 
       return {
-        needsApproval: nextStatus === 'needs_review',
+        needsApproval: finalStatus === 'needs_review',
         shift: `${formatClock(todayAttendance.actual_start)} → ${formatClock(endIso)}`,
         payable: formatHours(payableMinutes),
         autoClosedBreak: closedBreak.closed,
