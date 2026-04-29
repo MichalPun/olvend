@@ -890,14 +890,14 @@
         draftOrdersBody,
         draftOrdersEmpty,
         drafts,
-        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Schválit objednávku</button></div>`,
+        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Schválit objednávku</button><button class="btn secondary small" type="button" data-action="cancel-draft" data-id="${row.id}">Zrušit</button></div>`,
         { orderLabel: 'Objednávka', dateField: 'order_date' }
       )
       renderOrderTable(
         orderedOrdersBody,
         orderedOrdersEmpty,
         ordered,
-        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Potvrdit příjem</button></div>`,
+        (row) => `<div class="action-row"><button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Potvrdit příjem</button><button class="btn secondary small" type="button" data-action="cancel-receipt" data-id="${row.id}">Zrušit dodávku</button></div>`,
         { orderLabel: 'Čeká na příjem', dateField: 'delivery_date' }
       )
       renderOrderTable(
@@ -966,8 +966,8 @@
       `).join('')
       targetEmpty.style.display = rows.length ? 'none' : 'block'
     }
-    async function setOrderStatus(orderId, status) {
-      const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', orderId)
+    async function setOrderStatus(orderId, status, extra = {}) {
+      const { error } = await supabase.from('purchase_orders').update({ status, ...extra }).eq('id', orderId)
       if (error) throw error
     }
     function resolveSourceOrderDay(recurringOrder, deliveryIsoDate) {
@@ -1001,7 +1001,7 @@
       }
       const existingRecurringIds = new Set(
         orders
-          .filter((order) => ['draft', 'ordered'].includes(order.status) && order.order_date === today && order.recurring_order_id != null)
+          .filter((order) => ['draft', 'ordered', 'received', 'cancelled'].includes(order.status) && order.order_date === today && order.recurring_order_id != null)
           .map((order) => String(order.recurring_order_id))
       )
       let createdCount = 0
@@ -1056,7 +1056,7 @@
       if (!dueDeliveries.length) return 0
       const existingReceiptIds = new Set(
         orders
-          .filter((order) => ['ordered', 'received'].includes(String(order.status || '')) && order.delivery_date === today && order.recurring_order_id != null)
+          .filter((order) => ['ordered', 'received', 'cancelled'].includes(String(order.status || '')) && order.delivery_date === today && order.recurring_order_id != null)
           .map((order) => String(order.recurring_order_id))
       )
       let createdCount = 0
@@ -1195,11 +1195,21 @@
     })
     draftOrdersBody.addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-action="order"]')
-      if (!button) return
+      const cancelButton = event.target.closest('button[data-action="cancel-draft"]')
       try {
-        await setOrderStatus(button.dataset.id, 'ordered')
-        await loadPage()
-        setStatus('Souhrnná objednávka byla schválena jako objednaná.', 'success')
+        if (button) {
+          await setOrderStatus(button.dataset.id, 'ordered')
+          await loadPage()
+          setStatus('Souhrnná objednávka byla schválena jako objednaná.', 'success')
+          return
+        }
+        if (cancelButton) {
+          const confirmed = window.confirm('Opravdu chceš dnešní návrh objednávky zrušit?')
+          if (!confirmed) return
+          await setOrderStatus(cancelButton.dataset.id, 'cancelled', { note: 'Návrh objednávky byl ručně zrušen.' })
+          await loadPage()
+          setStatus('Dnešní návrh objednávky byl zrušen.', 'success')
+        }
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se změnit stav objednávky: ${error.message}`, 'error')
@@ -1207,8 +1217,24 @@
     })
     orderedOrdersBody.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="receive"]')
-      if (!button) return
-      openReceiptModal(button.dataset.id)
+      const cancelButton = event.target.closest('button[data-action="cancel-receipt"]')
+      if (button) {
+        openReceiptModal(button.dataset.id)
+        return
+      }
+      if (!cancelButton) return
+      ;(async () => {
+        try {
+          const confirmed = window.confirm('Opravdu chceš dnešní dodávku zrušit?')
+          if (!confirmed) return
+          await setOrderStatus(cancelButton.dataset.id, 'cancelled', { note: 'Dodávka byla ručně zrušena před příjmem.' })
+          await loadPage()
+          setStatus('Dnešní dodávka byla zrušena a už nečeká na příjem.', 'success')
+        } catch (error) {
+          console.error(error)
+          setStatus(`Nepodařilo se zrušit dodávku: ${error.message}`, 'error')
+        }
+      })()
     })
     receivedOrdersBody.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="view-receipt"]')

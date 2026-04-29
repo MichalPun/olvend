@@ -759,6 +759,65 @@
       line-height: 1.5;
     }
 
+    .consumption-graph {
+      display: grid;
+      gap: 12px;
+    }
+
+    .consumption-bars {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+      gap: 10px;
+      align-items: end;
+      min-height: 176px;
+    }
+
+    .consumption-bar-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .consumption-bar-track {
+      height: 118px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      padding: 6px;
+      display: flex;
+      align-items: flex-end;
+    }
+
+    .consumption-bar-fill {
+      width: 100%;
+      min-height: 8px;
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(213,16,26,0.92), rgba(213,16,26,0.36));
+    }
+
+    .consumption-bar-fill.warn {
+      background: linear-gradient(180deg, rgba(255,182,72,0.96), rgba(255,182,72,0.4));
+    }
+
+    .consumption-bar-fill.good {
+      background: linear-gradient(180deg, rgba(46,204,113,0.96), rgba(46,204,113,0.4));
+    }
+
+    .consumption-bar-label {
+      color: var(--soft);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .consumption-bar-value {
+      font-size: 13px;
+      font-weight: 800;
+      color: #fff;
+    }
+
     .search-input,
     .filter-select {
       min-width: 0;
@@ -2015,6 +2074,55 @@
       }
     }
 
+    function getWeightedConsumptionFromSegments(segments = []) {
+      const totalDistance = segments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0)
+      const totalFuel = segments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0)
+      if (totalDistance <= 0 || totalFuel <= 0) return null
+      return (totalFuel / totalDistance) * 100
+    }
+
+    function renderVehicleConsumptionBars(vehicle, consumptionInsight = {}) {
+      const segments = Array.isArray(consumptionInsight.segments) ? consumptionInsight.segments.slice(-6) : []
+      if (!segments.length) {
+        return `
+          <div class="detail-item">
+            <div class="detail-item-title">Zatím bez dostatku dat</div>
+            <div class="detail-item-note">Graf spotřeby se ukáže po druhém tankování, kdy už půjde spočítat první úsek mezi tankováními.</div>
+          </div>
+        `
+      }
+      const maxConsumption = Math.max(...segments.map((segment) => Number(segment.consumption || 0)), 1)
+      const toleratedLimit = vehicle.tolerated_consumption_l_100km != null ? Number(vehicle.tolerated_consumption_l_100km) : null
+      return `
+        <div class="consumption-graph">
+          <div class="consumption-bars">
+            ${segments.map((segment) => {
+              const consumption = Number(segment.consumption || 0)
+              const height = Math.max(8, Math.round((consumption / maxConsumption) * 100))
+              const toneClass = toleratedLimit == null
+                ? ''
+                : consumption > toleratedLimit
+                  ? ''
+                  : consumption > toleratedLimit - 0.4
+                    ? 'warn'
+                    : 'good'
+              const label = segment.toLog?.log_date ? formatDateLabel(segment.toLog.log_date) : `${Math.round(segment.distanceKm)} km`
+              return `
+                <div class="consumption-bar-card">
+                  <div class="consumption-bar-track">
+                    <div class="consumption-bar-fill ${toneClass}" style="height:${height}%;"></div>
+                  </div>
+                  <div class="consumption-bar-value">${escapeHtml(formatConsumption(consumption))} / 100 km</div>
+                  <div class="consumption-bar-label">${escapeHtml(label)}</div>
+                </div>
+              `
+            }).join('')}
+          </div>
+          <div class="detail-box-note">Každý sloupec je jeden úsek mezi dvěma tankováními. Přehled vozidla i report teď používají stejný vážený výpočet podle ujetých km.</div>
+        </div>
+      `
+    }
+
     function getDaysUntil(value) {
       if (!value) return null
       const today = new Date()
@@ -2192,13 +2300,14 @@
       const expenses = vehicleExpensesListMap.get(key) || []
       const operationalState = getVehicleOperationalState(vehicle.id)
       const assignedDriver = vehicle.assigned_employee_id ? getAssignedEmployeeName(vehicle) : 'Bez přiřazení'
+      const weightedConsumption = consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dat')
 
       vehicleDetailTitle.textContent = [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') || 'Detail vozidla'
       vehicleDetailContent.innerHTML = `
         <div class="detail-grid">
           <article class="detail-box">
             <div class="detail-box-label">Aktuální spotřeba</div>
-            <div class="detail-box-value">${escapeHtml(consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dat'))}</div>
+            <div class="detail-box-value">${escapeHtml(weightedConsumption)}</div>
             <div class="detail-box-note">${escapeHtml(
               consumptionInsight.avgConsumption != null
                 ? (vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
@@ -2252,6 +2361,14 @@
                 <div class="detail-item-note">U tohoto vozidla teď nevidíme nic, co by potřebovalo rychlou kontrolu.</div>
               </article>
             `}
+          </div>
+        </section>
+
+        <section class="detail-section">
+          <h4>Spotřeba v čase</h4>
+          ${renderVehicleConsumptionBars(vehicle, consumptionInsight)}
+          <div class="action-row" style="margin-top:12px;">
+            <a class="btn secondary small" href="report-vehicles.html?vehicle=${vehicle.id}">Otevřít detail spotřeby v reportu</a>
           </div>
         </section>
 
@@ -2732,9 +2849,7 @@
         const reviewItems = []
         const fuelTracking = buildFuelConsumptionSegments(vehicleLogs)
         const validConsumptionSegments = fuelTracking.segments
-        const totalDistance = validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0)
-        const totalFuel = validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0)
-        const avgConsumption = totalDistance > 0 ? (totalFuel / totalDistance) * 100 : null
+        const avgConsumption = getWeightedConsumptionFromSegments(validConsumptionSegments)
         const toleratedLimit = vehicle.tolerated_consumption_l_100km != null ? Number(vehicle.tolerated_consumption_l_100km) : null
         const overLimitLogs = validConsumptionSegments.filter((segment) => {
           if (toleratedLimit == null) return false
@@ -2821,12 +2936,13 @@
 
         vehicleConsumptionMap.set(key, {
           avgConsumption,
-          totalDistance,
-          totalFuel,
+          totalDistance: validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0),
+          totalFuel: validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0),
           fuelEventCount: fuelTracking.fuelLogs.length,
           segmentCount: validConsumptionSegments.length,
           overLimitCount: overLimitLogs.length,
-          status: consumptionStatus
+          status: consumptionStatus,
+          segments: validConsumptionSegments
         })
 
         vehicleExpenseMap.set(key, {
