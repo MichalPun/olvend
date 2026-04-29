@@ -2037,14 +2037,25 @@
                   <textarea id="instructionMessage" placeholder="Napiš, co má zaměstnanec vědět nebo udělat."></textarea>
                 </div>
 
-                <div class="field">
-                  <label for="instructionAttachmentUrl">PDF odkaz</label>
-                  <input id="instructionAttachmentUrl" type="url" placeholder="https://.../pokyn.pdf" />
+                <div class="field full">
+                  <label for="instructionAttachmentFile">Vložit PDF k pokynu</label>
+                  <div class="inline-actions" style="align-items:center; gap:10px; flex-wrap:wrap;">
+                    <input id="instructionAttachmentFile" type="file" accept="application/pdf" />
+                    <button class="btn secondary" id="uploadInstructionPdfBtn" type="button">Vložit PDF</button>
+                    <button class="btn secondary" id="clearInstructionPdfBtn" type="button">Odebrat přílohu</button>
+                  </div>
+                  <div class="helper-text" id="instructionAttachmentInfo">Zatím není vybraný žádný PDF soubor. Po vložení se příloha připojí přímo k pokynu.</div>
                 </div>
 
                 <div class="field">
-                  <label for="instructionAttachmentLabel">Popisek PDF</label>
+                  <label for="instructionAttachmentLabel">Popisek tlačítka PDF</label>
                   <input id="instructionAttachmentLabel" type="text" placeholder="Např. Otevřít přílohu" />
+                </div>
+
+                <div class="field">
+                  <label for="instructionAttachmentUrl">Ruční URL PDF</label>
+                  <input id="instructionAttachmentUrl" type="url" placeholder="Použij jen výjimečně, když už máš PDF nahrané jinde" />
+                  <div class="helper-text">Tohle je záložní varianta. Běžně používej nahoře `Vybrat soubor` a `Vložit PDF`.</div>
                 </div>
               </div>
 
@@ -2261,6 +2272,10 @@
     const instructionMessage = document.getElementById('instructionMessage');
     const instructionAttachmentUrl = document.getElementById('instructionAttachmentUrl');
     const instructionAttachmentLabel = document.getElementById('instructionAttachmentLabel');
+    const instructionAttachmentFile = document.getElementById('instructionAttachmentFile');
+    const uploadInstructionPdfBtn = document.getElementById('uploadInstructionPdfBtn');
+    const clearInstructionPdfBtn = document.getElementById('clearInstructionPdfBtn');
+    const instructionAttachmentInfo = document.getElementById('instructionAttachmentInfo');
     const instructionPersistent = document.getElementById('instructionPersistent');
     const instructionRequiresAck = document.getElementById('instructionRequiresAck');
     const instructionIsActive = document.getElementById('instructionIsActive');
@@ -2279,6 +2294,7 @@
     let instructionRows = [];
     let instructionAcknowledgements = [];
     let editingInstructionId = null;
+    let pendingInstructionPdfFile = null;
     let draggedHrTab = null;
 
     const HR_TAB_ORDER_KEY = 'olvendHrTabOrder';
@@ -2955,6 +2971,79 @@
       targetRoleField.style.display = targetType === 'role' ? 'flex' : 'none';
     }
 
+    function syncInstructionAttachmentInfo(message = '', type = '') {
+      if (!instructionAttachmentInfo) return;
+      instructionAttachmentInfo.textContent = message || 'Zatím není vybraný žádný PDF soubor.';
+      instructionAttachmentInfo.className = 'helper-text';
+      if (type) instructionAttachmentInfo.classList.add(type);
+    }
+
+    function clearPendingInstructionPdf({ keepUrl = false } = {}) {
+      pendingInstructionPdfFile = null;
+      if (instructionAttachmentFile) instructionAttachmentFile.value = '';
+      if (!keepUrl && instructionAttachmentUrl) instructionAttachmentUrl.value = '';
+      if (instructionAttachmentLabel && !keepUrl) instructionAttachmentLabel.value = '';
+      syncInstructionAttachmentInfo();
+    }
+
+    function buildInstructionPdfStoragePath(file) {
+      const safeName = String(file?.name || 'priloha.pdf')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'priloha.pdf';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      return `daily-instructions/${timestamp}-${safeName}`;
+    }
+
+    async function uploadInstructionPdfFile() {
+      if (!pendingInstructionPdfFile) {
+        throw new Error('Nejdřív vyber PDF soubor.');
+      }
+
+      const file = pendingInstructionPdfFile;
+      if (String(file.type || '').toLowerCase() !== 'application/pdf' && !String(file.name || '').toLowerCase().endsWith('.pdf')) {
+        throw new Error('Nahrát jde jen PDF soubor.');
+      }
+
+      const path = buildInstructionPdfStoragePath(file);
+      syncInstructionAttachmentInfo(`Nahrávám ${file.name}...`);
+
+      const { error: uploadError } = await supabase.storage
+        .from('daily-instructions')
+        .upload(path, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: 'application/pdf'
+        });
+
+      if (uploadError) {
+        const message = String(uploadError.message || '');
+        if (/bucket/i.test(message) || /not found/i.test(message) || /row-level security/i.test(message)) {
+          throw new Error('PDF úložiště ještě není připravené. Spusť database/daily_instructions_storage_patch_v13.sql.');
+        }
+        throw uploadError;
+      }
+
+      const { data: publicData } = supabase.storage
+        .from('daily-instructions')
+        .getPublicUrl(path);
+
+      if (!publicData?.publicUrl) {
+        throw new Error('Nepodařilo se získat veřejný odkaz na nahrané PDF.');
+      }
+
+      if (instructionAttachmentUrl) instructionAttachmentUrl.value = publicData.publicUrl;
+      if (instructionAttachmentLabel && !instructionAttachmentLabel.value.trim()) {
+        instructionAttachmentLabel.value = file.name.replace(/\.pdf$/i, '') || 'Otevřít PDF';
+      }
+      syncInstructionAttachmentInfo(`Nahrané PDF: ${file.name}`, 'success');
+      pendingInstructionPdfFile = null;
+      if (instructionAttachmentFile) instructionAttachmentFile.value = '';
+    }
+
     function resetInstructionFormState() {
       editingInstructionId = null;
       instructionForm.reset();
@@ -2965,6 +3054,7 @@
       instructionPrioritySelect.value = 'info';
       if (instructionAttachmentUrl) instructionAttachmentUrl.value = '';
       if (instructionAttachmentLabel) instructionAttachmentLabel.value = '';
+      clearPendingInstructionPdf({ keepUrl: false });
       saveInstructionBtn.textContent = 'Uložit pokyn';
       updateInstructionTargetFields();
     }
@@ -2990,6 +3080,13 @@
       instructionMessage.value = instruction.message || '';
       if (instructionAttachmentUrl) instructionAttachmentUrl.value = instruction.attachment_url || '';
       if (instructionAttachmentLabel) instructionAttachmentLabel.value = instruction.attachment_label || '';
+      clearPendingInstructionPdf({ keepUrl: true });
+      syncInstructionAttachmentInfo(
+        instruction.attachment_url
+          ? `Přiložené PDF je už nahrané. Můžeš ho ponechat, nebo vybrat nové.`
+          : 'K tomuto pokynu zatím není přiložené žádné PDF.',
+        instruction.attachment_url ? 'success' : ''
+      );
       instructionPersistent.checked = Boolean(instruction.is_persistent);
       instructionRequiresAck.checked = Boolean(instruction.requires_acknowledgement);
       instructionIsActive.checked = Boolean(instruction.is_active);
@@ -3536,6 +3633,10 @@
         throw new Error('Vyber prosím profesi nebo roli.');
       }
 
+      if (pendingInstructionPdfFile) {
+        await uploadInstructionPdfFile();
+      }
+
       const payload = {
         title: titleValue,
         message: messageValue,
@@ -3789,6 +3890,32 @@
 
     targetTypeSelect.addEventListener('change', updateInstructionTargetFields);
     resetInstructionBtn.addEventListener('click', resetInstructionFormState);
+    instructionAttachmentFile?.addEventListener('change', () => {
+      pendingInstructionPdfFile = instructionAttachmentFile.files?.[0] || null;
+      if (!pendingInstructionPdfFile) {
+        syncInstructionAttachmentInfo();
+        return;
+      }
+      syncInstructionAttachmentInfo(`Vybraný soubor: ${pendingInstructionPdfFile.name}`);
+    });
+    uploadInstructionPdfBtn?.addEventListener('click', async () => {
+      try {
+        uploadInstructionPdfBtn.disabled = true;
+        uploadInstructionPdfBtn.textContent = 'Vkládám...';
+        await uploadInstructionPdfFile();
+      } catch (error) {
+        console.error(error);
+        setInstructionsStatus(`Nepodařilo se nahrát PDF: ${error.message}`, 'error');
+        syncInstructionAttachmentInfo(`Nahrání selhalo: ${error.message}`, 'error');
+      } finally {
+        uploadInstructionPdfBtn.disabled = false;
+        uploadInstructionPdfBtn.textContent = 'Vložit PDF';
+      }
+    });
+    clearInstructionPdfBtn?.addEventListener('click', () => {
+      clearPendingInstructionPdf({ keepUrl: false });
+      setInstructionsStatus('PDF příloha byla z formuláře odebraná.', 'success');
+    });
 
     instructionForm.addEventListener('submit', async (event) => {
       event.preventDefault();
