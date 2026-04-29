@@ -188,7 +188,8 @@
     .modal-footer { padding: 20px 22px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
     #machineForm,
     #planogramForm,
-    #copyPlanogramForm {
+    #copyPlanogramForm,
+    #transferForm {
       display: flex;
       flex-direction: column;
       min-height: 0;
@@ -496,6 +497,65 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="transferModalBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="transferModalTitle">Přesunout stroj</h3>
+        <button class="close-btn" id="closeTransferModalBtn" type="button">&times;</button>
+      </div>
+      <form id="transferForm">
+        <input type="hidden" id="transferMachineId" />
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="field full">
+              <label>Aktuální umístění</label>
+              <input id="transferCurrentLocationLabel" type="text" readonly />
+            </div>
+            <div class="field">
+              <label for="transferDestinationType">Kam přesouváš</label>
+              <select id="transferDestinationType" required>
+                <option value="location">Na jinou lokalitu</option>
+                <option value="storage">Na sklad / bez lokality</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="transferTargetLocationId">Cílová lokalita</label>
+              <select id="transferTargetLocationId">
+                <option value="">Vyber cílovou lokalitu</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="transferStatus">Stav po přesunu</label>
+              <select id="transferStatus">
+                <option value="ok">V pořádku</option>
+                <option value="installing">Instalace</option>
+                <option value="offline">Mimo provoz</option>
+                <option value="removed">Stažený</option>
+                <option value="service_needed">Servis potřeba</option>
+              </select>
+            </div>
+            <div class="field">
+              <label><input id="transferActive" type="checkbox" checked style="width:auto; margin-right:10px;" /> Nechat stroj aktivní</label>
+            </div>
+            <div class="field full">
+              <label for="transferAt">Datum a čas přesunu</label>
+              <input id="transferAt" type="datetime-local" required />
+            </div>
+            <div class="field full">
+              <label for="transferReason">Důvod přesunu</label>
+              <textarea id="transferReason" placeholder="Např. přesun na jinou lokalitu, stažení na sklad, rušení lokality..." required></textarea>
+            </div>
+          </div>
+          <div class="helper-line" id="transferHelperLine">Přesun uloží nové umístění stroje, stav po přesunu a zapíše historii. Pro stažení na sklad zvol `Na sklad / bez lokality`.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn secondary" id="cancelTransferBtn">Zrušit</button>
+          <button type="submit" class="btn" id="saveTransferBtn">Uložit přesun</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script src="./sidebar.js?v=20260424nav13"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -539,6 +599,21 @@
     const closeCopyPlanogramModalBtn = document.getElementById('closeCopyPlanogramModalBtn')
     const cancelCopyPlanogramBtn = document.getElementById('cancelCopyPlanogramBtn')
     const saveCopyPlanogramBtn = document.getElementById('saveCopyPlanogramBtn')
+    const transferModalBackdrop = document.getElementById('transferModalBackdrop')
+    const transferModalTitle = document.getElementById('transferModalTitle')
+    const transferForm = document.getElementById('transferForm')
+    const transferMachineIdInput = document.getElementById('transferMachineId')
+    const transferCurrentLocationLabelInput = document.getElementById('transferCurrentLocationLabel')
+    const transferDestinationTypeInput = document.getElementById('transferDestinationType')
+    const transferTargetLocationIdInput = document.getElementById('transferTargetLocationId')
+    const transferStatusInput = document.getElementById('transferStatus')
+    const transferActiveInput = document.getElementById('transferActive')
+    const transferAtInput = document.getElementById('transferAt')
+    const transferReasonInput = document.getElementById('transferReason')
+    const transferHelperLine = document.getElementById('transferHelperLine')
+    const closeTransferModalBtn = document.getElementById('closeTransferModalBtn')
+    const cancelTransferBtn = document.getElementById('cancelTransferBtn')
+    const saveTransferBtn = document.getElementById('saveTransferBtn')
     const mobileNavShell = document.getElementById('mobileNavShell')
 
     let machines = []
@@ -547,6 +622,7 @@
     let serviceHistory = []
     let planogramSlots = []
     let planogramAvailable = true
+    let transferHistoryAvailable = true
     let isEditMode = false
     const machineDetailCache = new Map()
 
@@ -572,6 +648,24 @@
     function generateQrToken() {
       if (window.crypto?.randomUUID) return window.crypto.randomUUID().split('-')[0] + '-' + window.crypto.randomUUID().split('-')[0]
       return `qr-${Date.now()}`
+    }
+
+    function getCurrentUserLabel() {
+      try {
+        const raw = localStorage.getItem('olvendUser')
+        if (!raw) return null
+        const parsed = JSON.parse(raw)
+        const fullName = [parsed?.name, parsed?.surname].filter(Boolean).join(' ').trim()
+        return fullName || parsed?.email || null
+      } catch (_error) {
+        return null
+      }
+    }
+
+    function toLocalDateTimeInputValue(value) {
+      const date = value ? new Date(value) : new Date()
+      const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+      return local.toISOString().slice(0, 16)
     }
 
     function getEvidenceNumber(machine) {
@@ -644,6 +738,7 @@
       const html = options.join('')
       locationIdInput.innerHTML = html
       locationFilter.innerHTML = '<option value="">Všechny lokality</option>' + options.slice(1).join('')
+      transferTargetLocationIdInput.innerHTML = '<option value="">Vyber cílovou lokalitu</option>' + options.slice(1).join('')
     }
 
     function populateCopyPlanogramOptions(targetMachineId = '') {
@@ -716,6 +811,7 @@
             <div class="action-row">
               <button class="btn secondary" type="button" data-action="detail" data-id="${item.id}">Detail</button>
               <button class="btn secondary" type="button" data-action="edit" data-id="${item.id}">Upravit</button>
+              <button class="btn secondary" type="button" data-action="transfer" data-id="${item.id}">Přesunout</button>
               <a class="btn secondary" href="service-requests.html?machine=${encodeURIComponent(String(item.id))}${item.location_id ? `&location=${encodeURIComponent(String(item.location_id))}` : ''}">Servis</a>
               <a class="btn secondary" href="${buildQrWorkflowLink(item)}">QR</a>
               <a class="btn secondary" href="machine-qr-print.html?machine=${encodeURIComponent(String(item.id))}">Tisk</a>
@@ -771,6 +867,8 @@
     function closePlanogramModal() { planogramModalBackdrop.classList.remove('show'); resetPlanogramForm() }
     function openCopyPlanogramModal() { copyPlanogramModalBackdrop.classList.add('show') }
     function closeCopyPlanogramModal() { copyPlanogramModalBackdrop.classList.remove('show'); resetCopyPlanogramForm() }
+    function openTransferModal() { transferModalBackdrop.classList.add('show') }
+    function closeTransferModal() { transferModalBackdrop.classList.remove('show'); resetTransferForm() }
 
     function resetPlanogramForm(machineId = '') {
       planogramForm.reset()
@@ -806,6 +904,49 @@
       populateCopyPlanogramOptions(targetMachineId)
       copyPlanogramModalTitle.textContent = 'Kopírovat planogram'
       saveCopyPlanogramBtn.textContent = 'Zkopírovat planogram'
+    }
+
+    function syncTransferDestinationUI() {
+      const isStorage = transferDestinationTypeInput.value === 'storage'
+      transferTargetLocationIdInput.disabled = isStorage
+      if (isStorage) {
+        transferTargetLocationIdInput.value = ''
+        if (!['offline', 'removed'].includes(transferStatusInput.value)) {
+          transferStatusInput.value = 'removed'
+        }
+        transferHelperLine.textContent = 'Stažení na sklad nastaví stroj bez lokality. Doporučený stav je `Stažený` nebo `Mimo provoz`.'
+      } else {
+        if (['removed'].includes(transferStatusInput.value)) {
+          transferStatusInput.value = 'installing'
+        }
+        transferHelperLine.textContent = 'Přesun na jinou lokalitu změní vazbu stroje na cílové místo a zapíše historii přesunu.'
+      }
+    }
+
+    function resetTransferForm() {
+      transferForm.reset()
+      transferMachineIdInput.value = ''
+      transferCurrentLocationLabelInput.value = ''
+      transferDestinationTypeInput.value = 'location'
+      transferTargetLocationIdInput.value = ''
+      transferStatusInput.value = 'installing'
+      transferActiveInput.checked = true
+      transferAtInput.value = toLocalDateTimeInputValue()
+      transferReasonInput.value = ''
+      transferModalTitle.textContent = 'Přesunout stroj'
+      saveTransferBtn.textContent = 'Uložit přesun'
+      syncTransferDestinationUI()
+    }
+
+    function openMachineTransfer(machine) {
+      resetTransferForm()
+      transferMachineIdInput.value = String(machine.id)
+      transferCurrentLocationLabelInput.value = getLocationLabel(machine.location_id)
+      transferTargetLocationIdInput.value = ''
+      transferStatusInput.value = machine.location_id ? 'installing' : 'ok'
+      transferActiveInput.checked = machine.active !== false
+      transferModalTitle.textContent = `Přesunout stroj · ${machine.name}`
+      openTransferModal()
     }
 
     function fillForm(machine) {
@@ -872,7 +1013,9 @@
       let detail = {
         history: historyData ?? [],
         planogram: [],
-        planogramAvailable: true
+        planogramAvailable: true,
+        transfers: [],
+        transferHistoryAvailable: true
       }
 
       if (planogramError) {
@@ -884,6 +1027,32 @@
         }
       } else {
         detail.planogram = planogramData ?? []
+      }
+
+      try {
+        const { data: transferData, error: transferError } = await supabase
+          .from('machine_transfers')
+          .select('id, machine_id, from_location_id, to_location_id, transfer_kind, from_status, to_status, from_active, to_active, transferred_at, transferred_by, note')
+          .eq('machine_id', machineId)
+          .order('transferred_at', { ascending: false })
+          .limit(8)
+
+        if (transferError) {
+          const message = String(transferError.message || '').toLowerCase()
+          if (message.includes('machine_transfers')) {
+            detail.transferHistoryAvailable = false
+          } else {
+            throw transferError
+          }
+        } else {
+          detail.transfers = (transferData ?? []).map((item) => ({
+            ...item,
+            from_location_label: getLocationLabel(item.from_location_id),
+            to_location_label: item.to_location_id ? getLocationLabel(item.to_location_id) : 'Na sklad / bez lokality'
+          }))
+        }
+      } catch (error) {
+        throw error
       }
 
       machineDetailCache.set(cacheKey, detail)
@@ -924,6 +1093,7 @@
               <a class="btn secondary" href="${buildQuickActionLink(machine, 'fill')}">Doplnění</a>
               <a class="btn secondary" href="${buildQuickActionLink(machine, 'check')}">Kontrola</a>
               <a class="btn secondary" href="${buildQuickActionLink(machine, 'issue')}">Nahlásit problém</a>
+              <button class="btn secondary" type="button" data-machine-action="transfer" data-machine-id="${machine.id}">Přesunout stroj</button>
               <a class="btn secondary" href="${buildQrWorkflowLink(machine)}">QR stránka</a>
               <a class="btn secondary" href="machine-qr-print.html?machine=${encodeURIComponent(String(machine.id))}">Tisk QR</a>
               <a class="btn secondary" href="inventory.html?machine=${encodeURIComponent(String(machine.id))}">Zásoby / planogram</a>
@@ -1007,6 +1177,22 @@
                   </div>
                 `).join('')
                 : '<div class="history-item"><div class="history-item-title">Zatím bez historie</div><div class="history-item-note">Jakmile se na stroj naváže servisní požadavek, uvidíš ho tady.</div></div>'}
+            </div>
+          </section>
+
+          <section class="history-card">
+            <h4 style="margin:0 0 12px; font-size:20px;">Historie přesunů</h4>
+            <div class="history-list">
+              ${!detailData.transferHistoryAvailable
+                ? '<div class="history-item"><div class="history-item-title">Historie přesunů čeká na DB</div><div class="history-item-note">Spusť prosím database/machine_transfers_v13.sql a pak se tady začnou ukládat přesuny mezi lokalitami a skladem.</div></div>'
+                : detailData.transfers?.length
+                  ? detailData.transfers.map((item) => `
+                    <div class="history-item">
+                      <div class="history-item-title">${escapeHtml(item.transfer_kind === 'storage' ? 'Stažení na sklad' : 'Přesun mezi lokalitami')}</div>
+                      <div class="history-item-note">${escapeHtml(formatDateTime(item.transferred_at))} · ${escapeHtml(item.transferred_by || 'Bez autora')}<br />${escapeHtml(item.from_location_label || 'Bez lokality')} → ${escapeHtml(item.to_location_label || 'Na sklad / bez lokality')} · stav ${escapeHtml(getStatusLabel(item.to_status || machine.status))}${item.note ? `<br />${escapeHtml(item.note)}` : ''}</div>
+                    </div>
+                  `).join('')
+                  : '<div class="history-item"><div class="history-item-title">Zatím bez přesunů</div><div class="history-item-note">Jakmile stroj přesuneš na jinou lokalitu nebo stáhneš na sklad, uvidíš to tady.</div></div>'}
             </div>
           </section>
         </div>
@@ -1199,6 +1385,88 @@
       }
     }
 
+    async function saveMachineTransfer() {
+      const machineId = Number(transferMachineIdInput.value || 0)
+      const machine = machines.find((item) => String(item.id) === String(machineId))
+      if (!machineId || !machine) {
+        throw new Error('Nepodařilo se najít stroj pro přesun.')
+      }
+
+      const destinationType = transferDestinationTypeInput.value
+      const targetLocationId = destinationType === 'location'
+        ? Number(transferTargetLocationIdInput.value || 0)
+        : null
+      const transferredAt = transferAtInput.value
+      const reason = String(transferReasonInput.value || '').trim()
+      const nextStatus = transferStatusInput.value
+      const nextActive = transferActiveInput.checked
+
+      if (!transferredAt) {
+        throw new Error('Doplň datum a čas přesunu.')
+      }
+      if (!reason) {
+        throw new Error('Doplň důvod přesunu.')
+      }
+      if (destinationType === 'location' && !targetLocationId) {
+        throw new Error('Vyber cílovou lokalitu.')
+      }
+      if (destinationType === 'location' && String(machine.location_id || '') === String(targetLocationId)) {
+        throw new Error('Cílová lokalita je stejná jako aktuální.')
+      }
+      if (destinationType === 'storage' && !machine.location_id && ['removed', 'offline'].includes(String(machine.status || ''))) {
+        throw new Error('Tento stroj už je vedený bez lokality jako stažený nebo mimo provoz.')
+      }
+
+      const transferIso = new Date(transferredAt).toISOString()
+      const nextLocationId = destinationType === 'location' ? targetLocationId : null
+      const transferNotePrefix = destinationType === 'storage'
+        ? `Staženo na sklad ${new Date(transferIso).toLocaleDateString('cs-CZ')}`
+        : `Přesunuto na ${getLocationLabel(nextLocationId)} ${new Date(transferIso).toLocaleDateString('cs-CZ')}`
+      const nextMachineNote = [transferNotePrefix, reason, machine.note].filter(Boolean).join(' · ')
+
+      const { error: updateError } = await supabase
+        .from('machines')
+        .update({
+          location_id: nextLocationId,
+          status: nextStatus,
+          active: nextActive,
+          note: nextMachineNote
+        })
+        .eq('id', machineId)
+
+      if (updateError) throw updateError
+
+      try {
+        const { error: transferError } = await supabase
+          .from('machine_transfers')
+          .insert([{
+            machine_id: machineId,
+            from_location_id: machine.location_id || null,
+            to_location_id: nextLocationId,
+            transfer_kind: destinationType === 'storage' ? 'storage' : 'relocation',
+            from_status: machine.status || 'ok',
+            to_status: nextStatus,
+            from_active: machine.active !== false,
+            to_active: nextActive,
+            transferred_at: transferIso,
+            transferred_by: getCurrentUserLabel(),
+            note: reason
+          }])
+
+        if (transferError) {
+          const message = String(transferError.message || '').toLowerCase()
+          if (message.includes('machine_transfers')) {
+            transferHistoryAvailable = false
+            setStatus('Přesun stroje se uložil, ale historie přesunů ještě není nasazená v DB. Spusť database/machine_transfers_v13.sql.', 'error')
+          } else {
+            throw transferError
+          }
+        }
+      } catch (error) {
+        throw error
+      }
+    }
+
     function applyLocationPrefillFromUrl() {
       const params = new URLSearchParams(window.location.search)
       const locationParam = params.get('location')
@@ -1244,10 +1512,14 @@
     cancelPlanogramBtn.addEventListener('click', closePlanogramModal)
     closeCopyPlanogramModalBtn.addEventListener('click', closeCopyPlanogramModal)
     cancelCopyPlanogramBtn.addEventListener('click', closeCopyPlanogramModal)
+    closeTransferModalBtn.addEventListener('click', closeTransferModal)
+    cancelTransferBtn.addEventListener('click', closeTransferModal)
+    transferDestinationTypeInput.addEventListener('change', syncTransferDestinationUI)
     modalBackdrop.addEventListener('click', (event) => { if (event.target === modalBackdrop) closeModal() })
     detailModalBackdrop.addEventListener('click', (event) => { if (event.target === detailModalBackdrop) closeDetailModal() })
     planogramModalBackdrop.addEventListener('click', (event) => { if (event.target === planogramModalBackdrop) closePlanogramModal() })
     copyPlanogramModalBackdrop.addEventListener('click', (event) => { if (event.target === copyPlanogramModalBackdrop) closeCopyPlanogramModal() })
+    transferModalBackdrop.addEventListener('click', (event) => { if (event.target === transferModalBackdrop) closeTransferModal() })
 
     machinesTableBody.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action]')
@@ -1256,9 +1528,16 @@
       if (!machine) return
       if (button.dataset.action === 'detail') openDetailModal(machine)
       if (button.dataset.action === 'edit') fillForm(machine)
+      if (button.dataset.action === 'transfer') openMachineTransfer(machine)
     })
 
     detailModalBody.addEventListener('click', (event) => {
+      const machineActionButton = event.target.closest('[data-machine-action]')
+      if (machineActionButton?.dataset.machineAction === 'transfer') {
+        const machine = machines.find((item) => String(item.id) === String(machineActionButton.dataset.machineId))
+        if (machine) openMachineTransfer(machine)
+        return
+      }
       const button = event.target.closest('[data-planogram-action]')
       if (!button) return
       const machineId = button.dataset.machineId
@@ -1353,6 +1632,30 @@
       }
     })
 
+    transferForm.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      try {
+        const machineId = transferMachineIdInput.value
+        saveTransferBtn.disabled = true
+        saveTransferBtn.textContent = 'Ukládám přesun...'
+        await saveMachineTransfer()
+        closeTransferModal()
+        await loadMachines()
+        machineDetailCache.delete(String(machineId))
+        const refreshedMachine = machines.find((item) => String(item.id) === String(machineId))
+        if (refreshedMachine) {
+          await openDetailModal(refreshedMachine, { forceReload: true })
+        }
+        setStatus('Přesun stroje byl uložen.', 'success')
+      } catch (error) {
+        console.error(error)
+        setStatus(`Nepodařilo se uložit přesun stroje: ${error.message}`, 'error')
+      } finally {
+        saveTransferBtn.disabled = false
+        saveTransferBtn.textContent = 'Uložit přesun'
+      }
+    })
+
     document.addEventListener('click', (event) => {
       if (!mobileNavShell) return
       const toggle = document.getElementById('mobileNavToggle')
@@ -1375,6 +1678,7 @@
         closeDetailModal()
         closePlanogramModal()
         closeCopyPlanogramModal()
+        closeTransferModal()
         if (!mobileNavShell) return
         const toggle = document.getElementById('mobileNavToggle')
         mobileNavShell.classList.remove('open')
