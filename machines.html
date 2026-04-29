@@ -548,6 +548,7 @@
     let planogramSlots = []
     let planogramAvailable = true
     let isEditMode = false
+    const machineDetailCache = new Map()
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -709,7 +710,7 @@
           <td data-label="Evidence / QR">
             <strong>${escapeHtml(getEvidenceNumber(item) ? `Ev. č. ${getEvidenceNumber(item)}` : 'Bez evidenčního čísla')}</strong>
             <span class="subtext">${escapeHtml(item.qr_token || 'Bez tokenu')}</span>
-            <span class="subtext">${escapeHtml(getMachineHistory(item.id)[0]?.title || 'Zatím bez servisní historie')}</span>
+            <span class="subtext">Detail načte servisní historii a planogram zvlášť.</span>
           </td>
           <td data-label="Akce">
             <div class="action-row">
@@ -842,16 +843,79 @@
       return `machine-qr.html?qr=${encodeURIComponent(String(machine.qr_token || ''))}`
     }
 
-    function openDetailModal(machine) {
+    async function loadMachineDetailData(machineId, { force = false } = {}) {
+      const cacheKey = String(machineId)
+      if (!force && machineDetailCache.has(cacheKey)) {
+        return machineDetailCache.get(cacheKey)
+      }
+
+      const historyQuery = supabase
+        .from('service_requests')
+        .select('id, machine_id, title, description, resolution_note, status, created_at, updated_at')
+        .eq('machine_id', machineId)
+        .order('updated_at', { ascending: false })
+        .limit(8)
+
+      const planogramQuery = supabase
+        .from('machine_planogram_slots')
+        .select('*')
+        .eq('machine_id', machineId)
+        .order('sort_order', { ascending: true })
+
+      const [
+        { data: historyData, error: historyError },
+        { data: planogramData, error: planogramError }
+      ] = await Promise.all([historyQuery, planogramQuery])
+
+      if (historyError) throw historyError
+
+      let detail = {
+        history: historyData ?? [],
+        planogram: [],
+        planogramAvailable: true
+      }
+
+      if (planogramError) {
+        const message = String(planogramError.message || '').toLowerCase()
+        if (message.includes('machine_planogram_slots')) {
+          detail.planogramAvailable = false
+        } else {
+          throw planogramError
+        }
+      } else {
+        detail.planogram = planogramData ?? []
+      }
+
+      machineDetailCache.set(cacheKey, detail)
+      return detail
+    }
+
+    async function openDetailModal(machine, { forceReload = false } = {}) {
+      detailModalTitle.textContent = machine.name || 'Detail stroje'
+      detailModalBody.innerHTML = `
+        <div class="empty-state">Načítám detail stroje, servisní historii a planogram...</div>
+      `
+      detailModalBackdrop.classList.add('show')
+
+      let detailData
+      try {
+        detailData = await loadMachineDetailData(machine.id, { force: forceReload })
+      } catch (error) {
+        console.error(error)
+        detailModalBody.innerHTML = `
+          <div class="empty-state">Nepodařilo se načíst detail stroje: ${escapeHtml(error.message || 'Neznámá chyba')}</div>
+        `
+        return
+      }
+
       const rule = getMachineRule(machine.id)
-      const history = getMachineHistory(machine.id)
-      const planogram = getMachinePlanogram(machine.id)
+      const history = detailData.history || []
+      const planogram = detailData.planogram || []
       const locationLabel = getLocationLabel(machine.location_id)
       const lowSlots = planogram.filter((slot) => {
         const status = getPlanogramStatus(slot)
         return status.cls === 'bad'
       }).length
-      detailModalTitle.textContent = machine.name || 'Detail stroje'
       detailModalBody.innerHTML = `
         <div class="detail-layout">
           <section class="quick-actions">
@@ -905,7 +969,7 @@
               </div>
             </div>
             <div class="planogram-list">
-              ${!planogramAvailable
+              ${!detailData.planogramAvailable
                 ? '<div class="history-item"><div class="history-item-title">Planogram čeká na DB</div><div class="history-item-note">Nejdřív prosím spusť database/machine_planogram.sql. Pak se tady ukážou volby a produkty.</div></div>'
                 : planogram.length
                   ? planogram.map((slot) => {
@@ -986,17 +1050,18 @@
 
     async function loadMachines() {
       setStatus('Načítám stroje...')
-      const machinesQuery = supabase.from('machines').select('*').order('created_at', { ascending: false })
-      const rulesQuery = supabase.from('machine_service_rules').select('*')
-      const historyQuery = supabase.from('service_requests').select('id, machine_id, title, description, resolution_note, status, created_at, updated_at').not('machine_id', 'is', null).order('updated_at', { ascending: false })
-      const planogramQuery = supabase.from('machine_planogram_slots').select('*')
+      const machinesQuery = supabase
+        .from('machines')
+        .select('id, location_id, name, machine_type, brand, model, serial_number, evidence_number, status, active, note, qr_token, created_at')
+        .order('created_at', { ascending: false })
+      const rulesQuery = supabase
+        .from('machine_service_rules')
+        .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at')
 
       const [
         { data: machinesData, error: machinesError },
-        { data: rulesData, error: rulesError },
-        { data: historyData, error: historyError },
-        { data: planogramData, error: planogramError }
-      ] = await Promise.all([machinesQuery, rulesQuery, historyQuery, planogramQuery])
+        { data: rulesData, error: rulesError }
+      ] = await Promise.all([machinesQuery, rulesQuery])
       if (machinesError) {
         machines = []
         renderSummary()
@@ -1005,28 +1070,14 @@
         return
       }
       if (rulesError) throw rulesError
-      if (historyError) {
-        serviceHistory = []
-      } else {
-        serviceHistory = historyData ?? []
-      }
-      if (planogramError) {
-        const message = String(planogramError.message || '').toLowerCase()
-        if (message.includes('machine_planogram_slots')) {
-          planogramAvailable = false
-          planogramSlots = []
-        } else {
-          throw planogramError
-        }
-      } else {
-        planogramAvailable = true
-        planogramSlots = planogramData ?? []
-      }
+      serviceHistory = []
+      planogramSlots = []
       machines = machinesData ?? []
       serviceRules = rulesData ?? []
+      machineDetailCache.clear()
       renderSummary()
       applyFilters()
-      setStatus(`Načteno strojů: ${machines.length}${planogramAvailable ? ` · slotů ${planogramSlots.length}` : ' · planogram čeká na DB'}`, 'success')
+      setStatus(`Načteno strojů: ${machines.length}. Detail teď načítáme až při otevření konkrétního stroje, aby byla stránka rychlejší.`, 'success')
       applyQrPrefillFromUrl()
     }
 
@@ -1262,8 +1313,9 @@
         await savePlanogramSlot()
         closePlanogramModal()
         await loadMachines()
+        machineDetailCache.delete(String(machineId))
         const refreshedMachine = machines.find((item) => String(item.id) === String(machineId))
-        if (refreshedMachine) openDetailModal(refreshedMachine)
+        if (refreshedMachine) openDetailModal(refreshedMachine, { forceReload: true })
         setStatus(wasEdit ? 'Slot byl upraven.' : 'Slot byl přidán.', 'success')
       } catch (error) {
         console.error(error)
@@ -1288,8 +1340,9 @@
         const copiedCount = await copyPlanogramBetweenMachines(targetMachineId, sourceMachineId, { replaceExisting })
         closeCopyPlanogramModal()
         await loadMachines()
+        machineDetailCache.delete(String(targetMachineId))
         const refreshedMachine = machines.find((item) => String(item.id) === String(targetMachineId))
-        if (refreshedMachine) openDetailModal(refreshedMachine)
+        if (refreshedMachine) openDetailModal(refreshedMachine, { forceReload: true })
         setStatus(`Planogram byl zkopírovaný. Přeneseno slotů: ${copiedCount}.`, 'success')
       } catch (error) {
         console.error(error)
@@ -1331,9 +1384,9 @@
 
     async function initializePage() {
       try {
-        await loadLocations()
+        await Promise.all([loadLocations(), loadMachines()])
+        applyFilters()
         resetForm()
-        await loadMachines()
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se připravit modul strojů: ${error.message}`, 'error')
