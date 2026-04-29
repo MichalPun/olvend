@@ -1729,6 +1729,9 @@
     let currentMode = "service";
     let currentUser = null;
     let managerDashboardCache = null;
+    let serviceDashboardCache = null;
+    let serviceDashboardCacheAt = 0;
+    const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
     let managerAttendanceDayMap = new Map();
     let currentActions = [];
     let showPinnedActionsOnly = false;
@@ -2746,7 +2749,11 @@
       return managerDashboardCache;
     }
 
-    async function loadServiceDashboardData() {
+    async function loadServiceDashboardData({ forceReload = false } = {}) {
+      if (!forceReload && serviceDashboardCache && (Date.now() - serviceDashboardCacheAt) < SERVICE_DASHBOARD_CACHE_TTL_MS) {
+        return serviceDashboardCache;
+      }
+
       const today = getTodayDateString();
 
       const [
@@ -2780,7 +2787,7 @@
           .order("actual_start", { ascending: true }),
         supabase
           .from("service_requests")
-          .select("*")
+          .select("id, title, description, status, priority, due_date, assigned_employee_id, location_id, machine_id, created_at, updated_at")
           .order("due_date", { ascending: true }),
         supabase
           .from("vehicle_operation_logs")
@@ -3087,7 +3094,7 @@
           })
       ].slice(0, 8);
 
-      return {
+      serviceDashboardCache = {
         kpis,
         priority: priorityItems.length ? priorityItems : [{
           title: "Bez urgentních položek",
@@ -3109,6 +3116,8 @@
         }],
         actions: DASHBOARD_DATA.service.actions
       };
+      serviceDashboardCacheAt = Date.now();
+      return serviceDashboardCache;
     }
 
     async function renderManagerDashboard(forceReload = false) {
@@ -3163,7 +3172,7 @@
       setText("todayNote", data.todayNote);
 
       try {
-        const liveData = await loadServiceDashboardData();
+        const liveData = await loadServiceDashboardData({ forceReload: options.forceReload });
         renderKpis(liveData.kpis);
         renderList("priorityList", liveData.priority);
         renderList("todayList", liveData.today);
@@ -3259,6 +3268,9 @@
       if (currentMode === "manager") {
         managerDashboardCache = null;
         await renderDashboard("manager", { forceReload: true });
+      } else {
+        serviceDashboardCache = null;
+        serviceDashboardCacheAt = 0;
       }
 
       applyLayout(DEFAULT_LAYOUT);
@@ -3541,11 +3553,12 @@
 
       const defaultMode = "service";
       const savedMode = localStorage.getItem(getModeKey()) || defaultMode;
-      await renderDashboard(savedMode);
+      const renderPromise = renderDashboard(savedMode);
       loadLayout();
       setEditMode(false);
       updateBackButton();
       window.addEventListener("resize", refreshResponsiveState);
+      await renderPromise;
     }
 
     initializeDashboard().catch((error) => {
