@@ -1,6 +1,7 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
+  const APP_THEME_KEY = "olvendThemePreference";
   const APP_VERSION = "OLVEND 1.3";
   const MIN_RELEASE_ANNOUNCEMENT = "1.3";
   const RELEASE_NOTES = {
@@ -240,6 +241,76 @@
   ];
 
   const navItems = navGroups.flatMap((group) => group.items);
+
+  function getStoredThemePreference() {
+    const stored = localStorage.getItem(APP_THEME_KEY);
+    if (stored === "light" || stored === "dark" || stored === "auto") return stored;
+    return "auto";
+  }
+
+  function resolveTheme(preference) {
+    if (preference === "light" || preference === "dark") return preference;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  function updateThemeMeta(theme) {
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) {
+      metaTheme.setAttribute("content", theme === "light" ? "#f4f5f7" : "#0b0b0d");
+    }
+  }
+
+  function applyTheme(preference, options = {}) {
+    const nextPreference = preference === "light" || preference === "dark" || preference === "auto"
+      ? preference
+      : "auto";
+    const resolvedTheme = resolveTheme(nextPreference);
+
+    document.documentElement.dataset.olvendTheme = resolvedTheme;
+    document.documentElement.dataset.olvendThemePreference = nextPreference;
+    document.documentElement.style.colorScheme = resolvedTheme;
+    updateThemeMeta(resolvedTheme);
+
+    if (!options.skipPersist) {
+      localStorage.setItem(APP_THEME_KEY, nextPreference);
+    }
+
+    if (!options.skipEvent) {
+      document.dispatchEvent(new CustomEvent("olvend:themechange", {
+        detail: { preference: nextPreference, theme: resolvedTheme }
+      }));
+    }
+
+    return { preference: nextPreference, theme: resolvedTheme };
+  }
+
+  function initTheme() {
+    const preference = getStoredThemePreference();
+    applyTheme(preference, { skipPersist: true, skipEvent: true });
+
+    if (window.matchMedia) {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const handleMediaChange = () => {
+        if (getStoredThemePreference() === "auto") {
+          applyTheme("auto", { skipPersist: true });
+        }
+      };
+
+      if (typeof media.addEventListener === "function") {
+        media.addEventListener("change", handleMediaChange);
+      } else if (typeof media.addListener === "function") {
+        media.addListener(handleMediaChange);
+      }
+    }
+
+    window.OLVEND_THEME = {
+      getPreference: getStoredThemePreference,
+      getResolvedTheme: () => document.documentElement.dataset.olvendTheme || resolveTheme(getStoredThemePreference()),
+      setPreference(nextPreference) {
+        return applyTheme(nextPreference);
+      }
+    };
+  }
 
   function extractVersionNumber(value) {
     const match = String(value || "").match(/(\d+\.\d+)/);
@@ -773,6 +844,72 @@
           margin-bottom: 14px;
         }
       }
+
+      :root[data-olvend-theme="light"] body {
+        color: #18202a !important;
+        background:
+          radial-gradient(circle at top left, rgba(213, 16, 26, 0.08), transparent 22%),
+          linear-gradient(135deg, #f7f8fb, #edf1f6, #f8fafc) !important;
+      }
+
+      :root[data-olvend-theme="light"] .sidebar,
+      :root[data-olvend-theme="light"] .mobile-nav-toggle,
+      :root[data-olvend-theme="light"] .mobile-nav-panel,
+      :root[data-olvend-theme="light"] .release-card {
+        background: rgba(255,255,255,0.92) !important;
+        border-color: rgba(24,32,42,0.08) !important;
+        box-shadow: 0 20px 48px rgba(15, 23, 42, 0.08);
+      }
+
+      :root[data-olvend-theme="light"] .release-backdrop {
+        background: rgba(236, 240, 245, 0.64);
+      }
+
+      :root[data-olvend-theme="light"] .brand-logo,
+      :root[data-olvend-theme="light"] .nav a,
+      :root[data-olvend-theme="light"] .mobile-nav-current,
+      :root[data-olvend-theme="light"] .mobile-nav-panel a,
+      :root[data-olvend-theme="light"] .release-head h2,
+      :root[data-olvend-theme="light"] .release-list li,
+      :root[data-olvend-theme="light"] .version-value {
+        color: #18202a !important;
+      }
+
+      :root[data-olvend-theme="light"] .brand-subtitle,
+      :root[data-olvend-theme="light"] .global-nav-title,
+      :root[data-olvend-theme="light"] .nav-title,
+      :root[data-olvend-theme="light"] .global-nav-note,
+      :root[data-olvend-theme="light"] .mobile-nav-label,
+      :root[data-olvend-theme="light"] .mobile-nav-section-title,
+      :root[data-olvend-theme="light"] .release-head p,
+      :root[data-olvend-theme="light"] .release-note,
+      :root[data-olvend-theme="light"] .version-label,
+      :root[data-olvend-theme="light"] .version-note {
+        color: #667085 !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav a:hover,
+      :root[data-olvend-theme="light"] .mobile-nav-panel a,
+      :root[data-olvend-theme="light"] .release-list li,
+      :root[data-olvend-theme="light"] .version-box {
+        background: rgba(15, 23, 42, 0.03) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav-status {
+        background: rgba(15, 23, 42, 0.05) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+        color: #667085 !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-nav-icon {
+        border-right-color: rgba(24,32,42,0.72) !important;
+        border-bottom-color: rgba(24,32,42,0.72) !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav-dot {
+        background: rgba(24,32,42,0.2) !important;
+      }
     `;
 
     document.head.appendChild(style);
@@ -852,6 +989,8 @@
       backdrop.setAttribute("aria-hidden", "false");
     });
   }
+
+  initTheme();
 
   const sidebar = document.querySelector(".sidebar");
   if (sidebar) {
