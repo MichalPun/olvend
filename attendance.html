@@ -5450,9 +5450,13 @@
     }
 
     async function loadSupportData() {
-      const [warehousesResult, vehiclesResult, bagetteProfilesResult] = await Promise.allSettled([
+      const [warehousesResult, vehiclesResult, recurringOrdersResult, recurringItemsResult, suppliersResult, productsResult, bagetteProfilesResult] = await Promise.allSettled([
         supabase.from('warehouses').select('id, name').eq('active', true).order('name', { ascending: true }),
         supabase.from('vehicles').select('id, plate, brand, model, name, current_odometer_km, assigned_employee_id').eq('active', true).order('plate', { ascending: true }),
+        supabase.from('purchase_recurring_orders').select('id, supplier_id, pilot_scope, active').eq('pilot_scope', 'bagette').eq('active', true).order('id', { ascending: true }),
+        supabase.from('purchase_recurring_order_items').select('id, recurring_order_id, product_id, active').eq('active', true).order('id', { ascending: true }),
+        supabase.from('purchase_suppliers').select('id, name').eq('active', true).order('name', { ascending: true }),
+        supabase.from('products').select('id, name, base_unit, active').eq('active', true).order('name', { ascending: true }),
         supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true })
       ]);
 
@@ -5468,7 +5472,44 @@
         vehiclesDirectory = [];
       }
 
-      if (bagetteProfilesResult.status === 'fulfilled' && !bagetteProfilesResult.value.error) {
+      const recurringOrders = recurringOrdersResult.status === 'fulfilled' && !recurringOrdersResult.value.error
+        ? (recurringOrdersResult.value.data ?? [])
+        : [];
+      const recurringItems = recurringItemsResult.status === 'fulfilled' && !recurringItemsResult.value.error
+        ? (recurringItemsResult.value.data ?? [])
+        : [];
+      const suppliers = suppliersResult.status === 'fulfilled' && !suppliersResult.value.error
+        ? (suppliersResult.value.data ?? [])
+        : [];
+      const products = productsResult.status === 'fulfilled' && !productsResult.value.error
+        ? (productsResult.value.data ?? [])
+        : [];
+
+      const recurringOrderMap = new Map(recurringOrders.map((item) => [String(item.id), item]));
+      const supplierMap = new Map(suppliers.map((item) => [String(item.id), item.name || 'Dodavatel']));
+      const productMap = new Map(products.map((item) => [String(item.id), item]));
+      const recurringBagetteProductsMap = new Map();
+
+      recurringItems.forEach((item) => {
+        const recurringOrder = recurringOrderMap.get(String(item.recurring_order_id));
+        if (!recurringOrder || recurringOrder.active === false) return;
+        const product = productMap.get(String(item.product_id));
+        if (!product) return;
+        const key = String(item.product_id);
+        if (recurringBagetteProductsMap.has(key)) return;
+        recurringBagetteProductsMap.set(key, {
+          product_id: item.product_id,
+          product_name: product.name || 'Položka',
+          supplier_name: supplierMap.get(String(recurringOrder.supplier_id)) || 'Dodavatel',
+          base_unit: product.base_unit || 'ks',
+          available_qty: null,
+          warehouse_qty: null
+        });
+      });
+
+      if (recurringBagetteProductsMap.size) {
+        bagettePilotProducts = Array.from(recurringBagetteProductsMap.values()).sort((a, b) => normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'));
+      } else if (bagetteProfilesResult.status === 'fulfilled' && !bagetteProfilesResult.value.error) {
         bagettePilotProducts = bagetteProfilesResult.value.data ?? [];
       } else {
         bagettePilotProducts = [];
