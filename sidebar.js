@@ -54,6 +54,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "approval-center.html": {
+      currentLabel: "Schvalování",
+      activeKey: "approvals",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "tasks.html": {
       currentLabel: "Manažerský blok",
       activeKey: "tasks",
@@ -232,6 +239,7 @@
       key: "management",
       title: "Řízení",
       items: [
+        { key: "approvals", href: "approval-center.html", label: "Schvalování" },
         { key: "hr", href: "hr.html", label: "HR" },
         { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
         { key: "reporty", href: "reporty.html", label: "Reporty" },
