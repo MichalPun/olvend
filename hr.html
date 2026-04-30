@@ -2691,6 +2691,37 @@
       return `${hours}:${minutes}`;
     }
 
+    function hasMissingShiftEnd(row) {
+      return Boolean(row?.actual_start && !row?.actual_end);
+    }
+
+    function getAttendanceQueueMeta(row) {
+      if (hasMissingShiftEnd(row)) {
+        return {
+          kind: 'missing_end',
+          label: 'Chybí konec směny',
+          note: 'Směna zůstala otevřená a je potřeba ručně dopsat konec.',
+          actionLabel: 'Dopsat konec'
+        };
+      }
+
+      if (row?.start_location_type === 'home') {
+        return {
+          kind: 'home_start',
+          label: 'Start doma',
+          note: 'Zkontroluj výjimku domácího startu a rozhodni o schválení.',
+          actionLabel: 'Otevřít kontrolu'
+        };
+      }
+
+      return {
+        kind: 'review',
+        label: 'Ke kontrole',
+        note: 'Ve směně je výjimka nebo ruční zásah, který potřebuje zkontrolovat.',
+        actionLabel: 'Otevřít kontrolu'
+      };
+    }
+
     function formatHours(minutes) {
       return `${(Number(minutes || 0) / 60).toFixed(1).replace('.', ',')} h`;
     }
@@ -2788,15 +2819,19 @@
       adjustEndKm.disabled = !row.vehicle_id;
       adjustFuelKm.disabled = !row.vehicle_id;
       adjustReason.value = row.adjustment_reason || '';
+      const queueMeta = getAttendanceQueueMeta(row);
       const baseStatusMessage = row.vehicle_id
         ? (row.vehicle_log_count > 1
           ? 'Uprav začátek, konec, pauzu a případně km hlavního auta směny. Dnešní směna má víc jízd/aut, takže zkontroluj, že upravuješ správný záznam.'
           : 'Uprav začátek, konec, pauzu a případně km vozidla. Korekce se propíše i do záznamu auta.')
         : 'Uprav začátek, konec, pauzu a doplň důvod korekce.';
-      const reviewReason = String(row.vehicle_log_review_note || '').trim();
+      const reviewReason = [
+        hasMissingShiftEnd(row) ? 'Chybí konec směny. Tady ho můžeš ručně dopsat a uložit.' : '',
+        String(row.vehicle_log_review_note || '').trim()
+      ].filter(Boolean).join(' ');
       setAttendanceAdjustStatus(
         reviewReason
-          ? `Důvod kontroly: ${reviewReason} ${baseStatusMessage}`
+          ? `${queueMeta.label}: ${reviewReason} ${baseStatusMessage}`
           : baseStatusMessage,
         reviewReason ? 'warning' : ''
       );
@@ -3750,21 +3785,25 @@
 
       approvalStrip.classList.add('show');
       approvalStripText.innerHTML = pendingRows.length === 1
-        ? '<strong>1 směna</strong> právě čeká na schválení. Vyřeš ji rovnou tady, nemusíš ji hledat jinde.'
-        : `<strong>${pendingRows.length} směny</strong> právě čekají na schválení. Vyřeš je rovnou tady, nemusíš je hledat jinde.`;
+        ? '<strong>1 směna</strong> právě čeká na kontrolu. Tady hned uvidíš, jestli chybí konec směny, jde o start doma nebo jinou výjimku.'
+        : `<strong>${pendingRows.length} směny</strong> právě čekají na kontrolu. Tady hned uvidíš, jestli chybí konec směny, jde o start doma nebo jinou výjimku.`;
 
       approvalList.innerHTML = pendingRows.map((row) => `
         <article class="approval-item">
           <div class="approval-item-title">${escapeHtml(row.employee_name)} · ${escapeHtml(formatDate(row.attendance_date))}</div>
           <div class="approval-item-note">
+            <strong>${escapeHtml(getAttendanceQueueMeta(row).label)}</strong> ·
+            ${escapeHtml(getAttendanceQueueMeta(row).note)}<br />
             ${escapeHtml(row.start_location_type === 'home' ? 'Start doma' : row.location_label)} ·
             ${escapeHtml(formatTime(row.actual_start))} → ${escapeHtml(formatTime(row.actual_end))} ·
             ${escapeHtml(row.vehicle_label)}${row.note ? ` · ${escapeHtml(row.note)}` : ''}
           </div>
           <div class="approval-actions">
-            <button class="mini-btn approve" type="button" data-action="approve-home-start" data-day-id="${escapeHtml(String(row.id))}">Schválit</button>
-            <button class="mini-btn reject" type="button" data-action="reject-home-start" data-day-id="${escapeHtml(String(row.id))}">Zamítnout</button>
-            <button class="mini-btn" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}">Upravit</button>
+            ${getAttendanceQueueMeta(row).kind === 'home_start' ? `
+              <button class="mini-btn approve" type="button" data-action="approve-home-start" data-day-id="${escapeHtml(String(row.id))}">Schválit start</button>
+              <button class="mini-btn reject" type="button" data-action="reject-home-start" data-day-id="${escapeHtml(String(row.id))}">Zamítnout start</button>
+            ` : ''}
+            <button class="mini-btn ${getAttendanceQueueMeta(row).kind === 'missing_end' ? 'warn' : ''}" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}">${escapeHtml(getAttendanceQueueMeta(row).actionLabel)}</button>
           </div>
         </article>
       `).join('');
@@ -3883,12 +3922,12 @@
               <span class="subtext">Pauza ${escapeHtml(formatMinutes(row.break_minutes))}</span>
             </td>
             <td>
-              <span class="name-strong">${escapeHtml(exceptions.length ? exceptions.join(', ') : 'Bez výjimky')}</span>
+              <span class="name-strong">${escapeHtml(hasMissingShiftEnd(row) ? `Chybí konec směny${exceptions.length ? `, ${exceptions.join(', ')}` : ''}` : exceptions.length ? exceptions.join(', ') : 'Bez výjimky')}</span>
               <span class="subtext">${escapeHtml(row.adjustment_reason || row.note || '')}</span>
             </td>
             <td><span class="badge ${escapeHtml(status.cls)}">${escapeHtml(status.label)}</span></td>
             <td>
-              <button class="mini-btn" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}" ${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'disabled' : ''}>${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'Vlastní směna' : 'Upravit'}</button>
+              <button class="mini-btn ${hasMissingShiftEnd(row) ? 'warn' : ''}" type="button" data-action="edit-day" data-day-id="${escapeHtml(String(row.id))}" ${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'disabled' : ''}>${row.employee_id === currentUser?.id && !canSelfApproveAttendanceCorrection() ? 'Vlastní směna' : hasMissingShiftEnd(row) ? 'Dopsat konec' : 'Upravit'}</button>
             </td>
           </tr>
         `;
