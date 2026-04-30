@@ -1,6 +1,6 @@
 create table if not exists public.hr_requests (
   id bigint generated always as identity primary key,
-  employee_id bigint not null references public.employees(id) on delete cascade,
+  employee_id uuid not null references public.employees(id) on delete cascade,
   request_type text not null
     check (request_type in ('vacation', 'doctor', 'personal', 'sick', 'other')),
   status text not null default 'pending'
@@ -11,8 +11,8 @@ create table if not exists public.hr_requests (
   end_time time,
   reason text,
   manager_note text,
-  created_by_employee_id bigint references public.employees(id) on delete set null,
-  approved_by_employee_id bigint references public.employees(id) on delete set null,
+  created_by_employee_id uuid references public.employees(id) on delete set null,
+  approved_by_employee_id uuid references public.employees(id) on delete set null,
   approved_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
