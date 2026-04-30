@@ -1050,6 +1050,119 @@
       :root[data-olvend-theme="light"] .overlay {
         background: rgba(15, 23, 42, 0.32) !important;
       }
+
+      :root[data-olvend-theme="light"] .mobile-page,
+      :root[data-olvend-theme="light"] .mobile-focus-body,
+      :root[data-olvend-theme="light"] .mobile-section-stack,
+      :root[data-olvend-theme="light"] .widget-grid {
+        color: #18202a !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-hub,
+      :root[data-olvend-theme="light"] .mobile-focus-panel,
+      :root[data-olvend-theme="light"] .mobile-shift-tile,
+      :root[data-olvend-theme="light"] .mobile-section-card,
+      :root[data-olvend-theme="light"] .hero-card,
+      :root[data-olvend-theme="light"] .action-card,
+      :root[data-olvend-theme="light"] .instruction-card,
+      :root[data-olvend-theme="light"] .log-card,
+      :root[data-olvend-theme="light"] .service-inline-card,
+      :root[data-olvend-theme="light"] .service-request-card,
+      :root[data-olvend-theme="light"] .route-stop-card,
+      :root[data-olvend-theme="light"] .instruction-compact-group,
+      :root[data-olvend-theme="light"] .instruction-compact-item,
+      :root[data-olvend-theme="light"] .vehicle-log-card,
+      :root[data-olvend-theme="light"] .profile-section-card,
+      :root[data-olvend-theme="light"] .profile-card,
+      :root[data-olvend-theme="light"] .availability-card,
+      :root[data-olvend-theme="light"] .profile-plan-card,
+      :root[data-olvend-theme="light"] .mobile-bottom-nav-inner,
+      :root[data-olvend-theme="light"] .mobile-bottom-link,
+      :root[data-olvend-theme="light"] .mobile-tabbar,
+      :root[data-olvend-theme="light"] .mobile-tab,
+      :root[data-olvend-theme="light"] .start-review-card,
+      :root[data-olvend-theme="light"] .mobile-inline-warning {
+        background: rgba(255,255,255,0.94) !important;
+        border-color: rgba(15,23,42,0.08) !important;
+        box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-tile.active,
+      :root[data-olvend-theme="light"] .mobile-bottom-link.active,
+      :root[data-olvend-theme="light"] .mobile-tab.active,
+      :root[data-olvend-theme="light"] .hero-card.primary,
+      :root[data-olvend-theme="light"] .content-card.active {
+        background: rgba(213, 16, 26, 0.08) !important;
+        border-color: rgba(213, 16, 26, 0.22) !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-tile.done {
+        background: rgba(46, 204, 113, 0.08) !important;
+        border-color: rgba(46, 204, 113, 0.2) !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-tile.locked {
+        background: rgba(15, 23, 42, 0.04) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-tile-icon,
+      :root[data-olvend-theme="light"] .mobile-bottom-link-icon,
+      :root[data-olvend-theme="light"] .widget-action {
+        background: rgba(15, 23, 42, 0.06) !important;
+        color: #18202a !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-focus-kicker,
+      :root[data-olvend-theme="light"] .mobile-section-label,
+      :root[data-olvend-theme="light"] .mobile-count-chip small,
+      :root[data-olvend-theme="light"] .mobile-bottom-link-note,
+      :root[data-olvend-theme="light"] .instruction-compact-note,
+      :root[data-olvend-theme="light"] .status-copy,
+      :root[data-olvend-theme="light"] .widget-title-wrap p {
+        color: #667085 !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-shift-tile-title,
+      :root[data-olvend-theme="light"] .mobile-shift-tile-meta,
+      :root[data-olvend-theme="light"] .mobile-shift-tile-note,
+      :root[data-olvend-theme="light"] .mobile-focus-title,
+      :root[data-olvend-theme="light"] .mobile-focus-body,
+      :root[data-olvend-theme="light"] .mobile-back-btn,
+      :root[data-olvend-theme="light"] .mobile-section-value,
+      :root[data-olvend-theme="light"] .mobile-section-title,
+      :root[data-olvend-theme="light"] .mobile-section-text,
+      :root[data-olvend-theme="light"] .mobile-count-chip,
+      :root[data-olvend-theme="light"] .hero-card h3,
+      :root[data-olvend-theme="light"] .hero-card p,
+      :root[data-olvend-theme="light"] .action-card h3,
+      :root[data-olvend-theme="light"] .action-card p,
+      :root[data-olvend-theme="light"] .instruction-card,
+      :root[data-olvend-theme="light"] .service-inline-card,
+      :root[data-olvend-theme="light"] .service-request-card,
+      :root[data-olvend-theme="light"] .route-stop-card,
+      :root[data-olvend-theme="light"] .profile-section-card h3,
+      :root[data-olvend-theme="light"] .profile-section-card p,
+      :root[data-olvend-theme="light"] .profile-card h3,
+      :root[data-olvend-theme="light"] .profile-card p,
+      :root[data-olvend-theme="light"] .availability-card,
+      :root[data-olvend-theme="light"] .profile-plan-card,
+      :root[data-olvend-theme="light"] .mobile-bottom-link-label,
+      :root[data-olvend-theme="light"] .mobile-tab,
+      :root[data-olvend-theme="light"] .widget-action,
+      :root[data-olvend-theme="light"] .widget-header h2,
+      :root[data-olvend-theme="light"] .widget-header h3 {
+        color: #18202a !important;
+      }
+
+      :root[data-olvend-theme="light"] .mobile-back-btn,
+      :root[data-olvend-theme="light"] .mobile-count-chip,
+      :root[data-olvend-theme="light"] .instruction-compact-summary,
+      :root[data-olvend-theme="light"] .widget-action {
+        background: rgba(15, 23, 42, 0.04) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
     `;
 
     document.head.appendChild(style);
