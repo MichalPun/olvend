@@ -852,6 +852,19 @@
           linear-gradient(135deg, #f7f8fb, #edf1f6, #f8fafc) !important;
       }
 
+      :root[data-olvend-theme="light"] {
+        --bg: #f4f5f7 !important;
+        --panel: rgba(255,255,255,0.92) !important;
+        --panel-2: rgba(255,255,255,0.98) !important;
+        --panel-soft: rgba(15,23,42,0.03) !important;
+        --border: rgba(15,23,42,0.08) !important;
+        --border-strong: rgba(15,23,42,0.14) !important;
+        --text: #18202a !important;
+        --muted: #667085 !important;
+        --soft: #8a94a6 !important;
+        --shadow: 0 20px 50px rgba(15,23,42,0.08) !important;
+      }
+
       :root[data-olvend-theme="light"] .sidebar,
       :root[data-olvend-theme="light"] .mobile-nav-toggle,
       :root[data-olvend-theme="light"] .mobile-nav-panel,
@@ -871,7 +884,22 @@
       :root[data-olvend-theme="light"] .mobile-nav-panel a,
       :root[data-olvend-theme="light"] .release-head h2,
       :root[data-olvend-theme="light"] .release-list li,
-      :root[data-olvend-theme="light"] .version-value {
+      :root[data-olvend-theme="light"] .version-value,
+      :root[data-olvend-theme="light"] .title h1,
+      :root[data-olvend-theme="light"] .page-header h1,
+      :root[data-olvend-theme="light"] .page-header h2,
+      :root[data-olvend-theme="light"] .content-top h2,
+      :root[data-olvend-theme="light"] .widget-header h2,
+      :root[data-olvend-theme="light"] .widget-header h3,
+      :root[data-olvend-theme="light"] .section-title,
+      :root[data-olvend-theme="light"] .panel-title,
+      :root[data-olvend-theme="light"] .modal-title,
+      :root[data-olvend-theme="light"] .content-card h3,
+      :root[data-olvend-theme="light"] .topbar h1,
+      :root[data-olvend-theme="light"] .user-meta strong,
+      :root[data-olvend-theme="light"] .device-meta strong,
+      :root[data-olvend-theme="light"] th,
+      :root[data-olvend-theme="light"] td {
         color: #18202a !important;
       }
 
@@ -884,16 +912,47 @@
       :root[data-olvend-theme="light"] .release-head p,
       :root[data-olvend-theme="light"] .release-note,
       :root[data-olvend-theme="light"] .version-label,
-      :root[data-olvend-theme="light"] .version-note {
+      :root[data-olvend-theme="light"] .version-note,
+      :root[data-olvend-theme="light"] .title p,
+      :root[data-olvend-theme="light"] .page-header p,
+      :root[data-olvend-theme="light"] .content-card p,
+      :root[data-olvend-theme="light"] .widget-header p,
+      :root[data-olvend-theme="light"] .helper-text,
+      :root[data-olvend-theme="light"] .field-help,
+      :root[data-olvend-theme="light"] .empty-state,
+      :root[data-olvend-theme="light"] .empty-copy,
+      :root[data-olvend-theme="light"] .user-meta span,
+      :root[data-olvend-theme="light"] .device-meta span,
+      :root[data-olvend-theme="light"] label,
+      :root[data-olvend-theme="light"] .table-note {
         color: #667085 !important;
       }
 
       :root[data-olvend-theme="light"] .nav a:hover,
       :root[data-olvend-theme="light"] .mobile-nav-panel a,
       :root[data-olvend-theme="light"] .release-list li,
-      :root[data-olvend-theme="light"] .version-box {
+      :root[data-olvend-theme="light"] .version-box,
+      :root[data-olvend-theme="light"] .widget,
+      :root[data-olvend-theme="light"] .kpi-card,
+      :root[data-olvend-theme="light"] .action-card,
+      :root[data-olvend-theme="light"] .user-panel,
+      :root[data-olvend-theme="light"] .device-panel,
+      :root[data-olvend-theme="light"] .page-note,
+      :root[data-olvend-theme="light"] .content-card,
+      :root[data-olvend-theme="light"] .content-footer,
+      :root[data-olvend-theme="light"] .modal-card,
+      :root[data-olvend-theme="light"] .modal-shell,
+      :root[data-olvend-theme="light"] .panel,
+      :root[data-olvend-theme="light"] .panel-shell,
+      :root[data-olvend-theme="light"] .surface,
+      :root[data-olvend-theme="light"] .sheet,
+      :root[data-olvend-theme="light"] .table-shell,
+      :root[data-olvend-theme="light"] .summary-card,
+      :root[data-olvend-theme="light"] .stat-card,
+      :root[data-olvend-theme="light"] .card {
         background: rgba(15, 23, 42, 0.03) !important;
         border-color: rgba(15, 23, 42, 0.08) !important;
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06) !important;
       }
 
       :root[data-olvend-theme="light"] .nav-status {
@@ -909,6 +968,87 @@
 
       :root[data-olvend-theme="light"] .nav-dot {
         background: rgba(24,32,42,0.2) !important;
+      }
+
+      :root[data-olvend-theme="light"] .tool-btn,
+      :root[data-olvend-theme="light"] .back-btn,
+      :root[data-olvend-theme="light"] .btn.secondary,
+      :root[data-olvend-theme="light"] .btn.ghost,
+      :root[data-olvend-theme="light"] .secondary-btn,
+      :root[data-olvend-theme="light"] .ghost-btn,
+      :root[data-olvend-theme="light"] .content-link,
+      :root[data-olvend-theme="light"] .dropdown-item,
+      :root[data-olvend-theme="light"] .dashboard-dropdown-btn {
+        color: #18202a !important;
+        background: rgba(15, 23, 42, 0.04) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .tool-btn:hover,
+      :root[data-olvend-theme="light"] .back-btn:hover,
+      :root[data-olvend-theme="light"] .btn.secondary:hover,
+      :root[data-olvend-theme="light"] .btn.ghost:hover,
+      :root[data-olvend-theme="light"] .secondary-btn:hover,
+      :root[data-olvend-theme="light"] .ghost-btn:hover,
+      :root[data-olvend-theme="light"] .dropdown-item:hover {
+        background: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .dashboard-dropdown-menu,
+      :root[data-olvend-theme="light"] .popover,
+      :root[data-olvend-theme="light"] .menu,
+      :root[data-olvend-theme="light"] .dropdown-menu {
+        background: rgba(255,255,255,0.98) !important;
+        border-color: rgba(15,23,42,0.08) !important;
+        box-shadow: 0 24px 60px rgba(15,23,42,0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] input,
+      :root[data-olvend-theme="light"] select,
+      :root[data-olvend-theme="light"] textarea {
+        color: #18202a !important;
+        background: rgba(255,255,255,0.96) !important;
+        border-color: rgba(15,23,42,0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] input::placeholder,
+      :root[data-olvend-theme="light"] textarea::placeholder {
+        color: #98a2b3 !important;
+      }
+
+      :root[data-olvend-theme="light"] table,
+      :root[data-olvend-theme="light"] thead,
+      :root[data-olvend-theme="light"] tbody,
+      :root[data-olvend-theme="light"] tr {
+        border-color: rgba(15,23,42,0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .widget-header,
+      :root[data-olvend-theme="light"] .panel-header,
+      :root[data-olvend-theme="light"] .table-header,
+      :root[data-olvend-theme="light"] .content-top,
+      :root[data-olvend-theme="light"] .modal-head {
+        border-color: rgba(15,23,42,0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .status-chip,
+      :root[data-olvend-theme="light"] .mini-badge,
+      :root[data-olvend-theme="light"] .pill,
+      :root[data-olvend-theme="light"] .badge {
+        color: #344054 !important;
+      }
+
+      :root[data-olvend-theme="light"] .logout-btn,
+      :root[data-olvend-theme="light"] .btn.primary,
+      :root[data-olvend-theme="light"] .release-btn.primary,
+      :root[data-olvend-theme="light"] .primary-btn,
+      :root[data-olvend-theme="light"] .tool-btn.accent {
+        color: #ffffff !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal-backdrop,
+      :root[data-olvend-theme="light"] .overlay {
+        background: rgba(15, 23, 42, 0.32) !important;
       }
     `;
 
