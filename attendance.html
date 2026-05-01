@@ -3432,7 +3432,7 @@
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Před startem</p>
             <h3 class="mobile-section-title">${escapeHtml(getSelectedVehicleLabel())}</h3>
-            <p class="mobile-section-text">Vyber auto a potvrď start km.</p>
+            <p class="mobile-section-text">Vyber auto, doplň start km a hned pod tím uvidíš dnešní nakládku.</p>
           </article>
           <article class="mobile-section-card">
             <div class="form-grid" style="grid-template-columns:1fr;">
@@ -3452,6 +3452,7 @@
               </div>
             </div>
           </article>
+          ${renderMobileLoadingSessionCard(defaultBagetteWarehouseId)}
         `;
       }
 
@@ -3459,11 +3460,12 @@
         <article class="mobile-section-card primary">
           <p class="mobile-section-label">Aktuálně</p>
           <h3 class="mobile-section-title">${currentVehicleLabel}</h3>
-          <p class="mobile-section-text">${todayAttendance.vehicle_id ? (vehicleLogCount > 1 ? `Dnes už jsi pracoval/a s ${vehicleLogCount} auty. Tady ukládáš km, tankování i přesednutí.` : 'Tady ukládáš km, tankování i případné přesednutí.') : 'Směna je zatím bez auta. Můžeš ho připojit i během dne.'}</p>
+          <p class="mobile-section-text">${todayAttendance.vehicle_id ? (vehicleLogCount > 1 ? `Dnes už jsi pracoval/a s ${vehicleLogCount} auty. Nakládku, km i tankování řešíš tady.` : 'Nakládku, km i tankování řešíš tady v jedné sekci.') : 'Směna je zatím bez auta. Můžeš ho připojit i během dne.'}</p>
         </article>
+        ${renderMobileLoadingSessionCard(defaultBagetteWarehouseId)}
         ${todayAttendance.vehicle_id ? `
           <article class="mobile-section-card">
-            <p class="mobile-section-label">Aktuální auto</p>
+            <p class="mobile-section-label">Kilometry</p>
             <div class="form-grid" style="grid-template-columns:1fr;">
               <div class="field full">
                 <label for="mobileEndKmInput">Aktuální / poslední km</label>
@@ -3505,7 +3507,6 @@
             </div>
           </article>
         ` : ''}
-        ${renderMobileLoadingSessionCard(defaultBagetteWarehouseId)}
           <article class="mobile-section-card">
             <p class="mobile-section-label">${todayAttendance.vehicle_id ? 'Změna auta' : 'Přidat auto'}</p>
             <h3 class="mobile-section-title">${todayAttendance.vehicle_id ? 'Přesednout do jiného auta' : 'Připojit vozidlo ke směně'}</h3>
@@ -7480,8 +7481,8 @@
       const loaded = Number(item?.loaded_quantity || 0);
       const returned = Number(item?.returned_quantity || 0);
       const waste = Number(item?.waste_quantity || 0);
-      const consumed = Math.max(0, loaded - returned - waste);
-      return { loaded, returned, waste, consumed };
+      const onboard = Math.max(0, loaded - returned - waste);
+      return { loaded, returned, waste, onboard, consumed: onboard };
     }
 
     function getLoadingSessionTotals() {
@@ -7496,6 +7497,10 @@
     function getSessionConsumedTotal() {
       const totals = getLoadingSessionTotals();
       return Math.max(0, totals.loaded - totals.returned - totals.waste);
+    }
+
+    function getSessionOnVehicleTotal() {
+      return getSessionConsumedTotal();
     }
 
     function getMobileLoadingQty(productId) {
@@ -7665,13 +7670,14 @@
     }
 
     function renderMobileLoadingSessionCard(defaultWarehouseId) {
-      const hasVehicle = Boolean(todayAttendance?.vehicle_id);
+      const hasVehicle = Boolean(todayAttendance?.vehicle_id || startVehicleSelect.value);
+      const shiftStarted = Boolean(todayAttendance?.id);
       if (!hasVehicle) {
         return `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Nakládka vozidla</p>
-            <h3 class="mobile-section-title">Nejdřív připoj vozidlo</h3>
-            <p class="mobile-section-text">Nakládka i vykládka běží nad jednou session. Jakmile bude vozidlo připojené ke směně, odemkne se tady celý pracovní tok.</p>
+            <h3 class="mobile-section-title">Vyber nejdřív vozidlo</h3>
+            <p class="mobile-section-text">Jakmile zvolíš auto, ukážou se ti položky pro nakládku i přehled co je pak na vozidle.</p>
           </article>
         `;
       }
@@ -7690,9 +7696,9 @@
       }
 
       const totals = getLoadingSessionTotals();
-      const consumedTotal = getSessionConsumedTotal();
+      const onboardTotal = getSessionOnVehicleTotal();
       const sessionPhase = !currentLoadingSession
-        ? 'Připraveno k zahájení'
+        ? (shiftStarted ? 'Připraveno k zahájení' : 'Čeká na start směny')
         : currentLoadingSession.status === 'closed'
           ? 'Uzavřeno'
           : currentLoadingSession.unloading_started_at
@@ -7707,8 +7713,8 @@
         const sessionClosed = currentLoadingSession?.status === 'closed';
         const loadingDone = Boolean(currentLoadingSession?.loading_completed_at);
         const unloadingStarted = Boolean(currentLoadingSession?.unloading_started_at);
-        const canLoad = !sessionClosed && !loadingDone;
-        const canUnload = !sessionClosed && unloadingStarted;
+        const canLoad = shiftStarted && !sessionClosed && !loadingDone;
+        const canUnload = shiftStarted && !sessionClosed && unloadingStarted;
         return `
           <article class="mobile-loading-item">
             <div class="mobile-loading-item-head">
@@ -7716,7 +7722,7 @@
                 <h4 class="mobile-loading-item-title">${escapeHtml(item.product_name || 'Položka')}</h4>
                 <p class="mobile-loading-item-subtitle">${escapeHtml(item.supplier_name || 'Dodavatel')} · ${escapeHtml(item.base_unit || 'ks')}</p>
               </div>
-              <span class="badge ${metrics.consumed > 0 ? 'green' : 'blue'}">${escapeHtml(metrics.consumed > 0 ? 'V provozu' : 'Bez pohybu')}</span>
+              <span class="badge ${metrics.onboard > 0 ? 'green' : 'blue'}">${escapeHtml(metrics.onboard > 0 ? `${Number(metrics.onboard).toFixed(0)} ks na autě` : 'Zatím 0 ks')}</span>
             </div>
             <div class="mobile-loading-stats">
               <div class="mobile-loading-stat">
@@ -7732,8 +7738,8 @@
                 <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.waste).toFixed(0)))}</span>
               </div>
               <div class="mobile-loading-stat">
-                <span class="mobile-loading-stat-label">Rozdíl</span>
-                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.consumed).toFixed(0)))}</span>
+                <span class="mobile-loading-stat-label">Na vozidle</span>
+                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.onboard).toFixed(0)))}</span>
               </div>
             </div>
             <div class="mobile-stepper">
@@ -7754,7 +7760,7 @@
         <article class="mobile-section-card">
           <p class="mobile-section-label">Nakládka vozidla</p>
           <h3 class="mobile-section-title">${currentLoadingSession ? 'Dnešní session' : 'Zahájit session'}</h3>
-          <p class="mobile-section-text">Ráno naložíš, večer vracíš. Systém ti vždy ukáže naloženo, vráceno a rozdíl.</p>
+          <p class="mobile-section-text">${shiftStarted ? 'Ráno naložíš, večer vracíš. Tady na první pohled vidíš kolik je právě na vozidle.' : 'Session se spustí po zahájení směny. Už teď vidíš dnešní položky i co budeš řešit na autě.'}</p>
           <div class="mobile-loading-summary">
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Stav session</span>
@@ -7769,11 +7775,14 @@
               <span class="mobile-loading-metric-value">${escapeHtml(String(Number(totals.loaded).toFixed(0)))}</span>
             </div>
             <div class="mobile-loading-metric">
-              <span class="mobile-loading-metric-label">Rozdíl</span>
-              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(consumedTotal).toFixed(0)))}</span>
+              <span class="mobile-loading-metric-label">Na vozidle</span>
+              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(onboardTotal).toFixed(0)))}</span>
             </div>
           </div>
-          ${!currentLoadingSession ? `
+          ${!shiftStarted ? `
+            <div class="helper-line">Nejdřív spusť směnu. Jakmile směna poběží s vozidlem, odemkne se tady zahájení nakládky, vracení i odpad.</div>
+            <div class="mobile-loading-list">${productsMarkup}</div>
+          ` : !currentLoadingSession ? `
             <div class="form-grid" style="grid-template-columns:1fr;">
               <div class="field full">
                 <label for="mobileSessionWarehouseSelect">Sklad pro dnešek</label>
