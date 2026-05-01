@@ -217,6 +217,37 @@
         <section class="panel">
           <div class="panel-header">
             <div>
+              <h2>Co je právě na vozidlech</h2>
+              <p>Manažerský přehled aktuální zásoby na autech. Tady rychle uvidíš co kdo veze a můžeš udělat korekci bez hledání v mobilu.</p>
+            </div>
+            <div class="action-row">
+              <button class="btn secondary" type="button" id="openVehicleLoadCorrectionBtn">Korekce vozidla</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="status-line" id="vehicleLoadStatus">Načítám stav vozidel...</div>
+            <div class="summary-grid" id="vehicleLoadSummary"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Vozidlo</th>
+                    <th>Položka</th>
+                    <th>Na vozidle</th>
+                    <th>Poslední pohyb</th>
+                    <th>Akce</th>
+                  </tr>
+                </thead>
+                <tbody id="vehicleLoadBody"></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="vehicleLoadEmpty" style="display:none;">Na vozidlech teď není evidovaná žádná zásoba.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
               <h2>Zásobování vozidel</h2>
               <p>Tady sledujeme pravidelné zásobování skladu a vozidel. Inventář už nemá nahrazovat nákupy, ale ukázat, jestli stav a doporučení dávají smysl.</p>
             </div>
@@ -496,6 +527,11 @@
     const loadingSessionSummary = document.getElementById('loadingSessionSummary')
     const loadingSessionBody = document.getElementById('loadingSessionBody')
     const loadingSessionEmpty = document.getElementById('loadingSessionEmpty')
+    const vehicleLoadStatus = document.getElementById('vehicleLoadStatus')
+    const vehicleLoadSummary = document.getElementById('vehicleLoadSummary')
+    const vehicleLoadBody = document.getElementById('vehicleLoadBody')
+    const vehicleLoadEmpty = document.getElementById('vehicleLoadEmpty')
+    const openVehicleLoadCorrectionBtn = document.getElementById('openVehicleLoadCorrectionBtn')
     const bagetteOperatorSummary = document.getElementById('bagetteOperatorSummary')
     const bagetteOperatorBody = document.getElementById('bagetteOperatorBody')
     const bagetteOperatorEmpty = document.getElementById('bagetteOperatorEmpty')
@@ -550,6 +586,7 @@
     let stockMovementsV13 = []
     let bagettePilotRows = []
     let loadingSessionRows = []
+    let vehicleLoadRows = []
     let bagetteOperatorStats = []
     let vehicles = []
     let purchaseSuppliers = []
@@ -571,6 +608,11 @@
       loadingSessionStatus.textContent = message
       loadingSessionStatus.className = 'status-line'
       if (type) loadingSessionStatus.classList.add(type)
+    }
+    function setVehicleLoadStatus(message, type = '') {
+      vehicleLoadStatus.textContent = message
+      vehicleLoadStatus.className = 'status-line'
+      if (type) vehicleLoadStatus.classList.add(type)
     }
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
@@ -724,6 +766,90 @@
         </tr>
       `).join('')
       loadingSessionEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    function renderVehicleLoadSummary(rows) {
+      const vehicleCount = new Set(rows.map((row) => String(row.vehicle_id))).size
+      const productCount = rows.length
+      const totalOnVehicle = rows.reduce((sum, row) => sum + Number(row.quantity_on_hand || 0), 0)
+      const riskyCount = rows.filter((row) => Number(row.quantity_on_hand || 0) <= 0).length
+      vehicleLoadSummary.innerHTML = [
+        { label:'Vozidla se zásobou', value: vehicleCount, note:'Kolik aut teď něco opravdu veze.' },
+        { label:'Řádky zásoby', value: productCount, note:'Jednotlivé kombinace vozidlo + položka.' },
+        { label:'Celkem na autech', value: totalOnVehicle.toFixed(0), note:'Součet kusů právě na vozidlech.' },
+        { label:'Ke kontrole', value: riskyCount, note:'Řádky, kde je potřeba zásah nebo korekce.' }
+      ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+    }
+    function renderVehicleLoadRows(rows) {
+      vehicleLoadBody.innerHTML = rows.map((row) => `
+        <tr>
+          <td data-label="Vozidlo"><strong>${escapeHtml(row.vehicle_name || 'Vozidlo')}</strong><span class="subtext">${escapeHtml(row.vehicle_plate || 'Bez SPZ')}</span></td>
+          <td data-label="Položka"><strong>${escapeHtml(row.product_name || 'Položka')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')}</span></td>
+          <td data-label="Na vozidle"><strong>${escapeHtml(Number(row.quantity_on_hand || 0).toFixed(0))}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')} právě na autě</span></td>
+          <td data-label="Poslední pohyb"><strong>${escapeHtml(row.last_movement_type || 'Bez pohybu')}</strong><span class="subtext">${row.last_movement_at ? escapeHtml(new Date(row.last_movement_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
+          <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-vehicle-load-action="load" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Dopsat naložení</button><button class="btn secondary" type="button" data-vehicle-load-action="return" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Vrátit</button><button class="btn secondary" type="button" data-vehicle-load-action="waste" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Odpad</button></div></td>
+        </tr>
+      `).join('')
+      vehicleLoadEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    function openVehicleLoadCorrection(mode = 'load', productId = '', vehicleId = '') {
+      openBagettePilotModal(mode)
+      if (productId) document.getElementById('bagetteProductId').value = String(productId)
+      if (vehicleId) document.getElementById('bagetteVehicleId').value = String(vehicleId)
+      if (!document.getElementById('bagetteWarehouseId').value && warehouses[0]?.id) {
+        document.getElementById('bagetteWarehouseId').value = String(warehouses[0].id)
+      }
+    }
+    async function loadVehicleInventoryOverview() {
+      try {
+        setVehicleLoadStatus('Načítám zásobu na vozidlech...')
+        const vehicleLocationMap = new Map(
+          stockLocationsV13
+            .filter((location) => location.location_type === 'vehicle')
+            .map((location) => [String(location.id), location])
+        )
+        const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
+        const lastMovementMap = new Map()
+        stockMovementsV13.forEach((movement) => {
+          const key = `${movement.to_stock_location_id || movement.from_stock_location_id}:${movement.product_id}`
+          if (lastMovementMap.has(key)) return
+          lastMovementMap.set(key, movement)
+        })
+
+        vehicleLoadRows = stockBalancesV13
+          .filter((balance) => Number(balance.quantity_on_hand || 0) > 0)
+          .map((balance) => {
+            const location = vehicleLocationMap.get(String(balance.stock_location_id))
+            if (!location) return null
+            const vehicle = vehicles.find((item) => String(item.id) === String(location.vehicle_id))
+            const product = productMap.get(String(balance.product_id))
+            const movement = lastMovementMap.get(`${balance.stock_location_id}:${balance.product_id}`)
+            return {
+              stock_location_id: balance.stock_location_id,
+              vehicle_id: location.vehicle_id,
+              vehicle_name: vehicle?.name || location.name || 'Vozidlo',
+              vehicle_plate: vehicle?.registration_plate || '',
+              product_id: balance.product_id,
+              product_name: product?.name || 'Položka',
+              base_unit: product?.base_unit || 'ks',
+              quantity_on_hand: Number(balance.quantity_on_hand || 0),
+              last_movement_type: movement?.movement_type || '',
+              last_movement_at: movement?.created_at || null
+            }
+          })
+          .filter(Boolean)
+          .sort((a, b) => normalizeText(a.vehicle_name).localeCompare(normalizeText(b.vehicle_name), 'cs') || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
+
+        renderVehicleLoadSummary(vehicleLoadRows)
+        renderVehicleLoadRows(vehicleLoadRows)
+        setVehicleLoadStatus(vehicleLoadRows.length ? `Načteno řádků zásoby na vozidlech: ${vehicleLoadRows.length}` : 'Na vozidlech teď není evidovaná žádná zásoba.', vehicleLoadRows.length ? 'success' : '')
+      } catch (error) {
+        console.error(error)
+        vehicleLoadRows = []
+        vehicleLoadSummary.innerHTML = ''
+        vehicleLoadBody.innerHTML = ''
+        vehicleLoadEmpty.style.display = 'block'
+        setVehicleLoadStatus(`Nepodařilo se načíst zásobu na vozidlech: ${error.message}`, 'error')
+      }
     }
     async function loadLoadingSessionOverview() {
       try {
@@ -1186,6 +1312,11 @@
           title: 'Vrácení z vozidla',
           helper: 'Vrať neprodané zboží z vozidla zpět do skladu. To nám pomůže zpřesňovat objednávky.',
           supplier: false, warehouse: true, vehicle: true, deliveryDate: false, unitCost: false, submit: 'Uložit vrácení'
+        },
+        waste: {
+          title: 'Odpad / expirace z vozidla',
+          helper: 'Odepiš kusy, které už nejdou vrátit na sklad. Tohle je čistá korekce odpadu nebo expirace.',
+          supplier: false, warehouse: false, vehicle: true, deliveryDate: false, unitCost: false, submit: 'Uložit odpad'
         }
       }[mode]
       bagettePilotModalTitle.textContent = config.title
@@ -1387,6 +1518,22 @@
         if (movementError) throw movementError
         await applyBalanceDelta(vehicleLocationId, productId, -quantity)
         await applyBalanceDelta(warehouseLocationId, productId, quantity)
+      }
+
+      if (bagettePilotMode === 'waste') {
+        if (!vehicleId) throw new Error('U odpadu vyber vozidlo.')
+        const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, vehicle?.name || `Vozidlo ${vehicleId}`)
+        const { error: movementError } = await supabase
+          .from('stock_movements_v13')
+          .insert([{
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            movement_type: 'waste',
+            quantity_base_units: quantity,
+            note
+          }])
+        if (movementError) throw movementError
+        await applyBalanceDelta(vehicleLocationId, productId, -quantity)
       }
     }
     function fillItemForm(item) {
@@ -1697,6 +1844,7 @@
         loadInventoryV13Overview(),
         loadInventory()
       ])
+      await loadVehicleInventoryOverview()
       populateReferenceOptions()
       applyFilters()
       renderStockV13Rows()
@@ -1731,6 +1879,16 @@
       if (!button) return
       openV13ProductDetail(button.dataset.productId)
     })
+    vehicleLoadBody.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-vehicle-load-action]')
+      if (!button) return
+      openVehicleLoadCorrection(
+        button.dataset.vehicleLoadAction || 'load',
+        button.dataset.productId || '',
+        button.dataset.vehicleId || ''
+      )
+    })
+    openVehicleLoadCorrectionBtn.addEventListener('click', () => openVehicleLoadCorrection('load'))
     detailModalContent.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-detail-action]')
       if (!button || !currentDetailContext) return
@@ -1825,8 +1983,9 @@
           loadLoadingSessionOverview(),
           loadInventoryV13Overview()
         ])
+        await loadVehicleInventoryOverview()
         populateReferenceOptions()
-        setStatus('Bagetový pilotní pohyb byl uložen.', 'success')
+        setStatus('Korekce zásoby na vozidle byla uložená.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se uložit pohyb zboží: ${error.message}`, 'error')
@@ -1870,6 +2029,7 @@
           loadLoadingSessionOverview(),
           loadInventoryV13Overview()
         ])
+        await loadVehicleInventoryOverview()
         populateReferenceOptions()
         const params = new URLSearchParams(window.location.search)
         const machineParam = params.get('machine')

@@ -3327,6 +3327,7 @@
     let bagettePilotProducts = [];
     let loadingCatalogProducts = [];
     let warehouseStockByProduct = new Map();
+    let vehicleStockByProduct = new Map();
     let currentLoadingSession = null;
     let currentLoadingSessionItems = [];
     let mobileLoadingQuantities = {};
@@ -6378,7 +6379,7 @@
         supabase.from('purchase_suppliers').select('id, name').eq('active', true).order('name', { ascending: true }),
         supabase.from('products').select('id, name, base_unit, active').eq('active', true).order('name', { ascending: true }),
         supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true }),
-        supabase.from('stock_locations').select('id, warehouse_id, location_type, active').eq('active', true),
+        supabase.from('stock_locations').select('id, warehouse_id, vehicle_id, location_type, active').eq('active', true),
         supabase.from('stock_location_balances').select('stock_location_id, product_id, quantity_on_hand').gt('quantity_on_hand', 0)
       ]);
 
@@ -6431,29 +6432,47 @@
           .filter((item) => item.location_type === 'warehouse' && item.warehouse_id)
           .map((item) => [String(item.id), Number(item.warehouse_id)])
       );
+      const stockLocationVehicleMap = new Map(
+        stockLocations
+          .filter((item) => item.location_type === 'vehicle' && item.vehicle_id)
+          .map((item) => [String(item.id), Number(item.vehicle_id)])
+      );
 
       warehouseStockByProduct = new Map();
+      vehicleStockByProduct = new Map();
 
       stockBalances.forEach((row) => {
         const warehouseId = stockLocationWarehouseMap.get(String(row.stock_location_id));
-        if (!warehouseId) return;
         const productId = String(row.product_id);
         const quantity = Number(row.quantity_on_hand || 0);
         if (quantity <= 0) return;
 
-        const existing = warehouseStockByProduct.get(productId) || { total: 0, byWarehouse: {} };
-        existing.total += quantity;
-        existing.byWarehouse[warehouseId] = Number((Number(existing.byWarehouse[warehouseId] || 0) + quantity).toFixed(3));
-        warehouseStockByProduct.set(productId, existing);
+        if (warehouseId) {
+          const existing = warehouseStockByProduct.get(productId) || { total: 0, byWarehouse: {} };
+          existing.total += quantity;
+          existing.byWarehouse[warehouseId] = Number((Number(existing.byWarehouse[warehouseId] || 0) + quantity).toFixed(3));
+          warehouseStockByProduct.set(productId, existing);
+        }
+
+        const vehicleId = stockLocationVehicleMap.get(String(row.stock_location_id));
+        if (vehicleId) {
+          const existing = vehicleStockByProduct.get(productId) || { total: 0, byVehicle: {} };
+          existing.total += quantity;
+          existing.byVehicle[vehicleId] = Number((Number(existing.byVehicle[vehicleId] || 0) + quantity).toFixed(3));
+          vehicleStockByProduct.set(productId, existing);
+        }
       });
 
       loadingCatalogProducts = loadingCatalogProducts.map((item) => {
         const stock = warehouseStockByProduct.get(String(item.product_id));
+        const vehicleStock = vehicleStockByProduct.get(String(item.product_id));
         return {
           ...item,
           available_qty: stock ? Number(stock.total || 0) : 0,
           warehouse_qty: stock ? Number(stock.total || 0) : 0,
-          warehouse_quantities: stock?.byWarehouse || {}
+          warehouse_quantities: stock?.byWarehouse || {},
+          vehicle_qty: vehicleStock ? Number(vehicleStock.total || 0) : 0,
+          vehicle_quantities: vehicleStock?.byVehicle || {}
         };
       });
 
@@ -7931,14 +7950,24 @@
       return productsWithStock;
     }
 
+    function getVehicleDrivenLoadingProducts(selectedVehicleId = '') {
+      const vehicleKey = String(selectedVehicleId || '');
+      return loadingCatalogProducts.filter((item) => {
+        const vehicleQty = Number(item?.vehicle_quantities?.[vehicleKey] || 0);
+        return vehicleQty > 0;
+      });
+    }
+
     function getLoadingPickerCandidates(mode = 'load', selectedWarehouseId = '') {
+      const selectedVehicleId = String(todayAttendance?.vehicle_id || startVehicleSelect.value || '');
       const sourceProducts = mode === 'load'
         ? getWarehouseDrivenLoadingProducts(selectedWarehouseId)
-        : loadingCatalogProducts;
+        : getVehicleDrivenLoadingProducts(selectedVehicleId);
       return sourceProducts.filter((item) => {
         const metrics = getLoadingSessionProductMetrics(item.product_id);
         if (mode === 'return' || mode === 'waste') {
-          return Number(metrics.onboard || 0) > 0;
+          const vehicleQty = Number(item?.vehicle_quantities?.[selectedVehicleId] || 0);
+          return vehicleQty > 0 || Number(metrics.onboard || 0) > 0;
         }
         const warehouseQty = Number(item?.warehouse_quantities?.[String(selectedWarehouseId || '')] || 0);
         return warehouseQty > 0;
@@ -7948,6 +7977,7 @@
     function renderLoadingPickerList() {
       if (!loadingPickerList || !loadingPickerEmpty) return;
       const selectedWarehouseId = String(currentLoadingSession?.warehouse_id || document.getElementById('mobileSessionWarehouseSelect')?.value || getPreferredBagetteWarehouseId() || '');
+      const selectedVehicleId = String(todayAttendance?.vehicle_id || startVehicleSelect.value || '');
       const query = normalizeText(loadingPickerSearch?.value || '');
       const rows = getLoadingPickerCandidates(loadingPickerMode, selectedWarehouseId).filter((item) => {
         const haystack = [item.product_name, item.supplier_name, item.base_unit].filter(Boolean).join(' ');
@@ -7957,9 +7987,10 @@
       loadingPickerList.innerHTML = rows.map((item) => {
         const metrics = getLoadingSessionProductMetrics(item.product_id);
         const warehouseQty = Number(item?.warehouse_quantities?.[selectedWarehouseId] || 0);
+        const vehicleQty = Number(item?.vehicle_quantities?.[selectedVehicleId] || 0);
         const note = loadingPickerMode === 'load'
           ? (warehouseQty > 0 ? `Na skladu ${Number(warehouseQty).toFixed(0)} ${item.base_unit || 'ks'}` : 'Skladový stav zatím není přesně evidovaný')
-          : `Na vozidle ${Number(metrics.onboard || 0).toFixed(0)} ${item.base_unit || 'ks'}`;
+          : `Na vozidle ${Number(vehicleQty || metrics.onboard || 0).toFixed(0)} ${item.base_unit || 'ks'}`;
         return `
           <button class="loading-picker-item ${String(loadingPickerProductId) === String(item.product_id) ? 'active' : ''}" type="button" data-loading-picker-select="${escapeHtml(String(item.product_id))}">
             <span class="loading-picker-item-title">${escapeHtml(item.product_name || 'Položka')}</span>
