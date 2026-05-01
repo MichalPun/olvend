@@ -2991,6 +2991,7 @@
     let warehousesDirectory = [];
     let vehiclesDirectory = [];
     let bagettePilotProducts = [];
+    let warehouseStockByProduct = new Map();
     let currentLoadingSession = null;
     let currentLoadingSessionItems = [];
     let mobileLoadingQuantities = {};
@@ -6032,14 +6033,16 @@
     }
 
     async function loadSupportData() {
-      const [warehousesResult, vehiclesResult, recurringOrdersResult, recurringItemsResult, suppliersResult, productsResult, bagetteProfilesResult] = await Promise.allSettled([
+      const [warehousesResult, vehiclesResult, recurringOrdersResult, recurringItemsResult, suppliersResult, productsResult, bagetteProfilesResult, stockLocationsResult, stockBalancesResult] = await Promise.allSettled([
         supabase.from('warehouses').select('id, name').eq('active', true).order('name', { ascending: true }),
         supabase.from('vehicles').select('id, plate, brand, model, name, current_odometer_km, assigned_employee_id').eq('active', true).order('plate', { ascending: true }),
         supabase.from('purchase_recurring_orders').select('id, supplier_id, pilot_scope, active').eq('active', true).order('id', { ascending: true }),
         supabase.from('purchase_recurring_order_items').select('id, recurring_order_id, product_id, active').eq('active', true).order('id', { ascending: true }),
         supabase.from('purchase_suppliers').select('id, name').eq('active', true).order('name', { ascending: true }),
         supabase.from('products').select('id, name, base_unit, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true })
+        supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true }),
+        supabase.from('stock_locations').select('id, warehouse_id, location_type, active').eq('active', true),
+        supabase.from('stock_location_balances').select('stock_location_id, product_id, quantity_on_hand').gt('quantity_on_hand', 0)
       ]);
 
       if (warehousesResult.status === 'fulfilled' && !warehousesResult.value.error) {
@@ -6066,11 +6069,37 @@
       const products = productsResult.status === 'fulfilled' && !productsResult.value.error
         ? (productsResult.value.data ?? [])
         : [];
+      const stockLocations = stockLocationsResult.status === 'fulfilled' && !stockLocationsResult.value.error
+        ? (stockLocationsResult.value.data ?? [])
+        : [];
+      const stockBalances = stockBalancesResult.status === 'fulfilled' && !stockBalancesResult.value.error
+        ? (stockBalancesResult.value.data ?? [])
+        : [];
 
       const recurringOrderMap = new Map(recurringOrders.map((item) => [String(item.id), item]));
       const supplierMap = new Map(suppliers.map((item) => [String(item.id), item.name || 'Dodavatel']));
       const productMap = new Map(products.map((item) => [String(item.id), item]));
       const recurringBagetteProductsMap = new Map();
+      const stockLocationWarehouseMap = new Map(
+        stockLocations
+          .filter((item) => item.location_type === 'warehouse' && item.warehouse_id)
+          .map((item) => [String(item.id), Number(item.warehouse_id)])
+      );
+
+      warehouseStockByProduct = new Map();
+
+      stockBalances.forEach((row) => {
+        const warehouseId = stockLocationWarehouseMap.get(String(row.stock_location_id));
+        if (!warehouseId) return;
+        const productId = String(row.product_id);
+        const quantity = Number(row.quantity_on_hand || 0);
+        if (quantity <= 0) return;
+
+        const existing = warehouseStockByProduct.get(productId) || { total: 0, byWarehouse: {} };
+        existing.total += quantity;
+        existing.byWarehouse[warehouseId] = Number((Number(existing.byWarehouse[warehouseId] || 0) + quantity).toFixed(3));
+        warehouseStockByProduct.set(productId, existing);
+      });
 
       recurringItems.forEach((item) => {
         const recurringOrder = recurringOrderMap.get(String(item.recurring_order_id));
@@ -6089,7 +6118,23 @@
         });
       });
 
-      if (recurringBagetteProductsMap.size) {
+      const stockDrivenProducts = Array.from(warehouseStockByProduct.entries()).map(([productId, stock]) => {
+        const product = productMap.get(String(productId));
+        const recurringMeta = recurringBagetteProductsMap.get(String(productId));
+        return {
+          product_id: Number(productId),
+          product_name: product?.name || recurringMeta?.product_name || 'Položka',
+          supplier_name: recurringMeta?.supplier_name || 'Skladová položka',
+          base_unit: product?.base_unit || recurringMeta?.base_unit || 'ks',
+          available_qty: Number(stock.total || 0),
+          warehouse_qty: Number(stock.total || 0),
+          warehouse_quantities: stock.byWarehouse || {}
+        };
+      }).filter((item) => item.available_qty > 0);
+
+      if (stockDrivenProducts.length) {
+        bagettePilotProducts = stockDrivenProducts.sort((a, b) => normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'));
+      } else if (recurringBagetteProductsMap.size) {
         bagettePilotProducts = Array.from(recurringBagetteProductsMap.values()).sort((a, b) => normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'));
       } else if (bagetteProfilesResult.status === 'fulfilled' && !bagetteProfilesResult.value.error) {
         bagettePilotProducts = bagetteProfilesResult.value.data ?? [];
@@ -7672,6 +7717,7 @@
     function renderMobileLoadingSessionCard(defaultWarehouseId) {
       const hasVehicle = Boolean(todayAttendance?.vehicle_id || startVehicleSelect.value);
       const shiftStarted = Boolean(todayAttendance?.id);
+      const selectedWarehouseId = String(currentLoadingSession?.warehouse_id || document.getElementById('mobileSessionWarehouseSelect')?.value || defaultWarehouseId || '');
       if (!hasVehicle) {
         return `
           <article class="mobile-section-card">
@@ -7682,15 +7728,17 @@
         `;
       }
 
+      const visibleProducts = bagettePilotProducts.filter((item) => {
+        const warehouseQty = Number(item?.warehouse_quantities?.[selectedWarehouseId] || 0);
+        return warehouseQty > 0 || Boolean(getLoadingSessionItem(item.product_id));
+      });
+
       if (!bagettePilotProducts.length) {
         return `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Nakládka vozidla</p>
-            <h3 class="mobile-section-title">Zatím bez položek</h3>
-            <p class="mobile-section-text">Pro zásobování vozidel zatím nejsou připravené žádné aktivní položky. Zkontroluj pravidelné dodávky a navázané položky v Nákupy.</p>
-            <div class="mobile-section-actions">
-              <a class="btn secondary" href="purchases.html">Otevřít nákupy</a>
-            </div>
+            <h3 class="mobile-section-title">Na skladu zatím nic není</h3>
+            <p class="mobile-section-text">Nakládka pracuje přímo nad reálným skladem. Jakmile budou na skladu položky, ukážou se tady.</p>
           </article>
         `;
       }
@@ -7707,7 +7755,7 @@
               ? 'Nakládka hotová'
               : 'Probíhá nakládka';
 
-      const productsMarkup = bagettePilotProducts.map((item) => {
+      const productsMarkup = visibleProducts.map((item) => {
         const qty = getMobileLoadingQty(item.product_id) || 0;
         const metrics = getLoadingSessionProductMetrics(item.product_id);
         const sessionClosed = currentLoadingSession?.status === 'closed';
@@ -7715,12 +7763,13 @@
         const unloadingStarted = Boolean(currentLoadingSession?.unloading_started_at);
         const canLoad = shiftStarted && !sessionClosed && !loadingDone;
         const canUnload = shiftStarted && !sessionClosed && unloadingStarted;
+        const warehouseQty = Number(item?.warehouse_quantities?.[selectedWarehouseId] || 0);
         return `
           <article class="mobile-loading-item">
             <div class="mobile-loading-item-head">
               <div>
                 <h4 class="mobile-loading-item-title">${escapeHtml(item.product_name || 'Položka')}</h4>
-                <p class="mobile-loading-item-subtitle">${escapeHtml(item.supplier_name || 'Dodavatel')} · ${escapeHtml(item.base_unit || 'ks')}</p>
+                <p class="mobile-loading-item-subtitle">Na skladu ${escapeHtml(String(Number(warehouseQty).toFixed(0)))} ${escapeHtml(item.base_unit || 'ks')}</p>
               </div>
               <span class="badge ${metrics.onboard > 0 ? 'green' : 'blue'}">${escapeHtml(metrics.onboard > 0 ? `${Number(metrics.onboard).toFixed(0)} ks na autě` : 'Zatím 0 ks')}</span>
             </div>
@@ -7779,6 +7828,7 @@
               <span class="mobile-loading-metric-value">${escapeHtml(String(Number(onboardTotal).toFixed(0)))}</span>
             </div>
           </div>
+          ${selectedWarehouseId && !visibleProducts.length ? `<div class="helper-line">Na zvoleném skladu teď není nic k naložení. Změň sklad nebo nejdřív proveď příjem na sklad.</div>` : ''}
           ${!shiftStarted ? `
             <div class="helper-line">Nejdřív spusť směnu. Jakmile směna poběží s vozidlem, odemkne se tady zahájení nakládky, vracení i odpad.</div>
             <div class="mobile-loading-list">${productsMarkup}</div>
