@@ -2,18 +2,18 @@
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
-  const APP_VERSION = "OLVEND 1.3";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.3";
+  const APP_VERSION = "OLVEND 1.4";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.4";
   const RELEASE_NOTES = {
-    "1.3": {
-      title: "Nová verze 1.3",
-      subtitle: "Do aplikace jsme přidali praktičtější provozní věci a srovnali orientaci tak, aby se dalo rychleji pokračovat v práci.",
+    "1.4": {
+      title: "Nová verze 1.4",
+      subtitle: "Aplikace je přehlednější, mobilní práce jednodušší a hlavní provozní toky jsou blíž reálné každodenní práci.",
       items: [
-        "Nástěnka, menu a hlavní orientace jsou čistší a důležitější akce jsou blíž po ruce.",
-        "Moje směna lépe hlídá práci s vozidlem, nesoulad kilometrů a starší otevřené směny posílá ke kontrole.",
-        "Pokyny dne nově umí i PDF přílohu, takže důležité podklady můžeš otevřít přímo v aplikaci.",
-        "Přibyly základy pro dodavatele, pravidelné dodávky, nákupy a zásobování vozidel.",
-        "Tankování nově vyžaduje odkaz na foto účtenky a záznam jde ke schválení, aby nešlo zkreslovat spotřebu."
+        "Nástěnka a další hlavní moduly dostaly čistší manažerský vzhled a lepší čitelnost ve světlém i tmavém režimu.",
+        "Moje směna na mobilu se mění na jednodušší pracovní průvodce se zaměřením na pokyny, vozidlo, směnu a provozní kroky.",
+        "HR se změnilo na přehlednější cockpit a přibylo centrální Schvalování pro požadavky napříč aplikací.",
+        "Přibyly nové základy pro nakládku a vykládku vozidel, kontrolu toho, co je právě na autech, a další skladové návaznosti.",
+        "Tankování, km a další provozní záznamy jsou lépe kontrolované a připravené pro reálný každodenní provoz."
       ]
     }
   };
