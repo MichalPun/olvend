@@ -3347,6 +3347,8 @@
     let currentMobileShiftSection = 'home';
     let currentProfileSection = 'requests';
     let mobilePrestartVehicleId = '';
+    let mobileVehicleKmEditMode = false;
+    let mobileFuelFormVisible = false;
     let availabilityRows = [];
     let profileShiftPlanRows = [];
     let employeeHrRequests = [];
@@ -3373,6 +3375,7 @@
     const FUEL_PRICE_PER_LITER_MAX = 60;
     const FUEL_PRICE_PER_LITER_LPG_MIN = 8;
     const FUEL_PRICE_PER_LITER_LPG_MAX = 35;
+    const BAGETTE_RETURN_REVIEW_LIMIT = 0.07;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -3631,10 +3634,8 @@
     }
 
     function canUseCompanyMobileView() {
-      const normalizedRole = normalizeRole(currentUser?.role);
-      if (!normalizedRole) return false;
-      if (normalizedRole.includes('operátor')) return false;
-      return true;
+      if (!currentUser) return false;
+      return !isOperatorRole();
     }
 
     function setActiveMobileView(view) {
@@ -3678,6 +3679,106 @@
         || activeInstructions.find((instruction) => !acknowledgedIds.has(String(instruction.id)))
         || activeInstructions[0]
         || null;
+    }
+
+    function loadingSessionHasFlag(flag) {
+      const note = String(currentLoadingSession?.note || '');
+      return note.includes(`[${flag}]`);
+    }
+
+    async function setCurrentLoadingSessionFlag(flag, enabled = true) {
+      if (!currentLoadingSession?.id) return;
+      const marker = `[${flag}]`;
+      const currentNote = String(currentLoadingSession.note || '');
+      const nextNote = enabled
+        ? (currentNote.includes(marker) ? currentNote : `${currentNote} ${marker}`.trim())
+        : currentNote.replace(marker, '').replace(/\s{2,}/g, ' ').trim();
+
+      const { error } = await supabase
+        .from('loading_sessions')
+        .update({
+          note: nextNote || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', Number(currentLoadingSession.id));
+
+      if (error) throw error;
+      currentLoadingSession = {
+        ...currentLoadingSession,
+        note: nextNote || null
+      };
+    }
+
+    function hasConfirmedVehicleForMobileFlow() {
+      if (todayAttendance?.actual_start && todayAttendance?.vehicle_id) {
+        const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
+        return parseIntegerValue(currentLog?.start_odometer_km) != null;
+      }
+
+      const selectedVehicleId = String(mobilePrestartVehicleId || startVehicleSelect?.value || '').trim();
+      const selectedKm = parseIntegerValue(startOdometerInput?.value);
+      return Boolean(selectedVehicleId && selectedKm != null);
+    }
+
+    function needsMobileLoadingStep() {
+      if (!todayAttendance?.actual_start || !hasConfirmedVehicleForMobileFlow()) return false;
+      if (!currentLoadingSession?.id) return true;
+      return !currentLoadingSession.loading_completed_at;
+    }
+
+    function needsMobileUnloadingStep() {
+      if (!todayAttendance?.actual_start || todayAttendance?.actual_end) return false;
+      if (!currentLoadingSession?.id) return false;
+      const totals = getLoadingSessionTotals();
+      if (totals.loaded <= 0) return false;
+      if (!currentLoadingSession.loading_completed_at) return false;
+      if (currentLoadingSession.status === 'closed') return false;
+      if (loadingSessionHasFlag('UNLOAD_SKIPPED')) return false;
+      return true;
+    }
+
+    function getLoadingSessionSummary() {
+      const totals = getLoadingSessionTotals();
+      return {
+        loadedItems: currentLoadingSessionItems.filter((item) => Number(item.loaded_quantity || 0) > 0).length,
+        loadedUnits: Number(totals.loaded || 0),
+        returnedUnits: Number(totals.returned || 0),
+        wasteUnits: Number(totals.waste || 0),
+        onboardUnits: Number(getSessionOnVehicleTotal() || 0)
+      };
+    }
+
+    function getBagetteReturnReviewState() {
+      const bagetteIds = new Set(bagettePilotProducts.map((item) => String(item.product_id)));
+      let loaded = 0;
+      let returned = 0;
+      let waste = 0;
+
+      currentLoadingSessionItems.forEach((item) => {
+        if (!bagetteIds.has(String(item.product_id))) return;
+        loaded += Number(item.loaded_quantity || 0);
+        returned += Number(item.returned_quantity || 0);
+        waste += Number(item.waste_quantity || 0);
+      });
+
+      const ratio = loaded > 0 ? (returned + waste) / loaded : 0;
+      return {
+        loaded,
+        returned,
+        waste,
+        ratio,
+        requiresReview: loaded > 0 && ratio > BAGETTE_RETURN_REVIEW_LIMIT
+      };
+    }
+
+    function getRecommendedMobileShiftSection() {
+      if (todayAttendance?.actual_end) return 'shift';
+      if (getBlockingInstructionCount() > 0) return 'instructions';
+      if (!hasConfirmedVehicleForMobileFlow()) return 'vehicle';
+      if (!todayAttendance?.actual_start) return 'shift';
+      if (needsMobileLoadingStep()) return 'vehicle';
+      if (needsMobileUnloadingStep()) return 'shift';
+      return 'shift';
     }
 
     function getSelectedVehicleLabel() {
@@ -3729,20 +3830,19 @@
     function buildMobileInstructionsPanel() {
       const instruction = getFirstVisibleInstruction();
       const pendingRequired = getPendingInstructionsForCurrentEmployee();
-      const pendingItems = todayInstructions
-        .filter(isInstructionActive)
-        .filter(instructionTargetsCurrentEmployee)
-        .filter((item) => item.requires_acknowledgement && !getAcknowledgedInstructionIds().has(String(item.id)));
 
       mobileFocusKicker.textContent = 'Pokyny dne';
       mobileFocusTitle.textContent = 'Pokyny dne';
 
-      if (!instruction) {
+      if (!instruction || !pendingRequired.length) {
         return `
           <article class="mobile-section-card primary">
-            <p class="mobile-section-label">Dnes</p>
-            <h3 class="mobile-section-title">Žádné pokyny</h3>
-            <p class="mobile-section-text">Můžeš pokračovat.</p>
+            <p class="mobile-section-label">Krok 1</p>
+            <h3 class="mobile-section-title">Pokyny hotové</h3>
+            <p class="mobile-section-text">Můžeš pokračovat na vozidlo a km.</p>
+            <div class="mobile-section-actions">
+              <button class="btn" type="button" data-mobile-go-vehicle>Pokračovat na vozidlo</button>
+            </div>
           </article>
         `;
       }
@@ -3755,8 +3855,8 @@
         <article class="mobile-section-card primary">
           <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;">
             <div>
-              <p class="mobile-section-label">K přečtení</p>
-              <div class="mobile-section-value">${pendingRequired.length || 1}</div>
+              <p class="mobile-section-label">Krok 1</p>
+              <div class="mobile-section-value">${pendingRequired.length}</div>
             </div>
             <span class="badge ${escapeHtml(priorityMeta.cls)}">${escapeHtml(priorityMeta.label)}</span>
           </div>
@@ -3764,22 +3864,16 @@
           <p class="mobile-section-text">${escapeHtml(instruction.message || '')}</p>
           <div class="mobile-section-actions">
             ${instruction.requires_acknowledgement && !isAcknowledged
-              ? `<button class="btn" type="button" data-instruction-action="acknowledge" data-instruction-id="${instruction.id}">Potvrdit</button>`
-              : `<button class="btn secondary" type="button" data-mobile-home>Hotovo</button>`}
+              ? `<button class="btn" type="button" data-instruction-action="acknowledge" data-instruction-id="${instruction.id}">Potvrdit přečtení</button>`
+              : `<button class="btn" type="button" data-mobile-go-vehicle>Pokračovat</button>`}
             ${buildInstructionAttachmentMarkup(instruction)}
           </div>
         </article>
-        ${pendingItems.length > 1 ? `
+        ${pendingRequired.length > 1 ? `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Ještě zbývá</p>
-            <div class="mobile-section-stack">
-              ${pendingItems.map((item) => `
-                <div class="mobile-inline-warning">
-                  <strong>${escapeHtml(item.title || 'Pokyn')}</strong>
-                  <span class="mobile-section-text">${escapeHtml(item.message || '')}</span>
-                </div>
-              `).join('')}
-            </div>
+            <h3 class="mobile-section-title">${pendingRequired.length - 1} dalších pokynů</h3>
+            <p class="mobile-section-text">Po potvrzení se ti ukáže další krok automaticky.</p>
           </article>
         ` : ''}
       `;
@@ -3791,130 +3885,169 @@
 
       const selectedVehicleId = todayAttendance?.vehicle_id
         ? String(todayAttendance.vehicle_id)
-        : String(mobilePrestartVehicleId || startVehicleSelect.value || '');
-      const endKmValue = endOdometerInput?.value || '';
-      const operatorAutoFlow = isOperatorRole() && Boolean(todayAttendance?.vehicle_id);
-      const vehicleLogCount = todayVehicleOperationLogs.length;
-      const currentVehicleLabel = escapeHtml(todayAttendance?.vehicle_label || 'Bez vozidla');
-      const availableSwitchVehicles = vehiclesDirectory.filter((vehicle) => String(vehicle.id) !== String(todayAttendance?.vehicle_id || ''));
+        : String(mobileSwitchVehicleId || mobilePrestartVehicleId || startVehicleSelect.value || '');
       const defaultBagetteWarehouseId = getPreferredBagetteWarehouseId();
+      const currentLog = todayAttendance?.vehicle_id ? getCurrentVehicleOperationLog(todayAttendance.vehicle_id) : null;
+      const lastKnownVehicleKm = parseIntegerValue(
+        todayAttendance?.vehicle_id
+          ? currentLog?.start_odometer_km
+          : mobileSwitchVehicleStartKm || startOdometerInput?.value
+      );
+      const fuelSummaryText = parseDecimalValue(fuelLitersInput?.value) != null && parseDecimalValue(fuelCostInput?.value) != null
+        ? `Tankování uloženo · ${String(parseDecimalValue(fuelLitersInput.value)).replace('.', ',')} l · ${Math.round(parseDecimalValue(fuelCostInput.value))} Kč`
+        : 'Tankování zatím není zapsané';
 
-      if (!todayAttendance) {
-        const reviewState = getStartKmReviewState();
+      if (!todayAttendance?.actual_start) {
+        let reviewState = null;
+        try {
+          reviewState = getStartKmReviewState();
+        } catch (_error) {
+          reviewState = null;
+        }
+
         return `
           <article class="mobile-section-card primary">
-            <p class="mobile-section-label">Před startem</p>
-            <h3 class="mobile-section-title">${escapeHtml(getSelectedVehicleLabel())}</h3>
-            <p class="mobile-section-text">Tady si připrav auto a počáteční km. Samotné zahájení směny uděláš až v dalším kroku ve Směně.</p>
+            <p class="mobile-section-label">Krok 2</p>
+            <h3 class="mobile-section-title">Vyber vozidlo</h3>
+            <p class="mobile-section-text">Potvrď auto a počáteční km pro dnešní den.</p>
           </article>
           <article class="mobile-section-card">
             <div class="form-grid" style="grid-template-columns:1fr;">
               <div class="field full">
                 <label for="mobileVehicleSelect">Vozidlo</label>
                 <select id="mobileVehicleSelect">
-                  <option value="">Bez vozidla</option>
+                  <option value="">Vyber vozidlo</option>
+                  ${vehiclesDirectory.map((vehicle) => {
+                    const label = [vehicle.plate, [vehicle.brand, vehicle.model].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || vehicle.name || 'Vozidlo';
+                    const selected = String(mobilePrestartVehicleId || startVehicleSelect.value || '') === String(vehicle.id) ? 'selected' : '';
+                    return `<option value="${escapeHtml(String(vehicle.id))}" ${selected}>${escapeHtml(label)}</option>`;
+                  }).join('')}
+                </select>
+              </div>
+              <div class="field full">
+                <label>Poslední známý stav km</label>
+                <div class="input-like">${escapeHtml(startOdometerSource?.value || 'Po výběru auta načteme poslední známý stav km.')}</div>
+              </div>
+              <div class="field full">
+                <label for="mobileStartKmInput">Počáteční km</label>
+                <input id="mobileStartKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(startOdometerInput?.value || '')}" placeholder="Např. 152340" />
+              </div>
+              ${reviewState?.requiresReviewConfirmation ? `
+                <div class="field full">
+                  <label style="display:flex;align-items:center;gap:10px;">
+                    <input id="mobileStartReviewConfirm" type="checkbox" ${startKmReviewConfirm?.checked ? 'checked' : ''} />
+                    <span>Potvrzuji kontrolu rozdílu km</span>
+                  </label>
+                </div>
+                <div class="field full">
+                  <label for="mobileStartReviewNote">Poznámka k rozdílu</label>
+                  <textarea id="mobileStartReviewNote" placeholder="Krátce napiš, proč stav nesedí.">${escapeHtml(startKmReviewNote?.value || '')}</textarea>
+                </div>
+              ` : ''}
+            </div>
+            <div class="mobile-section-actions">
+              <button class="btn" type="button" data-mobile-confirm-vehicle-setup>Potvrdit vozidlo a km</button>
+              <button class="btn secondary" type="button" data-mobile-go-shift-start ${hasConfirmedVehicleForMobileFlow() ? '' : 'disabled'}>Pokračovat na zahájení směny</button>
+            </div>
+          </article>
+        `;
+      }
+
+      if (!todayAttendance.vehicle_id) {
+        return `
+          <article class="mobile-section-card primary">
+            <p class="mobile-section-label">Krok 3</p>
+            <h3 class="mobile-section-title">Vyber vozidlo</h3>
+            <p class="mobile-section-text">Potvrď auto, kterým dnes jedeš.</p>
+          </article>
+          <article class="mobile-section-card">
+            <div class="form-grid" style="grid-template-columns:1fr;">
+              <div class="field full">
+                <label for="mobileSwitchVehicleSelect">Vozidlo</label>
+                <select id="mobileSwitchVehicleSelect">
+                  <option value="">Vyber vozidlo</option>
                   ${vehiclesDirectory.map((vehicle) => {
                     const label = [vehicle.plate, [vehicle.brand, vehicle.model].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || vehicle.name || 'Vozidlo';
                     return `<option value="${escapeHtml(String(vehicle.id))}" ${selectedVehicleId === String(vehicle.id) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
                   }).join('')}
                 </select>
               </div>
-              <div class="field full">
-                <label for="mobileStartKmInput">Počáteční km</label>
-                <input id="mobileStartKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(startOdometerInput.value || '')}" placeholder="Např. 152340" />
-              </div>
+              ${selectedVehicleId ? `
+                <div class="field full">
+                  <label>Poslední známý stav km</label>
+                  <div class="input-like">${escapeHtml(mobileSwitchVehicleSource || 'Po výběru auta načteme poslední známý stav km.')}</div>
+                </div>
+                <div class="field full">
+                  <label>Sedí stav km ve vozidle?</label>
+                  <div class="mobile-section-actions">
+                    <button class="btn" type="button" data-mobile-confirm-active-vehicle ${mobileSwitchVehicleStartKm ? '' : 'disabled'}>Ano, sedí</button>
+                    <button class="btn secondary" type="button" data-mobile-vehicle-edit-km>Ne, opravit</button>
+                  </div>
+                </div>
+                ${mobileVehicleKmEditMode ? `
+                  <div class="field full">
+                    <label for="mobileSwitchStartKmInput">Opravený stav km</label>
+                    <input id="mobileSwitchStartKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(String(mobileSwitchVehicleStartKm || ''))}" placeholder="Např. 152340" />
+                  </div>
+                ` : ''}
+              ` : ''}
             </div>
-            <div class="mobile-section-actions">
-              <button class="btn secondary" type="button" data-mobile-confirm-vehicle-setup ${(!selectedVehicleId || (reviewState?.vehicleId && reviewState?.startOdometerKm == null) || (reviewState?.requiresReviewConfirmation && !reviewState?.isReady)) ? 'disabled' : ''}>Potvrdit vozidlo a km</button>
-              <button class="btn" type="button" data-mobile-go-shift-start ${(getBlockingInstructionCount() > 0 || (reviewState?.requiresReviewConfirmation && !reviewState?.isReady)) ? 'disabled' : ''}>Pokračovat na zahájení směny</button>
-            </div>
-          </article>
-          <article class="mobile-section-card">
-            <p class="mobile-section-label">Další krok</p>
-            <h3 class="mobile-section-title">Nakládka se odemkne po startu směny</h3>
-            <p class="mobile-section-text">Jakmile směnu opravdu zahájíš, objeví se tady možnost naložit zboží ze skladu na vozidlo.</p>
           </article>
         `;
       }
 
       return `
         <article class="mobile-section-card primary">
-          <p class="mobile-section-label">Aktuálně</p>
-          <h3 class="mobile-section-title">${currentVehicleLabel}</h3>
-          <p class="mobile-section-text">${todayAttendance.vehicle_id ? (vehicleLogCount > 1 ? `Dnes už jsi pracoval/a s ${vehicleLogCount} auty. Nakládku, km i tankování řešíš tady.` : 'Nakládku, km i tankování řešíš tady v jedné sekci.') : 'Směna je zatím bez auta. Můžeš ho připojit i během dne.'}</p>
+          <p class="mobile-section-label">Krok 3</p>
+          <h3 class="mobile-section-title">${escapeHtml(todayAttendance.vehicle_label || 'Vozidlo')}</h3>
+          <p class="mobile-section-text">Start km ${escapeHtml(lastKnownVehicleKm != null ? `${lastKnownVehicleKm} km` : 'zatím bez km')}.</p>
         </article>
         ${renderMobileLoadingSessionCard(defaultBagetteWarehouseId)}
-        ${todayAttendance.vehicle_id ? `
-          <article class="mobile-section-card">
-            <p class="mobile-section-label">Kilometry</p>
-            <div class="form-grid" style="grid-template-columns:1fr;">
-              <div class="field full">
-                <label for="mobileEndKmInput">Aktuální / poslední km</label>
-                <input id="mobileEndKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(endKmValue)}" placeholder="Např. 152418" />
-              </div>
-            </div>
-            <div class="mobile-section-actions">
-              <button class="btn secondary" type="button" data-mobile-save-km>Uložit km</button>
-            </div>
-          </article>
-          <article class="mobile-section-card">
-            <p class="mobile-section-label">Tankování</p>
-            <div class="form-grid" style="grid-template-columns:1fr;">
-              <div class="field full">
-                <label for="mobileFuelLitersInput">Tankování (l)</label>
-                <input id="mobileFuelLitersInput" type="number" min="0" step="0.1" value="${escapeHtml(fuelLitersInput.value || '')}" placeholder="Např. 24,5" />
-              </div>
-              <div class="field full">
-                <label for="mobileFuelCostInput">Cena tankování</label>
-                <input id="mobileFuelCostInput" type="number" min="0" step="0.01" value="${escapeHtml(fuelCostInput.value || '')}" placeholder="Např. 980" />
-              </div>
-              <div class="field full">
-                <label for="mobileFuelKmInput">Stav km při tankování</label>
-                <input id="mobileFuelKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(fuelOdometerKmInput?.value || '')}" placeholder="Např. 152418" />
-              </div>
-              <div class="field full">
-                <label for="mobileFuelReceiptUrlInput">Odkaz na foto účtenky</label>
-                <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Např. https://..." />
-              </div>
-              <div class="field full">
-                <label for="mobileFuelNoteInput">Poznámka</label>
-                <textarea id="mobileFuelNoteInput" placeholder="Krátká poznámka k jízdě nebo tankování.">${escapeHtml(fuelNoteInput.value || '')}</textarea>
-              </div>
-            </div>
-            <div class="mobile-section-actions">
-              <button class="btn secondary" type="button" data-mobile-save-fuel>Uložit tankování</button>
-              ${operatorAutoFlow ? '' : `<button class="btn secondary" type="button" data-mobile-depart ${departVehicleBtn.disabled ? 'disabled' : ''}>Vyjet autem</button>`}
-              ${operatorAutoFlow ? '' : `<button class="btn secondary" type="button" data-mobile-return ${returnBaseBtn.disabled ? 'disabled' : ''}>Vrátit se</button>`}
-            </div>
-          </article>
-        ` : ''}
-          <article class="mobile-section-card">
-            <p class="mobile-section-label">${todayAttendance.vehicle_id ? 'Změna auta' : 'Přidat auto'}</p>
-            <h3 class="mobile-section-title">${todayAttendance.vehicle_id ? 'Přesednout do jiného auta' : 'Připojit vozidlo ke směně'}</h3>
-          <p class="mobile-section-text">${todayAttendance.vehicle_id ? 'Nejdřív ulož km u aktuálního auta, pak převezmi nové.' : 'Když začneš bez auta a převezmeš ho později, uděláš to tady.'}</p>
+        <article class="mobile-section-card">
+          <p class="mobile-section-label">Tankování</p>
+          <h3 class="mobile-section-title">Rychlé tankování</h3>
+          <p class="mobile-section-text">${escapeHtml(fuelSummaryText)}</p>
+          <div class="mobile-section-actions">
+            <button class="btn secondary" type="button" data-mobile-open-fuel>Otevřít tankování</button>
+          </div>
+        </article>
+        <article class="mobile-section-card" ${mobileFuelFormVisible ? '' : 'hidden'}>
           <div class="form-grid" style="grid-template-columns:1fr;">
             <div class="field full">
-              <label for="mobileSwitchVehicleSelect">${todayAttendance.vehicle_id ? 'Nové vozidlo' : 'Vozidlo'}</label>
-              <select id="mobileSwitchVehicleSelect">
-                <option value="">${todayAttendance.vehicle_id ? 'Vyber jiné auto' : 'Vyber vozidlo'}</option>
-                ${(todayAttendance.vehicle_id ? availableSwitchVehicles : vehiclesDirectory).map((vehicle) => {
-                  const label = [vehicle.plate, [vehicle.brand, vehicle.model].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || vehicle.name || 'Vozidlo';
-                  return `<option value="${escapeHtml(String(vehicle.id))}" ${String(mobileSwitchVehicleId || '') === String(vehicle.id) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-                }).join('')}
-              </select>
+              <label for="mobileFuelLitersInput">Litry</label>
+              <input id="mobileFuelLitersInput" type="number" min="0" step="0.1" value="${escapeHtml(fuelLitersInput.value || '')}" placeholder="Např. 24,5" />
             </div>
             <div class="field full">
-              <label for="mobileSwitchStartKmInput">Start km nového auta</label>
-              <input id="mobileSwitchStartKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(String(mobileSwitchVehicleStartKm || ''))}" placeholder="Např. 153210" />
+              <label for="mobileFuelCostInput">Cena</label>
+              <input id="mobileFuelCostInput" type="number" min="0" step="0.01" value="${escapeHtml(fuelCostInput.value || '')}" placeholder="Např. 980" />
             </div>
             <div class="field full">
-              <label>Stav</label>
-              <div class="input-like">${escapeHtml(mobileSwitchVehicleSource || 'Po výběru auta doplníme poslední známý stav km.')}</div>
+              <label for="mobileFuelKmInput">Stav km</label>
+              <input id="mobileFuelKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(fuelOdometerKmInput?.value || '')}" placeholder="Např. 152418" />
+            </div>
+            <div class="field full">
+              <label for="mobileFuelReceiptUrlInput">Foto / odkaz na účtenku</label>
+              <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Např. https://..." />
+            </div>
+            <div class="field full">
+              <label for="mobileFuelNoteInput">Poznámka</label>
+              <textarea id="mobileFuelNoteInput" placeholder="Krátká poznámka.">${escapeHtml(fuelNoteInput.value || '')}</textarea>
             </div>
           </div>
           <div class="mobile-section-actions">
-            ${todayAttendance.actual_end && todayAttendance.vehicle_id ? '' : `<button class="btn" type="button" data-mobile-switch-vehicle ${mobileSwitchVehicleId ? '' : 'disabled'}>${todayAttendance.vehicle_id ? 'Převzít jiné auto' : 'Připojit auto'}</button>`}
-            ${todayAttendance.vehicle_id ? `<button class="btn secondary" type="button" data-mobile-correct-vehicle ${mobileSwitchVehicleId ? '' : 'disabled'}>Opravit omyl</button>` : ''}
+            <button class="btn" type="button" data-mobile-save-fuel>Uložit tankování</button>
+          </div>
+        </article>
+        <article class="mobile-section-card">
+          <p class="mobile-section-label">Kilometry</p>
+          <div class="form-grid" style="grid-template-columns:1fr;">
+            <div class="field full">
+              <label for="mobileEndKmInput">Poslední známý stav km</label>
+              <input id="mobileEndKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(endOdometerInput?.value || '')}" placeholder="Např. 152418" />
+            </div>
+          </div>
+          <div class="mobile-section-actions">
+            <button class="btn secondary" type="button" data-mobile-save-km>Uložit km</button>
           </div>
         </article>
       `;
@@ -3925,165 +4058,73 @@
       mobileFocusTitle.textContent = todayAttendance?.actual_end ? 'Ukončená směna' : todayAttendance?.actual_start ? 'Aktivní směna' : 'Zahájení směny';
 
       const state = getTodayStateMeta();
-      const startLocationValue = startLocationType.value || 'warehouse';
       const routeProgress = getRouteProgressMeta();
-      const nextRouteStop = getNextRouteStop();
-      const routeSummaryMarkup = todayRoutePlan ? `
-        <article class="mobile-section-card ${nextRouteStop ? 'primary' : ''}">
-          <p class="mobile-section-label">Dnešní trasa</p>
-          <h3 class="mobile-section-title">${nextRouteStop ? `Další zastávka: ${escapeHtml(nextRouteStop.title || nextRouteStop.address_snapshot || 'Zastávka')}` : 'Dnešní trasa je hotová'}</h3>
-          <p class="mobile-section-text">${routeProgress.done}/${routeProgress.total} hotovo${routeProgress.skipped ? ` · ${routeProgress.skipped} přeskočeno` : ''}${todayRoutePlan.vehicle_label ? ` · ${escapeHtml(todayRoutePlan.vehicle_label)}` : ''}.</p>
-          ${nextRouteStop ? `
-            <div class="mobile-section-actions">
-              <a class="btn secondary" href="${escapeHtml(buildRouteStopMapsUrl(nextRouteStop))}" target="_blank" rel="noopener noreferrer">Navigovat na další bod</a>
-            </div>
-          ` : ''}
-        </article>
-        <div class="route-stop-list">
-          ${todayRouteStops.map((stop) => {
-            const statusMeta = getRouteStopDisplayMeta(stop);
-            const isOpen = !['done', 'skipped'].includes(String(stop.status || 'planned'));
-            const linkedService = assignedServiceRequests.find((request) => String(request.id) === String(stop.service_request_id || ''));
-            return `
-              <article class="route-stop-card ${isOpen && String(nextRouteStop?.id || '') === String(stop.id) ? 'active' : ''}">
-                <div class="log-head">
-                  <div>
-                    <div class="log-title">${escapeHtml(`${stop.stop_order}. ${stop.title || 'Zastávka'}`)}</div>
-                    <div class="log-text">${escapeHtml([stop.address_snapshot, stop.city_snapshot].filter(Boolean).join(', ') || 'Bez adresy')}</div>
-                  </div>
-                  <span class="badge ${escapeHtml(statusMeta.cls)}">${escapeHtml(statusMeta.label)}</span>
-                </div>
-                <div class="meta-row">
-                  ${stop.estimated_service_minutes ? `<span class="meta-chip">Plán ${escapeHtml(formatMinutesLabel(stop.estimated_service_minutes))}</span>` : ''}
-                  ${stop.priority_snapshot ? `<span class="meta-chip">Priorita ${escapeHtml(stop.priority_snapshot)}</span>` : ''}
-                  ${stop.service_window_snapshot ? `<span class="meta-chip">Okno ${escapeHtml(stop.service_window_snapshot)}</span>` : ''}
-                  ${stop.arrived_at ? `<span class="meta-chip">Začátek ${escapeHtml(formatClock(stop.arrived_at))}</span>` : ''}
-                  ${stop.completed_at ? `<span class="meta-chip">Konec ${escapeHtml(formatClock(stop.completed_at))}</span>` : ''}
-                </div>
-                ${stop.note ? `<div class="log-text" style="margin-top:10px;">${escapeHtml(stop.note)}</div>` : ''}
-                <div class="instruction-actions">
-                  <a class="btn secondary" href="${escapeHtml(buildRouteStopMapsUrl(stop))}" target="_blank" rel="noopener noreferrer">Navigovat</a>
-                  ${linkedService && (linkedService.status === 'assigned' || linkedService.status === 'new') ? `<button class="btn secondary" type="button" data-service-action="arrived" data-service-id="${linkedService.id}">Začít servis</button>` : ''}
-                  ${linkedService && linkedService.status === 'in_progress' ? `<button class="btn success" type="button" data-service-action="fixed" data-service-id="${linkedService.id}">Servis hotovo</button>` : ''}
-                  ${linkedService && linkedService.status === 'in_progress' ? `<button class="btn secondary" type="button" data-service-action="return_with_part" data-service-id="${linkedService.id}">Vrátím se</button>` : ''}
-                  ${isOpen && !stop.arrived_at ? `<button class="btn secondary" type="button" data-route-stop-action="arrived" data-route-stop-id="${stop.id}">Na místě</button>` : ''}
-                  ${isOpen && !linkedService ? `<button class="btn success" type="button" data-route-stop-action="done" data-route-stop-id="${stop.id}">Hotovo</button>` : ''}
-                  ${isOpen ? `<button class="btn secondary" type="button" data-route-stop-action="skipped" data-route-stop-id="${stop.id}">Přeskočit</button>` : ''}
-                </div>
-              </article>
-            `;
-          }).join('')}
-        </div>
-      ` : `
+      const routeSummaryMarkup = `
         <article class="mobile-section-card">
-          <p class="mobile-section-label">Dnešní trasa</p>
-          <h3 class="mobile-section-title">Bez přiřazené trasy</h3>
-          <p class="mobile-section-text">${todayAttendance ? 'Dnes běží směna bez naplánované trasy. Start směny, vozidlo, tankování i ukončení dne fungují normálně.' : 'Když dnes není přiřazená trasa, můžeš normálně zahájit směnu a jet podle operativy.'}</p>
+          <p class="mobile-section-label">Krok 5</p>
+          <h3 class="mobile-section-title">Trasa</h3>
+          <p class="mobile-section-text">${todayRoutePlan ? `${routeProgress.done}/${routeProgress.total} hotovo.` : 'Trasa bude doplněna v další verzi.'}</p>
         </article>
       `;
 
       if (!todayAttendance) {
-        let reviewState = null;
-        const pendingRequiredNow = getPendingInstructionsForCurrentEmployee();
-        try {
-          reviewState = getStartKmReviewState();
-        } catch (_error) {
-          reviewState = null;
-        }
         return `
           <article class="mobile-section-card primary">
-            <p class="mobile-section-label">Dnes</p>
+            <p class="mobile-section-label">Krok 2</p>
             <h3 class="mobile-section-title">${escapeHtml(state.label)}</h3>
-            <p class="mobile-section-text">${escapeHtml(state.note)}</p>
+            <p class="mobile-section-text">Pokud jsou pokyny hotové, můžeš směnu rovnou zahájit.</p>
           </article>
-          ${pendingRequiredNow.length > 0 ? `
-            <article class="mobile-section-card">
-              <div class="mobile-inline-warning">
-                <strong>Nejdřív potvrď pokyny dne</strong>
-                <span class="mobile-section-text">Dokud nepotvrdíš ${pendingRequiredNow.length} povinných pokynů, směnu nespustíš.</span>
-              </div>
-            </article>
-          ` : ''}
           <article class="mobile-section-card">
-            <div class="form-grid" style="grid-template-columns:1fr;">
-              <div class="field full">
-                <label for="mobileStartLocationType">Začátek</label>
-                <select id="mobileStartLocationType">
-                  <option value="warehouse" ${startLocationValue === 'warehouse' ? 'selected' : ''}>Sklad / základna</option>
-                  <option value="home" ${startLocationValue === 'home' ? 'selected' : ''}>Práce z domova</option>
-                </select>
-              </div>
-              ${startLocationValue === 'warehouse' ? `
-                <div class="field full">
-                  <label for="mobileStartWarehouseSelect">Sklad</label>
-                  <select id="mobileStartWarehouseSelect">
-                    <option value="">Vyber sklad</option>
-                    ${warehousesDirectory.map((warehouse) => `<option value="${escapeHtml(String(warehouse.id))}" ${String(startWarehouseSelect.value || '') === String(warehouse.id) ? 'selected' : ''}>${escapeHtml(warehouse.name)}</option>`).join('')}
-                  </select>
-                </div>
-              ` : ''}
-              ${reviewState?.requiresReviewConfirmation ? `
-                <div class="field full">
-                  <div class="mobile-inline-warning">
-                    <strong>${reviewState.reviewSeverity === 'danger' ? 'Velký nesoulad km' : 'Nesoulad počátečních km'}</strong>
-                    <span class="mobile-section-text">Poslední známý stav je ${escapeHtml(String(reviewState.expectedStartKm))} km, zadáno ${escapeHtml(String(reviewState.startOdometerKm))} km. Záznam půjde ke kontrole.</span>
-                    <label class="review-checkline" for="mobileStartReviewConfirm">
-                      <input id="mobileStartReviewConfirm" type="checkbox" ${startKmReviewConfirm?.checked ? 'checked' : ''} />
-                      <span>Potvrzuji fyzickou kontrolu vozidla.</span>
-                    </label>
-                    <div class="field full" style="margin:0;">
-                      <label for="mobileStartReviewNote">Poznámka k nesouladu</label>
-                      <textarea id="mobileStartReviewNote" placeholder="Krátce popiš, proč se stav liší.">${escapeHtml(startKmReviewNote?.value || '')}</textarea>
-                    </div>
-                  </div>
-                </div>
-              ` : ''}
-            </div>
             <div class="mobile-section-actions">
               <button class="btn" type="button" data-mobile-start-shift>Zahájit směnu</button>
             </div>
           </article>
-          ${assignedServiceRequests.length ? `
-            <article class="mobile-section-card">
-              <p class="mobile-section-label">Čeká tě</p>
-              <h3 class="mobile-section-title">${assignedServiceRequests.length} servisů</h3>
-              <p class="mobile-section-text">Po zahájení směny se odemknou.</p>
-            </article>
-          ` : ''}
           ${routeSummaryMarkup}
+        `;
+      }
+
+      if (needsMobileUnloadingStep()) {
+        const loadingSummary = getLoadingSessionSummary();
+        const bagetteReview = getBagetteReturnReviewState();
+        return `
+          <article class="mobile-section-card primary">
+            <p class="mobile-section-label">Před ukončením</p>
+            <h3 class="mobile-section-title">Vykládka zboží</h3>
+            <p class="mobile-section-text">Před ukončením směny zkontroluj vrácené zboží a likvidaci.</p>
+          </article>
+          <article class="mobile-section-card">
+            <p class="mobile-section-label">Souhrn session</p>
+            <h3 class="mobile-section-title">Nakládka hotová</h3>
+            <p class="mobile-section-text">Naloženo ${escapeHtml(String(loadingSummary.loadedItems))} položek · ${escapeHtml(String(loadingSummary.loadedUnits.toFixed(0)))} ks celkem · na vozidle ${escapeHtml(String(loadingSummary.onboardUnits.toFixed(0)))} ks.</p>
+            ${bagetteReview.requiresReview ? `<div class="mobile-inline-warning"><strong>Vyšší vratkovost baget</strong><span class="mobile-section-text">Čeká na kontrolu nadřízeným.</span></div>` : ''}
+            <div class="mobile-section-actions">
+              <button class="btn" type="button" data-mobile-go-vehicle>Vyložit zboží</button>
+              <button class="btn secondary" type="button" data-mobile-unloading-skip>Přeskočit</button>
+            </div>
+          </article>
+          <article class="mobile-section-card">
+            <div class="mobile-section-actions">
+              <button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>
+            </div>
+          </article>
         `;
       }
 
       return `
         <article class="mobile-section-card primary">
-          <p class="mobile-section-label">Průběh</p>
+          <p class="mobile-section-label">${todayAttendance.actual_end ? 'Hotovo' : 'Směna běží'}</p>
           <h3 class="mobile-section-title">${escapeHtml(state.label)}</h3>
           <p class="mobile-section-text">${escapeHtml(state.note)}</p>
-        </article>
-        <article class="mobile-section-card">
-          <p class="mobile-section-label">Poloha</p>
-          <h3 class="mobile-section-title">Sdílení pro provoz</h3>
-          <p class="mobile-section-text">${escapeHtml(getLocationTrackingSummaryText())}</p>
-          <div class="mobile-section-actions">
-            <button class="btn secondary" type="button" data-mobile-capture-location ${locationTrackingAvailable && todayAttendance?.id && !todayAttendance?.actual_end ? '' : 'disabled'}>Zkusit polohu znovu</button>
-          </div>
         </article>
         ${routeSummaryMarkup}
         ${assignedServiceRequests.length ? buildMobileServiceCards() : ''}
         ${!todayAttendance.actual_end ? `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Akce</p>
-            ${todayAttendance.vehicle_id && parseIntegerValue(endOdometerInput?.value) == null ? `
-              <div class="mobile-inline-warning" style="margin-bottom:12px;">
-                <strong>Nejdřív doplň konečný stav km</strong>
-                <span class="mobile-section-text">Pro ukončení dne přejdi do záložky Vozidlo a doplň poslední km.</span>
-              </div>
-            ` : ''}
             <div class="mobile-section-actions">
               <button class="btn warn" type="button" data-mobile-break ${breakToggleBtn.disabled ? 'disabled' : ''}>${escapeHtml(breakToggleBtn.textContent || 'Začít pauzu')}</button>
-              ${todayAttendance.vehicle_id && parseIntegerValue(endOdometerInput?.value) == null
-                ? `<button class="btn success" type="button" data-mobile-open-vehicle-end>Doplnit km ve vozidle</button>`
-                : `<button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>`}
+              <button class="btn secondary" type="button" data-mobile-go-vehicle>Vozidlo</button>
+              <button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>
             </div>
           </article>
         ` : `
@@ -4163,43 +4204,44 @@
 
       const pendingInstructions = getPendingInstructionsForCurrentEmployee();
       const state = getTodayStateMeta();
+      const recommendedSection = getRecommendedMobileShiftSection();
       const vehicleLabel = getSelectedVehicleLabel();
       const employeeRequestCount = getOpenEmployeeRequestCount();
       const hasShift = Boolean(todayAttendance?.actual_start);
       const shiftDone = Boolean(todayAttendance?.actual_end);
-      const vehicleCount = todayVehicleOperationLogs.length;
-      const shiftLocked = pendingInstructions.length > 0 && !hasShift;
-      // Vozidlo musí jít otevřít i před startem směny, jinak se operátor
-      // nedostane k výběru auta a km pro zahájení dne.
-      const vehicleLocked = false;
+      const vehicleDone = hasConfirmedVehicleForMobileFlow();
+      const shiftLocked = !hasShift && (pendingInstructions.length > 0 || !vehicleDone);
+      const vehicleLocked = pendingInstructions.length > 0 && !hasShift;
+
+      if ((shiftLocked && currentMobileShiftSection === 'shift') || (vehicleLocked && currentMobileShiftSection === 'vehicle')) {
+        currentMobileShiftSection = recommendedSection;
+      }
+
+      if (!pendingInstructions.length && currentMobileShiftSection === 'instructions') {
+        currentMobileShiftSection = recommendedSection;
+      }
 
       if (mobileTileInstructionsValue) {
         mobileTileInstructionsValue.textContent = String(pendingInstructions.length);
       }
       if (mobileTileInstructionsNote) {
-        mobileTileInstructionsNote.textContent = pendingInstructions.length ? 'Klepni a potvrď' : 'Dnes hotovo';
+        mobileTileInstructionsNote.textContent = pendingInstructions.length ? 'Potvrdit' : 'Dnes hotovo';
       }
       if (mobileTileVehicleValue) {
-        mobileTileVehicleValue.textContent = vehicleCount > 1 ? `${vehicleCount} auta` : vehicleLabel === 'Bez vozidla' ? 'Bez' : 'Auto';
+        mobileTileVehicleValue.textContent = vehicleDone ? 'Hotovo' : vehicleLabel === 'Bez vozidla' ? 'Bez' : 'Auto';
       }
       if (mobileTileVehicleNote) {
-        mobileTileVehicleNote.textContent = vehicleCount > 1 ? `Aktuálně ${vehicleLabel}` : vehicleLabel;
+        mobileTileVehicleNote.textContent = vehicleDone ? vehicleLabel : 'Auto a km';
       }
       if (mobileTileShiftValue) {
-        if (todayRoutePlan) {
-          const routeProgress = getRouteProgressMeta();
-          mobileTileShiftValue.textContent = `${routeProgress.done}/${routeProgress.total}`;
-        } else {
-          mobileTileShiftValue.textContent = todayAttendance?.actual_end ? 'Hotovo' : todayAttendance?.actual_start ? 'Běží' : 'Start';
-        }
+        mobileTileShiftValue.textContent = todayAttendance?.actual_end ? 'Hotovo' : todayAttendance?.actual_start ? (needsMobileUnloadingStep() ? 'Vyložit' : 'Běží') : 'Start';
       }
       if (mobileTileShiftNote) {
-        const nextRouteStop = getNextRouteStop();
-        mobileTileShiftNote.textContent = todayRoutePlan
-          ? nextRouteStop
-            ? `Další ${nextRouteStop.stop_order}. ${nextRouteStop.title || 'zastávka'}`
-            : 'Dnešní trasa hotová'
-          : state.label;
+        mobileTileShiftNote.textContent = todayAttendance?.actual_end
+          ? 'Směna hotová'
+          : needsMobileUnloadingStep()
+            ? 'Před koncem vylož'
+            : state.label;
       }
       if (mobileTileRequestsValue) {
         mobileTileRequestsValue.textContent = employeeRequestCount ? String(employeeRequestCount) : 'Napsat';
@@ -4215,8 +4257,8 @@
         const isShift = section === 'shift';
         const isRequests = section === 'requests';
 
-        button.classList.toggle('active', section === currentMobileShiftSection);
-        button.classList.toggle('done', (isInstructions && pendingInstructions.length === 0) || (isVehicle && hasShift && !todayAttendance?.vehicle_id ? false : isVehicle && vehicleCount > 0) || (isShift && shiftDone));
+        button.classList.toggle('active', section === currentMobileShiftSection || (section === recommendedSection && currentMobileShiftSection === 'home'));
+        button.classList.toggle('done', (isInstructions && pendingInstructions.length === 0) || (isVehicle && vehicleDone) || (isShift && shiftDone));
         button.classList.toggle('locked', (isShift && shiftLocked) || (isVehicle && vehicleLocked));
         button.disabled = Boolean((isShift && shiftLocked) || (isVehicle && vehicleLocked));
 
@@ -4224,18 +4266,11 @@
           button.classList.remove('locked');
         }
       });
-
-      if ((shiftLocked && currentMobileShiftSection === 'shift') || (vehicleLocked && currentMobileShiftSection === 'vehicle')) {
-        currentMobileShiftSection = 'home';
-      }
-
-      if (!pendingInstructions.length && currentMobileShiftSection === 'instructions') {
-        currentMobileShiftSection = todayAttendance?.actual_start ? 'shift' : 'vehicle';
-      }
     }
 
     function renderMobileShiftSection() {
       if (!mobileFocusPanel || !mobileFocusBody) return;
+      const recommendedSection = getRecommendedMobileShiftSection();
 
       if (!isCompactMobileLayout() || currentMobileView !== 'shift') {
         mobileFocusPanel.hidden = true;
@@ -4246,6 +4281,10 @@
           mobileShiftHub.classList.remove('compact');
         }
         return;
+      }
+
+      if (currentMobileShiftSection === 'home' && !todayAttendance?.actual_end) {
+        currentMobileShiftSection = recommendedSection;
       }
 
       if (currentMobileShiftSection === 'home') {
@@ -4294,8 +4333,17 @@
     }
 
     function renderMobileShiftUI() {
-      if (currentMobileView === 'shift' && getBlockingInstructionCount() === 0 && currentMobileShiftSection === 'instructions') {
-        currentMobileShiftSection = todayAttendance?.actual_start ? 'shift' : 'vehicle';
+      if (currentMobileView === 'shift' && currentMobileShiftSection !== 'requests') {
+        const recommendedSection = getRecommendedMobileShiftSection();
+        if (currentMobileShiftSection === 'home') {
+          currentMobileShiftSection = recommendedSection;
+        } else if (currentMobileShiftSection === 'instructions' && getBlockingInstructionCount() === 0) {
+          currentMobileShiftSection = recommendedSection;
+        } else if (currentMobileShiftSection === 'shift' && getBlockingInstructionCount() > 0 && !todayAttendance?.actual_start) {
+          currentMobileShiftSection = recommendedSection;
+        } else if (currentMobileShiftSection === 'vehicle' && !todayAttendance?.actual_start) {
+          currentMobileShiftSection = recommendedSection;
+        }
       }
       renderMobileShiftHub();
       renderMobileShiftSection();
@@ -8289,6 +8337,12 @@
         .eq('id', Number(currentLoadingSession.id));
       if (error) throw error;
       await loadCurrentLoadingSession();
+      if (nextPhase === 'close') {
+        const bagetteReview = getBagetteReturnReviewState();
+        if (bagetteReview.requiresReview) {
+          await setCurrentLoadingSessionFlag('BAGETTE_REVIEW', true);
+        }
+      }
     }
 
     function renderMobileLoadingSessionCard(defaultWarehouseId) {
@@ -8305,25 +8359,23 @@
         `;
       }
 
-      const globalWarehouseProducts = loadingCatalogProducts.filter((item) => (
-        Object.values(item?.warehouse_quantities || {}).some((value) => Number(value || 0) > 0)
-      ));
       const warehouseProducts = getWarehouseDrivenLoadingProducts(selectedWarehouseId);
       const sessionProducts = loadingCatalogProducts.filter((item) => Boolean(getLoadingSessionItem(item.product_id)));
       const hasWarehouseStock = warehouseProducts.length > 0;
+      const pickerCandidates = getLoadingPickerCandidates('load', selectedWarehouseId);
+      const loadingSummary = getLoadingSessionSummary();
+      const bagetteReview = getBagetteReturnReviewState();
 
-      if (!globalWarehouseProducts.length && !sessionProducts.length) {
+      if (!pickerCandidates.length && !sessionProducts.length) {
         return `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Nakládka vozidla</p>
             <h3 class="mobile-section-title">Na skladu teď nic není</h3>
-            <p class="mobile-section-text">Mobilní nakládka bere jen reálné položky ze skladu. Jakmile bude na zvoleném skladu něco naskladněné, objeví se tady přímé tlačítko pro výběr položky.</p>
+            <p class="mobile-section-text">Jakmile bude na zvoleném skladu něco naskladněné, objeví se tu přímé tlačítko pro výběr položky.</p>
           </article>
         `;
       }
 
-      const totals = getLoadingSessionTotals();
-      const onboardTotal = getSessionOnVehicleTotal();
       const sessionPhase = !currentLoadingSession
         ? (shiftStarted ? 'Připraveno k zahájení' : 'Čeká na start směny')
         : currentLoadingSession.status === 'closed'
@@ -8337,54 +8389,24 @@
       const onboardRowsMarkup = sessionProducts.map((item) => {
         const metrics = getLoadingSessionProductMetrics(item.product_id);
         if (!metrics.loaded && !metrics.returned && !metrics.waste && !metrics.onboard) return '';
-        const warehouseQty = Number(item?.warehouse_quantities?.[selectedWarehouseId] || 0);
-        const hasKnownWarehouseQty = Number.isFinite(warehouseQty) && warehouseQty > 0;
         return `
           <article class="mobile-loading-item">
             <div class="mobile-loading-item-head">
               <div>
                 <h4 class="mobile-loading-item-title">${escapeHtml(item.product_name || 'Položka')}</h4>
-                <p class="mobile-loading-item-subtitle">${hasKnownWarehouseQty ? `Na skladu ${escapeHtml(String(Number(warehouseQty).toFixed(0)))} ${escapeHtml(item.base_unit || 'ks')}` : 'Skladový stav zatím není přesně evidovaný'}</p>
+                <p class="mobile-loading-item-subtitle">Naloženo ${escapeHtml(String(Number(metrics.loaded).toFixed(0)))} · vráceno ${escapeHtml(String(Number(metrics.returned).toFixed(0)))} · likvidace ${escapeHtml(String(Number(metrics.waste).toFixed(0)))}</p>
               </div>
-              <span class="badge ${metrics.onboard > 0 ? 'green' : 'blue'}">${escapeHtml(metrics.onboard > 0 ? `${Number(metrics.onboard).toFixed(0)} ks na autě` : 'Zatím 0 ks')}</span>
-            </div>
-            <div class="mobile-loading-stats">
-              <div class="mobile-loading-stat">
-                <span class="mobile-loading-stat-label">Naloženo</span>
-                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.loaded).toFixed(0)))}</span>
-              </div>
-              <div class="mobile-loading-stat">
-                <span class="mobile-loading-stat-label">Vráceno</span>
-                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.returned).toFixed(0)))}</span>
-              </div>
-              <div class="mobile-loading-stat">
-                <span class="mobile-loading-stat-label">Odpad</span>
-                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.waste).toFixed(0)))}</span>
-              </div>
-              <div class="mobile-loading-stat">
-                <span class="mobile-loading-stat-label">Na vozidle</span>
-                <span class="mobile-loading-stat-value">${escapeHtml(String(Number(metrics.onboard).toFixed(0)))}</span>
-              </div>
+              <span class="badge ${metrics.onboard > 0 ? 'green' : 'blue'}">${escapeHtml(`${Number(metrics.onboard).toFixed(0)} ks na vozidle`)}</span>
             </div>
           </article>
         `;
       }).filter(Boolean).join('');
 
-      const stockPreviewMarkup = warehouseProducts.slice(0, 4).map((item) => {
-        const warehouseQty = Number(item?.warehouse_quantities?.[selectedWarehouseId] || 0);
-        return `
-          <div class="mobile-loading-stat">
-            <span class="mobile-loading-stat-label">${escapeHtml(item.product_name || 'Položka')}</span>
-            <span class="mobile-loading-stat-value">${escapeHtml(String(Number(warehouseQty).toFixed(0)))} ${escapeHtml(item.base_unit || 'ks')}</span>
-          </div>
-        `;
-      }).join('');
-
       return `
         <article class="mobile-section-card">
-          <p class="mobile-section-label">Nakládka vozidla</p>
-          <h3 class="mobile-section-title">${currentLoadingSession ? 'Dnešní session' : 'Zahájit session'}</h3>
-          <p class="mobile-section-text">${shiftStarted ? 'Ráno jen otevřeš nakládku, vybereš položku ze skladu, zadáš kusy a potvrdíš. Večer vrátíš použitelné a zvlášť zapíšeš expiraci.' : 'Po zahájení směny se tady odemkne jednoduchý picker. Ten ti dovolí naložit položku přímo ze skladu na auto.'}</p>
+          <p class="mobile-section-label">Krok 4</p>
+          <h3 class="mobile-section-title">${currentLoadingSession ? 'Nakládka hotová' : 'Nakládka zboží'}</h3>
+          <p class="mobile-section-text">${shiftStarted ? 'Nalož jen to, co skutečně bereš na auto. Dlouhý seznam necháváme schovaný až na detail.' : 'Po startu směny se tady odemkne nakládka ze skladu na vozidlo.'}</p>
           <div class="mobile-loading-summary">
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Stav session</span>
@@ -8396,17 +8418,16 @@
             </div>
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Naloženo</span>
-              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(totals.loaded).toFixed(0)))}</span>
+              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(loadingSummary.loadedUnits).toFixed(0)))}</span>
             </div>
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Na vozidle</span>
-              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(onboardTotal).toFixed(0)))}</span>
+              <span class="mobile-loading-metric-value">${escapeHtml(String(Number(loadingSummary.onboardUnits).toFixed(0)))}</span>
             </div>
           </div>
-          ${hasWarehouseStock ? `<div class="mobile-loading-stats">${stockPreviewMarkup}</div>` : `<div class="helper-line">Skladový stav zatím není přesně evidovaný. Nakládku ale můžeš normálně zapsat výběrem položky a počtu kusů.</div>`}
+          ${hasWarehouseStock ? `<div class="helper-line">Na skladu jsou připravené položky pro nakládku.</div>` : `<div class="helper-line">Skladový stav zatím není přesně evidovaný. Nakládku ale můžeš normálně zapsat výběrem položky a počtu kusů.</div>`}
           ${!shiftStarted ? `
             <div class="helper-line">Nejdřív spusť směnu. Jakmile běží směna s vozidlem, odemkne se session a tlačítko Naložit položku.</div>
-            ${onboardRowsMarkup ? `<div class="mobile-loading-list">${onboardRowsMarkup}</div>` : ''}
           ` : !currentLoadingSession ? `
             <div class="form-grid" style="grid-template-columns:1fr;">
               <div class="field full">
@@ -8418,18 +8439,22 @@
               </div>
             </div>
             <div class="mobile-section-actions">
-              <button class="btn" type="button" data-mobile-loading-begin="load">Zahájit nakládku</button>
+              <button class="btn" type="button" data-mobile-loading-begin="load">Ano, naložit zboží</button>
+              <button class="btn secondary" type="button" data-mobile-loading-skip>Přeskočit</button>
             </div>
           ` : `
             <div class="mobile-section-actions">
               ${!currentLoadingSession.loading_completed_at ? `<button class="btn" type="button" data-mobile-loading-open="load">Naložit položku</button>` : ''}
+              ${!currentLoadingSession.loading_completed_at ? `<button class="btn secondary" type="button" data-mobile-loading-mark="loading_done">Uložit nakládku</button>` : ''}
               ${currentLoadingSession.unloading_started_at && currentLoadingSession.status !== 'closed' ? `<button class="btn secondary" type="button" data-mobile-loading-open="return">Vrátit na sklad</button>` : ''}
-              ${currentLoadingSession.unloading_started_at && currentLoadingSession.status !== 'closed' ? `<button class="btn danger" type="button" data-mobile-loading-open="waste">Zapsat expiraci</button>` : ''}
-              ${currentLoadingSession.loading_completed_at ? '' : `<button class="btn secondary" type="button" data-mobile-loading-mark="loading_done">Dokončit nakládku</button>`}
-              ${currentLoadingSession.loading_completed_at && !currentLoadingSession.unloading_started_at ? `<button class="btn secondary" type="button" data-mobile-loading-mark="unloading_start">Zahájit vykládku</button>` : ''}
-              ${currentLoadingSession.unloading_started_at && currentLoadingSession.status !== 'closed' ? `<button class="btn" type="button" data-mobile-loading-mark="close">Uzavřít session</button>` : ''}
+              ${currentLoadingSession.unloading_started_at && currentLoadingSession.status !== 'closed' ? `<button class="btn danger" type="button" data-mobile-loading-open="waste">Vozidlo → likvidace</button>` : ''}
+              ${currentLoadingSession.unloading_started_at && currentLoadingSession.status !== 'closed' ? `<button class="btn" type="button" data-mobile-loading-mark="close">Uložit vykládku</button>` : ''}
             </div>
-            ${onboardRowsMarkup ? `<div class="mobile-loading-list">${onboardRowsMarkup}</div>` : '<div class="helper-line">Na vozidle zatím není nic zapsané. Klepni na Naložit položku a vyber ji přímo ze skladu.</div>'}
+            ${loadingSummary.loadedItems ? `
+              <div class="helper-line">Nakládka hotová · ${escapeHtml(String(loadingSummary.loadedItems))} položek · ${escapeHtml(String(Number(loadingSummary.loadedUnits).toFixed(0)))} ks celkem</div>
+              ${bagetteReview.requiresReview ? `<div class="mobile-inline-warning"><strong>Vyšší vratkovost baget</strong><span class="mobile-section-text">Čeká na kontrolu nadřízeným.</span></div>` : ''}
+            ` : '<div class="helper-line">Zatím není nic naložené. Klepni na Naložit položku a vyber ji přímo ze skladu.</div>'}
+            ${onboardRowsMarkup ? `<details class="instruction-compact-group"><summary class="instruction-compact-summary"><span>Detail položek na vozidle</span><span class="instruction-compact-note">${escapeHtml(String(loadingSummary.onboardUnits.toFixed(0)))} ks</span></summary><div class="mobile-loading-list">${onboardRowsMarkup}</div></details>` : ''}
           `}
         </article>
       `;
@@ -9485,6 +9510,14 @@
           if (pendingRequiredNow.length > 0) {
             throw new Error(`Nejdřív potvrď ${pendingRequiredNow.length} povinných pokynů dne.`);
           }
+          if (!hasConfirmedVehicleForMobileFlow()) {
+            setMobileShiftSection('vehicle');
+            throw new Error('Nejdřív potvrď vozidlo a počáteční km.');
+          }
+          if (startLocationType.value === 'warehouse' && !startWarehouseSelect.value) {
+            const defaultWarehouseId = getPreferredBagetteWarehouseId() || warehousesDirectory[0]?.id || '';
+            if (defaultWarehouseId) startWarehouseSelect.value = String(defaultWarehouseId);
+          }
           button.disabled = true;
           setActionsStatus('Ukládám začátek směny...');
           await startShift();
@@ -9492,13 +9525,22 @@
           await queueOperationalLocationCapture('shift_start');
           setActionsStatus('Směna byla zahájena a propsala se do dnešního přehledu.', 'success');
           if (isCompactMobileLayout()) {
-            setMobileShiftSection('shift');
+            setMobileShiftSection('vehicle');
           }
           return;
         }
 
         if (button.hasAttribute('data-mobile-go-shift-start')) {
+          if (!todayAttendance?.actual_start && !hasConfirmedVehicleForMobileFlow()) {
+            setMobileShiftSection('vehicle');
+            throw new Error('Nejdřív potvrď vozidlo a počáteční km.');
+          }
           setMobileShiftSection('shift');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-go-vehicle')) {
+          setMobileShiftSection('vehicle');
           return;
         }
 
@@ -9514,6 +9556,26 @@
             throw new Error('Potvrď nesoulad km a doplň krátkou poznámku.');
           }
           setActionsStatus('Vozidlo a počáteční km jsou připravené. Pokračuj do Směny a tam den zahaj.', 'success');
+          setMobileShiftSection('shift');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-vehicle-edit-km')) {
+          mobileVehicleKmEditMode = !mobileVehicleKmEditMode;
+          renderMobileShiftUI();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-confirm-active-vehicle')) {
+          const vehicleId = mobileSwitchVehicleId || '';
+          if (!vehicleId) throw new Error('Nejdřív vyber vozidlo.');
+          if (!mobileSwitchVehicleStartKm) throw new Error('Potvrď nebo oprav stav km.');
+          button.disabled = true;
+          await switchVehicleDuringShift(vehicleId, mobileSwitchVehicleStartKm);
+          mobileVehicleKmEditMode = false;
+          await refreshPageData();
+          setActionsStatus('Vozidlo je potvrzené. Pokračuj na nakládku.', 'success');
+          setMobileShiftSection('vehicle');
           return;
         }
 
@@ -9523,6 +9585,10 @@
         }
 
         if (button.hasAttribute('data-mobile-end-shift')) {
+          if (needsMobileUnloadingStep()) {
+            setMobileShiftSection('shift');
+            throw new Error('Nejdřív proveď vykládku zboží nebo ji vědomě přeskoč.');
+          }
           endShiftBtn.click();
           return;
         }
@@ -9544,7 +9610,14 @@
         }
 
         if (button.hasAttribute('data-mobile-save-fuel')) {
+          mobileFuelFormVisible = true;
           saveFuelBtn.click();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-open-fuel')) {
+          mobileFuelFormVisible = !mobileFuelFormVisible;
+          renderMobileShiftUI();
           return;
         }
 
@@ -9615,6 +9688,12 @@
           return;
         }
 
+        if (button.hasAttribute('data-mobile-loading-skip')) {
+          setActionsStatus('Nakládka byla přeskočená. Můžeš pokračovat dál.', 'success');
+          setMobileShiftSection('shift');
+          return;
+        }
+
         if (button.hasAttribute('data-mobile-loading-mark')) {
           button.disabled = true;
           const nextPhase = button.dataset.mobileLoadingMark || '';
@@ -9628,6 +9707,15 @@
             'success'
           );
           setMobileShiftSection('vehicle');
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-unloading-skip')) {
+          if (currentLoadingSession?.id) {
+            await setCurrentLoadingSessionFlag('UNLOAD_SKIPPED', true);
+          }
+          setActionsStatus('Vykládka byla vědomě přeskočená. Směnu můžeš ukončit.', 'warning');
+          setMobileShiftSection('shift');
           return;
         }
 
@@ -9676,7 +9764,7 @@
           await acknowledgeInstruction(button.dataset.instructionId);
           setInstructionsStatus('Pokyn byl označený jako přečtený.', 'success');
           await refreshPageData();
-          setMobileShiftSection('home');
+          setMobileShiftSection(getRecommendedMobileShiftSection());
         }
       } catch (error) {
         console.error(error);
