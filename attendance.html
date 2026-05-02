@@ -7960,9 +7960,14 @@
 
     function getLoadingPickerCandidates(mode = 'load', selectedWarehouseId = '') {
       const selectedVehicleId = String(todayAttendance?.vehicle_id || startVehicleSelect.value || '');
-      const sourceProducts = mode === 'load'
+      let sourceProducts = mode === 'load'
         ? getWarehouseDrivenLoadingProducts(selectedWarehouseId)
         : getVehicleDrivenLoadingProducts(selectedVehicleId);
+      if (mode === 'load' && !sourceProducts.length) {
+        sourceProducts = bagettePilotProducts.length
+          ? [...bagettePilotProducts]
+          : [...loadingCatalogProducts];
+      }
       return sourceProducts.filter((item) => {
         const metrics = getLoadingSessionProductMetrics(item.product_id);
         if (mode === 'return' || mode === 'waste') {
@@ -7970,7 +7975,8 @@
           return vehicleQty > 0 || Number(metrics.onboard || 0) > 0;
         }
         const warehouseQty = Number(item?.warehouse_quantities?.[String(selectedWarehouseId || '')] || 0);
-        return warehouseQty > 0;
+        if (warehouseQty > 0) return true;
+        return !getWarehouseDrivenLoadingProducts(selectedWarehouseId).length;
       }).sort((a, b) => normalizeText(a.product_name || '').localeCompare(normalizeText(b.product_name || ''), 'cs'));
     }
 
@@ -8320,7 +8326,7 @@
               <span class="mobile-loading-metric-value">${escapeHtml(String(Number(onboardTotal).toFixed(0)))}</span>
             </div>
           </div>
-          ${hasWarehouseStock ? `<div class="mobile-loading-stats">${stockPreviewMarkup}</div>` : `<div class="helper-line">Na zvoleném skladu teď není nic naskladněné. Vyber jiný sklad nebo nejdřív potvrď příjem do skladu.</div>`}
+          ${hasWarehouseStock ? `<div class="mobile-loading-stats">${stockPreviewMarkup}</div>` : `<div class="helper-line">Skladový stav zatím není přesně evidovaný. Nakládku ale můžeš normálně zapsat výběrem položky a počtu kusů.</div>`}
           ${!shiftStarted ? `
             <div class="helper-line">Nejdřív spusť směnu. Jakmile běží směna s vozidlem, odemkne se session a tlačítko Naložit položku.</div>
             ${onboardRowsMarkup ? `<div class="mobile-loading-list">${onboardRowsMarkup}</div>` : ''}
@@ -8335,7 +8341,7 @@
               </div>
             </div>
             <div class="mobile-section-actions">
-              <button class="btn" type="button" data-mobile-loading-start>Zahájit nakládku</button>
+              <button class="btn" type="button" data-mobile-loading-begin="load">Zahájit nakládku</button>
             </div>
           ` : `
             <div class="mobile-section-actions">
@@ -9463,7 +9469,7 @@
           return;
         }
 
-        if (button.hasAttribute('data-mobile-loading-start')) {
+        if (button.hasAttribute('data-mobile-loading-begin')) {
           const warehouseId = document.getElementById('mobileSessionWarehouseSelect')?.value || String(getPreferredBagetteWarehouseId() || '');
           if (!warehouseId) {
             throw new Error('Vyber sklad pro dnešní nakládku.');
@@ -9473,6 +9479,8 @@
           await loadCurrentLoadingSession();
           setActionsStatus('Dnešní nakládka je zahájená.', 'success');
           setMobileShiftSection('vehicle');
+          renderMobileShiftUI();
+          openLoadingPicker(button.dataset.mobileLoadingBegin || 'load');
           return;
         }
 
@@ -9493,6 +9501,15 @@
         }
 
         if (button.hasAttribute('data-mobile-loading-open')) {
+          if (!currentLoadingSession?.id) {
+            const warehouseId = document.getElementById('mobileSessionWarehouseSelect')?.value || String(getPreferredBagetteWarehouseId() || '');
+            if (!warehouseId) {
+              throw new Error('Vyber sklad pro dnešní nakládku.');
+            }
+            await ensureCurrentLoadingSession(warehouseId);
+            await loadCurrentLoadingSession();
+            renderMobileShiftUI();
+          }
           openLoadingPicker(button.dataset.mobileLoadingOpen || 'load');
           return;
         }
@@ -9534,7 +9551,7 @@
         console.error(error);
         setActionsStatus(`Nepodařilo se dokončit akci: ${error.message}`, 'error');
         if (
-          button.hasAttribute('data-mobile-loading-start')
+          button.hasAttribute('data-mobile-loading-begin')
           || button.hasAttribute('data-mobile-loading-mark')
           || button.hasAttribute('data-mobile-loading-open')
           || button.hasAttribute('data-mobile-loading-action')
