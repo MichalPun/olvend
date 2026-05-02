@@ -3386,6 +3386,19 @@
       if (type) instructionsStatusLine.classList.add(type);
     }
 
+    function resetInstructionsState(message = 'Na dnešek zatím nejsou žádné aktivní pokyny.', type = 'success') {
+      todayInstructions = [];
+      instructionAcknowledgements = [];
+      blockingInstructionCount = 0;
+      if (instructionsPendingValue) instructionsPendingValue.textContent = '0';
+      if (instructionsBlockingValue) instructionsBlockingValue.textContent = '0';
+      if (mobileTileInstructionsValue) mobileTileInstructionsValue.textContent = '0';
+      if (mobileTileInstructionsNote) mobileTileInstructionsNote.textContent = 'Dnes hotovo';
+      if (instructionList) instructionList.innerHTML = '';
+      if (instructionEmpty) instructionEmpty.style.display = 'block';
+      setInstructionsStatus(message, type);
+    }
+
     async function flagStaleOpenShiftsForCurrentUser() {
       if (!currentUser?.id) return 0;
 
@@ -6242,28 +6255,8 @@
     }
 
     async function loadInstructions() {
-      let { data: instructions, error: instructionsError } = await supabase
-        .from('daily_instructions')
-        .select(`
-          id,
-          title,
-          message,
-          target_type,
-          target_employee_id,
-          target_role,
-          valid_from,
-          valid_to,
-          is_persistent,
-          priority,
-          requires_acknowledgement,
-          is_active,
-          attachment_url,
-          attachment_label
-        `)
-        .order('created_at', { ascending: false });
-
-      if (instructionsError && /attachment_url|attachment_label/i.test(String(instructionsError.message || ''))) {
-        const fallback = await supabase
+      try {
+        let { data: instructions, error: instructionsError } = await supabase
           .from('daily_instructions')
           .select(`
             id,
@@ -6277,31 +6270,79 @@
             is_persistent,
             priority,
             requires_acknowledgement,
-            is_active
+            is_active,
+            attachment_url,
+            attachment_label
           `)
           .order('created_at', { ascending: false });
-        instructions = fallback.data;
-        instructionsError = fallback.error;
-      }
 
-      if (instructionsError) throw instructionsError;
-      todayInstructions = instructions ?? [];
+        if (instructionsError && /attachment_url|attachment_label/i.test(String(instructionsError.message || ''))) {
+          const fallback = await supabase
+            .from('daily_instructions')
+            .select(`
+              id,
+              title,
+              message,
+              target_type,
+              target_employee_id,
+              target_role,
+              valid_from,
+              valid_to,
+              is_persistent,
+              priority,
+              requires_acknowledgement,
+              is_active
+            `)
+            .order('created_at', { ascending: false });
+          instructions = fallback.data;
+          instructionsError = fallback.error;
+        }
 
-      if (!todayInstructions.length) {
-        instructionAcknowledgements = [];
+        if (instructionsError) {
+          const errorText = String(instructionsError.message || '').toLowerCase();
+          if (errorText.includes('daily_instructions') || errorText.includes('permission') || errorText.includes('rls')) {
+            resetInstructionsState(`Pokyny dne se nepodařilo načíst: ${instructionsError.message}`, 'error');
+            renderMobileShiftUI();
+            renderAttendanceState();
+            return;
+          }
+          throw instructionsError;
+        }
+
+        todayInstructions = instructions ?? [];
+
+        if (!todayInstructions.length) {
+          resetInstructionsState('Na dnešek zatím nejsou žádné aktivní pokyny.', 'success');
+          renderMobileShiftUI();
+          renderAttendanceState();
+          return;
+        }
+
+        const { data: acknowledgements, error: ackError } = await supabase
+          .from('instruction_acknowledgements')
+          .select('id, instruction_id, employee_id, acknowledged_at')
+          .eq('employee_id', currentUser.id)
+          .in('instruction_id', todayInstructions.map((item) => item.id));
+
+        if (ackError) {
+          const ackText = String(ackError.message || '').toLowerCase();
+          if (ackText.includes('instruction_acknowledgements') || ackText.includes('permission') || ackText.includes('rls')) {
+            instructionAcknowledgements = [];
+            renderInstructions();
+            setInstructionsStatus(`Pokyny dne se načetly, ale potvrzení se nepodařilo dohledat: ${ackError.message}`, 'warning');
+            return;
+          }
+          throw ackError;
+        }
+
+        instructionAcknowledgements = acknowledgements ?? [];
         renderInstructions();
-        return;
+      } catch (error) {
+        console.error('loadInstructions failed', error);
+        resetInstructionsState(`Pokyny dne se nepodařilo načíst: ${error.message}`, 'error');
+        renderMobileShiftUI();
+        renderAttendanceState();
       }
-
-      const { data: acknowledgements, error: ackError } = await supabase
-        .from('instruction_acknowledgements')
-        .select('id, instruction_id, employee_id, acknowledged_at')
-        .eq('employee_id', currentUser.id)
-        .in('instruction_id', todayInstructions.map((item) => item.id));
-
-      if (ackError) throw ackError;
-      instructionAcknowledgements = acknowledgements ?? [];
-      renderInstructions();
     }
 
     async function loadAttendance() {
@@ -8935,14 +8976,7 @@
     }
 
     async function refreshPageData() {
-      const instructionSettled = await Promise.allSettled([
-        loadInstructions()
-      ]);
-
-      const instructionError = instructionSettled.find((result) => result.status === 'rejected');
-      if (instructionError?.status === 'rejected') {
-        setInstructionsStatus(`Pokyny dne se nepodařilo načíst: ${instructionError.reason?.message || instructionError.reason}`, 'error');
-      }
+      await loadInstructions();
 
       const settled = await Promise.allSettled([
         loadSupportData(),
@@ -8956,17 +8990,26 @@
         loadAssignedServiceRequests()
       ]);
 
-      const firstError = settled.find((result) => result.status === 'rejected');
+      settled
+        .filter((result) => result.status === 'rejected')
+        .forEach((result) => {
+          console.error('refreshPageData section failed', result.reason);
+        });
+
       restartLocationTrackingLoop();
       if (!todayAttendance?.actual_start && startVehicleSelect?.value) {
-        await loadVehicleStartSuggestion(startVehicleSelect.value, { force: !startOdometerTouched });
+        try {
+          await loadVehicleStartSuggestion(startVehicleSelect.value, { force: !startOdometerTouched });
+        } catch (error) {
+          console.error('loadVehicleStartSuggestion after refresh failed', error);
+        }
       }
 
-      if (firstError?.status === 'rejected') {
-        throw firstError.reason;
+      try {
+        await loadCurrentLoadingSession();
+      } catch (error) {
+        console.error('loadCurrentLoadingSession failed', error);
       }
-
-      await loadCurrentLoadingSession();
     }
 
     startLocationType.addEventListener('change', updateLocationVisibility);
