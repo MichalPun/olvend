@@ -2630,7 +2630,7 @@
             <div class="title">
               <div class="title-meta-row">
                 <div class="title-date" id="todayDateChip">Dnes</div>
-                <div class="title-version" id="mobileVersionChip">Verze 1.4</div>
+                <div class="title-version" id="mobileVersionChip">Verze 1.41</div>
               </div>
               <div class="title-greeting" id="greetingLine">Dobrý den</div>
               <h1>Moje směna</h1>
@@ -2922,8 +2922,15 @@
                       </div>
 
                       <div class="field full">
-                        <label for="fuelReceiptUrlInput">Odkaz na foto účtenky</label>
-                        <input id="fuelReceiptUrlInput" type="url" placeholder="Např. https://... nebo odkaz na nahranou fotku" disabled />
+                        <label>Foto účtenky</label>
+                        <div class="instruction-actions" style="margin-top:0;">
+                          <button class="btn secondary" id="fuelReceiptCameraBtn" type="button" disabled>Vyfotit účtenku</button>
+                          <button class="btn secondary" id="fuelReceiptGalleryBtn" type="button" disabled>Vybrat z galerie</button>
+                        </div>
+                        <input id="fuelReceiptCameraInput" type="file" accept="image/*" capture="environment" hidden />
+                        <input id="fuelReceiptGalleryInput" type="file" accept="image/*" hidden />
+                        <input id="fuelReceiptUrlInput" type="url" placeholder="Záložní ruční URL účtenky" disabled />
+                        <div class="helper-text" id="fuelReceiptStatusLine">Účtenku můžeš vyfotit nebo vybrat z galerie.</div>
                       </div>
 
                       <div class="field full">
@@ -2996,7 +3003,7 @@
             <div class="title">
               <div class="title-meta-row">
                 <div class="title-date">Můj profil</div>
-                <div class="title-version">Verze 1.4</div>
+                <div class="title-version">Verze 1.41</div>
               </div>
               <div class="title-greeting" id="profileGreetingLine">Osobní přehled</div>
               <h1>Můj profil</h1>
@@ -3365,7 +3372,12 @@
     const fuelLitersInput = document.getElementById('fuelLitersInput');
     const fuelCostInput = document.getElementById('fuelCostInput');
     const fuelOdometerKmInput = document.getElementById('fuelOdometerKmInput');
+    const fuelReceiptCameraBtn = document.getElementById('fuelReceiptCameraBtn');
+    const fuelReceiptGalleryBtn = document.getElementById('fuelReceiptGalleryBtn');
+    const fuelReceiptCameraInput = document.getElementById('fuelReceiptCameraInput');
+    const fuelReceiptGalleryInput = document.getElementById('fuelReceiptGalleryInput');
     const fuelReceiptUrlInput = document.getElementById('fuelReceiptUrlInput');
+    const fuelReceiptStatusLine = document.getElementById('fuelReceiptStatusLine');
     const fuelNoteInput = document.getElementById('fuelNoteInput');
     const saveFuelBtn = document.getElementById('saveFuelBtn');
     const activeDaySummary = document.getElementById('activeDaySummary');
@@ -3480,6 +3492,8 @@
     const FUEL_PRICE_PER_LITER_LPG_MIN = 8;
     const FUEL_PRICE_PER_LITER_LPG_MAX = 35;
     const BAGETTE_RETURN_REVIEW_LIMIT = 0.07;
+    const SHIFT_DOCUMENTS_BUCKET = 'shift-documents';
+    let fuelReceiptUploadInFlight = false;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -3504,6 +3518,73 @@
       if (instructionList) instructionList.innerHTML = '';
       if (instructionEmpty) instructionEmpty.style.display = 'block';
       setInstructionsStatus(message, type);
+    }
+
+    function buildShiftDocumentStoragePath(prefix, file) {
+      const safeName = String(file?.name || 'soubor')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'soubor';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      return `${prefix}/${timestamp}-${safeName}`;
+    }
+
+    function syncFuelReceiptStatus(message = '', type = '') {
+      if (!fuelReceiptStatusLine) return;
+
+      if (message) {
+        fuelReceiptStatusLine.textContent = message;
+        fuelReceiptStatusLine.className = 'helper-text';
+        if (type) fuelReceiptStatusLine.classList.add(type);
+        return;
+      }
+
+      const receiptUrl = String(fuelReceiptUrlInput?.value || '').trim();
+      fuelReceiptStatusLine.textContent = receiptUrl
+        ? 'Účtenka je nahraná a připravená k uložení tankování.'
+        : 'Účtenku můžeš vyfotit nebo vybrat z galerie.';
+      fuelReceiptStatusLine.className = `helper-text${receiptUrl ? ' success' : ''}`;
+    }
+
+    async function uploadFuelReceiptFile(file) {
+      if (!file) throw new Error('Nejdřív vyber fotku účtenky.');
+      if (!String(file.type || '').toLowerCase().startsWith('image/')) {
+        throw new Error('Nahrát jde jen obrázek účtenky.');
+      }
+
+      const path = buildShiftDocumentStoragePath('fuel-receipts', file);
+      fuelReceiptUploadInFlight = true;
+      syncFuelReceiptStatus(`Nahrávám ${file.name}...`);
+
+      const { error: uploadError } = await supabase.storage
+        .from(SHIFT_DOCUMENTS_BUCKET)
+        .upload(path, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type || 'image/jpeg'
+        });
+
+      if (uploadError) {
+        const message = String(uploadError.message || '');
+        if (/bucket/i.test(message) || /not found/i.test(message) || /row-level security/i.test(message)) {
+          throw new Error('Úložiště pro doklady ještě není připravené. Spusť database/shift_documents_storage_v141.sql.');
+        }
+        throw uploadError;
+      }
+
+      const { data: publicData } = supabase.storage
+        .from(SHIFT_DOCUMENTS_BUCKET)
+        .getPublicUrl(path);
+
+      if (!publicData?.publicUrl) {
+        throw new Error('Nepodařilo se získat veřejný odkaz na nahranou účtenku.');
+      }
+
+      if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = publicData.publicUrl;
+      syncFuelReceiptStatus(`Účtenka nahraná: ${file.name}`, 'success');
     }
 
     async function flagStaleOpenShiftsForCurrentUser() {
@@ -3824,6 +3905,10 @@
       return Boolean(selectedVehicleId && selectedKm != null);
     }
 
+    function requiresVehicleForShiftStart() {
+      return isOperatorRole();
+    }
+
     function needsMobileLoadingStep() {
       if (!todayAttendance?.actual_start || !hasConfirmedVehicleForMobileFlow()) return false;
       if (!currentLoadingSession?.id) return true;
@@ -3878,8 +3963,11 @@
     function getRecommendedMobileShiftSection() {
       if (todayAttendance?.actual_end) return 'shift';
       if (getBlockingInstructionCount() > 0) return 'instructions';
-      if (!hasConfirmedVehicleForMobileFlow()) return 'vehicle';
-      if (!todayAttendance?.actual_start) return 'shift';
+      if (!todayAttendance?.actual_start) {
+        if (requiresVehicleForShiftStart() && !hasConfirmedVehicleForMobileFlow()) return 'vehicle';
+        return 'shift';
+      }
+      if (todayAttendance?.vehicle_id && !hasConfirmedVehicleForMobileFlow()) return 'vehicle';
       if (needsMobileLoadingStep()) return 'vehicle';
       if (needsMobileUnloadingStep()) return 'shift';
       return 'shift';
@@ -3943,9 +4031,9 @@
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Krok 1</p>
             <h3 class="mobile-section-title">Pokyny hotové</h3>
-            <p class="mobile-section-text">Můžeš pokračovat na vozidlo a km.</p>
+            <p class="mobile-section-text">${escapeHtml(requiresVehicleForShiftStart() ? 'Můžeš pokračovat na vozidlo a km.' : 'Můžeš pokračovat na zahájení směny.')}</p>
             <div class="mobile-section-actions">
-              <button class="btn" type="button" data-mobile-go-vehicle>Pokračovat na vozidlo</button>
+              <button class="btn" type="button" data-mobile-go-${requiresVehicleForShiftStart() ? 'vehicle' : 'shift-start'}">Pokračovat</button>
             </div>
           </article>
         `;
@@ -3966,10 +4054,11 @@
           </div>
           <h3 class="mobile-section-title">${escapeHtml(instruction.title || 'Pokyn dne')}</h3>
           <p class="mobile-section-text">${escapeHtml(instruction.message || '')}</p>
+          <p class="mobile-section-text">${instruction.attachment_url ? 'Dokument je přiložený ke směně.' : 'Ke směně není přiložen žádný dokument.'}</p>
           <div class="mobile-section-actions">
             ${instruction.requires_acknowledgement && !isAcknowledged
               ? `<button class="btn" type="button" data-instruction-action="acknowledge" data-instruction-id="${instruction.id}">Potvrdit přečtení</button>`
-              : `<button class="btn" type="button" data-mobile-go-vehicle>Pokračovat</button>`}
+              : `<button class="btn" type="button" data-mobile-go-${requiresVehicleForShiftStart() ? 'vehicle' : 'shift-start'}">Pokračovat</button>`}
             ${buildInstructionAttachmentMarkup(instruction)}
           </div>
         </article>
@@ -4000,6 +4089,7 @@
       const fuelSummaryText = parseDecimalValue(fuelLitersInput?.value) != null && parseDecimalValue(fuelCostInput?.value) != null
         ? `Tankování uloženo · ${String(parseDecimalValue(fuelLitersInput.value)).replace('.', ',')} l · ${Math.round(parseDecimalValue(fuelCostInput.value))} Kč`
         : 'Tankování zatím není zapsané';
+      const vehicleIsRequired = requiresVehicleForShiftStart();
 
       if (!todayAttendance?.actual_start) {
         let reviewState = null;
@@ -4012,8 +4102,8 @@
         return `
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Krok 2</p>
-            <h3 class="mobile-section-title">Vyber vozidlo</h3>
-            <p class="mobile-section-text">Potvrď auto a počáteční km pro dnešní den.</p>
+            <h3 class="mobile-section-title">${escapeHtml(vehicleIsRequired ? 'Vyber vozidlo' : 'Vozidlo je volitelné')}</h3>
+            <p class="mobile-section-text">${escapeHtml(vehicleIsRequired ? 'Potvrď auto a počáteční km pro dnešní den.' : 'Pokud dnes jedeš autem, potvrď auto a počáteční km. Jinak můžeš směnu zahájit bez vozidla.')}</p>
           </article>
           <article class="mobile-section-card">
             <div class="form-grid" style="grid-template-columns:1fr;">
@@ -4051,13 +4141,62 @@
             </div>
             <div class="mobile-section-actions">
               <button class="btn" type="button" data-mobile-confirm-vehicle-setup>Potvrdit vozidlo a km</button>
-              <button class="btn secondary" type="button" data-mobile-go-shift-start ${hasConfirmedVehicleForMobileFlow() ? '' : 'disabled'}>Pokračovat na zahájení směny</button>
+              <button class="btn secondary" type="button" data-mobile-go-shift-start ${vehicleIsRequired && !hasConfirmedVehicleForMobileFlow() ? 'disabled' : ''}>${escapeHtml(vehicleIsRequired ? 'Pokračovat na zahájení směny' : 'Zahájit směnu bez vozidla')}</button>
             </div>
           </article>
         `;
       }
 
       if (!todayAttendance.vehicle_id) {
+        if (!vehicleIsRequired) {
+          return `
+            <article class="mobile-section-card primary">
+              <p class="mobile-section-label">Krok 3</p>
+              <h3 class="mobile-section-title">Směna běží bez vozidla</h3>
+              <p class="mobile-section-text">Auto pro dnešní den není potřeba. Kdykoliv můžeš dopsat tankování nebo poznámku.</p>
+            </article>
+            <article class="mobile-section-card">
+              <p class="mobile-section-label">Tankování</p>
+              <h3 class="mobile-section-title">Rychlé tankování</h3>
+              <p class="mobile-section-text">${escapeHtml(fuelSummaryText)}</p>
+              <div class="mobile-section-actions">
+                <button class="btn secondary" type="button" data-mobile-open-fuel>Otevřít tankování</button>
+              </div>
+            </article>
+            <article class="mobile-section-card" ${mobileFuelFormVisible ? '' : 'hidden'}>
+              <div class="form-grid" style="grid-template-columns:1fr;">
+                <div class="field full">
+                  <label for="mobileFuelLitersInput">Litry</label>
+                  <input id="mobileFuelLitersInput" type="number" min="0" step="0.1" value="${escapeHtml(fuelLitersInput.value || '')}" placeholder="Např. 24,5" />
+                </div>
+                <div class="field full">
+                  <label for="mobileFuelCostInput">Cena</label>
+                  <input id="mobileFuelCostInput" type="number" min="0" step="0.01" value="${escapeHtml(fuelCostInput.value || '')}" placeholder="Např. 980" />
+                </div>
+                <div class="field full">
+                  <label for="mobileFuelKmInput">Stav km</label>
+                  <input id="mobileFuelKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(fuelOdometerKmInput?.value || '')}" placeholder="Např. 152418" />
+                </div>
+                <div class="field full">
+                  <label>Foto účtenky</label>
+                  <div class="mobile-section-actions">
+                    <button class="btn secondary" type="button" data-mobile-fuel-camera>Vyfotit účtenku</button>
+                    <button class="btn secondary" type="button" data-mobile-fuel-gallery>Vybrat z galerie</button>
+                  </div>
+                  <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Záložní ruční URL účtenky" />
+                  <p class="mobile-section-text">${escapeHtml(fuelReceiptUrlInput?.value ? 'Účtenka je nahraná a připravená.' : 'Účtenku můžeš vyfotit nebo vybrat z galerie.')}</p>
+                </div>
+                <div class="field full">
+                  <label for="mobileFuelNoteInput">Poznámka</label>
+                  <textarea id="mobileFuelNoteInput" placeholder="Krátká poznámka.">${escapeHtml(fuelNoteInput.value || '')}</textarea>
+                </div>
+              </div>
+              <div class="mobile-section-actions">
+                <button class="btn" type="button" data-mobile-save-fuel>Uložit tankování</button>
+              </div>
+            </article>
+          `;
+        }
         return `
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Krok 3</p>
@@ -4130,8 +4269,13 @@
               <input id="mobileFuelKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(fuelOdometerKmInput?.value || '')}" placeholder="Např. 152418" />
             </div>
             <div class="field full">
-              <label for="mobileFuelReceiptUrlInput">Foto / odkaz na účtenku</label>
-              <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Např. https://..." />
+              <label>Foto účtenky</label>
+              <div class="mobile-section-actions">
+                <button class="btn secondary" type="button" data-mobile-fuel-camera>Vyfotit účtenku</button>
+                <button class="btn secondary" type="button" data-mobile-fuel-gallery>Vybrat z galerie</button>
+              </div>
+              <input id="mobileFuelReceiptUrlInput" type="url" value="${escapeHtml(fuelReceiptUrlInput?.value || '')}" placeholder="Záložní ruční URL účtenky" />
+              <p class="mobile-section-text">${escapeHtml(fuelReceiptUrlInput?.value ? 'Účtenka je nahraná a připravená.' : 'Účtenku můžeš vyfotit nebo vybrat z galerie.')}</p>
             </div>
             <div class="field full">
               <label for="mobileFuelNoteInput">Poznámka</label>
@@ -4172,15 +4316,18 @@
       `;
 
       if (!todayAttendance) {
+        const vehicleReadyForStart = !requiresVehicleForShiftStart() || hasConfirmedVehicleForMobileFlow();
         return `
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Krok 2</p>
             <h3 class="mobile-section-title">${escapeHtml(state.label)}</h3>
-            <p class="mobile-section-text">Pokud jsou pokyny hotové, můžeš směnu rovnou zahájit.</p>
+            <p class="mobile-section-text">${escapeHtml(requiresVehicleForShiftStart() ? 'Pokud jsou pokyny hotové, potvrď vozidlo a pak směnu zahaj.' : 'Pokud jsou pokyny hotové, můžeš směnu rovnou zahájit i bez vozidla.')}</p>
           </article>
           <article class="mobile-section-card">
             <div class="mobile-section-actions">
-              <button class="btn" type="button" data-mobile-start-shift>Zahájit směnu</button>
+              ${vehicleReadyForStart
+                ? `<button class="btn" type="button" data-mobile-start-shift>${escapeHtml(requiresVehicleForShiftStart() ? 'Zahájit směnu' : 'Zahájit směnu bez vozidla')}</button>`
+                : `<button class="btn" type="button" data-mobile-go-vehicle>Nejdřív vybrat vozidlo</button>`}
             </div>
           </article>
           ${routeSummaryMarkup}
@@ -4444,8 +4591,6 @@
         } else if (currentMobileShiftSection === 'instructions' && getBlockingInstructionCount() === 0) {
           currentMobileShiftSection = recommendedSection;
         } else if (currentMobileShiftSection === 'shift' && getBlockingInstructionCount() > 0 && !todayAttendance?.actual_start) {
-          currentMobileShiftSection = recommendedSection;
-        } else if (currentMobileShiftSection === 'vehicle' && !todayAttendance?.actual_start) {
           currentMobileShiftSection = recommendedSection;
         }
       }
@@ -5197,7 +5342,7 @@
 
     function buildInstructionAttachmentMarkup(instruction, buttonClass = 'btn secondary') {
       if (!instruction?.attachment_url) return '';
-      return `<a class="${escapeHtml(buttonClass)}" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít PDF')}</a>`;
+      return `<a class="${escapeHtml(buttonClass)}" href="${escapeHtml(instruction.attachment_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(instruction.attachment_label || 'Otevřít dokument')}</a>`;
     }
 
     function getFuelReviewState({ fuelLiters, fuelCost, fuelReceiptUrl, vehicleId }) {
@@ -5653,6 +5798,8 @@
       if (fuelLitersInput) fuelLitersInput.disabled = !enabled;
       if (fuelCostInput) fuelCostInput.disabled = !enabled;
       if (fuelOdometerKmInput) fuelOdometerKmInput.disabled = !enabled;
+      if (fuelReceiptCameraBtn) fuelReceiptCameraBtn.disabled = !enabled;
+      if (fuelReceiptGalleryBtn) fuelReceiptGalleryBtn.disabled = !enabled;
       if (fuelReceiptUrlInput) fuelReceiptUrlInput.disabled = !enabled;
       if (fuelNoteInput) fuelNoteInput.disabled = !enabled;
       if (saveFuelBtn) saveFuelBtn.disabled = !enabled;
@@ -5662,6 +5809,8 @@
       if (fuelLitersInput) fuelLitersInput.disabled = !enabled;
       if (fuelCostInput) fuelCostInput.disabled = !enabled;
       if (fuelOdometerKmInput) fuelOdometerKmInput.disabled = !enabled;
+      if (fuelReceiptCameraBtn) fuelReceiptCameraBtn.disabled = !enabled;
+      if (fuelReceiptGalleryBtn) fuelReceiptGalleryBtn.disabled = !enabled;
       if (fuelReceiptUrlInput) fuelReceiptUrlInput.disabled = !enabled;
       if (fuelNoteInput) fuelNoteInput.disabled = !enabled;
       if (saveFuelBtn) saveFuelBtn.disabled = !enabled;
@@ -5693,6 +5842,7 @@
       if (fuelCostInput) fuelCostInput.value = '';
       if (fuelOdometerKmInput) fuelOdometerKmInput.value = '';
       if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = '';
+      syncFuelReceiptStatus();
       if (fuelNoteInput) fuelNoteInput.value = '';
       if (vehicleLogCard) vehicleLogCard.classList.remove('review');
       if (startKmReviewConfirm) startKmReviewConfirm.checked = false;
@@ -5870,6 +6020,7 @@
       if (fuelCostInput && todayVehicleOperationLog?.fuel_cost != null) fuelCostInput.value = String(todayVehicleOperationLog.fuel_cost);
       if (fuelOdometerKmInput && todayVehicleOperationLog?.fuel_odometer_km != null) fuelOdometerKmInput.value = String(todayVehicleOperationLog.fuel_odometer_km);
       if (fuelReceiptUrlInput) fuelReceiptUrlInput.value = todayVehicleOperationLog?.fuel_receipt_url || '';
+      syncFuelReceiptStatus();
       if (fuelNoteInput && (todayVehicleOperationLog?.fuel_note || todayVehicleOperationLog?.trip_note)) {
         fuelNoteInput.value = [todayVehicleOperationLog.fuel_note, todayVehicleOperationLog.trip_note].filter(Boolean).join(' | ');
       }
@@ -6069,6 +6220,7 @@
               <span class="meta-chip">${escapeHtml(instruction.is_persistent ? 'Trvalý pokyn' : `Platí ${formatDate(instruction.valid_from)}`)}</span>
               <span class="meta-chip">${isAcknowledged ? 'Potvrzeno' : 'Nepřečtené'}</span>
             </div>
+            <div class="instruction-text">${instruction.attachment_url ? 'Dokument je přiložený ke směně.' : 'Ke směně není přiložen žádný dokument.'}</div>
             ${instruction.requires_acknowledgement && !isAcknowledged || instruction.attachment_url ? `
               <div class="instruction-actions">
                 ${instruction.requires_acknowledgement && !isAcknowledged ? `
@@ -7414,7 +7566,8 @@
       if (!todayAttendance) {
         const blockedByInstructions = getBlockingInstructionCount() > 0;
         const blockedByReview = showReview && !reviewState.isReady;
-        if (startShiftBtn) startShiftBtn.disabled = blockedByInstructions || blockedByReview;
+        const blockedByVehicle = requiresVehicleForShiftStart() && !hasConfirmedVehicleForMobileFlow();
+        if (startShiftBtn) startShiftBtn.disabled = blockedByInstructions || blockedByReview || blockedByVehicle;
       }
 
       if (shouldRenderMobile) {
@@ -7428,6 +7581,10 @@
 
       const selectedVehicleId = String(startVehicleSelect?.value || '').trim();
       const startKmValue = parseIntegerValue(startOdometerInput?.value);
+
+      if (requiresVehicleForShiftStart() && (!selectedVehicleId || startKmValue == null)) {
+        return 'vehicle';
+      }
 
       if (selectedVehicleId && startKmValue == null) {
         return 'vehicle';
@@ -7856,6 +8013,9 @@
     async function saveFuelProgress() {
       if (!todayAttendance?.id || !todayAttendance.vehicle_id) {
         throw new Error('Tankování lze uložit jen k dnešní směně s vozidlem.');
+      }
+      if (fuelReceiptUploadInFlight) {
+        throw new Error('Počkej, až se dokončí nahrání fotky účtenky.');
       }
       const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
 
@@ -9290,6 +9450,36 @@
       }
     });
 
+    fuelReceiptCameraBtn?.addEventListener('click', () => {
+      fuelReceiptCameraInput?.click();
+    });
+
+    fuelReceiptGalleryBtn?.addEventListener('click', () => {
+      fuelReceiptGalleryInput?.click();
+    });
+
+    async function handleFuelReceiptSelection(event) {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      const file = input.files?.[0];
+      if (!file) return;
+
+      try {
+        await uploadFuelReceiptFile(file);
+        if (isCompactMobileLayout()) renderMobileShiftUI();
+      } catch (error) {
+        console.error(error);
+        syncFuelReceiptStatus(`Nepodařilo se nahrát účtenku: ${error.message}`, 'error');
+        setActionsStatus(`Nepodařilo se nahrát účtenku: ${error.message}`, 'error');
+      } finally {
+        input.value = '';
+        fuelReceiptUploadInFlight = false;
+      }
+    }
+
+    fuelReceiptCameraInput?.addEventListener('change', handleFuelReceiptSelection);
+    fuelReceiptGalleryInput?.addEventListener('change', handleFuelReceiptSelection);
+
     returnBaseBtn.addEventListener('click', async () => {
       try {
         returnBaseBtn.disabled = true;
@@ -9570,6 +9760,8 @@
         || button.hasAttribute('data-mobile-switch-vehicle')
         || button.hasAttribute('data-mobile-correct-vehicle')
         || button.hasAttribute('data-mobile-capture-location')
+        || button.hasAttribute('data-mobile-fuel-camera')
+        || button.hasAttribute('data-mobile-fuel-gallery')
         || button.hasAttribute('data-mobile-loading-open')
         || button.hasAttribute('data-mobile-loading-dec')
         || button.hasAttribute('data-mobile-loading-inc')
@@ -9614,9 +9806,10 @@
           if (pendingRequiredNow.length > 0) {
             throw new Error(`Nejdřív potvrď ${pendingRequiredNow.length} povinných pokynů dne.`);
           }
-          if (!hasConfirmedVehicleForMobileFlow()) {
+          if (requiresVehicleForShiftStart() && !hasConfirmedVehicleForMobileFlow()) {
             setMobileShiftSection('vehicle');
-            throw new Error('Nejdřív potvrď vozidlo a počáteční km.');
+            const selectedVehicleId = String(mobilePrestartVehicleId || startVehicleSelect?.value || '').trim();
+            throw new Error(selectedVehicleId ? 'Nejdřív potvrď vozidlo a počáteční km.' : 'Nemáte přiřazené vozidlo. Kontaktujte vedoucího.');
           }
           if (startLocationType.value === 'warehouse' && !startWarehouseSelect.value) {
             const defaultWarehouseId = getPreferredBagetteWarehouseId() || warehousesDirectory[0]?.id || '';
@@ -9635,7 +9828,7 @@
         }
 
         if (button.hasAttribute('data-mobile-go-shift-start')) {
-          if (!todayAttendance?.actual_start && !hasConfirmedVehicleForMobileFlow()) {
+          if (!todayAttendance?.actual_start && requiresVehicleForShiftStart() && !hasConfirmedVehicleForMobileFlow()) {
             setMobileShiftSection('vehicle');
             throw new Error('Nejdřív potvrď vozidlo a počáteční km.');
           }
@@ -9722,6 +9915,16 @@
         if (button.hasAttribute('data-mobile-open-fuel')) {
           mobileFuelFormVisible = !mobileFuelFormVisible;
           renderMobileShiftUI();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-fuel-camera')) {
+          fuelReceiptCameraInput?.click();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-fuel-gallery')) {
+          fuelReceiptGalleryInput?.click();
           return;
         }
 
