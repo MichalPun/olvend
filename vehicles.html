@@ -2174,7 +2174,26 @@
       return fallbackPayload
     }
 
-    function buildFuelConsumptionSegments(vehicleLogs) {
+    function getConsumptionBoundsByFuelType(fuelType, vehicle = {}) {
+      const normalizedFuelType = String(fuelType || vehicle?.fuel_type || '').trim().toLowerCase()
+      const isVan = /kangoo|vivaro|trafic|transit|sprinter|jumper|boxer|ducato|master|doblo|berlingo|partner|caddy/i.test(
+        [vehicle?.name, vehicle?.brand, vehicle?.model].filter(Boolean).join(' ')
+      )
+
+      if (normalizedFuelType === 'lpg') {
+        return {
+          min: 5,
+          max: isVan ? 24 : 18
+        }
+      }
+
+      return {
+        min: 3,
+        max: isVan ? 35 : 20
+      }
+    }
+
+    function buildFuelConsumptionSegments(vehicleLogs, vehicle = {}) {
       const fuelLogs = [...(vehicleLogs || [])]
         .filter((log) => Number(log.fuel_liters) > 0 && Number.isFinite(Number(log.fuel_odometer_km)))
         .sort((a, b) => {
@@ -2184,7 +2203,9 @@
           return new Date(a.log_date || 0).getTime() - new Date(b.log_date || 0).getTime()
         })
 
+      const bounds = getConsumptionBoundsByFuelType(vehicle?.fuel_type, vehicle)
       const segments = []
+      const skippedSegments = []
       for (let index = 1; index < fuelLogs.length; index += 1) {
         const previous = fuelLogs[index - 1]
         const current = fuelLogs[index]
@@ -2193,20 +2214,67 @@
         const liters = Number(current.fuel_liters || 0)
         const distanceKm = currentKm - previousKm
 
-        if (distanceKm <= 0 || liters <= 0) continue
+        if (previousKm <= 0 || currentKm <= 0 || liters <= 0) {
+          skippedSegments.push({
+            fromLog: previous,
+            toLog: current,
+            distanceKm,
+            fuelLiters: liters,
+            reason: 'Chybí validní km nebo litry'
+          })
+          continue
+        }
+
+        if (distanceKm <= 0) {
+          skippedSegments.push({
+            fromLog: previous,
+            toLog: current,
+            distanceKm,
+            fuelLiters: liters,
+            reason: 'Km nerostou'
+          })
+          continue
+        }
+
+        if (distanceKm < 20) {
+          skippedSegments.push({
+            fromLog: previous,
+            toLog: current,
+            distanceKm,
+            fuelLiters: liters,
+            reason: 'Úsek je příliš krátký'
+          })
+          continue
+        }
+
+        const consumption = (liters / distanceKm) * 100
+        const suspicious = consumption < bounds.min || consumption > bounds.max
+        if (suspicious) {
+          skippedSegments.push({
+            fromLog: previous,
+            toLog: current,
+            distanceKm,
+            fuelLiters: liters,
+            consumption,
+            reason: `Podezřelá hodnota ${formatConsumption(consumption)} / 100 km`
+          })
+          continue
+        }
 
         segments.push({
           fromLog: previous,
           toLog: current,
           distanceKm,
           fuelLiters: liters,
-          consumption: (liters / distanceKm) * 100
+          consumption,
+          suspicious: false
         })
       }
 
       return {
         fuelLogs,
-        segments
+        segments,
+        skippedSegments
       }
     }
 
@@ -2223,7 +2291,7 @@
         return `
           <div class="detail-item">
             <div class="detail-item-title">Zatím bez dostatku dat</div>
-            <div class="detail-item-note">Graf spotřeby se ukáže po druhém tankování, kdy už půjde spočítat první úsek mezi tankováními.</div>
+            <div class="detail-item-note">Graf spotřeby se ukáže po druhém validním tankování. První tankování je jen startovní bod.</div>
           </div>
         `
       }
@@ -2236,7 +2304,7 @@
               const consumption = Number(segment.consumption || 0)
               const height = Math.max(8, Math.round((consumption / maxConsumption) * 100))
               const toneClass = toleratedLimit == null
-                ? ''
+                ? 'good'
                 : consumption > toleratedLimit
                   ? ''
                   : consumption > toleratedLimit - 0.4
@@ -2254,7 +2322,7 @@
               `
             }).join('')}
           </div>
-          <div class="detail-box-note">Každý sloupec je jeden úsek mezi dvěma tankováními. Přehled vozidla i report teď používají stejný vážený výpočet podle ujetých km.</div>
+          <div class="detail-box-note">Spotřeba je orientační a počítá se mezi dvěma tankováními. Přesná je pouze při tankování do plna.</div>
         </div>
       `
     }
@@ -2449,7 +2517,7 @@
               consumptionInsight.avgConsumption != null
                 ? (vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
                   ? `Cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}`
-                  : 'Spotřeba se počítá mezi dvěma tankováními.')
+                  : 'Spotřeba je orientační mezi dvěma tankováními.')
                 : (consumptionInsight.fuelEventCount >= 1
                   ? 'První tankování bereme jako bod 0. Spotřeba se dopočte až od dalšího tankování.'
                   : 'Zatím není nastavený limit spotřeby.')
@@ -2504,6 +2572,18 @@
 
         <section class="detail-section">
           <h4>Spotřeba v čase</h4>
+          <div class="detail-grid" style="margin-bottom:12px;">
+            <article class="detail-box">
+              <div class="detail-box-label">Validní úseky</div>
+              <div class="detail-box-value">${escapeHtml(String(consumptionInsight.segmentCount || 0))}</div>
+              <div class="detail-box-note">${escapeHtml(`Přeskočeno ${Number(consumptionInsight.skippedSegmentCount || 0)} úseků.`)}</div>
+            </article>
+            <article class="detail-box">
+              <div class="detail-box-label">Výpočet</div>
+              <div class="detail-box-value">${escapeHtml(`${Math.round(Number(consumptionInsight.totalDistance || 0))} km`)}</div>
+              <div class="detail-box-note">${escapeHtml(`${formatConsumption(consumptionInsight.totalFuel || 0)} l celkem · vážený průměr`)}</div>
+            </article>
+          </div>
           ${renderVehicleConsumptionBars(vehicle, consumptionInsight)}
           <div class="action-row" style="margin-top:12px;">
             <a class="btn secondary small" href="report-vehicles.html?vehicle=${vehicle.id}">Otevřít detail spotřeby v reportu</a>
@@ -2988,7 +3068,7 @@
         const vehicleLogs = logsByVehicle.get(key) || []
         const vehicleExpenses = expensesByVehicle.get(key) || []
         const reviewItems = []
-        const fuelTracking = buildFuelConsumptionSegments(vehicleLogs)
+        const fuelTracking = buildFuelConsumptionSegments(vehicleLogs, vehicle)
         const validConsumptionSegments = fuelTracking.segments
         const avgConsumption = getWeightedConsumptionFromSegments(validConsumptionSegments)
         const reviewLog = vehicleLogs.find((log) => String(log.status) === 'review' && log.attendance_day_id)
@@ -3026,6 +3106,13 @@
             label: 'Spotřeba nad limitem',
             title: vehicle.name || vehicle.plate || 'Vozidlo',
             note: `Průměr ${formatConsumption(avgConsumption)} / 100 km, limit ${formatConsumption(toleratedLimit)}. V posledních záznamech je auto ${overLimitLogs.length}x nad normou.`
+          })
+        }
+
+        if ((fuelTracking.skippedSegments || []).length) {
+          reviewItems.push({
+            short: `${fuelTracking.skippedSegments.length}x přeskočeno`,
+            full: `Některé úseky spotřeby jsme vynechali, protože mají krátký nebo neplatný km rozdíl, nebo vychází podezřele.`
           })
         }
 
@@ -3088,9 +3175,11 @@
           totalFuel: validConsumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0),
           fuelEventCount: fuelTracking.fuelLogs.length,
           segmentCount: validConsumptionSegments.length,
+          skippedSegmentCount: (fuelTracking.skippedSegments || []).length,
           overLimitCount: overLimitLogs.length,
           status: consumptionStatus,
-          segments: validConsumptionSegments
+          segments: validConsumptionSegments,
+          skippedSegments: fuelTracking.skippedSegments || []
         })
 
         vehicleExpenseMap.set(key, {
