@@ -5626,6 +5626,9 @@
       const diffKm = expectedKm != null && actualKm != null
         ? Math.abs(Number(actualKm) - Number(expectedKm))
         : null;
+      if (String(contextLabel).toLowerCase().includes('start')) {
+        return `Počáteční stav km se výrazně liší od posledního známého stavu: očekáváno ${expectedKm} km, zadáno ${actualKm} km${diffKm != null ? `, rozdíl ${diffKm} km` : ''}.`;
+      }
       return `${contextLabel} nesedí: očekáváno ${expectedKm} km, zadáno ${actualKm} km${diffKm != null ? `, rozdíl ${diffKm} km` : ''}.`;
     }
 
@@ -5635,12 +5638,12 @@
     }
 
     function getFuelReviewState({ fuelLiters, fuelCost, fuelReceiptUrl, vehicleId }) {
-      const hasFuelEntry = fuelLiters != null || fuelCost != null;
+      const hasFuelEntry = fuelLiters != null || fuelCost != null || Boolean(fuelReceiptUrl);
       if (!hasFuelEntry) {
         return { hasFuelEntry: false, requiresReview: false, reviewNote: null };
       }
 
-      const reasons = ['Tankování čeká na kontrolu účtenky.'];
+      const reasons = [];
       const vehicle = vehiclesDirectory.find((item) => String(item.id) === String(vehicleId));
 
       if (fuelLiters != null && fuelCost != null && fuelLiters > 0 && fuelCost > 0) {
@@ -5659,48 +5662,23 @@
       }
 
       if (!fuelReceiptUrl) {
-        reasons.push('Chybí odkaz na foto účtenky.');
+        reasons.push('Tankování nemá účtenku.');
       }
 
       return {
         hasFuelEntry: true,
-        requiresReview: true,
-        reviewNote: reasons.join(' ')
+        requiresReview: reasons.length > 0,
+        reviewNote: reasons.length ? reasons.join(' ') : null
       };
     }
 
     function getEndKmReviewState(vehicleId = todayAttendance?.vehicle_id) {
-      if (!vehicleId) {
-        return {
-          expectedEndKm: null,
-          actualEndKm: parseIntegerValue(endOdometerInput?.value),
-          requiresReview: false,
-          reviewSeverity: null,
-          reviewNote: null
-        };
-      }
-
-      const currentLog = getCurrentVehicleOperationLog(vehicleId);
-      const actualEndKm = parseIntegerValue(endOdometerInput?.value);
-      const fuelKm = parseIntegerValue(currentLog?.fuel_odometer_km ?? fuelOdometerKmInput?.value);
-      const previousEndKm = parseIntegerValue(currentLog?.end_odometer_km);
-      const vehicle = vehiclesDirectory.find((item) => String(item.id) === String(vehicleId));
-      const vehicleCardKm = parseIntegerValue(vehicle?.current_odometer_km);
-      const startKm = parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
-
-      const expectedEndKm = [previousEndKm, fuelKm, vehicleCardKm]
-        .filter((value) => value != null && (startKm == null || value >= startKm))
-        .sort((a, b) => b - a)[0] ?? null;
-
-      const reviewSeverity = getKmReviewSeverity(expectedEndKm, actualEndKm);
       return {
-        expectedEndKm,
-        actualEndKm,
-        requiresReview: Boolean(reviewSeverity),
-        reviewSeverity,
-        reviewNote: reviewSeverity
-          ? buildKmReviewNote(expectedEndKm, actualEndKm, previousEndKm != null ? 'Konečný stav km' : 'Průběžný stav km')
-          : null
+        expectedEndKm: null,
+        actualEndKm: parseIntegerValue(endOdometerInput?.value),
+        requiresReview: false,
+        reviewSeverity: null,
+        reviewNote: null
       };
     }
 
@@ -8095,14 +8073,17 @@
           throw new Error('K tankování doplň odkaz na foto účtenky.');
         }
       }
-      const isReview = currentLog?.status === 'review';
+      const hasExistingReview = currentLog?.status === 'review';
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
       const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
-      const endKmReview = getEndKmReviewState(todayAttendance.vehicle_id);
-      const needsEndKmReview = Boolean(endKmReview.requiresReview);
       const distanceReviewNote = needsDistanceReview
         ? `Denní nájezd ${distanceKm} km je nezvykle vysoký.`
         : null;
+      const reviewNotes = [
+        currentLog?.status === 'review' ? String(currentLog?.trip_note || '').trim() || 'Provozní log má status ke kontrole.' : null,
+        fuelReview.reviewNote,
+        distanceReviewNote
+      ].filter(Boolean);
 
       const payload = {
         vehicle_id: Number(todayAttendance.vehicle_id),
@@ -8117,14 +8098,8 @@
         fuel_cost: fuelCost,
         fuel_receipt_url: fuelReceiptUrl,
         fuel_note: operationNote,
-        trip_note: [
-          currentLog?.trip_note,
-          endKmReview.reviewNote,
-          fuelReview.reviewNote,
-          isReview ? 'Zkontrolovat rozdíl start km proti poslednímu stavu vozidla.' : null,
-          distanceReviewNote
-        ].filter(Boolean).join(' · ') || null,
-        status: isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'closed'
+        trip_note: reviewNotes.join(' · ') || null,
+        status: hasExistingReview || needsDistanceReview || fuelReview.requiresReview ? 'review' : 'closed'
       };
 
       if (currentLog?.id) {
@@ -8153,15 +8128,13 @@
         await markAttendanceForFuelReview(fuelReview.reviewNote);
       }
 
-      if (needsDistanceReview || needsEndKmReview) {
-        await markAttendanceForVehicleKmReview(
-          [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ')
-        );
+      if (needsDistanceReview) {
+        await markAttendanceForVehicleKmReview(distanceReviewNote);
       }
 
       return {
-        needsReview: Boolean(needsDistanceReview || needsEndKmReview),
-        reviewNote: [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ') || null
+        needsReview: Boolean(hasExistingReview || needsDistanceReview || fuelReview.requiresReview),
+        reviewNote: reviewNotes.join(' · ') || null
       };
     }
 
@@ -8203,15 +8176,18 @@
           throw new Error('K tankování doplň odkaz na foto účtenky.');
         }
       }
-      const isReview = currentLog?.status === 'review';
+      const hasExistingReview = currentLog?.status === 'review';
       const eventTime = new Date().toISOString();
       const distanceKm = startOdometerKm != null ? endOdometerKm - startOdometerKm : null;
       const needsDistanceReview = distanceKm != null && distanceKm > VEHICLE_DAILY_DISTANCE_REVIEW_THRESHOLD;
-      const endKmReview = getEndKmReviewState(todayAttendance.vehicle_id);
-      const needsEndKmReview = Boolean(endKmReview.requiresReview);
       const distanceReviewNote = needsDistanceReview
         ? `Aktuální nájezd ${distanceKm} km je nezvykle vysoký.`
         : null;
+      const reviewNotes = [
+        currentLog?.status === 'review' ? String(currentLog?.trip_note || '').trim() || 'Provozní log má status ke kontrole.' : null,
+        fuelReview.reviewNote,
+        distanceReviewNote
+      ].filter(Boolean);
 
       const payload = {
         vehicle_id: Number(todayAttendance.vehicle_id),
@@ -8227,10 +8203,10 @@
         fuel_odometer_km: fuelOdometerKm,
         fuel_receipt_url: fuelReceiptUrl,
         fuel_note: operationNote,
-        trip_note: [currentLog?.trip_note, endKmReview.reviewNote, fuelReview.reviewNote, distanceReviewNote].filter(Boolean).join(' · ') || null,
+        trip_note: reviewNotes.join(' · ') || null,
         status: closeCurrent
-          ? (isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'closed')
-          : (isReview || needsDistanceReview || needsEndKmReview || fuelReview.requiresReview ? 'review' : 'open')
+          ? (hasExistingReview || needsDistanceReview || fuelReview.requiresReview ? 'review' : 'closed')
+          : (hasExistingReview || needsDistanceReview || fuelReview.requiresReview ? 'review' : 'open')
       };
 
       if (currentLog?.id) {
@@ -8273,10 +8249,8 @@
 
       if (eventError) throw eventError;
 
-      if (needsDistanceReview || needsEndKmReview) {
-        await markAttendanceForVehicleKmReview(
-          [distanceReviewNote, endKmReview.reviewNote].filter(Boolean).join(' · ')
-        );
+      if (needsDistanceReview) {
+        await markAttendanceForVehicleKmReview(distanceReviewNote);
       }
     }
 
@@ -9692,14 +9666,15 @@
         ...todayAttendance,
         actual_end: endIso
       };
-      const payableStartIso = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+      const hasPendingHomeApproval = todayAttendance.start_location_type === 'home' && todayAttendance.approval_status === 'pending';
+      const payableStartIso = hasPendingHomeApproval
         ? todayAttendance.payable_start
         : getStandardPayableStartIso(nextDay);
-      const payableEndIso = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+      const payableEndIso = hasPendingHomeApproval
         ? todayAttendance.payable_end
         : getComputedPayableEndIso(nextDay);
       const effectiveBreakMinutes = getComputedBreakMinutesFromEvents(todayEvents, endIso);
-      const payableMinutes = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+      const payableMinutes = hasPendingHomeApproval
         ? Number(todayAttendance.payable_minutes || 0)
         : getComputedPayableMinutes({
             ...nextDay,
@@ -9707,13 +9682,13 @@
             adjustment_minutes: Number(todayAttendance.adjustment_minutes || 0)
           }, payableStartIso);
 
-      const nextStatus = todayAttendance.requires_approval && todayAttendance.approval_status === 'pending'
+      const nextStatus = hasPendingHomeApproval
         ? 'needs_review'
         : 'closed';
 
       const vehicleEndResult = await saveVehicleOperationEnd(endIso);
       const shouldRequireApproval = Boolean(
-        (todayAttendance.requires_approval && todayAttendance.approval_status === 'pending')
+        hasPendingHomeApproval
         || vehicleEndResult?.needsReview
       );
       const finalStatus = shouldRequireApproval ? 'needs_review' : nextStatus;
@@ -9727,7 +9702,7 @@
           payable_minutes: payableMinutes,
           break_minutes: effectiveBreakMinutes,
           requires_approval: shouldRequireApproval,
-          approval_status: shouldRequireApproval ? 'pending' : (todayAttendance.approval_status || 'not_required'),
+          approval_status: shouldRequireApproval ? 'pending' : null,
           status: finalStatus
         })
         .eq('id', todayAttendance.id);
@@ -9742,7 +9717,7 @@
         payable_minutes: payableMinutes,
         break_minutes: effectiveBreakMinutes,
         requires_approval: shouldRequireApproval,
-        approval_status: shouldRequireApproval ? 'pending' : (todayAttendance.approval_status || 'not_required'),
+        approval_status: shouldRequireApproval ? 'pending' : null,
         status: finalStatus
       };
 
