@@ -1484,7 +1484,7 @@
       <div class="sidebar-bottom">
         <div class="version-box">
           <div class="version-label">Aktuální verze</div>
-          <div class="version-value">OLVEND 1.4</div>
+          <div class="version-value">OLVEND 1.41</div>
         </div>
       </div>
     </aside>
@@ -1902,8 +1902,15 @@
             </div>
 
             <div class="field full">
-              <label for="fuel_receipt_url_modal">Odkaz na foto účtenky</label>
-              <input id="fuel_receipt_url_modal" name="fuel_receipt_url_modal" type="url" placeholder="Např. https://... nebo odkaz na nahranou fotku" />
+              <label>Foto účtenky</label>
+              <div class="action-row" style="margin-bottom:10px;">
+                <button class="btn secondary small" type="button" id="fuelReceiptCameraBtn">Vyfotit účtenku</button>
+                <button class="btn secondary small" type="button" id="fuelReceiptGalleryBtn">Vybrat z galerie</button>
+              </div>
+              <input id="fuelReceiptCameraInput" type="file" accept="image/*" capture="environment" hidden />
+              <input id="fuelReceiptGalleryInput" type="file" accept="image/*" hidden />
+              <input id="fuel_receipt_url_modal" name="fuel_receipt_url_modal" type="url" placeholder="Záložní ruční URL účtenky" />
+              <div id="fuelReceiptStatusLine" class="status-line">Účtenku můžeš vyfotit nebo vybrat z galerie.</div>
             </div>
 
             <div class="field full">
@@ -1986,6 +1993,12 @@
     const saveFuelLogBtn = document.getElementById('saveFuelLogBtn')
     const fuelVehicleSelect = document.getElementById('fuel_vehicle_id')
     const fuelDateInput = document.getElementById('fuel_date')
+    const fuelReceiptCameraBtn = document.getElementById('fuelReceiptCameraBtn')
+    const fuelReceiptGalleryBtn = document.getElementById('fuelReceiptGalleryBtn')
+    const fuelReceiptCameraInput = document.getElementById('fuelReceiptCameraInput')
+    const fuelReceiptGalleryInput = document.getElementById('fuelReceiptGalleryInput')
+    const fuelReceiptUrlModalInput = document.getElementById('fuel_receipt_url_modal')
+    const fuelReceiptStatusLine = document.getElementById('fuelReceiptStatusLine')
     const saveExpenseBtn = document.getElementById('saveExpenseBtn')
     const expenseVehicleSelect = document.getElementById('expense_vehicle_id')
     const expenseDateInput = document.getElementById('expense_date')
@@ -2010,11 +2023,79 @@
     let isEditMode = false
     let vehicleDetailFieldsAvailable = true
     let vehicleExpensesAvailable = true
+    const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
+    let fuelReceiptUploadInFlight = false
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
       statusLine.className = 'status-line'
       if (type) statusLine.classList.add(type)
+    }
+
+    function syncFuelReceiptStatus(message = '', type = '') {
+      if (!fuelReceiptStatusLine) return
+      if (message) {
+        fuelReceiptStatusLine.textContent = message
+        fuelReceiptStatusLine.className = 'status-line'
+        if (type) fuelReceiptStatusLine.classList.add(type)
+        return
+      }
+
+      const receiptUrl = String(fuelReceiptUrlModalInput?.value || '').trim()
+      fuelReceiptStatusLine.textContent = receiptUrl
+        ? 'Účtenka je nahraná a připravená k uložení.'
+        : 'Účtenku můžeš vyfotit nebo vybrat z galerie.'
+      fuelReceiptStatusLine.className = `status-line${receiptUrl ? ' success' : ''}`
+    }
+
+    function buildShiftDocumentStoragePath(prefix, file) {
+      const safeName = String(file?.name || 'soubor')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'soubor'
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      return `${prefix}/${timestamp}-${safeName}`
+    }
+
+    async function uploadFuelReceiptFile(file) {
+      if (!file) throw new Error('Nejdřív vyber fotku účtenky.')
+      if (!String(file.type || '').toLowerCase().startsWith('image/')) {
+        throw new Error('Nahrát jde jen obrázek účtenky.')
+      }
+
+      const path = buildShiftDocumentStoragePath('fuel-receipts', file)
+      fuelReceiptUploadInFlight = true
+      syncFuelReceiptStatus(`Nahrávám ${file.name}...`)
+
+      const { error: uploadError } = await supabase.storage
+        .from(SHIFT_DOCUMENTS_BUCKET)
+        .upload(path, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type || 'image/jpeg'
+        })
+
+      if (uploadError) {
+        const message = String(uploadError.message || '')
+        if (/bucket/i.test(message) || /not found/i.test(message) || /row-level security/i.test(message)) {
+          throw new Error('Úložiště pro účtenky ještě není připravené. Spusť database/shift_documents_storage_v141.sql.')
+        }
+        throw uploadError
+      }
+
+      const { data: publicData } = supabase.storage
+        .from(SHIFT_DOCUMENTS_BUCKET)
+        .getPublicUrl(path)
+
+      if (!publicData?.publicUrl) {
+        throw new Error('Nepodařilo se získat veřejný odkaz na nahranou účtenku.')
+      }
+
+      if (fuelReceiptUrlModalInput) fuelReceiptUrlModalInput.value = publicData.publicUrl
+      syncFuelReceiptStatus(`Účtenka nahraná: ${file.name}`, 'success')
     }
 
     function escapeHtml(value) {
@@ -2662,6 +2743,7 @@
     function openFuelModal(selectedVehicleId = '') {
       populateFuelVehicleOptions(selectedVehicleId)
       fuelDateInput.value = getTodayDateString()
+      syncFuelReceiptStatus()
       fuelModalBackdrop.classList.add('show')
     }
 
@@ -2670,6 +2752,8 @@
       fuelForm.reset()
       fuelDateInput.value = ''
       populateFuelVehicleOptions()
+      fuelReceiptUploadInFlight = false
+      syncFuelReceiptStatus()
     }
 
     function openVehicleDetailModal(vehicle) {
@@ -2804,7 +2888,7 @@
                   ? (
                     vehicle.target_consumption_l_100km != null || vehicle.tolerated_consumption_l_100km != null
                       ? `cíl ${formatConsumption(vehicle.target_consumption_l_100km)} · limit ${formatConsumption(vehicle.tolerated_consumption_l_100km)}`
-                      : 'Spotřeba se počítá mezi tankováními'
+                      : 'Spotřeba orientačně mezi tankováními'
                   )
                   : (consumptionInsight?.fuelEventCount >= 1
                     ? 'První tankování je bod 0'
@@ -3426,6 +3510,29 @@
       return Number.isFinite(parsed) ? parsed : null
     }
 
+    function getReasonableFuelPriceRangeByFuelType(fuelType) {
+      const normalized = String(fuelType || '').toLowerCase()
+      if (normalized === 'lpg') return { min: 8, max: 35 }
+      if (normalized === 'electric') return { min: 0, max: 0 }
+      return { min: 20, max: 60 }
+    }
+
+    function getLatestKnownVehicleKm(vehicleId, vehicleLogs = []) {
+      const logKm = [...vehicleLogs]
+        .map((log) => [
+          parseIntegerValue(log.end_odometer_km),
+          parseIntegerValue(log.fuel_odometer_km),
+          parseIntegerValue(log.start_odometer_km)
+        ])
+        .flat()
+        .filter((value) => value != null)
+        .sort((a, b) => b - a)[0] ?? null
+
+      const vehicle = vehiclesData.find((item) => String(item.id) === String(vehicleId))
+      const currentKm = parseIntegerValue(vehicle?.current_odometer_km)
+      return Math.max(logKm ?? 0, currentKm ?? 0) || null
+    }
+
     async function createFuelLogEntry(formData) {
       const vehicleId = Number(formData.get('fuel_vehicle_id'))
       const logDate = formData.get('fuel_date') || getTodayDateString()
@@ -3436,20 +3543,23 @@
       const fuelNote = formData.get('fuel_note_modal')?.trim() || null
 
       if (!vehicleId) throw new Error('Vyber vozidlo.')
-      if (fuelLiters == null && fuelCost == null && fuelOdometerKm == null && !fuelNote) {
-        throw new Error('Doplň alespoň litry, cenu, stav km nebo poznámku.')
+      if (fuelLiters == null || fuelLiters <= 0) {
+        throw new Error('Litry musí být větší než 0.')
       }
-      if ((fuelLiters != null || fuelCost != null) && fuelOdometerKm == null) {
+      if (fuelCost == null || fuelCost <= 0) {
+        throw new Error('Cena musí být větší než 0.')
+      }
+      if (fuelOdometerKm == null) {
         throw new Error('K tankování doplň i stav km v okamžiku tankování.')
       }
-      if ((fuelLiters != null || fuelCost != null) && (fuelLiters == null || fuelCost == null)) {
-        throw new Error('K tankování doplň litry i cenu z účtenky.')
+      if (!fuelReceiptUrl) {
+        throw new Error('K tankování nahraj nebo doplň foto účtenky.')
       }
-      if ((fuelLiters != null || fuelCost != null) && !fuelReceiptUrl) {
-        throw new Error('K tankování doplň odkaz na foto účtenky.')
+      if (fuelReceiptUploadInFlight) {
+        throw new Error('Počkej, až se účtenka úplně nahraje.')
       }
 
-      const [{ data: attendanceDay, error: attendanceError }, { data: existingLog, error: logError }] = await Promise.all([
+      const [{ data: attendanceDay, error: attendanceError }, { data: vehicleLogs, error: logError }] = await Promise.all([
         supabase
           .from('attendance_days')
           .select('id, employee_id, actual_start, actual_end, status')
@@ -3460,52 +3570,82 @@
           .maybeSingle(),
         supabase
           .from('vehicle_operation_logs')
-          .select('id, vehicle_id, employee_id, attendance_day_id, log_date, started_at, ended_at, start_odometer_km, end_odometer_km, status, trip_note')
+          .select('id, vehicle_id, employee_id, attendance_day_id, log_date, started_at, ended_at, start_odometer_km, end_odometer_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_receipt_url, status, trip_note')
           .eq('vehicle_id', vehicleId)
-          .eq('log_date', logDate)
-          .order('started_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
+          .lte('log_date', logDate)
+          .order('log_date', { ascending: false })
+          .order('fuel_odometer_km', { ascending: false, nullsFirst: false })
       ])
 
       if (attendanceError) throw attendanceError
       if (logError) throw logError
 
+      const vehicle = vehiclesData.find((item) => String(item.id) === String(vehicleId)) || null
+      const fuelType = vehicle?.fuel_type || ''
+      const pricePerLiter = fuelCost / fuelLiters
+      const priceRange = getReasonableFuelPriceRangeByFuelType(fuelType)
+
+      if (priceRange.max > 0 && (pricePerLiter < priceRange.min || pricePerLiter > priceRange.max)) {
+        throw new Error(`Cena za litr nevypadá správně (${pricePerLiter.toFixed(2).replace('.', ',')} Kč/l).`)
+      }
+
+      const latestKnownKm = getLatestKnownVehicleKm(vehicleId, vehicleLogs || [])
+      if (latestKnownKm != null && fuelOdometerKm < latestKnownKm) {
+        throw new Error(`Km při tankování nesmí být nižší než poslední známý stav ${latestKnownKm} km.`)
+      }
+
+      const historicalFuelLogs = [...(vehicleLogs || [])]
+        .filter((log) => Number(log.fuel_liters) > 0 && Number.isFinite(Number(log.fuel_odometer_km)))
+        .sort((a, b) => {
+          const aKm = Number(a.fuel_odometer_km || 0)
+          const bKm = Number(b.fuel_odometer_km || 0)
+          if (aKm !== bKm) return aKm - bKm
+          return new Date(`${a.log_date || '1970-01-01'}T00:00:00`).getTime() - new Date(`${b.log_date || '1970-01-01'}T00:00:00`).getTime()
+        })
+
+      const previousFuelLog = historicalFuelLogs
+        .filter((log) => Number(log.fuel_odometer_km || 0) < fuelOdometerKm)
+        .slice(-1)[0] || null
+
+      let requiresReview = false
+      const reviewReasons = []
+      if (previousFuelLog?.fuel_odometer_km != null) {
+        const distanceKm = fuelOdometerKm - Number(previousFuelLog.fuel_odometer_km || 0)
+        if (distanceKm >= 20) {
+          const segmentConsumption = (fuelLiters / distanceKm) * 100
+          const bounds = getConsumptionBoundsByFuelType(fuelType, vehicle)
+          if (segmentConsumption < bounds.min || segmentConsumption > bounds.max) {
+            requiresReview = true
+            reviewReasons.push(`Podezřelá orientační spotřeba ${formatConsumption(segmentConsumption)} / 100 km`)
+          }
+        }
+      }
+
       const payload = {
         vehicle_id: vehicleId,
-        employee_id: existingLog?.employee_id || attendanceDay?.employee_id || null,
-        attendance_day_id: existingLog?.attendance_day_id || attendanceDay?.id || null,
+        employee_id: attendanceDay?.employee_id || currentUser?.id || null,
+        attendance_day_id: attendanceDay?.id || null,
         log_date: logDate,
-        started_at: existingLog?.started_at || attendanceDay?.actual_start || null,
-        ended_at: existingLog?.ended_at || attendanceDay?.actual_end || null,
-        start_odometer_km: existingLog?.start_odometer_km ?? null,
-        end_odometer_km: existingLog?.end_odometer_km ?? null,
+        started_at: attendanceDay?.actual_start || new Date().toISOString(),
+        ended_at: attendanceDay?.actual_end || null,
+        start_odometer_km: null,
+        end_odometer_km: null,
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
         fuel_odometer_km: fuelOdometerKm,
         fuel_receipt_url: fuelReceiptUrl,
         fuel_note: fuelNote,
-        trip_note: [existingLog?.trip_note, fuelReceiptUrl ? 'Tankování čeká na kontrolu účtenky.' : null].filter(Boolean).join(' · ') || null,
-        status: (fuelLiters != null || fuelCost != null) ? 'review' : (existingLog?.status || (attendanceDay?.actual_end ? 'closed' : 'open'))
+        trip_note: reviewReasons.filter(Boolean).join(' · ') || null,
+        status: requiresReview ? 'review' : (attendanceDay?.actual_end ? 'closed' : 'open')
       }
 
-      if (existingLog?.id) {
-        const { error } = await supabase
-          .from('vehicle_operation_logs')
-          .update(payload)
-          .eq('id', existingLog.id)
+      const { error } = await supabase
+        .from('vehicle_operation_logs')
+        .insert([payload])
 
-        if (error) throw error
-      } else {
-        const { error } = await supabase
-          .from('vehicle_operation_logs')
-          .insert([payload])
-
-        if (error) throw error
-      }
+      if (error) throw error
 
       if (fuelOdometerKm != null) {
-        const vehicle = vehiclesData.find((item) => String(item.id) === String(vehicleId))
         if (!vehicle || vehicle.current_odometer_km == null || Number(vehicle.current_odometer_km) < fuelOdometerKm) {
           const { error: vehicleUpdateError } = await supabase
             .from('vehicles')
@@ -3524,6 +3664,8 @@
 
     openFuelModalBtn.addEventListener('click', () => {
       fuelForm.reset()
+      fuelReceiptUploadInFlight = false
+      syncFuelReceiptStatus()
       openFuelModal()
     })
 
@@ -3537,6 +3679,24 @@
     closeFuelModalBtn.addEventListener('click', closeFuelModal)
     closeExpenseModalBtn.addEventListener('click', closeExpenseModal)
     cancelFuelBtn.addEventListener('click', closeFuelModal)
+    fuelReceiptCameraBtn?.addEventListener('click', () => fuelReceiptCameraInput?.click())
+    fuelReceiptGalleryBtn?.addEventListener('click', () => fuelReceiptGalleryInput?.click())
+    fuelReceiptUrlModalInput?.addEventListener('input', () => syncFuelReceiptStatus())
+    const handleFuelReceiptSelection = async (event) => {
+      const file = event.target?.files?.[0]
+      if (!file) return
+      try {
+        await uploadFuelReceiptFile(file)
+      } catch (error) {
+        console.error(error)
+        syncFuelReceiptStatus(`Nahrání účtenky selhalo: ${error.message}`, 'error')
+      } finally {
+        event.target.value = ''
+        fuelReceiptUploadInFlight = false
+      }
+    }
+    fuelReceiptCameraInput?.addEventListener('change', handleFuelReceiptSelection)
+    fuelReceiptGalleryInput?.addEventListener('change', handleFuelReceiptSelection)
     cancelExpenseBtn.addEventListener('click', closeExpenseModal)
     closeVehicleDetailBtn.addEventListener('click', closeVehicleDetailModal)
     closeVehicleDetailFooterBtn.addEventListener('click', closeVehicleDetailModal)
