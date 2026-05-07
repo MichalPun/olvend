@@ -3556,6 +3556,7 @@
     let currentLoadingSessionItems = [];
     let currentPickListDraft = null;
     let currentPickListItems = [];
+    let recentLoadingRecommendations = new Map();
     let mobileLoadingQuantities = {};
     let mobileLoadingNotes = {};
     let mobileUnloadDraft = {};
@@ -4089,29 +4090,145 @@
       );
     }
 
-    function getPreparedLoadingRows() {
-      const warehouseId = String(getCurrentLoadingWarehouseId() || '');
-      if (currentPickListItems.length) {
-        return currentPickListItems.map((item) => {
-          const productId = Number(item.product_id);
-          const stockMeta = warehouseStockByProduct.get(String(productId));
-          const onWarehouse = Number(stockMeta?.byWarehouse?.[warehouseId] || stockMeta?.total || 0);
-          const plannedQty = Number(mobileLoadingQuantities[String(productId)] || getPickListItemRequestedQty(item) || 0);
-          return {
-            id: item.id,
-            product_id: productId,
-            product_name: item.product_name || 'Položka',
-            base_unit: item.base_unit || 'ks',
-            planned_qty: plannedQty,
-            source_qty: onWarehouse,
-            category_label: item.priority_label || item.reason_label || 'Pick list',
-            note: mobileLoadingNotes[String(productId)] || item.note || '',
-            confirmed: plannedQty > 0
-          };
-        });
+    function getCurrentLoadingVehicleId() {
+      return Number(
+        todayAttendance?.vehicle_id
+        || mobileSwitchVehicleId
+        || mobilePrestartVehicleId
+        || startVehicleSelect?.value
+        || 0
+      );
+    }
+
+    function getLoadingRecommendationStat(productId) {
+      return recentLoadingRecommendations.get(String(productId)) || null;
+    }
+
+    function getRecommendedLoadingQtyForProduct(candidate, draftItem = null) {
+      const productId = String(candidate?.product_id || draftItem?.product_id || '');
+      const warehouseKey = String(getCurrentLoadingWarehouseId() || '');
+      const warehouseQty = Number(
+        candidate?.warehouse_quantities?.[warehouseKey]
+        ?? warehouseStockByProduct.get(productId)?.byWarehouse?.[warehouseKey]
+        ?? candidate?.available_qty
+        ?? 0
+      );
+      const draftQty = Number(getPickListItemRequestedQty(draftItem));
+      const recommendationStat = getLoadingRecommendationStat(productId);
+
+      let suggestedQty = 0;
+      if (draftQty > 0) suggestedQty += draftQty * 0.6;
+      if (recommendationStat?.sameWeekdayAverage > 0) suggestedQty += recommendationStat.sameWeekdayAverage * 0.2;
+      if (recommendationStat?.sameVehicleAverage > 0) suggestedQty += recommendationStat.sameVehicleAverage * 0.15;
+      if (recommendationStat?.overallAverage > 0) suggestedQty += recommendationStat.overallAverage * 0.05;
+
+      const reductionRatio = Math.min(0.35, Number(recommendationStat?.lossRatio || 0));
+      suggestedQty = suggestedQty * (1 - reductionRatio);
+
+      if (suggestedQty <= 0 && warehouseQty > 0) {
+        suggestedQty = Math.min(
+          warehouseQty,
+          draftQty > 0
+            ? draftQty
+            : recommendationStat?.sameWeekdayAverage
+              || recommendationStat?.sameVehicleAverage
+              || recommendationStat?.overallAverage
+              || Math.min(warehouseQty, 6)
+        );
       }
 
-      return [];
+      if (warehouseQty > 0) {
+        suggestedQty = Math.min(warehouseQty, suggestedQty);
+      }
+
+      return Math.max(0, Math.round(Number(suggestedQty || 0)));
+    }
+
+    function getRecommendedLoadingDefaults() {
+      const warehouseKey = String(getCurrentLoadingWarehouseId() || '');
+      const draftMap = new Map(currentPickListItems.map((item) => [String(item.product_id), item]));
+      const candidateMap = new Map();
+
+      loadingCatalogProducts.forEach((item) => {
+        const warehouseQty = Number(item?.warehouse_quantities?.[warehouseKey] || 0);
+        if (warehouseQty > 0) {
+          candidateMap.set(String(item.product_id), {
+            ...item,
+            source_reason: 'Sklad'
+          });
+        }
+      });
+
+      currentPickListItems.forEach((item) => {
+        const key = String(item.product_id);
+        const productMeta = loadingCatalogProducts.find((row) => String(row.product_id) === key)
+          || bagettePilotProducts.find((row) => String(row.product_id) === key);
+        candidateMap.set(key, {
+          product_id: Number(item.product_id),
+          product_name: productMeta?.product_name || item.product_name || 'Položka',
+          supplier_name: productMeta?.supplier_name || 'Doporučeno',
+          base_unit: productMeta?.base_unit || item.base_unit || 'ks',
+          available_qty: Number(productMeta?.available_qty || 0),
+          warehouse_qty: Number(productMeta?.warehouse_qty || 0),
+          warehouse_quantities: productMeta?.warehouse_quantities || {},
+          source_reason: 'Návrh'
+        });
+      });
+
+      recentLoadingRecommendations.forEach((stat, productId) => {
+        const productMeta = loadingCatalogProducts.find((row) => String(row.product_id) === String(productId))
+          || bagettePilotProducts.find((row) => String(row.product_id) === String(productId));
+        if (!productMeta) return;
+        candidateMap.set(String(productId), {
+          ...productMeta,
+          source_reason: 'Historie'
+        });
+      });
+
+      const rows = Array.from(candidateMap.values()).map((candidate) => {
+        const key = String(candidate.product_id);
+        const draftItem = draftMap.get(key) || null;
+        const warehouseQty = Number(
+          candidate?.warehouse_quantities?.[warehouseKey]
+          ?? warehouseStockByProduct.get(key)?.byWarehouse?.[warehouseKey]
+          ?? candidate?.available_qty
+          ?? 0
+        );
+        const suggestedQty = getRecommendedLoadingQtyForProduct(candidate, draftItem);
+        const recommendationStat = getLoadingRecommendationStat(key);
+        const reasonParts = [];
+
+        if (draftItem && getPickListItemRequestedQty(draftItem) > 0) reasonParts.push('návrh');
+        if (recommendationStat?.sameWeekdayAverage > 0) reasonParts.push('stejný den');
+        if (recommendationStat?.sameVehicleAverage > 0) reasonParts.push('stejné auto');
+        if (!reasonParts.length) reasonParts.push(candidate.source_reason || 'sklad');
+
+        return {
+          id: draftItem?.id || `recommended-${key}`,
+          product_id: Number(candidate.product_id),
+          product_name: candidate.product_name || 'Položka',
+          base_unit: candidate.base_unit || 'ks',
+          planned_qty: Number(mobileLoadingQuantities[key] ?? suggestedQty),
+          source_qty: warehouseQty,
+          category_label: reasonParts.join(' · '),
+          note: mobileLoadingNotes[key] || draftItem?.note || '',
+          confirmed: Number(mobileLoadingQuantities[key] ?? suggestedQty) > 0,
+          is_recommended: true,
+          suggested_qty: suggestedQty
+        };
+      }).filter((row) => row.source_qty > 0 || row.planned_qty > 0);
+
+      rows.sort((a, b) => {
+        const qtyDiff = Number(b.planned_qty || 0) - Number(a.planned_qty || 0);
+        if (qtyDiff !== 0) return qtyDiff;
+        return normalizeText(a.product_name || '').localeCompare(normalizeText(b.product_name || ''), 'cs');
+      });
+
+      return rows.slice(0, 12);
+    }
+
+    function getPreparedLoadingRows() {
+      return getRecommendedLoadingDefaults();
     }
 
     function getPreparedLoadingSummary() {
@@ -8738,6 +8855,104 @@
       mobileLoadingNotes = nextNotes;
     }
 
+    async function loadRecentLoadingRecommendations() {
+      recentLoadingRecommendations = new Map();
+
+      const activeVehicleId = getCurrentLoadingVehicleId();
+      if (!currentUser?.id) return;
+
+      let sessionsQuery = supabase
+        .from('loading_sessions')
+        .select('id, employee_id, vehicle_id, session_date')
+        .order('session_date', { ascending: false })
+        .limit(24);
+
+      if (activeVehicleId) {
+        sessionsQuery = sessionsQuery.eq('vehicle_id', Number(activeVehicleId));
+      } else {
+        sessionsQuery = sessionsQuery.eq('employee_id', currentUser.id);
+      }
+
+      const { data: sessions, error: sessionsError } = await sessionsQuery;
+      if (sessionsError) {
+        const message = String(sessionsError.message || '');
+        if (/loading_sessions/i.test(message) && /does not exist|relation/i.test(message)) return;
+        throw sessionsError;
+      }
+
+      const filteredSessions = (sessions || []).filter((row) => String(row.session_date || '') !== String(todayAttendance?.attendance_date || ''));
+      if (!filteredSessions.length) return;
+
+      const sessionIds = filteredSessions.map((row) => Number(row.id)).filter(Boolean);
+      const sessionMap = new Map(filteredSessions.map((row) => [String(row.id), row]));
+      const weekday = new Date(`${getTodayDateString()}T12:00:00`).getDay();
+
+      const { data: items, error: itemsError } = await supabase
+        .from('loading_session_items')
+        .select('loading_session_id, product_id, loaded_quantity, returned_quantity, waste_quantity')
+        .in('loading_session_id', sessionIds);
+
+      if (itemsError) {
+        const message = String(itemsError.message || '');
+        if (/loading_session_items/i.test(message) && /does not exist|relation/i.test(message)) return;
+        throw itemsError;
+      }
+
+      const nextStats = new Map();
+      (items || []).forEach((item) => {
+        const session = sessionMap.get(String(item.loading_session_id));
+        if (!session) return;
+
+        const productId = String(item.product_id);
+        const loaded = Number(item.loaded_quantity || 0);
+        const returned = Number(item.returned_quantity || 0);
+        const waste = Number(item.waste_quantity || 0);
+        if (loaded <= 0) return;
+
+        const sessionWeekday = session.session_date
+          ? new Date(`${session.session_date}T12:00:00`).getDay()
+          : null;
+
+        const stat = nextStats.get(productId) || {
+          count: 0,
+          totalLoaded: 0,
+          totalReturned: 0,
+          totalWaste: 0,
+          sameVehicleCount: 0,
+          sameVehicleLoaded: 0,
+          sameWeekdayCount: 0,
+          sameWeekdayLoaded: 0
+        };
+
+        stat.count += 1;
+        stat.totalLoaded += loaded;
+        stat.totalReturned += returned;
+        stat.totalWaste += waste;
+
+        if (activeVehicleId && Number(session.vehicle_id || 0) === Number(activeVehicleId)) {
+          stat.sameVehicleCount += 1;
+          stat.sameVehicleLoaded += loaded;
+        }
+
+        if (sessionWeekday != null && sessionWeekday === weekday) {
+          stat.sameWeekdayCount += 1;
+          stat.sameWeekdayLoaded += loaded;
+        }
+
+        nextStats.set(productId, stat);
+      });
+
+      nextStats.forEach((stat, productId) => {
+        recentLoadingRecommendations.set(productId, {
+          overallAverage: stat.count ? stat.totalLoaded / stat.count : 0,
+          sameVehicleAverage: stat.sameVehicleCount ? stat.sameVehicleLoaded / stat.sameVehicleCount : 0,
+          sameWeekdayAverage: stat.sameWeekdayCount ? stat.sameWeekdayLoaded / stat.sameWeekdayCount : 0,
+          lossRatio: stat.totalLoaded > 0 ? (stat.totalReturned + stat.totalWaste) / stat.totalLoaded : 0,
+          sampleCount: stat.count
+        });
+      });
+    }
+
     async function loadCurrentLoadingSession() {
       if (!todayAttendance?.id || !todayAttendance?.vehicle_id) {
         currentLoadingSession = null;
@@ -8859,7 +9074,9 @@
       const hasVehicle = Boolean(todayAttendance?.vehicle_id || startVehicleSelect.value);
       const shiftStarted = Boolean(todayAttendance?.id);
       const selectedWarehouseId = String(getCurrentLoadingWarehouseId() || defaultWarehouseId || '');
-      if (!hasVehicle) {
+      const warehouseName = warehousesDirectory.find((item) => String(item.id) === String(selectedWarehouseId))?.name || 'Bez skladu';
+
+      if (!hasVehicle && requiresVehicleForShiftStart()) {
         return `
           <article class="mobile-section-card">
             <p class="mobile-section-label">Nakládka vozidla</p>
@@ -8874,16 +9091,23 @@
       const preparedSummary = getPreparedLoadingSummary();
       const loadingSummary = getLoadingSessionSummary();
       const bagetteReview = getBagetteReturnReviewState();
-      const canUsePickList = preparedRows.length > 0;
+      const hasRecommendations = preparedRows.length > 0;
       const hasWarehouseStock = warehouseProducts.length > 0;
       const sessionHasLoadedItems = loadingSummary.loadedItems > 0;
+      const confirmedRows = preparedRows.filter((row) => Number(row.planned_qty || 0) > 0);
+      const remainingRows = Math.max(0, preparedRows.length - confirmedRows.length);
 
-      if (!canUsePickList && !hasWarehouseStock && !sessionHasLoadedItems) {
+      if (!hasRecommendations && !hasWarehouseStock && !sessionHasLoadedItems) {
         return `
           <article class="mobile-section-card">
-            <p class="mobile-section-label">Nakládka vozidla</p>
-            <h3 class="mobile-section-title">Na skladu teď nic není</h3>
-            <p class="mobile-section-text">Až bude něco na skladu nebo připravený pick list, ukáže se to tady.</p>
+            <p class="mobile-section-label">Krok 4</p>
+            <h3 class="mobile-section-title">Bez doporučení</h3>
+            <p class="mobile-section-text">Na skladu teď nemáme nic vhodného k naložení.</p>
+            ${shiftStarted ? `
+              <div class="mobile-section-actions">
+                <button class="btn secondary" type="button" data-mobile-loading-open="load">Přidat další položku</button>
+              </div>
+            ` : ''}
           </article>
         `;
       }
@@ -8901,19 +9125,19 @@
                 : 'Nakládka běží';
 
       const preparedRowsMarkup = preparedRows.map((row) => {
-        const isAdjusted = Number(row.planned_qty || 0) !== Number(getPickListItemRequestedQty(currentPickListItems.find((item) => String(item.product_id) === String(row.product_id)) || {}));
+        const isAdjusted = Number(row.planned_qty || 0) !== Number(row.suggested_qty || 0);
         return `
           <article class="mobile-step-row">
             <div class="mobile-step-row-top">
               <div>
                 <h4 class="mobile-step-row-title">${escapeHtml(row.product_name)}</h4>
-                <p class="mobile-step-row-subtitle">${escapeHtml(row.category_label || 'Pick list')} · sklad ${escapeHtml(String(Number(row.source_qty || 0).toFixed(0)))} ${escapeHtml(row.base_unit || 'ks')}</p>
+                <p class="mobile-step-row-subtitle">${escapeHtml(row.category_label || 'Doporučeno')} · sklad ${escapeHtml(String(Number(row.source_qty || 0).toFixed(0)))} ${escapeHtml(row.base_unit || 'ks')}</p>
               </div>
-              <span class="badge ${row.confirmed ? 'green' : 'blue'}">${escapeHtml(row.confirmed ? 'Potvrzeno' : 'Chybí')}</span>
+              <span class="badge ${row.confirmed ? 'green' : 'orange'}">${escapeHtml(row.confirmed ? 'Potvrzeno' : 'Chybí')}</span>
             </div>
             <div class="mobile-step-row-controls">
               <input class="mobile-inline-input" type="number" min="0" step="1" value="${escapeHtml(String(Number(row.planned_qty || 0).toFixed(0)))}" data-mobile-loading-qty-input="${escapeHtml(String(row.product_id))}" />
-              <button class="btn secondary" type="button" data-mobile-loading-clear="${escapeHtml(String(row.product_id))}">${isAdjusted ? 'Reset' : 'Reset'}</button>
+              <button class="btn secondary" type="button" data-mobile-loading-clear="${escapeHtml(String(row.product_id))}">${isAdjusted ? 'Vrátit' : 'Vrátit'}</button>
             </div>
             <textarea class="mobile-note-input" rows="2" placeholder="Poznámka k odchylce" data-mobile-loading-note-input="${escapeHtml(String(row.product_id))}">${escapeHtml(row.note || '')}</textarea>
           </article>
@@ -8923,8 +9147,8 @@
       return `
         <article class="mobile-section-card">
           <p class="mobile-section-label">Krok 4</p>
-          <h3 class="mobile-section-title">Nakládka zboží</h3>
-          <p class="mobile-section-text">${shiftStarted ? 'Potvrď připravený seznam a naskladni vše najednou.' : 'Nakládka se odemkne po startu směny.'}</p>
+          <h3 class="mobile-section-title">Doporučená nakládka</h3>
+          <p class="mobile-section-text">${shiftStarted ? 'Uprav podle reality a potvrď vše jedním klikem.' : 'Po startu směny uvidíš doporučenou nakládku.'}</p>
           <div class="mobile-loading-summary">
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Stav</span>
@@ -8932,24 +9156,24 @@
             </div>
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Sklad</span>
-              <span class="mobile-loading-metric-value">${escapeHtml(warehousesDirectory.find((item) => String(item.id) === String(selectedWarehouseId))?.name || 'Bez skladu')}</span>
+              <span class="mobile-loading-metric-value">${escapeHtml(warehouseName)}</span>
             </div>
             <div class="mobile-loading-metric">
-              <span class="mobile-loading-metric-label">Položky</span>
-              <span class="mobile-loading-metric-value">${escapeHtml(String(canUsePickList ? preparedSummary.totalRows : loadingSummary.loadedItems))}</span>
+              <span class="mobile-loading-metric-label">Zbývá</span>
+              <span class="mobile-loading-metric-value">${escapeHtml(String(remainingRows))}</span>
             </div>
             <div class="mobile-loading-metric">
               <span class="mobile-loading-metric-label">Na vozidle</span>
               <span class="mobile-loading-metric-value">${escapeHtml(String(Number(loadingSummary.onboardUnits).toFixed(0)))}</span>
             </div>
           </div>
-          ${hasWarehouseStock ? `<div class="helper-line">Na skladu jsou dostupné položky pro dnešek.</div>` : `<div class="helper-line">Skladový stav ještě není úplný. Ruční doplnění je stále možné.</div>`}
+          ${hasWarehouseStock ? `<div class="helper-line">Navrženo podle skladu a historie.</div>` : `<div class="helper-line">Skladový stav ještě není úplný. Doporučení můžeš ručně upravit.</div>`}
           ${!shiftStarted ? `
             <div class="mobile-section-actions">
               <button class="btn secondary" type="button" disabled>Nejdřív zahájit směnu</button>
             </div>
           ` : `
-            ${!currentLoadingSession?.loading_completed_at && canUsePickList ? `
+            ${!currentLoadingSession?.loading_completed_at && hasRecommendations ? `
               <div class="mobile-summary-strip">
                 <span class="mobile-summary-chip">${escapeHtml(String(preparedSummary.confirmedRows))}/${escapeHtml(String(preparedSummary.totalRows))} potvrzeno</span>
                 <span class="mobile-summary-chip">${escapeHtml(String(Number(preparedSummary.totalUnits).toFixed(0)))} ks celkem</span>
@@ -8957,13 +9181,13 @@
               <div class="mobile-section-actions">
                 <button class="btn mobile-primary-action" type="button" data-mobile-loading-pick-all>Naskladnit vše</button>
                 <button class="btn secondary" type="button" data-mobile-loading-editor-toggle>Upravit položky</button>
-                <button class="btn secondary" type="button" data-mobile-loading-open="load">Přidat mimo seznam</button>
+                <button class="btn secondary" type="button" data-mobile-loading-open="load">Přidat další položku</button>
               </div>
               ${mobileLoadingEditorVisible ? `<div class="mobile-step-list">${preparedRowsMarkup}</div>` : ''}
             ` : `
               ${!currentLoadingSession?.loading_completed_at ? `
                 <div class="mobile-section-actions">
-                  <button class="btn mobile-primary-action" type="button" data-mobile-loading-open="load">Přidat položku</button>
+                  <button class="btn mobile-primary-action" type="button" data-mobile-loading-open="load">Přidat další položku</button>
                   <button class="btn secondary" type="button" data-mobile-loading-skip>Přeskočit</button>
                 </div>
               ` : ''}
@@ -8990,7 +9214,7 @@
     async function runMobileBulkLoadFromPreparedRows() {
       const rows = getPreparedLoadingRows().filter((row) => Number(row.planned_qty || 0) > 0);
       if (!rows.length) {
-        throw new Error('V pick listu není nic k naskladnění.');
+        throw new Error('V doporučené nakládce zatím není nic k naskladnění.');
       }
 
       const warehouseId = getCurrentLoadingWarehouseId();
@@ -9588,6 +9812,12 @@
         await loadCurrentPickListDraft();
       } catch (error) {
         console.error('loadCurrentPickListDraft failed', error);
+      }
+
+      try {
+        await loadRecentLoadingRecommendations();
+      } catch (error) {
+        console.error('loadRecentLoadingRecommendations failed', error);
       }
     }
 
@@ -10307,11 +10537,11 @@
 
         if (button.hasAttribute('data-mobile-loading-clear')) {
           const productId = button.dataset.mobileLoadingClear || '';
-          const sourceItem = currentPickListItems.find((item) => String(item.product_id) === String(productId));
-          setMobileLoadingQty(productId, getPickListItemRequestedQty(sourceItem));
+          const sourceRow = getPreparedLoadingRows().find((item) => String(item.product_id) === String(productId));
+          setMobileLoadingQty(productId, Number(sourceRow?.suggested_qty || 0));
           mobileLoadingNotes = {
             ...mobileLoadingNotes,
-            [String(productId)]: sourceItem?.note || ''
+            [String(productId)]: sourceRow?.note || ''
           };
           renderMobileShiftUI();
           return;
