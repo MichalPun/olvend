@@ -2,7 +2,7 @@
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
-  const APP_VERSION = "OLVEND 1.4";
+  const APP_VERSION = "OLVEND 1.41";
   const MIN_RELEASE_ANNOUNCEMENT = "1.4";
   const RELEASE_NOTES = {
     "1.4": {
