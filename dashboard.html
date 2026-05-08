@@ -2348,6 +2348,27 @@
       return `${hours} h ${restMinutes} min`;
     }
 
+    function toIsoDateString(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    }
+
+    function getCompletionDateValue(item) {
+      return item?.completed_at
+        || item?.service_finished_at
+        || item?.closed_at
+        || item?.updated_at
+        || "";
+    }
+
+    function isCompletedToday(item, today) {
+      const completionValue = getCompletionDateValue(item);
+      if (!completionValue) return false;
+      return toIsoDateString(completionValue) === String(today || getTodayDateString());
+    }
+
     function getManagerStatusLabel(day) {
       const statusMap = {
         open: "Otevřená směna",
@@ -2938,7 +2959,7 @@
           .order("actual_start", { ascending: true }),
         supabase
           .from("service_requests")
-          .select("id, title, description, status, priority, due_date, assigned_employee_id, location_id, machine_id, created_at, updated_at")
+          .select("id, title, description, status, priority, due_date, assigned_employee_id, location_id, machine_id, created_at, updated_at, completed_at, service_finished_at, closed_at")
           .order("due_date", { ascending: true }),
         supabase
           .from("vehicle_operation_logs")
@@ -3043,11 +3064,17 @@
       ) || String(day.status) === "needs_review");
       const activeVehicleIds = new Set(activeShifts.map((day) => day.vehicle_id).filter(Boolean));
       const openServices = serviceRequests.filter((item) => ["new", "assigned", "in_progress"].includes(String(item.status)));
-      const doneServices = serviceRequests.filter((item) => ["done", "cancelled"].includes(String(item.status)));
+      const doneServicesToday = serviceRequests.filter((item) => (
+        ["done", "cancelled"].includes(String(item.status)) && isCompletedToday(item, today)
+      ));
       const activeMachines = machines.filter((item) => item.active !== false);
       const alertMachines = activeMachines.filter((item) => ["service_needed", "offline"].includes(String(item.status)));
       const routePlansOpen = routePlans.filter((item) => ["assigned", "draft", "ready", "in_progress"].includes(String(item.execution_status || "draft")));
-      const routePlansDone = routePlans.filter((item) => ["done", "completed"].includes(String(item.execution_status || "")));
+      const routePlansDoneToday = routePlans.filter((item) => {
+        if (!["done", "completed"].includes(String(item.execution_status || ""))) return false;
+        if (item.completed_at) return toIsoDateString(item.completed_at) === today;
+        return String(item.planning_date || "") === today;
+      });
       const overdueServices = openServices.filter((item) => item.due_date && item.due_date < today);
       const unassignedServices = openServices.filter((item) => !item.assigned_employee_id);
       const criticalServices = openServices.filter((item) => String(item.priority) === "critical");
@@ -3219,7 +3246,7 @@
               ctaLabel: "Otevřít docházku"
             };
           }),
-        ...doneServices
+        ...doneServicesToday
           .slice(0, 3)
           .map((item) => {
             const location = locationMap.get(String(item.location_id));
@@ -3232,7 +3259,7 @@
               ctaLabel: "Otevřít servis"
             };
           }),
-        ...routePlansDone.slice(0, 2).map((plan) => ({
+        ...routePlansDoneToday.slice(0, 2).map((plan) => ({
           title: plan.title || "Trasa",
           subtitle: `Dokončeno · ${plan.stop_count || 0} zastávek`,
           badgeClass: "green",
