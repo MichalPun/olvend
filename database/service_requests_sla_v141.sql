@@ -1,0 +1,41 @@
+alter table public.service_requests
+  add column if not exists assigned_at timestamp with time zone;
+
+create or replace function public.set_service_requests_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+
+  if new.assigned_employee_id is not null and (old.assigned_employee_id is distinct from new.assigned_employee_id or new.assigned_at is null) then
+    new.assigned_at = coalesce(new.assigned_at, now());
+  end if;
+
+  if new.service_arrived_at is not null and new.service_started_at is null then
+    new.service_started_at = new.service_arrived_at;
+  end if;
+
+  if new.service_departed_at is not null and new.service_finished_at is null then
+    new.service_finished_at = new.service_departed_at;
+  end if;
+
+  if new.service_started_at is not null and new.service_finished_at is not null then
+    new.actual_duration_minutes = greatest(0, floor(extract(epoch from (new.service_finished_at - new.service_started_at)) / 60));
+  end if;
+
+  if new.status = 'done' and new.resolved_at is null then
+    new.resolved_at = now();
+  end if;
+
+  if new.status not in ('done') then
+    new.resolved_at = null;
+  end if;
+
+  if new.status = 'return_with_part' and new.last_service_result is null then
+    new.last_service_result = 'return_with_part';
+  end if;
+
+  return new;
+end;
+$$;

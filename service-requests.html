@@ -292,6 +292,10 @@
     .badge.done { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
     .badge.return_with_part { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
     .badge.cancelled { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
+    .badge.sla-good { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
+    .badge.sla-warn { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
+    .badge.sla-danger { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
+    .badge.sla-critical { color: #ffd7db; border-color: rgba(213,16,26,0.28); background: rgba(213,16,26,0.18); }
     .badge.qr {
       color: #ffd6db;
       border-color: rgba(213,16,26,0.28);
@@ -404,6 +408,13 @@
     .history-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
     .detail-action-stack { display: flex; gap: 10px; flex-wrap: wrap; }
     .detail-action-stack .btn { flex: 1 1 220px; }
+    .timeline-list { display: grid; gap: 10px; }
+    .timeline-item {
+      display: grid; gap: 4px; padding: 12px 14px; border-radius: 14px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+    }
+    .timeline-item strong { font-size: 14px; }
+    .timeline-item span { color: var(--muted); font-size: 13px; line-height: 1.45; }
     @media (max-width: 1180px) { .toolbar { grid-template-columns: 1fr 1fr; } .focus-strip { grid-template-columns: 1fr; } .focus-strip-meta { justify-items: start; } }
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
@@ -862,6 +873,78 @@
       return item ? item.label : 'Bez přiřazení'
     }
 
+    function getRequestEffectiveEnd(item) {
+      if (!item) return null
+      if (['done', 'cancelled'].includes(String(item.status || ''))) {
+        return item.service_finished_at || item.service_departed_at || item.updated_at || item.resolved_at || null
+      }
+      return new Date().toISOString()
+    }
+
+    function getHoursDiff(fromValue, toValue) {
+      if (!fromValue || !toValue) return null
+      const from = new Date(fromValue).getTime()
+      const to = new Date(toValue).getTime()
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return null
+      return (to - from) / 3600000
+    }
+
+    function formatHoursOrDays(hours) {
+      if (!Number.isFinite(hours) || hours == null) return '—'
+      if (hours < 24) return `${Math.max(1, Math.round(hours))} h`
+      const days = Math.max(1, Math.round(hours / 24))
+      return days === 1 ? '1 den' : `${days} dny`
+    }
+
+    function getSlaToneByHours(hours) {
+      if (!Number.isFinite(hours) || hours == null) return 'sla-good'
+      if (hours >= 24 * 7) return 'sla-critical'
+      if (hours >= 24 * 4) return 'sla-danger'
+      if (hours >= 24 * 2) return 'sla-warn'
+      return 'sla-good'
+    }
+
+    function getAgeBandLabel(hours, isClosed = false) {
+      if (!Number.isFinite(hours) || hours == null) {
+        return isClosed ? 'Vyřešeno —' : 'Otevřeno —'
+      }
+      const days = Math.floor(hours / 24)
+      if (days <= 0) return isClosed ? 'Vyřešeno dnes' : 'Nové dnes'
+      if (days >= 7) return isClosed ? 'Vyřešeno za 7+ dní' : 'Čeká 7+ dní'
+      if (days === 1) return isClosed ? 'Vyřešeno za 1 den' : 'Čeká 1 den'
+      return isClosed ? `Vyřešeno za ${days} dny` : `Čeká ${days} dny`
+    }
+
+    function getAssignedAtValue(item) {
+      if (!item?.assigned_employee_id) return null
+      return item.assigned_at || item.updated_at || null
+    }
+
+    function getRequestSlaMeta(item) {
+      const createdAt = item?.created_at || null
+      const effectiveEnd = getRequestEffectiveEnd(item)
+      const ageHours = getHoursDiff(createdAt, effectiveEnd)
+      const assignedHours = getHoursDiff(createdAt, getAssignedAtValue(item))
+      const arrivedHours = getHoursDiff(createdAt, item?.service_arrived_at || item?.service_started_at || null)
+      const resolvedHours = getHoursDiff(createdAt, item?.service_finished_at || item?.service_departed_at || item?.updated_at || null)
+      const isClosed = ['done', 'cancelled'].includes(String(item?.status || ''))
+      const isUrgentLate = !isClosed && ['high', 'critical'].includes(String(item?.priority || '')) && Number(ageHours || 0) > 24
+
+      return {
+        ageHours,
+        assignedHours,
+        arrivedHours,
+        resolvedHours,
+        isClosed,
+        isUrgentLate,
+        ageLabel: getAgeBandLabel(ageHours, isClosed),
+        ageTone: getSlaToneByHours(ageHours),
+        assignedLabel: assignedHours != null ? `Převzato za ${formatHoursOrDays(assignedHours)}` : 'Převzetí —',
+        arrivedLabel: arrivedHours != null ? `Na místě za ${formatHoursOrDays(arrivedHours)}` : 'Příjezd —',
+        resolvedLabel: resolvedHours != null ? `Vyřešeno za ${formatHoursOrDays(resolvedHours)}` : 'Vyřešení —'
+      }
+    }
+
     function getMachineHistoryItems(item) {
       if (!item?.machine_id) return []
       return requests
@@ -922,6 +1005,19 @@
       const onSiteCount = requests.filter((item) => item.status === 'on_site').length
       const overdueCount = requests.filter((item) => item.due_date && item.status !== 'done' && item.status !== 'cancelled' && item.due_date < new Date().toLocaleDateString('en-CA')).length
       const totalPlannedMinutes = requests.reduce((sum, item) => sum + Number(item.estimated_duration_minutes || 0), 0)
+      const openRequests = requests.filter((item) => !['done', 'cancelled'].includes(String(item.status || '')))
+      const resolvedRequests = requests.filter((item) => ['done', 'cancelled'].includes(String(item.status || '')))
+      const openThreePlus = openRequests.filter((item) => Number(getRequestSlaMeta(item).ageHours || 0) >= 72).length
+      const openSevenPlus = openRequests.filter((item) => Number(getRequestSlaMeta(item).ageHours || 0) >= 168).length
+      const oldestOpen = openRequests
+        .map((item) => ({ item, meta: getRequestSlaMeta(item) }))
+        .sort((a, b) => Number(b.meta.ageHours || 0) - Number(a.meta.ageHours || 0))[0] || null
+      const avgResolutionHours = resolvedRequests
+        .map((item) => getRequestSlaMeta(item).resolvedHours)
+        .filter((value) => Number.isFinite(value))
+      const avgResolution = avgResolutionHours.length
+        ? formatHoursOrDays(avgResolutionHours.reduce((sum, value) => sum + Number(value), 0) / avgResolutionHours.length)
+        : '—'
 
       summaryGrid.innerHTML = [
         { label: 'Nové', value: newCount, note: 'Požadavky, které ještě čekají na první zpracování.' },
@@ -930,7 +1026,11 @@
         { label: 'Na místě', value: onSiteCount, note: 'Technik už je na místě a zásah běží.' },
         { label: 'V řešení', value: progressCount, note: 'Přiřazený člověk už má požadavek rozpracovaný.' },
         { label: 'Po termínu', value: overdueCount, note: 'Otevřené požadavky po plánovaném termínu.' },
-        { label: 'Plánovaný čas', value: formatDurationMinutes(totalPlannedMinutes), note: 'Součet plánovaného času napříč otevřenými i hotovými požadavky.' }
+        { label: 'Plánovaný čas', value: formatDurationMinutes(totalPlannedMinutes), note: 'Součet plánovaného času napříč otevřenými i hotovými požadavky.' },
+        { label: 'Průměrné vyřešení', value: avgResolution, note: 'Průměrná doba od založení požadavku do jeho uzavření.' },
+        { label: 'Otevřené 3+ dny', value: String(openThreePlus), note: 'Požadavky, které visí déle než tři dny.' },
+        { label: 'Otevřené 7+ dní', value: String(openSevenPlus), note: 'Nejstarší a kriticky otevřené zásahy.' },
+        { label: 'Nejstarší otevřený', value: oldestOpen ? getAgeBandLabel(oldestOpen.meta.ageHours, false).replace('Čeká ', '') : '—', note: oldestOpen ? oldestOpen.item.title || 'Servisní požadavek' : 'Momentálně nic nevisí.' }
       ].map((card) => `
         <article class="summary-box">
           <div class="summary-box-label">${escapeHtml(card.label)}</div>
@@ -951,11 +1051,16 @@
       items.forEach((item) => {
         const isQrReported = isQrReportedRequest(item)
         const qrContact = getQrContactLine(item)
+        const sla = getRequestSlaMeta(item)
         const tr = document.createElement('tr')
         tr.innerHTML = `
           <td data-label="Požadavek">
             <strong>${escapeHtml(item.title)}</strong>
             <span class="subtext">${escapeHtml(item.description || 'Bez doplňujícího popisu')}</span>
+            <div class="request-origin">
+              <span class="badge ${escapeHtml(sla.ageTone)}">${escapeHtml(sla.ageLabel)}</span>
+              ${sla.isUrgentLate ? '<span class="badge sla-danger">Urgentní 24+ h</span>' : ''}
+            </div>
             ${isQrReported ? `
               <div class="request-origin">
                 <span class="badge qr">Nahlášeno přes QR</span>
@@ -977,8 +1082,9 @@
             <span class="badge ${escapeHtml(item.status || 'new')}">${escapeHtml(getStatusLabel(item.status))}</span>
           </td>
           <td data-label="Čas">
-            <strong>Plán ${escapeHtml(formatDurationMinutes(item.estimated_duration_minutes))}</strong>
-            <span class="subtext">Skutečně ${escapeHtml(formatDurationMinutes(item.actual_duration_minutes))}</span>
+            <strong>${escapeHtml(sla.assignedLabel)}</strong>
+            <span class="subtext">${escapeHtml(sla.arrivedLabel)}</span>
+            <span class="subtext">${escapeHtml(sla.resolvedLabel)}</span>
           </td>
           <td data-label="Termín">
             <strong>${escapeHtml(formatDate(item.due_date))}</strong>
@@ -1130,6 +1236,7 @@
     function renderDetail(item) {
       const historyItems = getMachineHistoryItems(item)
       const showRepeatWarning = hasRepeatedMachineIssue(item)
+      const sla = getRequestSlaMeta(item)
       activeDetailRequestId = item.id
       detailTitle.textContent = item.title || 'Detail zásahu'
       detailBody.innerHTML = `
@@ -1151,9 +1258,21 @@
               <div class="detail-meta-card"><label>Příjezd / odjezd</label><strong>${escapeHtml(formatDateTime(item.service_arrived_at || item.service_started_at))} → ${escapeHtml(formatDateTime(item.service_departed_at || item.service_finished_at))}</strong></div>
             </div>
             ${showRepeatWarning ? '<div class="detail-warning">Pozor, podobná závada se u tohoto automatu řešila nedávno.</div>' : ''}
+            ${sla.isUrgentLate ? '<div class="detail-warning">Pozor: urgentní servis čeká déle než 24 hodin.</div>' : ''}
             <div class="detail-action-stack">
               <button type="button" class="btn secondary" data-detail-inline-edit>Zapsat zásah</button>
               ${item.status !== 'done' ? '<button type="button" class="btn" data-detail-inline-done>Ukončit zásah</button>' : ''}
+            </div>
+          </section>
+          <section class="detail-section">
+            <h5>Časová osa zásahu</h5>
+            <p>Rychle vidíš, jak dlouho servis čekal, kdy byl převzat a kdy se opravdu dokončil.</p>
+            <div class="timeline-list">
+              <article class="timeline-item"><strong>Založeno</strong><span>${escapeHtml(formatDateTime(item.created_at))}</span></article>
+              <article class="timeline-item"><strong>Přiřazeno</strong><span>${escapeHtml(item.assigned_employee_id ? `${formatDateTime(item.assigned_at || item.updated_at)} · ${sla.assignedLabel}` : 'Zatím bez přiřazení')}</span></article>
+              <article class="timeline-item"><strong>Technik na místě</strong><span>${escapeHtml(item.service_arrived_at || item.service_started_at ? `${formatDateTime(item.service_arrived_at || item.service_started_at)} · ${sla.arrivedLabel}` : 'Zatím bez příjezdu')}</span></article>
+              <article class="timeline-item"><strong>Zahájeno</strong><span>${escapeHtml(item.service_started_at ? formatDateTime(item.service_started_at) : 'Zatím nezačalo')}</span></article>
+              <article class="timeline-item"><strong>Dokončeno</strong><span>${escapeHtml(item.service_finished_at || item.service_departed_at ? `${formatDateTime(item.service_finished_at || item.service_departed_at)} · ${sla.resolvedLabel}` : 'Zatím nedokončeno')}</span></article>
             </div>
           </section>
           <section class="detail-section">
@@ -1216,6 +1335,12 @@
 
     function getPayload() {
       const estimatedMinutesRaw = document.getElementById('estimatedDurationMinutes').value
+      const currentItem = requestId.value
+        ? requests.find((item) => String(item.id) === String(requestId.value))
+        : null
+      const nextAssignedEmployeeId = assignedEmployeeId.value || null
+      const assignmentWasMissing = !currentItem?.assigned_employee_id
+      const assignmentJustAdded = Boolean(nextAssignedEmployeeId && assignmentWasMissing)
       return {
         location_id: locationId.value ? Number(locationId.value) : null,
         machine_id: machineId.value ? Number(machineId.value) : null,
@@ -1227,7 +1352,8 @@
         estimated_duration_minutes: estimatedMinutesRaw ? Number(estimatedMinutesRaw) : null,
         service_arrived_at: toIsoOrNull(document.getElementById('serviceArrivedAt').value),
         service_departed_at: toIsoOrNull(document.getElementById('serviceDepartedAt').value),
-        assigned_employee_id: assignedEmployeeId.value || null,
+        assigned_employee_id: nextAssignedEmployeeId,
+        assigned_at: assignmentJustAdded ? new Date().toISOString() : (currentItem?.assigned_at || null),
         resolution_note: document.getElementById('resolutionNote').value.trim() || null,
         service_result: document.getElementById('serviceResult').value || null,
         last_service_result: document.getElementById('serviceResult').value || null,
@@ -1248,6 +1374,7 @@
         status: payload.status,
         due_date: payload.due_date,
         assigned_employee_id: payload.assigned_employee_id,
+        assigned_at: payload.assigned_at ?? null,
         resolution_note: payload.resolution_note,
         last_service_result: payload.last_service_result ?? null
       }
@@ -1336,6 +1463,7 @@
         'service_arrived_at',
         'service_departed_at',
         'machine_id',
+        'assigned_at',
         'last_service_result',
         'created_by',
         'service_result',
@@ -1356,6 +1484,7 @@
         'service_arrived_at',
         'service_departed_at',
         'machine_id',
+        'assigned_at',
         'last_service_result',
         'created_by',
         'service_result',
@@ -1470,6 +1599,7 @@
         || message.includes('actual_duration_minutes')
         || message.includes('service_arrived_at')
         || message.includes('service_departed_at')
+        || message.includes('assigned_at')
         || message.includes('service_result')
         || message.includes('work_performed')
         || message.includes('used_parts')
