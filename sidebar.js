@@ -3,17 +3,17 @@
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
   const APP_VERSION = "OLVEND 1.41";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.4";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.41";
   const RELEASE_NOTES = {
-    "1.4": {
-      title: "Nová verze 1.4",
-      subtitle: "Aplikace je přehlednější, mobilní práce jednodušší a hlavní provozní toky jsou blíž reálné každodenní práci.",
+    "1.41": {
+      title: "Nová verze 1.41",
+      subtitle: "Aplikace je stabilnější, přehlednější a hlavní provozní toky jsou blíž reálné každodenní práci v terénu i v kanceláři.",
       items: [
-        "Nástěnka a další hlavní moduly dostaly čistší manažerský vzhled a lepší čitelnost ve světlém i tmavém režimu.",
-        "Moje směna na mobilu se mění na jednodušší pracovní průvodce se zaměřením na pokyny, vozidlo, směnu a provozní kroky.",
-        "HR se změnilo na přehlednější cockpit a přibylo centrální Schvalování pro požadavky napříč aplikací.",
-        "Přibyly nové základy pro nakládku a vykládku vozidel, kontrolu toho, co je právě na autech, a další skladové návaznosti.",
-        "Tankování, km a další provozní záznamy jsou lépe kontrolované a připravené pro reálný každodenní provoz."
+        "Nástěnka, HR, Trasy a další hlavní moduly jsou jednodušší, kompaktnější a lépe čitelné ve světlém i tmavém režimu.",
+        "Moje směna na mobilu je víc appková a drží jasnější pracovní tok pro pokyny, vozidlo, směnu, nakládku a ukončení dne.",
+        "Nakládka a vykládka vozidel jsou jednodušší pro operátora a přehlednější pro manažera v inventáři a kontrole vozidel.",
+        "Servis teď lépe ukazuje detail zásahu, historii stejného stroje, stáří požadavku i upozornění na dlouho otevřené úkoly.",
+        "Trasy, tankování, vozidla a schvalování jsou stabilnější a lépe připravené pro běžný každodenní provoz."
       ]
     }
   };
