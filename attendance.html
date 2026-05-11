@@ -3655,6 +3655,8 @@
     const serviceInlineBadge = document.getElementById('serviceInlineBadge');
     const mobileBottomNavInner = document.getElementById('mobileBottomNavInner');
     const mobileNavShell = document.getElementById('mobileNavShell');
+    let mobileShiftBlockingMessage = '';
+    let mobileShiftBlockingType = '';
     const profileEmploymentTypeValue = document.getElementById('profileEmploymentTypeValue');
     const profileEmploymentTypeNote = document.getElementById('profileEmploymentTypeNote');
     const profileContractedHoursValue = document.getElementById('profileContractedHoursValue');
@@ -3911,6 +3913,29 @@
       line.textContent = message;
       line.className = 'status-line finish-status-line';
       if (type) line.classList.add(type);
+    }
+
+    function setMobileShiftBlockingMessage(message = '', type = '') {
+      mobileShiftBlockingMessage = String(message || '').trim();
+      mobileShiftBlockingType = mobileShiftBlockingMessage ? String(type || 'warning') : '';
+    }
+
+    function buildMobileShiftBlockingMarkup() {
+      if (!mobileShiftBlockingMessage) return '';
+      const title = mobileShiftBlockingType === 'error' ? 'Něco brání dokončení' : 'Co je ještě potřeba';
+      const badgeClass = mobileShiftBlockingType === 'error' ? 'danger' : mobileShiftBlockingType === 'success' ? 'success' : 'warn';
+      return `
+        <article class="mobile-section-card">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;">
+            <div>
+              <p class="mobile-section-label">Ukončení směny</p>
+              <h3 class="mobile-section-title">${escapeHtml(title)}</h3>
+            </div>
+            <span class="badge ${escapeHtml(badgeClass)}">${escapeHtml(mobileShiftBlockingType === 'error' ? 'Chyba' : 'Pozor')}</span>
+          </div>
+          <p class="mobile-section-text">${escapeHtml(mobileShiftBlockingMessage)}</p>
+        </article>
+      `;
     }
 
     function setLocationTrackingStatus(message, type = '') {
@@ -4535,6 +4560,7 @@
         : String(mobileSwitchVehicleId || mobilePrestartVehicleId || startVehicleSelect.value || '');
       const defaultBagetteWarehouseId = getPreferredBagetteWarehouseId();
       const currentLog = todayAttendance?.vehicle_id ? getCurrentVehicleOperationLog(todayAttendance.vehicle_id) : null;
+      const resolvedEndKm = getResolvedEndOdometerKm();
       const lastKnownVehicleKm = parseIntegerValue(
         todayAttendance?.vehicle_id
           ? currentLog?.start_odometer_km
@@ -4707,6 +4733,7 @@
       }
 
       return `
+        ${buildMobileShiftBlockingMarkup()}
         <article class="mobile-section-card primary">
           <p class="mobile-section-label">Krok 3</p>
           <h3 class="mobile-section-title">${escapeHtml(todayAttendance.vehicle_label || 'Vozidlo')}</h3>
@@ -4757,7 +4784,7 @@
           <div class="form-grid" style="grid-template-columns:1fr;">
             <div class="field full">
               <label for="mobileEndKmInput">Aktuální km</label>
-              <input id="mobileEndKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(endOdometerInput?.value || '')}" placeholder="Např. 152418" />
+              <input id="mobileEndKmInput" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${escapeHtml(String(endOdometerInput?.value || (resolvedEndKm != null ? String(resolvedEndKm) : '')))}" placeholder="Např. 152418" />
             </div>
           </div>
           <div class="mobile-section-actions">
@@ -4829,6 +4856,7 @@
           </article>
         `).join('');
         return `
+          ${buildMobileShiftBlockingMarkup()}
           <article class="mobile-section-card primary">
             <p class="mobile-section-label">Před ukončením</p>
             <h3 class="mobile-section-title">Vracíš nebo likviduješ zboží?</h3>
@@ -4842,7 +4870,7 @@
             <div class="mobile-section-actions">
               <button class="btn secondary" type="button" data-mobile-unload-mode="return">Ano, vracím na sklad</button>
               <button class="btn secondary" type="button" data-mobile-unload-mode="waste">Ano, likviduji zboží</button>
-              <button class="btn" type="button" data-mobile-unloading-skip>Ne, nic neřeším</button>
+              <button class="btn success mobile-primary-action" type="button" data-mobile-unloading-skip>Nic nevracím ani nelikviduji – ukončit směnu</button>
             </div>
           </article>
           ${mobileUnloadMode !== 'none' ? `
@@ -4863,6 +4891,7 @@
       }
 
       return `
+        ${buildMobileShiftBlockingMarkup()}
         <article class="mobile-section-card primary">
           <p class="mobile-section-label">${todayAttendance.actual_end ? 'Hotovo' : 'Směna běží'}</p>
           <h3 class="mobile-section-title">${escapeHtml(state.label)}</h3>
@@ -5130,10 +5159,35 @@
       endOdometerInput?.focus();
     }
 
+    function syncMobileEndKmToDesktop() {
+      const mobileEndKmInput = document.getElementById('mobileEndKmInput');
+      if (!(mobileEndKmInput instanceof HTMLInputElement)) return;
+      if (!endOdometerInput) return;
+      const mobileValue = String(mobileEndKmInput.value || '').trim();
+      if (mobileValue) {
+        endOdometerInput.value = mobileValue;
+      }
+    }
+
+    function getResolvedEndOdometerKm() {
+      syncMobileEndKmToDesktop();
+      const directValue = parseIntegerValue(endOdometerInput?.value);
+      if (directValue != null) return directValue;
+      const currentLog = getCurrentVehicleOperationLog(todayAttendance?.vehicle_id);
+      return parseIntegerValue(currentLog?.end_odometer_km);
+    }
+
     function syncEndShiftRequirementUI() {
       if (!todayAttendance || todayAttendance.actual_end) return;
 
-      const hasEndKm = parseIntegerValue(endOdometerInput?.value) != null;
+      const hasEndKm = getResolvedEndOdometerKm() != null;
+
+      if (endOdometerInput && !String(endOdometerInput.value || '').trim()) {
+        const resolvedKm = getResolvedEndOdometerKm();
+        if (resolvedKm != null) {
+          endOdometerInput.value = String(resolvedKm);
+        }
+      }
 
       if (endShiftBtn) {
         endShiftBtn.disabled = Boolean(todayAttendance.vehicle_id && !hasEndKm);
@@ -8313,9 +8367,12 @@
       if (!todayAttendance?.id || !todayAttendance.vehicle_id) return;
       const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
 
-      const endOdometerKm = parseIntegerValue(endOdometerInput?.value);
+      const endOdometerKm = getResolvedEndOdometerKm();
       if (endOdometerKm == null) {
         throw new Error('U vybraného vozidla doplň konečný stav km.');
+      }
+      if (endOdometerInput && !String(endOdometerInput.value || '').trim()) {
+        endOdometerInput.value = String(endOdometerKm);
       }
 
       const startOdometerKm = parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
@@ -8416,9 +8473,12 @@
       }
 
       const currentLog = getCurrentVehicleOperationLog(todayAttendance.vehicle_id);
-      const endOdometerKm = parseIntegerValue(endOdometerInput?.value);
+      const endOdometerKm = getResolvedEndOdometerKm();
       if (endOdometerKm == null) {
         throw new Error('Nejdřív doplň aktuální stav km.');
+      }
+      if (endOdometerInput && !String(endOdometerInput.value || '').trim()) {
+        endOdometerInput.value = String(endOdometerKm);
       }
 
       const startOdometerKm = parseIntegerValue(currentLog?.start_odometer_km ?? startOdometerInput?.value);
@@ -8532,9 +8592,12 @@
       }
 
       if (todayAttendance.vehicle_id) {
-        const endOdometerKm = parseIntegerValue(endOdometerInput?.value);
+        const endOdometerKm = getResolvedEndOdometerKm();
         if (endOdometerKm == null) {
           throw new Error('U vybraného vozidla doplň konečný stav km.');
+        }
+        if (endOdometerInput && !String(endOdometerInput.value || '').trim()) {
+          endOdometerInput.value = String(endOdometerKm);
         }
       }
     }
@@ -8545,7 +8608,7 @@
       }
 
       if (todayAttendance.vehicle_id) {
-        const endOdometerKm = parseIntegerValue(endOdometerInput?.value);
+        const endOdometerKm = getResolvedEndOdometerKm();
         if (endOdometerKm == null) {
           return 'Nejdřív doplň konečný stav km v záložce Vozidlo.';
         }
@@ -8578,10 +8641,22 @@
     }
 
     function tryOpenEndShiftFromMobile() {
+      syncMobileEndKmToDesktop();
       syncEndShiftRequirementUI();
+
+      if (needsMobileUnloadingStep()) {
+        setMobileShiftBlockingMessage('Před ukončením rozhodni, co vracíš, co likviduješ, nebo potvrď, že nic neřešíš.', 'warning');
+        setMobileShiftSection('shift');
+        setFinishStatus('Před ukončením dne dokonči krok vykládky nebo ho vědomě přeskoč.', 'warning');
+        setActionsStatus('Před ukončením dne dokonči krok vykládky nebo ho vědomě přeskoč.', 'warning');
+        renderMobileShiftUI();
+        return false;
+      }
+
       const blockingReason = getEndShiftBlockingReason();
 
       if (blockingReason) {
+        setMobileShiftBlockingMessage(blockingReason, 'warning');
         if (String(blockingReason).toLowerCase().includes('km')) {
           revealEndOdometerField();
         }
@@ -8592,6 +8667,7 @@
         return false;
       }
 
+      setMobileShiftBlockingMessage('', '');
       endShiftBtn.click();
       return true;
     }
@@ -10461,6 +10537,7 @@
         setFinishStatus('Probíhá ukládání ukončení směny...');
         const result = await endShift();
         await refreshPageData();
+        setMobileShiftBlockingMessage('', '');
         setFinishStatus(
           result.needsApproval
             ? 'Směna je ukončená a čeká na schválení.'
@@ -10476,6 +10553,7 @@
       } catch (error) {
         console.error(error);
         if (String(error.message || '').includes('konečný stav km')) {
+          setMobileShiftBlockingMessage('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           revealEndOdometerField();
           setFinishStatus('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           setActionsStatus('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
@@ -10486,12 +10564,14 @@
           || String(error.message || '').includes('účtenku')
           || String(error.message || '').includes('litry i cenu')
         ) {
+          setMobileShiftBlockingMessage('Dokonči údaje o tankování v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           setMobileShiftSection('vehicle');
           setFinishStatus('Dokonči údaje o tankování v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           setActionsStatus('Dokonči údaje o tankování v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           renderMobileShiftUI();
           return;
         }
+        setMobileShiftBlockingMessage(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
         setFinishStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
         setActionsStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
       } finally {
