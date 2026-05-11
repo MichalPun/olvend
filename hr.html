@@ -3748,16 +3748,34 @@
       return [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Zaměstnanec';
     }
 
-    function getInstructionAudienceCount(instruction) {
-      if (instruction.target_type === 'company') return employeesDirectory.length;
+    function getInstructionAudienceEmployees(instruction) {
+      const activeEmployees = employeesDirectory.filter((employee) => employee.active !== false);
+
+      if (instruction.target_type === 'company') return activeEmployees;
       if (instruction.target_type === 'role') {
-        return employeesDirectory.filter((employee) => String(employee.role || '').trim() === String(instruction.target_role || '').trim()).length;
+        return activeEmployees.filter((employee) => String(employee.role || '').trim() === String(instruction.target_role || '').trim());
       }
-      return instruction.target_employee_id ? 1 : 0;
+      if (instruction.target_type === 'employee') {
+        return activeEmployees.filter((employee) => String(employee.id) === String(instruction.target_employee_id));
+      }
+      return [];
+    }
+
+    function getInstructionAudienceCount(instruction) {
+      return getInstructionAudienceEmployees(instruction).length;
     }
 
     function getInstructionAcknowledgementCount(instructionId) {
-      return instructionAcknowledgements.filter((row) => String(row.instruction_id) === String(instructionId)).length;
+      const instruction = instructionRows.find((row) => String(row.id) === String(instructionId));
+      if (!instruction) return 0;
+
+      const audienceIds = new Set(getInstructionAudienceEmployees(instruction).map((employee) => String(employee.id)));
+      if (!audienceIds.size) return 0;
+
+      return instructionAcknowledgements.filter((row) => (
+        String(row.instruction_id) === String(instructionId)
+        && audienceIds.has(String(row.employee_id))
+      )).length;
     }
 
     function getInstructionPendingCountValue(instruction) {
@@ -3902,11 +3920,13 @@
     }
 
     function populateInstructionTargets() {
-      const sortedEmployees = [...employeesDirectory].sort((a, b) => {
-        const aLabel = getEmployeeDisplayName(a);
-        const bLabel = getEmployeeDisplayName(b);
-        return aLabel.localeCompare(bLabel, 'cs');
-      });
+      const sortedEmployees = [...employeesDirectory]
+        .filter((employee) => employee.active !== false)
+        .sort((a, b) => {
+          const aLabel = getEmployeeDisplayName(a);
+          const bLabel = getEmployeeDisplayName(b);
+          return aLabel.localeCompare(bLabel, 'cs');
+        });
 
       targetEmployeeSelect.innerHTML = '<option value="">Vyber zaměstnance</option>';
       requestEmployeeId.innerHTML = '<option value="">Vyber zaměstnance</option>';
@@ -3936,7 +3956,7 @@
     async function loadEmployeesDirectory() {
       const { data, error } = await supabase
         .from('employees')
-        .select('id, name, surname, role, email, contracted_weekly_hours')
+        .select('id, name, surname, role, email, contracted_weekly_hours, active')
         .order('surname', { ascending: true });
 
       if (error) throw error;
