@@ -2,18 +2,18 @@
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
-  const APP_VERSION = "OLVEND 1.41";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.41";
+  const APP_VERSION = "OLVEND 1.42";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.42";
   const RELEASE_NOTES = {
-    "1.41": {
-      title: "Nová verze 1.41",
-      subtitle: "Aplikace je stabilnější, přehlednější a hlavní provozní toky jsou blíž reálné každodenní práci v terénu i v kanceláři.",
+    "1.42": {
+      title: "Nová verze 1.42",
+      subtitle: "Tahleta verze dorovnává kritické provozní kroky, hlavně Moje směna v mobilu, ukončení směny a stabilitu hlavních přehledů.",
       items: [
-        "Nástěnka, HR, Trasy a další hlavní moduly jsou jednodušší, kompaktnější a lépe čitelné ve světlém i tmavém režimu.",
-        "Moje směna na mobilu je víc appková a drží jasnější pracovní tok pro pokyny, vozidlo, směnu, nakládku a ukončení dne.",
-        "Nakládka a vykládka vozidel jsou jednodušší pro operátora a přehlednější pro manažera v inventáři a kontrole vozidel.",
-        "Servis teď lépe ukazuje detail zásahu, historii stejného stroje, stáří požadavku i upozornění na dlouho otevřené úkoly.",
-        "Trasy, tankování, vozidla a schvalování jsou stabilnější a lépe připravené pro běžný každodenní provoz."
+        "Moje směna v mobilu je stabilnější: lépe funguje ukončení směny, konečné km, tankování i kontrolní krok vykládky.",
+        "Ukončení směny už nepadá na vedlejší aktualizaci vozidla a lépe ukazuje konkrétní důvod, pokud něco skutečně chybí.",
+        "Dashboard, servis a další přehledy byly dorovnané tak, aby nepadaly na chybějících sloupcích nebo starších datech.",
+        "Spodní mobilní navigace je znovu zjednodušená podle role, takže není přeplněná a zůstává použitelná v provozu.",
+        "Verze 1.42 je hlavně stabilizační vydání pro každodenní práci operátorů i vedení."
       ]
     }
   };

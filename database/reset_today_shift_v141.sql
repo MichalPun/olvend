@@ -1,4 +1,4 @@
--- OLVEND 1.41
+-- OLVEND 1.42
 -- Reset dnešní směny pro jednoho zaměstnance včetně navázané nakládky, tankování a pohybů.
 -- Uprav jen target_employee_email a případně target_date.
 
