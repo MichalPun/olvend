@@ -97,7 +97,14 @@
       versionNote: ""
     },
     "service-requests.html": {
-      currentLabel: "Servis",
+      currentLabel: "Servisní požadavky",
+      activeKey: "service",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "technical-jobs.html": {
+      currentLabel: "Technické zásahy",
       activeKey: "service",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -225,7 +232,7 @@
       key: "operations",
       title: "Provoz",
       items: [
-        { key: "service", href: "service-requests.html", label: "Servis" },
+        { key: "service", href: "technical-jobs.html", label: "Technické zásahy" },
         { key: "operations", href: "operations.html", label: "Lokality" },
         { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
         { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
