@@ -4855,7 +4855,7 @@
               </div>
               <div class="mobile-compact-list">${unloadRowsMarkup || '<div class="helper-line">Na autě teď nic není.</div>'}</div>
               <div class="mobile-sticky-action-bar">
-                <button class="btn success mobile-primary-action" type="button" data-mobile-unload-save-end ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit a uložit</button>
+                <button class="btn success mobile-primary-action" type="button" data-mobile-unload-save-end>Ukončit a uložit</button>
               </div>
             </article>
           ` : ''}
@@ -4873,7 +4873,7 @@
             <div class="mobile-section-actions">
               <button class="btn warn mobile-primary-action" type="button" data-mobile-break ${breakToggleBtn.disabled ? 'disabled' : ''}>${escapeHtml(breakToggleBtn.textContent || 'Pauza')}</button>
               <button class="btn secondary" type="button" data-mobile-go-vehicle>Vozidlo</button>
-              <button class="btn success" type="button" data-mobile-end-shift ${endShiftBtn.disabled ? 'disabled' : ''}>Ukončit směnu</button>
+              <button class="btn success" type="button" data-mobile-end-shift>Ukončit směnu</button>
             </div>
           </article>
           <article class="mobile-section-card">
@@ -8529,6 +8529,63 @@
       }
     }
 
+    function getEndShiftBlockingReason() {
+      if (!todayAttendance?.id || todayAttendance.actual_end) {
+        return 'Nejdřív musí být otevřená aktivní směna.';
+      }
+
+      if (todayAttendance.vehicle_id) {
+        const endOdometerKm = parseIntegerValue(endOdometerInput?.value);
+        if (endOdometerKm == null) {
+          return 'Nejdřív doplň konečný stav km v záložce Vozidlo.';
+        }
+      }
+
+      if (fuelReceiptUploadInFlight) {
+        return 'Počkej, až se dokončí nahrání účtenky k tankování.';
+      }
+
+      const fuelLiters = parseDecimalValue(fuelLitersInput?.value);
+      const fuelCost = parseDecimalValue(fuelCostInput?.value);
+      const fuelReceiptUrl = String(fuelReceiptUrlInput?.value || '').trim() || null;
+      const fuelReview = getFuelReviewState({
+        fuelLiters,
+        fuelCost,
+        fuelReceiptUrl,
+        vehicleId: todayAttendance.vehicle_id
+      });
+
+      if (fuelReview.hasFuelEntry) {
+        if (fuelLiters == null || fuelCost == null) {
+          return 'Dokonči údaje o tankování. Doplň litry i cenu z účtenky.';
+        }
+        if (!fuelReceiptUrl) {
+          return 'K tankování doplň foto nebo odkaz na účtenku.';
+        }
+      }
+
+      return null;
+    }
+
+    function tryOpenEndShiftFromMobile() {
+      syncEndShiftRequirementUI();
+      const blockingReason = getEndShiftBlockingReason();
+
+      if (blockingReason) {
+        if (String(blockingReason).toLowerCase().includes('km')) {
+          revealEndOdometerField();
+        }
+        setMobileShiftSection('vehicle');
+        setFinishStatus(blockingReason, 'warning');
+        setActionsStatus(blockingReason, 'warning');
+        renderMobileShiftUI();
+        return false;
+      }
+
+      endShiftBtn.click();
+      return true;
+    }
+
     async function saveFuelProgress() {
       if (!todayAttendance?.id || !todayAttendance.vehicle_id) {
         throw new Error('Tankování lze uložit jen k dnešní směně s vozidlem.');
@@ -10414,10 +10471,25 @@
           setActionsStatus('Nejdřív doplň konečný stav km v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
           return;
         }
+        if (
+          String(error.message || '').includes('účtenky')
+          || String(error.message || '').includes('účtenku')
+          || String(error.message || '').includes('litry i cenu')
+        ) {
+          setMobileShiftSection('vehicle');
+          setFinishStatus('Dokonči údaje o tankování v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
+          setActionsStatus('Dokonči údaje o tankování v záložce Vozidlo. Pak můžeš směnu ukončit.', 'warning');
+          renderMobileShiftUI();
+          return;
+        }
         setFinishStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
         setActionsStatus(`Nepodařilo se ukončit směnu: ${error.message}`, 'error');
       } finally {
         endShiftBtn.textContent = 'Ukončit směnu';
+        if (!todayAttendance?.actual_end) {
+          syncEndShiftRequirementUI();
+          renderMobileShiftUI();
+        }
       }
     });
 
@@ -10806,7 +10878,7 @@
             setActionsStatus('Nejdřív rozhodni, co vracíš, co vyhazuješ nebo že nic neřešíš.', 'warning');
             return;
           }
-          endShiftBtn.click();
+          tryOpenEndShiftFromMobile();
           return;
         }
 
@@ -10980,7 +11052,7 @@
           mobileUnloadMode = 'none';
           setActionsStatus('Zboží zůstává na autě. Směna se ukončuje.', 'success');
           setMobileShiftSection('shift');
-          endShiftBtn.click();
+          tryOpenEndShiftFromMobile();
           return;
         }
 
@@ -11016,7 +11088,7 @@
           await refreshPageData();
           setActionsStatus(`Vykládka hotová · vráceno ${Math.round(returned)} ks · likvidace ${Math.round(wasted)} ks.`, 'success');
           setMobileShiftSection('shift');
-          endShiftBtn.click();
+          tryOpenEndShiftFromMobile();
           return;
         }
 
