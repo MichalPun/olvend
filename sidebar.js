@@ -292,6 +292,12 @@
     return { preference: nextPreference, theme: resolvedTheme };
   }
 
+  function syncAutoThemeFromSystem() {
+    if (getStoredThemePreference() === "auto") {
+      applyTheme("auto", { skipPersist: true });
+    }
+  }
+
   function initTheme() {
     const preference = getStoredThemePreference();
     applyTheme(preference, { skipPersist: true, skipEvent: true });
@@ -310,6 +316,17 @@
         media.addListener(handleMediaChange);
       }
     }
+
+    window.addEventListener("pageshow", syncAutoThemeFromSystem);
+    window.addEventListener("focus", syncAutoThemeFromSystem);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) syncAutoThemeFromSystem();
+    });
+    window.addEventListener("storage", (event) => {
+      if (event.key === APP_THEME_KEY) {
+        applyTheme(getStoredThemePreference(), { skipPersist: true });
+      }
+    });
 
     window.OLVEND_THEME = {
       getPreference: getStoredThemePreference,
