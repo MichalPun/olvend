@@ -42,6 +42,46 @@ create table if not exists public.technical_jobs (
   updated_at timestamp with time zone not null default now()
 );
 
+alter table public.technical_jobs
+  add column if not exists description text,
+  add column if not exists note text,
+  add column if not exists result text,
+  add column if not exists service_request_id bigint references public.service_requests (id) on delete set null,
+  add column if not exists source_location_id bigint references public.locations (id) on delete set null,
+  add column if not exists target_location_id bigint references public.locations (id) on delete set null,
+  add column if not exists workshop_ready boolean default false,
+  add column if not exists workshop_ready_at timestamp with time zone,
+  add column if not exists workshop_ready_by uuid references public.employees (id) on delete set null,
+  add column if not exists workshop_note text,
+  add column if not exists configuration_kind text default 'general',
+  add column if not exists configuration_payload jsonb default '{}'::jsonb,
+  add column if not exists due_at timestamp with time zone,
+  add column if not exists submitted_at timestamp with time zone,
+  add column if not exists manager_confirmed_at timestamp with time zone,
+  add column if not exists manager_confirmed_by uuid references public.employees (id) on delete set null,
+  add column if not exists protocol_url text,
+  add column if not exists active boolean default true,
+  add column if not exists created_by uuid references public.employees (id) on delete set null,
+  add column if not exists created_at timestamp with time zone default now(),
+  add column if not exists updated_at timestamp with time zone default now();
+
+update public.technical_jobs
+set
+  workshop_ready = coalesce(workshop_ready, false),
+  configuration_kind = coalesce(configuration_kind, 'general'),
+  configuration_payload = coalesce(configuration_payload, '{}'::jsonb),
+  active = coalesce(active, true),
+  created_at = coalesce(created_at, now()),
+  updated_at = coalesce(updated_at, now());
+
+alter table public.technical_jobs
+  alter column workshop_ready set default false,
+  alter column configuration_kind set default 'general',
+  alter column configuration_payload set default '{}'::jsonb,
+  alter column active set default true,
+  alter column created_at set default now(),
+  alter column updated_at set default now();
+
 create index if not exists technical_jobs_type_idx
   on public.technical_jobs (job_type);
 
