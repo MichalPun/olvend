@@ -494,6 +494,7 @@
           </div>
           <div class="panel-body">
             <div class="technician-queue hidden" id="technicianQueue"></div>
+            <div class="technician-queue hidden" id="draftQueue"></div>
             <div class="service-grid">
               <article class="overview-box">
                 <h3>Technické karty</h3>
@@ -981,6 +982,7 @@
     const typeTabs = document.getElementById('typeTabs')
     const overviewPanel = document.getElementById('overviewPanel')
     const technicianQueue = document.getElementById('technicianQueue')
+    const draftQueue = document.getElementById('draftQueue')
     const servicePanel = document.getElementById('servicePanel')
     const jobsPanel = document.getElementById('jobsPanel')
     const jobsPanelTitle = document.getElementById('jobsPanelTitle')
@@ -1349,6 +1351,17 @@
       return jobs.filter((item) => String(item.job_type || '') === String(type))
     }
 
+    function isDraftJob(item) {
+      const config = safeJson(item?.configuration_payload, {})
+      return Boolean(config.draft_saved) || String(item?.status || '') === 'planned' && !item?.planned_date
+    }
+
+    function getDraftJobs() {
+      return jobs
+        .filter((item) => !HISTORY_STATUSES.includes(String(item.status || '')) && isDraftJob(item))
+        .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
+    }
+
     function getChecklistForJob(jobId) {
       return checklistItems
         .filter((item) => String(item.technical_job_id) === String(jobId))
@@ -1464,6 +1477,32 @@
           <span>${escapeHtml(item.note)}</span>
         </article>
       `).join('')
+
+      const draftJobs = getDraftJobs()
+      draftQueue.classList.toggle('hidden', !draftJobs.length)
+      draftQueue.innerHTML = draftJobs.length
+        ? `
+          <article class="technician-card">
+            <div class="technician-card-header">
+              <div>
+                <h3 class="technician-card-title">Rozpracované koncepty</h3>
+                <div class="technician-card-meta">Předuložené karty, které čekají na doplnění konfigurace nebo termínu.</div>
+              </div>
+              <span class="badge planned">${draftJobs.length}</span>
+            </div>
+            ${draftJobs.slice(0, 5).map((item) => `
+              <div class="attachment-card">
+                <strong>${escapeHtml(item.title || getJobTypeLabel(item.job_type))}</strong>
+                <span class="subtext">${escapeHtml(getJobTypeLabel(item.job_type))} · ${escapeHtml(getMachineLabel(item.machine_id))} · Uloženo ${escapeHtml(formatDateTime(item.updated_at || item.created_at))}</span>
+                <div class="action-row">
+                  <button class="btn" type="button" data-action="edit-draft" data-id="${item.id}">Pokračovat</button>
+                  <button class="btn secondary" type="button" data-action="detail-draft" data-id="${item.id}">Detail</button>
+                </div>
+              </div>
+            `).join('')}
+          </article>
+        `
+        : ''
 
       const serviceCounts = getServiceCounts()
       const serviceStatsMarkup = [
@@ -2285,10 +2324,11 @@
       }
     }
 
-    function buildConfigurationPayload() {
+    function buildConfigurationPayload(options = {}) {
       const planogramData = normalizePlanogramRows(getConfigTableRows(planogramRows))
       const ingredientData = normalizeIngredientRows(getConfigTableRows(ingredientRows))
       return {
+        draft_saved: Boolean(options.draft),
         summary: String(configurationSummary.value || '').trim(),
         telemetry_profile: telemetryProfileInput.value,
         telemetry_mapping: parseKeyValueRows(telemetryMappingInput.value),
@@ -2455,8 +2495,8 @@
           workshop_ready: Boolean(workshopReady.checked),
           workshop_note: String(workshopNote.value || '').trim() || null,
           configuration_kind: configurationKind.value,
-          configuration_payload: buildConfigurationPayload(),
-          status: options.draft ? 'new' : undefined,
+          configuration_payload: buildConfigurationPayload({ draft: Boolean(options.draft) }),
+          status: options.draft ? 'planned' : undefined,
           qr_token: jobId.value ? undefined : createQrToken(),
           created_by: currentUser?.id || null
         }
@@ -3109,6 +3149,21 @@
           }
         } catch (error) {
           setStatus(`Nepodařilo se upravit stav karty: ${error.message}`, 'error')
+        }
+      })
+
+      draftQueue.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]')
+        if (!button) return
+        const job = jobs.find((item) => String(item.id) === String(button.dataset.id))
+        if (!job) return
+        if (button.dataset.action === 'edit-draft') {
+          populateJobForm(job)
+          openJobModal()
+          return
+        }
+        if (button.dataset.action === 'detail-draft') {
+          renderDetail(job.id)
         }
       })
 
