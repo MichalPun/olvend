@@ -609,6 +609,30 @@
               <label for="productNote">Poznámka</label>
               <textarea id="productNote" placeholder="Dodavatel, specifikace, servisní poznámka..."></textarea>
             </div>
+            <div class="field full" id="productRecipeSection" hidden>
+              <div class="panel" style="background:rgba(255,255,255,0.02); box-shadow:none;">
+                <div class="panel-header">
+                  <div>
+                    <h2 style="font-size:18px;">Receptura teplého nápoje</h2>
+                    <p>Vyber suroviny z inventáře, zadej dávku a systém spočítá náklad na jednu volbu.</p>
+                  </div>
+                  <button class="btn secondary" type="button" id="addProductRecipeItemBtn">+ Surovina</button>
+                </div>
+                <div class="panel-body">
+                  <div class="config-table">
+                    <div class="config-table-head">
+                      <span>Surovina</span>
+                      <span>Množství</span>
+                      <span>Jednotka</span>
+                      <span>Náklad</span>
+                      <span></span>
+                    </div>
+                    <div id="productRecipeRows" class="config-table"></div>
+                  </div>
+                  <div class="helper-line" id="productRecipeCostSummary">Náklad receptury: 0 Kč</div>
+                </div>
+              </div>
+            </div>
             <div class="field full">
               <div class="panel" style="background:rgba(255,255,255,0.02); box-shadow:none;">
                 <div class="panel-header">
@@ -800,6 +824,9 @@
     const productModalTitle = document.getElementById('productModalTitle')
     const productIdInput = document.getElementById('productId')
     const productPackageRows = document.getElementById('productPackageRows')
+    const productRecipeSection = document.getElementById('productRecipeSection')
+    const productRecipeRows = document.getElementById('productRecipeRows')
+    const productRecipeCostSummary = document.getElementById('productRecipeCostSummary')
     const saveItemBtn = document.getElementById('saveItemBtn')
     const saveProductBtn = document.getElementById('saveProductBtn')
     const saveMovementBtn = document.getElementById('saveMovementBtn')
@@ -821,6 +848,9 @@
     let isEditMode = false
     let productsV13 = []
     let productPackagesV13 = []
+    let recipesV13 = []
+    let recipeItemsV13 = []
+    let recipesAvailable = true
     let stockLocationsV13 = []
     let stockBalancesV13 = []
     let replenishmentProfilesV13 = []
@@ -836,6 +866,7 @@
     let currentDetailContext = null
     let isProductEditMode = false
     const productKindMarker = 'olvend_product_kind'
+    const recipeProductMarker = 'olvend_recipe_product_id'
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -982,6 +1013,7 @@
       } else {
         helper.textContent = 'Karta zásoby určuje kmenová data. Skladová mapa potom řeší fyzické umístění a množství.'
       }
+      if (productRecipeSection) productRecipeSection.hidden = type !== 'hot_drink'
     }
     function getExpiryModeLabel(value) {
       return {
@@ -994,6 +1026,79 @@
       return productPackagesV13
         .filter((pack) => String(pack.product_id) === String(productId) && pack.active !== false)
         .sort((a, b) => Number(b.is_default === true) - Number(a.is_default === true) || normalizeText(a.package_name).localeCompare(normalizeText(b.package_name), 'cs'))
+    }
+    function getRecipeIngredients() {
+      return productsV13
+        .filter((product) => product.active !== false && (product.product_category === 'ingredient' || product.usage_type === 'recipe_consumption'))
+        .sort((a, b) => normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
+    }
+    function getUnitCost(productId) {
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      return Number(product?.purchase_price || 0)
+    }
+    function getRecipeForProduct(productId) {
+      return recipesV13.find((recipe) => {
+        const note = String(recipe.note || '')
+        return note.includes(`[${recipeProductMarker}:${productId}]`) || String(recipe.selection_code || '') === `product:${productId}`
+      }) || null
+    }
+    function getRecipeItemsForProduct(productId) {
+      const recipe = getRecipeForProduct(productId)
+      if (!recipe) return []
+      return recipeItemsV13.filter((item) => String(item.recipe_id) === String(recipe.id))
+    }
+    function renderProductRecipeRows(rows = []) {
+      const ingredients = getRecipeIngredients()
+      productRecipeRows.innerHTML = rows.map((row) => {
+        const productId = row.product_id || ''
+        const product = productsV13.find((item) => String(item.id) === String(productId))
+        const unit = row.unit || product?.base_unit || 'g'
+        const quantity = row.quantity ?? ''
+        const lineCost = Number(quantity || 0) * getUnitCost(productId)
+        return `
+          <div class="config-table-row" data-recipe-item-id="${escapeHtml(String(row.id || ''))}">
+            <select data-recipe-field="product_id">
+              <option value="">Vyber surovinu</option>
+              ${ingredients.map((ingredient) => `<option value="${escapeHtml(String(ingredient.id))}" ${String(productId) === String(ingredient.id) ? 'selected' : ''}>${escapeHtml([ingredient.sku, ingredient.name].filter(Boolean).join(' · '))}</option>`).join('')}
+            </select>
+            <input data-recipe-field="quantity" type="number" step="0.001" min="0" placeholder="8" value="${escapeHtml(quantity)}" />
+            <input data-recipe-field="unit" placeholder="g" value="${escapeHtml(unit)}" />
+            <input data-recipe-field="line_cost" readonly value="${escapeHtml(lineCost ? `${lineCost.toFixed(2)} Kč` : '')}" />
+            <button class="icon-btn" type="button" data-recipe-action="remove" title="Odebrat surovinu">×</button>
+          </div>
+        `
+      }).join('')
+      updateProductRecipeCostSummary()
+    }
+    function getProductRecipeFormRows({ persist = false } = {}) {
+      const rows = [...productRecipeRows.querySelectorAll('.config-table-row')].map((row) => {
+        const productId = row.querySelector('[data-recipe-field="product_id"]')?.value || ''
+        const product = productsV13.find((item) => String(item.id) === String(productId))
+        return {
+          id: row.dataset.recipeItemId || '',
+          product_id: productId,
+          quantity: Number(row.querySelector('[data-recipe-field="quantity"]')?.value || 0),
+          unit: row.querySelector('[data-recipe-field="unit"]')?.value.trim() || product?.base_unit || 'g'
+        }
+      })
+      if (!persist) return rows
+      return rows.filter((row) => row.product_id && row.quantity > 0)
+    }
+    function updateProductRecipeCostSummary() {
+      let total = 0
+      productRecipeRows.querySelectorAll('.config-table-row').forEach((row) => {
+        const productId = row.querySelector('[data-recipe-field="product_id"]')?.value || ''
+        const quantityInput = row.querySelector('[data-recipe-field="quantity"]')
+        const unitInput = row.querySelector('[data-recipe-field="unit"]')
+        const lineCostInput = row.querySelector('[data-recipe-field="line_cost"]')
+        const product = productsV13.find((item) => String(item.id) === String(productId))
+        if (product && unitInput && !String(unitInput.value || '').trim()) unitInput.value = product.base_unit || 'g'
+        const lineCost = Number(quantityInput?.value || 0) * getUnitCost(productId)
+        total += lineCost
+        if (lineCostInput) lineCostInput.value = lineCost ? `${lineCost.toFixed(2)} Kč` : ''
+      })
+      productRecipeCostSummary.textContent = `Náklad receptury: ${total.toFixed(2)} Kč`
+      return total
     }
     function getPackageSummary(productId, baseUnit) {
       const packages = getProductPackages(productId)
@@ -1588,6 +1693,8 @@
         const [
           productsResult,
           packagesResult,
+          recipesResult,
+          recipeItemsResult,
           locationsResult,
           balancesResult,
           profilesResult,
@@ -1595,6 +1702,8 @@
         ] = await Promise.all([
           supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, vat_rate, purchase_price, sale_price, shelf_life_days, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, active, note').order('name', { ascending: true }),
           supabase.from('product_packages').select('id, product_id, package_name, units_per_package, package_barcode, is_default, active').order('is_default', { ascending: false }),
+          supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending: true }),
+          supabase.from('recipe_items').select('id, recipe_id, product_id, quantity, unit').order('id', { ascending: true }),
           supabase.from('stock_locations').select('id, name, location_type, note, active').eq('active', true).order('name', { ascending: true }),
           supabase.from('stock_location_balances').select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity').order('updated_at', { ascending: false }),
           supabase.from('replenishment_profiles').select('id, stock_location_id, product_id, min_quantity, target_quantity, active').eq('active', true),
@@ -1607,6 +1716,9 @@
 
         productsV13 = productsResult.data ?? []
         productPackagesV13 = packagesResult.data ?? []
+        recipesAvailable = !(recipesResult.error || recipeItemsResult.error)
+        recipesV13 = recipesAvailable ? (recipesResult.data ?? []) : []
+        recipeItemsV13 = recipesAvailable ? (recipeItemsResult.data ?? []) : []
         stockLocationsV13 = locationsResult.data ?? []
         stockBalancesV13 = balancesResult.data ?? []
         replenishmentProfilesV13 = profilesResult.data ?? []
@@ -1617,11 +1729,14 @@
         renderStockV13Rows()
         renderProductCatalogRows()
         setStockV13Status(`Načteno skladových pozic 1.42: ${rows.length}`, 'success')
-        setProductCatalogStatus(`Načteno produktových karet: ${productsV13.length}`, 'success')
+        setProductCatalogStatus(recipesAvailable ? `Načteno produktových karet: ${productsV13.length}` : `Načteno produktových karet: ${productsV13.length}. Receptury čekají na DB tabulky recipes / recipe_items.`, recipesAvailable ? 'success' : 'error')
       } catch (error) {
         console.error(error)
         productsV13 = []
         productPackagesV13 = []
+        recipesV13 = []
+        recipeItemsV13 = []
+        recipesAvailable = false
         stockV13Summary.innerHTML = ''
         stockV13Body.innerHTML = ''
         productCatalogSummary.innerHTML = ''
@@ -1715,6 +1830,7 @@
       document.getElementById('productBatchTracking').checked = false
       productPackageRows.innerHTML = ''
       addProductPackageRow({ package_name: 'Balení 1 kg', units_per_package: 1000, is_default: true })
+      renderProductRecipeRows([])
       updateProductTypeHelper()
       productModalTitle.textContent = 'Nová karta zásoby'
       saveProductBtn.textContent = 'Uložit kartu zásoby'
@@ -1748,6 +1864,7 @@
       const packages = getProductPackages(product.id)
       if (packages.length) packages.forEach(addProductPackageRow)
       else addProductPackageRow({ package_name: 'Výchozí balení', units_per_package: 1, is_default: true })
+      renderProductRecipeRows(getRecipeItemsForProduct(product.id))
       productModalTitle.textContent = 'Upravit kartu zásoby'
       saveProductBtn.textContent = 'Uložit změny'
       isProductEditMode = true
@@ -1820,6 +1937,50 @@
         const { error } = await supabase.from('product_packages').update({ active: false }).in('id', removedIds)
         if (error) throw error
       }
+      if (productKind === 'hot_drink') {
+        await saveProductRecipe(Number(productId), payload)
+      } else if (productId) {
+        await deactivateProductRecipe(Number(productId))
+      }
+    }
+    async function saveProductRecipe(productId, productPayload) {
+      if (!recipesAvailable) throw new Error('Receptury ještě nejsou připravené v databázi. Spusť database/inventory_replenishment_v13.sql.')
+      const rows = getProductRecipeFormRows({ persist: true })
+      if (!rows.length) {
+        await deactivateProductRecipe(productId)
+        return
+      }
+      const existingRecipe = getRecipeForProduct(productId)
+      const recipePayload = {
+        machine_id: null,
+        machine_type: 'product_catalog',
+        selection_code: `product:${productId}`,
+        name: productPayload.name,
+        sale_price: productPayload.sale_price,
+        active: true,
+        note: `[${recipeProductMarker}:${productId}]`
+      }
+      if (existingRecipe?.id) {
+        const { error } = await supabase.from('recipes').update({ active: false }).eq('id', existingRecipe.id)
+        if (error) throw error
+      }
+      const { data, error } = await supabase.from('recipes').insert([recipePayload]).select('id').single()
+      if (error) throw error
+      const recipeId = data.id
+      const itemPayload = rows.map((row) => ({
+        recipe_id: Number(recipeId),
+        product_id: Number(row.product_id),
+        quantity: Number(row.quantity),
+        unit: row.unit || 'g'
+      }))
+      const { error: itemError } = await supabase.from('recipe_items').insert(itemPayload)
+      if (itemError) throw itemError
+    }
+    async function deactivateProductRecipe(productId) {
+      const existingRecipe = getRecipeForProduct(productId)
+      if (!existingRecipe?.id) return
+      const { error } = await supabase.from('recipes').update({ active: false }).eq('id', existingRecipe.id)
+      if (error) throw error
     }
     function openDetailModal() { detailModalBackdrop.classList.add('show') }
     function closeDetailModal() {
@@ -2401,6 +2562,9 @@
     document.getElementById('closeProductModalBtn').addEventListener('click', closeProductModal)
     document.getElementById('cancelProductBtn').addEventListener('click', closeProductModal)
     document.getElementById('addProductPackageBtn').addEventListener('click', () => addProductPackageRow({ units_per_package: 1 }))
+    document.getElementById('addProductRecipeItemBtn').addEventListener('click', () => {
+      renderProductRecipeRows([...getProductRecipeFormRows(), { unit: 'g' }])
+    })
     document.getElementById('closeMovementModalBtn').addEventListener('click', closeMovementModal)
     document.getElementById('cancelMovementBtn').addEventListener('click', closeMovementModal)
     document.getElementById('closeDetailModalBtn').addEventListener('click', closeDetailModal)
@@ -2469,6 +2633,14 @@
         if (item !== checkbox) item.checked = false
       })
     })
+    productRecipeRows.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-recipe-action="remove"]')
+      if (!button) return
+      button.closest('.config-table-row')?.remove()
+      updateProductRecipeCostSummary()
+    })
+    productRecipeRows.addEventListener('input', updateProductRecipeCostSummary)
+    productRecipeRows.addEventListener('change', updateProductRecipeCostSummary)
     vehicleLoadBody.addEventListener('click', (event) => {
       const button = event.target.closest('[data-vehicle-load-action]')
       if (!button) return
