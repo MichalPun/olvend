@@ -889,6 +889,26 @@
       if (type) statusLine.classList.add(type)
     }
 
+    function getSupabaseErrorMessage(error) {
+      if (!error) return 'Neznámá chyba'
+      const parts = [
+        error.message,
+        error.details,
+        error.hint,
+        error.code ? `code=${error.code}` : ''
+      ].filter(Boolean)
+      return parts.join(' · ')
+    }
+
+    function reportSupabaseError(scope, error, statusPrefix = '') {
+      const message = getSupabaseErrorMessage(error)
+      console.error(`[technical-jobs] ${scope}`, error)
+      if (statusPrefix) {
+        setStatus(`${statusPrefix}: ${message}`, 'error')
+      }
+      return message
+    }
+
     function escapeHtml(value) {
       return String(value ?? '')
         .replace(/&/g, '&amp;')
@@ -1483,11 +1503,6 @@
       return message.includes('technical_jobs') || message.includes('technical_job_')
     }
 
-    function isMissingSchemaFeatureError(error, feature = '') {
-      const message = String(error?.message || '').toLowerCase()
-      return message.includes('does not exist') && (!feature || message.includes(String(feature).toLowerCase()))
-    }
-
     function normalizeJobRecord(item = {}) {
       return {
         description: null,
@@ -1527,6 +1542,8 @@
           error: null
         }
       }
+
+      console.error('[technical-jobs] Full technical_jobs select failed, trying fallback.', result.error)
 
       if (!isMissingTechnicalTableError(result.error)) {
         return result
@@ -1574,11 +1591,13 @@
       const warnings = []
       const resolveSupabaseResult = (result, label, { allowMissingTable = false } = {}) => {
         if (result.status !== 'fulfilled') {
+          console.error(`[technical-jobs] ${label} promise rejected`, result.reason)
           warnings.push(`${label}: neznámá chyba`)
           return []
         }
         const payload = result.value
         if (payload.error) {
+          console.error(`[technical-jobs] ${label} Supabase error`, payload.error)
           if (allowMissingTable && isMissingTechnicalTableError(payload.error)) {
             return null
           }
@@ -1654,7 +1673,10 @@
         sort_order: index + 1
       }))
       const { error } = await supabase.from('technical_job_checklist_items').insert(payload)
-      if (error) throw error
+      if (error) {
+        reportSupabaseError('ensureChecklist', error, 'Nepodařilo se založit checklist')
+        throw error
+      }
     }
 
     async function createLocationFromFormIfNeeded() {
@@ -1745,7 +1767,10 @@
           : supabase.from('technical_jobs').insert([cleanedPayload]).select('*').single()
 
         const { data, error } = await operation
-        if (error) throw error
+        if (error) {
+          reportSupabaseError('saveJob', error, 'Nepodařilo se uložit technickou kartu')
+          throw error
+        }
 
         await ensureChecklist(data)
         closeJobModal()
@@ -2079,7 +2104,10 @@
         ? supabase.from('technical_job_signatures').update(payload).eq('id', existing.id)
         : supabase.from('technical_job_signatures').insert([payload])
       const { error } = await operation
-      if (error) throw error
+      if (error) {
+        reportSupabaseError('saveSignature', error, 'Nepodařilo se uložit podpis')
+        throw error
+      }
       closeSignatureModal()
       await loadData()
       renderDetail(activeDetailId)
@@ -2094,7 +2122,10 @@
       const { error: uploadError } = await supabase.storage
         .from('technical-job-files')
         .upload(path, file, { upsert: false, contentType: file.type || undefined })
-      if (uploadError) throw uploadError
+      if (uploadError) {
+        reportSupabaseError('uploadAttachment.upload', uploadError, 'Nepodařilo se nahrát přílohu')
+        throw uploadError
+      }
       const { data: publicUrlData } = supabase.storage.from('technical-job-files').getPublicUrl(path)
       const attachmentType = file.type.startsWith('image/') ? 'photo' : 'document'
       const { error } = await supabase.from('technical_job_attachments').insert([{
@@ -2104,7 +2135,10 @@
         note: attachmentType === 'photo' ? 'Fotka zásahu' : file.name,
         created_by: currentUser?.id || null
       }])
-      if (error) throw error
+      if (error) {
+        reportSupabaseError('uploadAttachment.insert', error, 'Nepodařilo se uložit metadata přílohy')
+        throw error
+      }
       await loadData()
       renderDetail(jobIdValue)
     }
@@ -2374,7 +2408,7 @@
         buildMobileNav()
         await loadData()
       } catch (error) {
-        setStatus(`Nepodařilo se načíst modul technických zásahů: ${error.message}`, 'error')
+        reportSupabaseError('bootstrap', error, 'Nepodařilo se načíst modul technických zásahů')
       }
     })()
   </script>

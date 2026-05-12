@@ -29,3 +29,12 @@ for update
 to authenticated, anon
 using (bucket_id = 'technical-job-files')
 with check (bucket_id = 'technical-job-files');
+
+drop policy if exists "Allow delete technical job files"
+on storage.objects;
+
+create policy "Allow delete technical job files"
+on storage.objects
+for delete
+to authenticated
+using (bucket_id = 'technical-job-files');
