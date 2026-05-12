@@ -160,6 +160,14 @@
     .badge.on_the_way, .badge.on_site, .badge.in_progress { background: rgba(255,255,255,0.08); color: #fff; }
     .stack { display: grid; gap: 16px; }
     .service-grid { display: grid; grid-template-columns: 1.15fr minmax(0, 1fr); gap: 16px; }
+    .technician-queue { display: grid; gap: 12px; margin-bottom: 18px; }
+    .technician-card {
+      display: grid; gap: 12px; padding: 16px; border-radius: 18px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+    }
+    .technician-card-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .technician-card-title { margin: 0; font-size: 18px; }
+    .technician-card-meta { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .technician-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .service-box, .overview-box, .detail-card {
       padding: 18px; border-radius: 20px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
     }
@@ -239,6 +247,13 @@
     #signatureCanvas { width: 100%; height: 220px; display: block; background: #fff; touch-action: none; }
     .signature-preview {
       max-width: 240px; border-radius: 16px; background: #fff; padding: 12px; border: 1px solid rgba(255,255,255,0.08);
+    }
+    .attachments-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .attachment-card {
+      display: grid; gap: 10px; padding: 14px; border-radius: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+    }
+    .attachment-card img {
+      width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; background: rgba(255,255,255,0.04);
     }
     .helper-line { color: var(--muted); font-size: 13px; line-height: 1.55; }
     .detail-warning, .detail-good {
@@ -334,6 +349,7 @@
             </div>
           </div>
           <div class="panel-body">
+            <div class="technician-queue hidden" id="technicianQueue"></div>
             <div class="service-grid">
               <article class="overview-box">
                 <h3>Technické karty</h3>
@@ -371,6 +387,7 @@
               <article class="service-box">
                 <h3>Dnes v servisu</h3>
                 <div class="quick-stats" id="servicePanelStats"></div>
+                <div class="stack" id="serviceBridgeList" style="margin-top:14px;"></div>
               </article>
             </div>
           </div>
@@ -494,6 +511,13 @@
               <select id="jobMachineId">
                 <option value="">Vyber automat</option>
               </select>
+            </div>
+            <div class="field full">
+              <label for="jobServiceRequestId">Navázaný servisní požadavek</label>
+              <select id="jobServiceRequestId">
+                <option value="">Bez navázání</option>
+              </select>
+              <div class="help">Pro servisní kartu můžeš rovnou převzít otevřený servisní požadavek do širší technické karty.</div>
             </div>
             <div class="field full">
               <label class="inline-toggle"><input type="checkbox" id="createLocationToggle" /> Založit novou lokalitu z instalační karty</label>
@@ -655,6 +679,7 @@
     const openCreateBtn = document.getElementById('openCreateBtn')
     const typeTabs = document.getElementById('typeTabs')
     const overviewPanel = document.getElementById('overviewPanel')
+    const technicianQueue = document.getElementById('technicianQueue')
     const servicePanel = document.getElementById('servicePanel')
     const jobsPanel = document.getElementById('jobsPanel')
     const jobsPanelTitle = document.getElementById('jobsPanelTitle')
@@ -662,6 +687,7 @@
     const overviewQuickStats = document.getElementById('overviewQuickStats')
     const serviceQuickStats = document.getElementById('serviceQuickStats')
     const servicePanelStats = document.getElementById('servicePanelStats')
+    const serviceBridgeList = document.getElementById('serviceBridgeList')
     const searchInput = document.getElementById('searchInput')
     const statusFilter = document.getElementById('statusFilter')
     const priorityFilter = document.getElementById('priorityFilter')
@@ -684,6 +710,7 @@
     const jobPlannedDate = document.getElementById('jobPlannedDate')
     const jobLocationId = document.getElementById('jobLocationId')
     const jobMachineId = document.getElementById('jobMachineId')
+    const jobServiceRequestId = document.getElementById('jobServiceRequestId')
     const createLocationToggle = document.getElementById('createLocationToggle')
     const newLocationFields = document.getElementById('newLocationFields')
     const newLocationName = document.getElementById('newLocationName')
@@ -743,6 +770,7 @@
     let checklistItems = []
     let signatures = []
     let protocols = []
+    let attachments = []
     let activeTab = 'overview'
     let activeDetailId = null
     let drawingSignature = false
@@ -856,6 +884,22 @@
       return { open, urgent, assigned, waiting }
     }
 
+    function getServiceRequestLabel(id) {
+      const item = serviceRequests.find((row) => String(row.id) === String(id))
+      return item ? `${item.title}${item.priority ? ` · ${getPriorityLabel(item.priority)}` : ''}` : 'Bez navázaného servisu'
+    }
+
+    function getActiveTechnicianJobs() {
+      if (!currentUser?.id) return []
+      return jobs
+        .filter((item) => String(item.assigned_employee_id || '') === String(currentUser.id) && !HISTORY_STATUSES.includes(String(item.status || '')))
+        .sort((a, b) => {
+          const aTime = new Date(a.planned_date || a.created_at || 0).getTime()
+          const bTime = new Date(b.planned_date || b.created_at || 0).getTime()
+          return aTime - bTime
+        })
+    }
+
     function getJobsByType(type) {
       return jobs.filter((item) => String(item.job_type || '') === String(type))
     }
@@ -872,6 +916,10 @@
 
     function getProtocolForJob(jobId) {
       return protocols.find((item) => String(item.technical_job_id) === String(jobId)) || null
+    }
+
+    function getAttachmentsForJob(jobId) {
+      return attachments.filter((item) => String(item.technical_job_id) === String(jobId))
     }
 
     function buildChecklistTemplate(type, configurationType) {
@@ -987,6 +1035,48 @@
 
       serviceQuickStats.innerHTML = serviceStatsMarkup
       servicePanelStats.innerHTML = serviceStatsMarkup
+      const bridgedRequests = serviceRequests
+        .filter((item) => !['done', 'cancelled'].includes(String(item.status || '')))
+        .slice(0, 3)
+      serviceBridgeList.innerHTML = bridgedRequests.length
+        ? bridgedRequests.map((item) => `
+            <article class="attachment-card">
+              <strong>${escapeHtml(item.title || 'Servisní požadavek')}</strong>
+              <span class="subtext">${escapeHtml(getPriorityLabel(item.priority))} · ${escapeHtml(getLocationLabel(item.location_id))}</span>
+              <div class="action-row">
+                <button class="btn secondary" type="button" data-action="bridge-service-request" data-id="${item.id}">Převzít do technické karty</button>
+                <a class="btn ghost" href="service-requests.html">Otevřít servis</a>
+              </div>
+            </article>
+          `).join('')
+        : '<div class="empty-state">Aktuálně tu nejsou otevřené servisní požadavky k převzetí do technické karty.</div>'
+
+      const technicianJobs = getActiveTechnicianJobs()
+      if (['technician', 'technik'].includes(String(currentUser?.role || '').toLowerCase()) || String(currentUser?.role || '').toLowerCase().includes('technik')) {
+        technicianQueue.classList.remove('hidden')
+        technicianQueue.innerHTML = technicianJobs.length
+          ? technicianJobs.slice(0, 3).map((item) => `
+              <article class="technician-card">
+                <div class="technician-card-header">
+                  <div>
+                    <div class="technician-card-title">${escapeHtml(item.title || 'Technická karta')}</div>
+                    <div class="technician-card-meta">${escapeHtml(getLocationLabel(item.location_id))} · ${escapeHtml(getMachineLabel(item.machine_id))}</div>
+                  </div>
+                  <span class="badge ${escapeHtml(String(item.status || 'new'))}">${escapeHtml(getStatusLabel(item.status))}</span>
+                </div>
+                <div class="technician-card-meta">${escapeHtml(item.description || 'Otevři kartu a pokračuj dalším krokem.')}</div>
+                <div class="technician-card-actions">
+                  <button class="btn secondary" type="button" data-action="quick-status" data-id="${item.id}" data-status="on_the_way">Jedu</button>
+                  <button class="btn secondary" type="button" data-action="quick-status" data-id="${item.id}" data-status="on_site">Na místě</button>
+                  <button class="btn" type="button" data-action="open-detail" data-id="${item.id}">Otevřít kartu</button>
+                </div>
+              </article>
+            `).join('')
+          : '<div class="empty-state">Na dnešek na tebe nečeká žádná technická karta.</div>'
+      } else {
+        technicianQueue.classList.add('hidden')
+        technicianQueue.innerHTML = ''
+      }
     }
 
     function populateSupportOptions() {
@@ -1007,6 +1097,11 @@
       jobAssignedEmployeeId.innerHTML = employeeOptions
       technicianFilter.innerHTML = '<option value="">Všichni technici</option>' + employees
         .map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.label)}</option>`)
+        .join('')
+
+      jobServiceRequestId.innerHTML = '<option value="">Bez navázání</option>' + serviceRequests
+        .filter((item) => !['done', 'cancelled'].includes(String(item.status || '')))
+        .map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.title)}${item.priority ? ` · ${escapeHtml(getPriorityLabel(item.priority))}` : ''}</option>`)
         .join('')
 
       populateMachineOptions(jobLocationId.value || '')
@@ -1141,6 +1236,7 @@
       jobId.value = ''
       jobType.value = 'installation'
       jobPriority.value = 'normal'
+      jobServiceRequestId.value = ''
       createLocationToggle.checked = false
       newLocationFields.classList.add('hidden')
       configurationKind.value = 'general'
@@ -1225,6 +1321,7 @@
       jobLocationId.value = item.location_id ? String(item.location_id) : ''
       populateMachineOptions(jobLocationId.value || '')
       jobMachineId.value = item.machine_id ? String(item.machine_id) : ''
+      jobServiceRequestId.value = item.service_request_id ? String(item.service_request_id) : ''
       sourceLocationId.value = item.source_location_id ? String(item.source_location_id) : ''
       targetLocationId.value = item.target_location_id ? String(item.target_location_id) : ''
       workshopReady.checked = Boolean(item.workshop_ready)
@@ -1247,11 +1344,24 @@
         window.location.href = 'index.html'
         return false
       }
-      const { data: employee, error } = await supabase
+      let employee = null
+      let error = null
+      let result = await supabase
         .from('employees')
         .select('id, name, surname, role, email, permissions')
         .eq('auth_user_id', authUser.id)
         .maybeSingle()
+      employee = result.data
+      error = result.error
+      if (error && String(error.message || '').toLowerCase().includes('permissions')) {
+        result = await supabase
+          .from('employees')
+          .select('id, name, surname, role, email')
+          .eq('auth_user_id', authUser.id)
+          .maybeSingle()
+        employee = result.data
+        error = result.error
+      }
       if (error) throw error
       if (!employee) {
         window.location.href = 'index.html'
@@ -1276,60 +1386,83 @@
         jobsResult,
         checklistResult,
         signaturesResult,
-        protocolsResult
-      ] = await Promise.all([
+        protocolsResult,
+        attachmentsResult
+      ] = await Promise.allSettled([
         supabase.from('locations').select('id, name, city, address, active').eq('active', true).order('name', { ascending: true }),
         supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true }),
         supabase.from('machines').select('id, location_id, name, machine_type, status, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('service_requests').select('id, title, priority, status, assigned_employee_id, created_at').order('created_at', { ascending: false }),
+        supabase.from('service_requests').select('id, title, priority, status, assigned_employee_id, location_id, machine_id, created_at').order('created_at', { ascending: false }),
         supabase.from('technical_jobs').select('*').order('created_at', { ascending: false }),
         supabase.from('technical_job_checklist_items').select('*').order('sort_order', { ascending: true }),
         supabase.from('technical_job_signatures').select('*').order('signed_at', { ascending: false }),
-        supabase.from('technical_job_protocols').select('*').order('generated_at', { ascending: false })
+        supabase.from('technical_job_protocols').select('*').order('generated_at', { ascending: false }),
+        supabase.from('technical_job_attachments').select('*').order('created_at', { ascending: false })
       ])
 
-      if (locationsResult.error) throw locationsResult.error
-      if (employeesResult.error) throw employeesResult.error
-      if (machinesResult.error) throw machinesResult.error
-      if (serviceRequestsResult.error) throw serviceRequestsResult.error
-      if (jobsResult.error) {
-        if (isMissingTechnicalTableError(jobsResult.error)) {
-          jobs = []
-          checklistItems = []
-          signatures = []
-          protocols = []
-          locations = locationsResult.data ?? []
-          employees = (employeesResult.data ?? []).map((item) => ({
-            ...item,
-            label: [item.name, item.surname].filter(Boolean).join(' ').trim() || item.email || 'Zaměstnanec'
-          }))
-          machines = machinesResult.data ?? []
-          serviceRequests = serviceRequestsResult.data ?? []
-          populateSupportOptions()
-          renderSummary()
-          renderActiveTab()
-          setStatus('V databázi ještě chybí modul technických zásahů. Prosím spusť database/technical_jobs_v15.sql.', 'error')
-          return
+      const warnings = []
+      const resolveSupabaseResult = (result, label, { allowMissingTable = false } = {}) => {
+        if (result.status !== 'fulfilled') {
+          warnings.push(`${label}: neznámá chyba`)
+          return []
         }
-        throw jobsResult.error
+        const payload = result.value
+        if (payload.error) {
+          if (allowMissingTable && isMissingTechnicalTableError(payload.error)) {
+            return null
+          }
+          warnings.push(`${label}: ${payload.error.message}`)
+          return []
+        }
+        return payload.data ?? []
       }
 
-      locations = locationsResult.data ?? []
-      employees = (employeesResult.data ?? []).map((item) => ({
+      const loadedLocations = resolveSupabaseResult(locationsResult, 'lokality')
+      const loadedEmployees = resolveSupabaseResult(employeesResult, 'zaměstnanci')
+      const loadedMachines = resolveSupabaseResult(machinesResult, 'automaty')
+      const loadedServiceRequests = resolveSupabaseResult(serviceRequestsResult, 'servisní požadavky')
+      const loadedJobs = resolveSupabaseResult(jobsResult, 'technické karty', { allowMissingTable: true })
+      const loadedChecklist = resolveSupabaseResult(checklistResult, 'checklist')
+      const loadedSignatures = resolveSupabaseResult(signaturesResult, 'podpisy')
+      const loadedProtocols = resolveSupabaseResult(protocolsResult, 'protokoly')
+      const loadedAttachments = resolveSupabaseResult(attachmentsResult, 'fotky a přílohy')
+
+      locations = Array.isArray(loadedLocations) ? loadedLocations : []
+      employees = (Array.isArray(loadedEmployees) ? loadedEmployees : []).map((item) => ({
         ...item,
         label: [item.name, item.surname].filter(Boolean).join(' ').trim() || item.email || 'Zaměstnanec'
       }))
-      machines = machinesResult.data ?? []
-      serviceRequests = serviceRequestsResult.data ?? []
-      jobs = jobsResult.data ?? []
-      checklistItems = checklistResult.error ? [] : (checklistResult.data ?? [])
-      signatures = signaturesResult.error ? [] : (signaturesResult.data ?? [])
-      protocols = protocolsResult.error ? [] : (protocolsResult.data ?? [])
+      machines = Array.isArray(loadedMachines) ? loadedMachines : []
+      serviceRequests = Array.isArray(loadedServiceRequests) ? loadedServiceRequests : []
+
+      if (loadedJobs === null) {
+        jobs = []
+        checklistItems = []
+        signatures = []
+        protocols = []
+        attachments = []
+        populateSupportOptions()
+        renderSummary()
+        renderActiveTab()
+        setStatus('V databázi ještě chybí modul technických zásahů. Prosím spusť database/technical_jobs_v15.sql a database/technical_jobs_storage_v15.sql.', 'error')
+        return
+      }
+
+      jobs = Array.isArray(loadedJobs) ? loadedJobs : []
+      checklistItems = Array.isArray(loadedChecklist) ? loadedChecklist : []
+      signatures = Array.isArray(loadedSignatures) ? loadedSignatures : []
+      protocols = Array.isArray(loadedProtocols) ? loadedProtocols : []
+      attachments = Array.isArray(loadedAttachments) ? loadedAttachments : []
 
       populateSupportOptions()
       renderSummary()
       renderActiveTab()
-      setStatus(`Načteno technických karet: ${jobs.length}. Servisní požadavky držíme pod stejným širším modulem.`, 'success')
+      setStatus(
+        warnings.length
+          ? `Načteno technických karet: ${jobs.length}. Některé vrstvy se teď nenačetly: ${warnings.join(' · ')}`
+          : `Načteno technických karet: ${jobs.length}. Servisní požadavky držíme pod stejným širším modulem.`,
+        warnings.length ? 'error' : 'success'
+      )
     }
 
     async function ensureChecklist(jobRecord) {
@@ -1375,6 +1508,30 @@
       }
     }
 
+    function prefillFromServiceRequest(serviceRequestId) {
+      const request = serviceRequests.find((item) => String(item.id) === String(serviceRequestId))
+      if (!request) return
+      if (!jobTitle.value.trim()) {
+        jobTitle.value = request.title || ''
+      }
+      if (!jobDescription.value.trim()) {
+        jobDescription.value = request.description || ''
+      }
+      if (!jobLocationId.value && request.location_id) {
+        jobLocationId.value = String(request.location_id)
+        populateMachineOptions(jobLocationId.value || '')
+      }
+      if (!jobMachineId.value && request.machine_id) {
+        jobMachineId.value = String(request.machine_id)
+      }
+      if (!jobAssignedEmployeeId.value && request.assigned_employee_id) {
+        jobAssignedEmployeeId.value = String(request.assigned_employee_id)
+      }
+      if (request.priority && jobPriority.value === 'normal') {
+        jobPriority.value = request.priority
+      }
+    }
+
     async function saveJob(event) {
       event.preventDefault()
       saveJobBtn.disabled = true
@@ -1387,6 +1544,7 @@
           description: String(jobDescription.value || '').trim() || null,
           location_id: resolvedLocationId,
           machine_id: jobMachineId.value ? Number(jobMachineId.value) : null,
+          service_request_id: jobServiceRequestId.value ? Number(jobServiceRequestId.value) : null,
           source_location_id: sourceLocationId.value ? Number(sourceLocationId.value) : null,
           target_location_id: targetLocationId.value ? Number(targetLocationId.value) : null,
           assigned_employee_id: jobAssignedEmployeeId.value || null,
@@ -1556,6 +1714,7 @@
       const checklist = getChecklistForJob(job.id)
       const signature = getSignatureForJob(job.id)
       const protocol = getProtocolForJob(job.id)
+      const jobAttachments = getAttachmentsForJob(job.id)
       const configuration = safeJson(job.configuration_payload, {})
       const requiredCount = checklist.filter((item) => item.required !== false).length
       const doneCount = checklist.filter((item) => item.completed).length
@@ -1585,6 +1744,11 @@
             <span class="detail-label">Lokalita</span>
             <span class="detail-value">${escapeHtml(getLocationLabel(job.location_id))}</span>
             <span class="detail-value small">${escapeHtml(getMachineLabel(job.machine_id))}</span>
+          </article>
+          <article class="detail-metric">
+            <span class="detail-label">Navázaný servis</span>
+            <span class="detail-value">${escapeHtml(getServiceRequestLabel(job.service_request_id))}</span>
+            <span class="detail-value small">${job.service_request_id ? 'Karta je navázaná na konkrétní servisní požadavek.' : 'Bez vazby na detailní servisní požadavek.'}</span>
           </article>
           <article class="detail-metric">
             <span class="detail-label">Termín a časy</span>
@@ -1680,6 +1844,27 @@
             </article>
           </div>
         </div>
+
+        <div class="detail-card">
+          <div class="section-title">
+            <h4>Fotky a přílohy</h4>
+            <span>Technik může nahrát fotku z galerie nebo ji pořídit přímo na mobilu.</span>
+          </div>
+          <div class="actions" style="margin-top:14px;">
+            <label class="btn secondary" for="detailAttachmentInput">Přidat fotku / přílohu</label>
+            <input id="detailAttachmentInput" type="file" accept="image/*,.pdf" capture="environment" data-job-id="${job.id}" style="display:none;" />
+          </div>
+          <div class="attachments-grid" style="margin-top:14px;">
+            ${jobAttachments.length ? jobAttachments.map((item) => `
+              <article class="attachment-card">
+                ${String(item.attachment_type || '').includes('photo') ? `<img src="${item.attachment_url}" alt="Příloha zásahu" />` : ''}
+                <strong>${escapeHtml(item.note || (String(item.attachment_type || '').includes('photo') ? 'Fotka zásahu' : 'Příloha zásahu'))}</strong>
+                <span class="subtext">${escapeHtml(formatDateTime(item.created_at))}</span>
+                <a class="btn secondary" href="${item.attachment_url}" target="_blank" rel="noopener">Otevřít</a>
+              </article>
+            `).join('') : '<div class="empty-state">Zatím tu nejsou žádné fotky ani přílohy.</div>'}
+          </div>
+        </div>
       `
       detailEditBtn.disabled = !isManagerRole() && String(job.assigned_employee_id || '') !== String(currentUser?.id || '')
       detailConfirmBtn.disabled = !isManagerRole()
@@ -1722,6 +1907,41 @@
       closeSignatureModal()
       await loadData()
       renderDetail(activeDetailId)
+    }
+
+    async function uploadAttachment(file, jobIdValue) {
+      if (!file) throw new Error('Vyber fotku nebo přílohu.')
+      if (!jobIdValue) throw new Error('Chybí aktivní technická karta.')
+      const extension = String(file.name || 'upload').split('.').pop() || 'bin'
+      const safeName = normalizeText(file.name || 'attachment').replace(/[^a-z0-9_-]/g, '-') || 'attachment'
+      const path = `${jobIdValue}/${Date.now()}-${safeName}.${extension}`
+      const { error: uploadError } = await supabase.storage
+        .from('technical-job-files')
+        .upload(path, file, { upsert: false, contentType: file.type || undefined })
+      if (uploadError) throw uploadError
+      const { data: publicUrlData } = supabase.storage.from('technical-job-files').getPublicUrl(path)
+      const attachmentType = file.type.startsWith('image/') ? 'photo' : 'document'
+      const { error } = await supabase.from('technical_job_attachments').insert([{
+        technical_job_id: Number(jobIdValue),
+        attachment_type: attachmentType,
+        attachment_url: publicUrlData.publicUrl,
+        note: attachmentType === 'photo' ? 'Fotka zásahu' : file.name,
+        created_by: currentUser?.id || null
+      }])
+      if (error) throw error
+      await loadData()
+      renderDetail(jobIdValue)
+    }
+
+    async function updateJobStatus(jobIdValue, nextStatus) {
+      const payload = { status: nextStatus }
+      if (nextStatus === 'on_the_way') payload.started_at = new Date().toISOString()
+      if (nextStatus === 'on_site') payload.arrived_at = new Date().toISOString()
+      if (nextStatus === 'in_progress') payload.started_at = new Date().toISOString()
+      const { error } = await supabase.from('technical_jobs').update(payload).eq('id', Number(jobIdValue))
+      if (error) throw error
+      await loadData()
+      if (String(activeDetailId || '') === String(jobIdValue)) renderDetail(jobIdValue)
     }
 
     async function submitForConfirmation() {
@@ -1826,6 +2046,9 @@
     statusFilter.addEventListener('change', renderJobsTable)
     priorityFilter.addEventListener('change', renderJobsTable)
     technicianFilter.addEventListener('change', renderJobsTable)
+    jobServiceRequestId.addEventListener('change', () => {
+      if (jobServiceRequestId.value) prefillFromServiceRequest(jobServiceRequestId.value)
+    })
     refreshBtn.addEventListener('click', loadData)
     openCreateBtn.addEventListener('click', () => {
       resetJobForm()
@@ -1855,13 +2078,55 @@
 
     detailBody.addEventListener('click', async (event) => {
       const actionButton = event.target.closest('[data-action="save-checklist-item"]')
-      if (!actionButton) return
-      try {
-        await saveChecklistItem(actionButton.dataset.id)
-        setStatus('Checklist byl uložen.', 'success')
-      } catch (error) {
-        setStatus(`Nepodařilo se uložit checklist: ${error.message}`, 'error')
+      if (actionButton) {
+        try {
+          await saveChecklistItem(actionButton.dataset.id)
+          setStatus('Checklist byl uložen.', 'success')
+        } catch (error) {
+          setStatus(`Nepodařilo se uložit checklist: ${error.message}`, 'error')
+        }
+        return
       }
+    })
+
+    detailBody.addEventListener('change', async (event) => {
+      const input = event.target.closest('#detailAttachmentInput')
+      if (!input?.files?.length) return
+      try {
+        await uploadAttachment(input.files[0], input.dataset.jobId)
+        setStatus('Fotka nebo příloha byla uložená.', 'success')
+      } catch (error) {
+        setStatus(`Nepodařilo se uložit přílohu: ${error.message}`, 'error')
+      } finally {
+        input.value = ''
+      }
+    })
+
+    technicianQueue.addEventListener('click', async (event) => {
+      const openButton = event.target.closest('[data-action="open-detail"]')
+      const statusButton = event.target.closest('[data-action="quick-status"]')
+      try {
+        if (openButton) {
+          renderDetail(openButton.dataset.id)
+          return
+        }
+        if (statusButton) {
+          await updateJobStatus(statusButton.dataset.id, statusButton.dataset.status)
+          setStatus('Stav technické karty byl upraven.', 'success')
+        }
+      } catch (error) {
+        setStatus(`Nepodařilo se upravit stav karty: ${error.message}`, 'error')
+      }
+    })
+
+    serviceBridgeList.addEventListener('click', (event) => {
+      const bridgeButton = event.target.closest('[data-action="bridge-service-request"]')
+      if (!bridgeButton) return
+      resetJobForm()
+      jobType.value = 'service'
+      jobServiceRequestId.value = bridgeButton.dataset.id
+      prefillFromServiceRequest(bridgeButton.dataset.id)
+      openJobModal()
     })
 
     jobsTableBody.addEventListener('click', (event) => {
