@@ -3544,6 +3544,50 @@
       return Math.max(logKm ?? 0, currentKm ?? 0) || null
     }
 
+    function getFuelLogChronologicalTime(log) {
+      const dateValue = String(log?.log_date || '1970-01-01')
+      const timeValue = log?.started_at || log?.ended_at || `${dateValue}T12:00:00`
+      const parsed = new Date(timeValue)
+      if (Number.isNaN(parsed.getTime())) {
+        return new Date(`${dateValue}T12:00:00`).getTime()
+      }
+      return parsed.getTime()
+    }
+
+    function getHistoricalFuelBounds(vehicleLogs = [], targetKm, targetDate, currentVehicleKm = null) {
+      const targetDateTime = new Date(`${targetDate || '1970-01-01'}T12:00:00`).getTime()
+      const sortedFuelLogs = [...vehicleLogs]
+        .filter((log) => Number(log.fuel_liters) > 0 && Number.isFinite(Number(log.fuel_odometer_km)))
+        .sort((a, b) => {
+          const timeDiff = getFuelLogChronologicalTime(a) - getFuelLogChronologicalTime(b)
+          if (timeDiff !== 0) return timeDiff
+          return Number(a.fuel_odometer_km || 0) - Number(b.fuel_odometer_km || 0)
+        })
+
+      let previousFuelLog = null
+      let nextFuelLog = null
+
+      sortedFuelLogs.forEach((log) => {
+        const logKm = Number(log.fuel_odometer_km || 0)
+        const logTime = getFuelLogChronologicalTime(log)
+        if (logTime <= targetDateTime && logKm < targetKm) {
+          previousFuelLog = log
+          return
+        }
+        if (nextFuelLog) return
+        if (logTime >= targetDateTime && logKm > targetKm) {
+          nextFuelLog = log
+        }
+      })
+
+      const upperVehicleKm = parseIntegerValue(currentVehicleKm)
+      return {
+        previousFuelLog,
+        nextFuelLog,
+        upperVehicleKm
+      }
+    }
+
     async function createFuelLogEntry(formData) {
       const vehicleId = Number(formData.get('fuel_vehicle_id'))
       const logDate = formData.get('fuel_date') || getTodayDateString()
@@ -3600,23 +3644,27 @@
         throw new Error(`Cena za litr nevypadá správně (${pricePerLiter.toFixed(2).replace('.', ',')} Kč/l).`)
       }
 
-      const latestKnownKm = getLatestKnownVehicleKm(vehicleId, vehicleLogs || [])
-      if (latestKnownKm != null && fuelOdometerKm < latestKnownKm) {
-        throw new Error(`Km při tankování nesmí být nižší než poslední známý stav ${latestKnownKm} km.`)
+      const {
+        previousFuelLog,
+        nextFuelLog,
+        upperVehicleKm
+      } = getHistoricalFuelBounds(vehicleLogs || [], fuelOdometerKm, logDate, vehicle?.current_odometer_km)
+
+      if (previousFuelLog?.fuel_odometer_km != null) {
+        const previousKm = Number(previousFuelLog.fuel_odometer_km || 0)
+        if (fuelOdometerKm <= previousKm) {
+          throw new Error(`Km při tankování musí být vyšší než předchozí známé tankování ${previousKm} km.`)
+        }
       }
 
-      const historicalFuelLogs = [...(vehicleLogs || [])]
-        .filter((log) => Number(log.fuel_liters) > 0 && Number.isFinite(Number(log.fuel_odometer_km)))
-        .sort((a, b) => {
-          const aKm = Number(a.fuel_odometer_km || 0)
-          const bKm = Number(b.fuel_odometer_km || 0)
-          if (aKm !== bKm) return aKm - bKm
-          return new Date(`${a.log_date || '1970-01-01'}T00:00:00`).getTime() - new Date(`${b.log_date || '1970-01-01'}T00:00:00`).getTime()
-        })
-
-      const previousFuelLog = historicalFuelLogs
-        .filter((log) => Number(log.fuel_odometer_km || 0) < fuelOdometerKm)
-        .slice(-1)[0] || null
+      if (nextFuelLog?.fuel_odometer_km != null) {
+        const nextKm = Number(nextFuelLog.fuel_odometer_km || 0)
+        if (fuelOdometerKm >= nextKm) {
+          throw new Error(`Km při tankování musí být nižší než následující známý stav ${nextKm} km.`)
+        }
+      } else if (upperVehicleKm != null && fuelOdometerKm > upperVehicleKm) {
+        throw new Error(`Km při tankování nesmí být vyšší než aktuálně známý stav vozidla ${upperVehicleKm} km.`)
+      }
 
       let requiresReview = false
       const reviewReasons = []
