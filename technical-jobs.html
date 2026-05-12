@@ -835,10 +835,34 @@
                         <label for="newDrinkSalePrice">Základní cena</label>
                         <input id="newDrinkSalePrice" type="number" min="0" step="0.01" placeholder="Např. 45" />
                       </div>
-                      <div class="field full compact">
-                        <label for="newDrinkRecipeInput">Receptura</label>
-                        <textarea id="newDrinkRecipeInput" placeholder="Jedna surovina na řádek: ingredience | množství | jednotka&#10;Zrnková káva | 8 | g&#10;Mléko instant | 14 | g"></textarea>
-                        <div class="help">Receptura se uloží do konfigurace volby. Jakmile bude karta navázaná na konkrétní automat, půjde z ní vytvořit ostrý recept.</div>
+                      <div class="field full">
+                        <div class="config-section">
+                          <div class="config-section-header">
+                            <div>
+                              <h5>Receptura nápoje</h5>
+                              <span>Ingredience z inventáře, dávka a náklad na jednu volbu.</span>
+                            </div>
+                            <button class="btn secondary" type="button" id="addRecipeIngredientBtn">+ Přidat surovinu</button>
+                          </div>
+                          <div class="config-table-wrap">
+                            <table class="config-table">
+                              <thead>
+                                <tr>
+                                  <th>Ingredience</th>
+                                  <th class="small-cell">Množství</th>
+                                  <th class="tiny-cell">Jednotka</th>
+                                  <th class="small-cell">Náklad / j.</th>
+                                  <th class="small-cell">Náklad řádku</th>
+                                  <th class="action-cell">Akce</th>
+                                </tr>
+                              </thead>
+                              <tbody id="drinkRecipeRows"></tbody>
+                            </table>
+                          </div>
+                          <div class="config-empty hidden" id="drinkRecipeEmpty">Zatím není zadaná žádná recepturová surovina.</div>
+                          <div class="helper-line" id="drinkRecipeCostSummary" style="padding:12px 14px;">Náklad receptury: 0 Kč</div>
+                        </div>
+                        <div class="help">Náklad se počítá z ceny balení a přepočtu v inventáři. Např. balení 1 kg = 1000 g.</div>
                       </div>
                       <div class="field full">
                         <button class="btn secondary" type="button" id="createDrinkBtn">Založit produkt a přidat do planogramu</button>
@@ -1055,7 +1079,10 @@
     const newDrinkSku = document.getElementById('newDrinkSku')
     const newDrinkChoice = document.getElementById('newDrinkChoice')
     const newDrinkSalePrice = document.getElementById('newDrinkSalePrice')
-    const newDrinkRecipeInput = document.getElementById('newDrinkRecipeInput')
+    const addRecipeIngredientBtn = document.getElementById('addRecipeIngredientBtn')
+    const drinkRecipeRows = document.getElementById('drinkRecipeRows')
+    const drinkRecipeEmpty = document.getElementById('drinkRecipeEmpty')
+    const drinkRecipeCostSummary = document.getElementById('drinkRecipeCostSummary')
     const createDrinkBtn = document.getElementById('createDrinkBtn')
     const toggleQuickConfigBtn = document.getElementById('toggleQuickConfigBtn')
     const addIngredientBtn = document.getElementById('addIngredientBtn')
@@ -1318,6 +1345,10 @@
       return product ? `${product.sku ? `${product.sku} · ` : ''}${product.name}` : ''
     }
 
+    function getIngredientProducts() {
+      return products.filter((item) => String(item.product_category || '') === 'ingredient' || String(item.usage_type || '') === 'recipe_consumption')
+    }
+
     function getNextProductSku() {
       const numericSkus = products
         .map((item) => Number(String(item.sku || '').trim()))
@@ -1334,6 +1365,21 @@
       return productPackages.find((item) => String(item.product_id) === String(productId) && item.is_default)
         || productPackages.find((item) => String(item.product_id) === String(productId))
         || null
+    }
+
+    function getProductUnitCost(productId) {
+      const product = products.find((item) => String(item.id) === String(productId))
+      if (!product) return 0
+      const packageRow = getDefaultPackageForProduct(product.id)
+      const packageUnits = Number(packageRow?.units_per_package || 0)
+      const packagePrice = Number(product.purchase_price ?? product.sale_price ?? 0)
+      if (packagePrice > 0 && packageUnits > 0) return packagePrice / packageUnits
+      return packagePrice > 0 ? packagePrice : 0
+    }
+
+    function formatMoney(value) {
+      const number = Number(value || 0)
+      return `${number.toLocaleString('cs-CZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kč`
     }
 
     function getActiveTechnicianJobs() {
@@ -1742,6 +1788,7 @@
       telemetryMappingInput.value = ''
       renderIngredientTable([])
       renderPlanogramTable([])
+      renderDrinkRecipeTable([])
       updateConfigurationMode()
       jobModalTitle.textContent = 'Nová technická karta'
       saveJobBtn.textContent = 'Uložit technickou kartu'
@@ -2222,8 +2269,12 @@
             <td class="${column.className || ''}">
               ${column.type === 'product'
                 ? `<select data-config-field="${escapeHtml(column.key)}"><option value="">Vyber z inventáře</option>${products.map((product) => `<option value="${escapeHtml(String(product.id))}" ${String(row[column.key] || '') === String(product.id) ? 'selected' : ''}>${escapeHtml(getProductLabel(product.id))}</option>`).join('')}</select>`
+                : column.type === 'ingredient-product'
+                ? `<select data-config-field="${escapeHtml(column.key)}"><option value="">Vyber ingredienci</option>${getIngredientProducts().map((product) => `<option value="${escapeHtml(String(product.id))}" ${String(row[column.key] || '') === String(product.id) ? 'selected' : ''}>${escapeHtml(getProductLabel(product.id))}</option>`).join('')}</select>`
                 : column.type === 'select'
                 ? `<select data-config-field="${escapeHtml(column.key)}">${column.options.map((option) => `<option value="${escapeHtml(option.value)}" ${String(row[column.key] || '') === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}</select>`
+                : column.type === 'readonly'
+                ? `<input data-config-field="${escapeHtml(column.key)}" type="text" value="${escapeHtml(row[column.key] || '')}" readonly />`
                 : `<input data-config-field="${escapeHtml(column.key)}" type="${column.type || 'text'}" value="${escapeHtml(row[column.key] || '')}" placeholder="${escapeHtml(column.placeholder || '')}" />`
               }
             </td>
@@ -2246,6 +2297,7 @@
     function refreshConfigEmptyStates() {
       ingredientEmpty.classList.toggle('hidden', Boolean(ingredientRows.children.length))
       planogramEmpty.classList.toggle('hidden', Boolean(planogramRows.children.length))
+      drinkRecipeEmpty.classList.toggle('hidden', Boolean(drinkRecipeRows.children.length))
     }
 
     function renderIngredientTable(rows = []) {
@@ -2284,15 +2336,78 @@
       renderPlanogramTable([...getConfigTableRows(planogramRows), row])
     }
 
+    function normalizeRecipeRows(rows = []) {
+      return (Array.isArray(rows) ? rows : []).map((row) => {
+        const productId = row.product_id || ''
+        const product = products.find((item) => String(item.id) === String(productId))
+        const quantity = Number(row.quantity || 0)
+        const unitCost = Number(row.unit_cost || getProductUnitCost(productId) || 0)
+        const lineCost = quantity * unitCost
+        return {
+          product_id: productId,
+          ingredient_name: row.ingredient_name || product?.name || '',
+          quantity: row.quantity || '',
+          unit: row.unit || product?.base_unit || 'g',
+          unit_cost: unitCost ? unitCost.toFixed(4) : '',
+          line_cost: lineCost ? lineCost.toFixed(2) : ''
+        }
+      }).filter((row) => row.product_id || row.ingredient_name || row.quantity)
+    }
+
+    function renderDrinkRecipeTable(rows = []) {
+      renderConfigTableRows(drinkRecipeRows, normalizeRecipeRows(rows), [
+        { key: 'product_id', type: 'ingredient-product' },
+        { key: 'quantity', className: 'small-cell', type: 'number', placeholder: '8' },
+        { key: 'unit', className: 'tiny-cell', placeholder: 'g' },
+        { key: 'unit_cost', className: 'small-cell', type: 'readonly' },
+        { key: 'line_cost', className: 'small-cell', type: 'readonly' }
+      ], 'remove-recipe-row')
+      updateDrinkRecipeCosts()
+      refreshConfigEmptyStates()
+    }
+
+    function getDrinkRecipeRows() {
+      return normalizeRecipeRows(getConfigTableRows(drinkRecipeRows))
+    }
+
+    function addDrinkRecipeRow(row = {}) {
+      renderDrinkRecipeTable([...getDrinkRecipeRows(), row])
+    }
+
+    function updateDrinkRecipeCosts() {
+      let total = 0
+      drinkRecipeRows.querySelectorAll('tr').forEach((tr) => {
+        const productSelect = tr.querySelector('[data-config-field="product_id"]')
+        const quantityInput = tr.querySelector('[data-config-field="quantity"]')
+        const unitInput = tr.querySelector('[data-config-field="unit"]')
+        const unitCostInput = tr.querySelector('[data-config-field="unit_cost"]')
+        const lineCostInput = tr.querySelector('[data-config-field="line_cost"]')
+        const product = products.find((item) => String(item.id) === String(productSelect?.value || ''))
+        const unitCost = getProductUnitCost(product?.id)
+        const quantity = Number(quantityInput?.value || 0)
+        const lineCost = quantity * unitCost
+        if (product && unitInput && !unitInput.value) unitInput.value = product.base_unit || 'g'
+        if (unitCostInput) unitCostInput.value = unitCost ? unitCost.toFixed(4) : ''
+        if (lineCostInput) lineCostInput.value = lineCost ? lineCost.toFixed(2) : ''
+        total += lineCost
+      })
+      drinkRecipeCostSummary.textContent = `Náklad receptury: ${formatMoney(total)}`
+      return total
+    }
+
     function parseRecipeRows(value) {
       return String(value || '').split(/\n|;/).map((row) => row.trim()).filter(Boolean).map((row) => {
         const [ingredientName = '', quantity = '', unit = 'g'] = row.split('|').map((part) => part.trim())
         const product = products.find((item) => normalizeText(item.name) === normalizeText(ingredientName))
+        const unitCost = getProductUnitCost(product?.id)
+        const lineCost = Number(quantity || 0) * unitCost
         return {
           product_id: product?.id || '',
           ingredient_name: ingredientName,
           quantity,
-          unit
+          unit,
+          unit_cost: unitCost ? unitCost.toFixed(4) : '',
+          line_cost: lineCost ? lineCost.toFixed(2) : ''
         }
       }).filter((row) => row.ingredient_name || row.quantity)
     }
@@ -2406,6 +2521,8 @@
       if (!name) throw new Error('Doplň název nápoje nebo produktu.')
       ensureSuggestedSku(newDrinkSku)
       const salePrice = newDrinkSalePrice.value ? Number(newDrinkSalePrice.value) : null
+      const recipeRows = getDrinkRecipeRows()
+      const recipeCost = updateDrinkRecipeCosts()
       const productPayload = {
         name,
         sku: String(newDrinkSku.value || '').trim() || null,
@@ -2435,18 +2552,19 @@
         loyalty_price: salePrice ?? '',
         telemetry_key: newDrinkChoice.value ? `drink_${newDrinkChoice.value}` : '',
         active: 'ano',
-        recipe_text: newDrinkRecipeInput.value.trim().replace(/\n/g, '; '),
-        recipe_items: parseRecipeRows(newDrinkRecipeInput.value)
+        recipe_text: recipeRows.map((row) => `${row.ingredient_name} | ${row.quantity} | ${row.unit}`).join('; '),
+        recipe_items: recipeRows,
+        recipe_cost: recipeCost.toFixed(2)
       })
-      if (newDrinkRecipeInput.value.trim()) {
+      if (recipeRows.length) {
         const existing = String(coffeeButtonsInput.value || '').trim()
-        coffeeButtonsInput.value = [existing, `${product.name}\n${newDrinkRecipeInput.value.trim()}`].filter(Boolean).join('\n\n')
+        coffeeButtonsInput.value = [existing, `${product.name}\n${recipeRows.map((row) => `${row.ingredient_name} | ${row.quantity} | ${row.unit} | ${row.line_cost} Kč`).join('\n')}`].filter(Boolean).join('\n\n')
       }
       newDrinkName.value = ''
       newDrinkSku.value = ''
       newDrinkChoice.value = ''
       newDrinkSalePrice.value = ''
-      newDrinkRecipeInput.value = ''
+      renderDrinkRecipeTable([])
       setStatus('Produkt nápoje byl založený a přidaný do planogramu.', 'success')
     }
 
@@ -3029,6 +3147,7 @@
       configurationKind.addEventListener('change', updateConfigurationMode)
       addIngredientBtn.addEventListener('click', () => addIngredientRow({ unit: 'g' }))
       addPlanogramRowBtn.addEventListener('click', () => addPlanogramRow({ active: 'ano' }))
+      addRecipeIngredientBtn.addEventListener('click', () => addDrinkRecipeRow({ unit: 'g' }))
       createIngredientBtn.addEventListener('click', async () => {
         createIngredientBtn.disabled = true
         try {
@@ -3072,6 +3191,15 @@
         button.closest('tr')?.remove()
         refreshConfigEmptyStates()
       })
+      drinkRecipeRows.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-config-action="remove-recipe-row"]')
+        if (!button) return
+        button.closest('tr')?.remove()
+        updateDrinkRecipeCosts()
+        refreshConfigEmptyStates()
+      })
+      drinkRecipeRows.addEventListener('change', updateDrinkRecipeCosts)
+      drinkRecipeRows.addEventListener('input', updateDrinkRecipeCosts)
       jobTitle.addEventListener('input', () => {
         jobTitle.dataset.manual = String(Boolean(jobTitle.value.trim()))
       })
