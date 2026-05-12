@@ -882,6 +882,7 @@
     let activeDetailId = null
     let drawingSignature = false
     let lastSignaturePoint = null
+    const QUERY_TIMEOUT_MS = 12000
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -907,6 +908,30 @@
         setStatus(`${statusPrefix}: ${message}`, 'error')
       }
       return message
+    }
+
+    function createTimeoutError(label, timeoutMs = QUERY_TIMEOUT_MS) {
+      return {
+        message: `Dotaz ${label} se nevrátil do ${Math.round(timeoutMs / 1000)} s`,
+        details: 'Zkontroluj prosím RLS policy, chybějící sloupce nebo dočasně nedostupnou tabulku.',
+        code: 'QUERY_TIMEOUT'
+      }
+    }
+
+    async function runTimedQuery(label, factory, timeoutMs = QUERY_TIMEOUT_MS) {
+      let timeoutId = null
+      try {
+        return await Promise.race([
+          Promise.resolve().then(factory),
+          new Promise((resolve) => {
+            timeoutId = window.setTimeout(() => {
+              resolve({ data: null, error: createTimeoutError(label, timeoutMs) })
+            }, timeoutMs)
+          })
+        ])
+      } finally {
+        if (timeoutId) window.clearTimeout(timeoutId)
+      }
     }
 
     function escapeHtml(value) {
@@ -1531,10 +1556,12 @@
     }
 
     async function loadTechnicalJobsWithFallback() {
-      let result = await supabase
-        .from('technical_jobs')
-        .select('*')
-        .order('created_at', { ascending: false })
+      let result = await runTimedQuery('technické karty', () => (
+        supabase
+          .from('technical_jobs')
+          .select('*')
+          .order('created_at', { ascending: false })
+      ))
 
       if (!result.error) {
         return {
@@ -1549,10 +1576,12 @@
         return result
       }
 
-      result = await supabase
-        .from('technical_jobs')
-        .select('id, job_type, status, priority, title, description, note, result, location_id, machine_id, assigned_employee_id, planned_date, arrived_at, started_at, finished_at, qr_token, created_at, updated_at')
-        .order('created_at', { ascending: false })
+      result = await runTimedQuery('technické karty (fallback)', () => (
+        supabase
+          .from('technical_jobs')
+          .select('id, job_type, status, priority, title, description, note, result, location_id, machine_id, assigned_employee_id, planned_date, arrived_at, started_at, finished_at, qr_token, created_at, updated_at')
+          .order('created_at', { ascending: false })
+      ))
 
       if (result.error) {
         return result
@@ -1566,6 +1595,9 @@
 
     async function loadData() {
       setStatus('Načítám technické zásahy...', '')
+      const slowLoadWarningId = window.setTimeout(() => {
+        setStatus('Načítání technických zásahů trvá déle než obvykle. Kontroluji databázové vrstvy…', 'warning')
+      }, 4000)
       const [
         locationsResult,
         employeesResult,
@@ -1577,16 +1609,17 @@
         protocolsResult,
         attachmentsResult
       ] = await Promise.allSettled([
-        supabase.from('locations').select('id, name, city, address, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true }),
-        supabase.from('machines').select('id, location_id, name, machine_type, status, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('service_requests').select('id, title, description, priority, status, assigned_employee_id, location_id, machine_id, created_at').order('created_at', { ascending: false }),
+        runTimedQuery('lokality', () => supabase.from('locations').select('id, name, city, address, active').eq('active', true).order('name', { ascending: true })),
+        runTimedQuery('zaměstnanci', () => supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true })),
+        runTimedQuery('automaty', () => supabase.from('machines').select('id, location_id, name, machine_type, status, active').eq('active', true).order('name', { ascending: true })),
+        runTimedQuery('servisní požadavky', () => supabase.from('service_requests').select('id, title, description, priority, status, assigned_employee_id, location_id, machine_id, created_at').order('created_at', { ascending: false })),
         loadTechnicalJobsWithFallback(),
-        supabase.from('technical_job_checklist_items').select('*').order('sort_order', { ascending: true }),
-        supabase.from('technical_job_signatures').select('*').order('signed_at', { ascending: false }),
-        supabase.from('technical_job_protocols').select('*').order('generated_at', { ascending: false }),
-        supabase.from('technical_job_attachments').select('*').order('created_at', { ascending: false })
+        runTimedQuery('checklist', () => supabase.from('technical_job_checklist_items').select('*').order('sort_order', { ascending: true })),
+        runTimedQuery('podpisy', () => supabase.from('technical_job_signatures').select('*').order('signed_at', { ascending: false })),
+        runTimedQuery('protokoly', () => supabase.from('technical_job_protocols').select('*').order('generated_at', { ascending: false })),
+        runTimedQuery('fotky a přílohy', () => supabase.from('technical_job_attachments').select('*').order('created_at', { ascending: false }))
       ])
+      window.clearTimeout(slowLoadWarningId)
 
       const warnings = []
       const resolveSupabaseResult = (result, label, { allowMissingTable = false } = {}) => {
