@@ -1177,6 +1177,27 @@
       const baseQuantity = convertRecipeQuantityToBase(quantity, unit, product.base_unit || unit || 'ks')
       return baseQuantity * getRecipeBaseUnitCost(productId)
     }
+    function getProductRecipeCost(productId) {
+      return getRecipeItemsForProduct(productId).reduce((sum, item) => {
+        return sum + getRecipeLineCost(item.product_id, item.quantity, item.unit)
+      }, 0)
+    }
+    function getProductCostMeta(product) {
+      if (getProductKind(product) === 'hot_drink') {
+        const recipeCost = getProductRecipeCost(product.id)
+        return {
+          value: recipeCost,
+          label: recipeCost ? `${recipeCost.toFixed(2)} Kč / volba` : 'Receptura bez nákladů',
+          note: recipeCost ? 'Náklad ze surovin receptury' : 'Doplň suroviny a jejich nákupní ceny'
+        }
+      }
+      const purchasePrice = Number(product?.purchase_price || 0)
+      return {
+        value: purchasePrice,
+        label: product?.purchase_price != null ? `${purchasePrice.toFixed(4)} Kč / ${product.base_unit || 'ks'}` : 'Bez nákupní ceny',
+        note: 'Nákupní cena z karty'
+      }
+    }
     function getRecipeForProduct(productId) {
       return recipesV13.find((recipe) => {
         const note = String(recipe.note || '')
@@ -1242,6 +1263,9 @@
         if (lineCostInput) lineCostInput.value = lineCost ? `${lineCost.toFixed(2)} Kč` : ''
       })
       productRecipeCostSummary.textContent = `Náklad receptury: ${total.toFixed(2)} Kč`
+      if (document.getElementById('productCategory')?.value === 'hot_drink' && productPurchasePriceInput) {
+        productPurchasePriceInput.value = total ? total.toFixed(4) : ''
+      }
       return total
     }
     function getPackageSummary(productId, baseUnit) {
@@ -1297,14 +1321,14 @@
       if (active === 'inactive') rows = rows.filter((product) => product.active === false)
       rows.sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
       productCatalogBody.innerHTML = rows.map((product) => {
-        const purchase = product.purchase_price != null ? `${Number(product.purchase_price || 0).toFixed(4)} Kč / ${product.base_unit || 'ks'}` : 'Bez nákupní ceny'
+        const costMeta = getProductCostMeta(product)
         const sale = product.sale_price != null ? `${Number(product.sale_price || 0).toFixed(2)} Kč` : 'Bez prodejní ceny'
         return `
           <tr>
             <td data-label="Karta"><strong>${escapeHtml(product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : ''].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
             <td data-label="Typ / použití"><span class="badge ${product.active === false ? 'bad' : 'good'}">${escapeHtml(product.active === false ? 'Neaktivní' : getProductCategoryLabel(getProductKind(product)))}</span><span class="subtext">${escapeHtml(getProductKind(product) === 'hot_drink' ? 'Složená karta s recepturou' : getProductKind(product) === 'ingredient' ? 'Vstupní surovina bez vlastní receptury' : getProductUsageLabel(product.usage_type))}</span></td>
             <td data-label="Jednotka a balení"><strong>${escapeHtml(product.base_unit || 'ks')}</strong><span class="subtext">${escapeHtml(getPackageSummary(product.id, product.base_unit))}</span></td>
-            <td data-label="Ceny"><strong>${escapeHtml(purchase)}</strong><span class="subtext">${escapeHtml(sale)}</span></td>
+            <td data-label="Ceny"><strong>${escapeHtml(costMeta.label)}</strong><span class="subtext">${escapeHtml(`${sale} · ${costMeta.note}`)}</span></td>
             <td data-label="Expirace / šarže"><strong>${escapeHtml(getExpiryModeLabel(product.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(product.requires_batch_tracking ? 'Šarže povinná' : 'Bez povinné šarže')}${product.expiry_warning_days ? ` · ${escapeHtml(product.expiry_warning_days)} dní varování` : ''}</span></td>
             <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-product-action="edit" data-product-id="${escapeHtml(String(product.id))}">Upravit</button><button class="btn secondary" type="button" data-product-action="detail" data-product-id="${escapeHtml(String(product.id))}">Detail</button></div></td>
           </tr>
@@ -2035,6 +2059,7 @@
       const selectedType = document.getElementById('productCategory').value
       const usesPackageConversions = selectedType === 'ingredient'
       const packageRows = usesPackageConversions ? getProductPackageFormRows() : []
+      const recipeCost = selectedType === 'hot_drink' ? updateProductRecipeCostSummary() : null
       if (packageRows.some((row) => !row.package_name || row.units_per_package <= 0)) {
         throw new Error('U každého balení doplň název a kladné množství.')
       }
@@ -2050,7 +2075,7 @@
         usage_type: document.getElementById('productUsageType').value,
         base_unit: document.getElementById('productBaseUnit').value || 'ks',
         vat_rate: document.getElementById('productVatRate').value ? Number(document.getElementById('productVatRate').value) : null,
-        purchase_price: document.getElementById('productPurchasePrice').value ? Number(document.getElementById('productPurchasePrice').value) : null,
+        purchase_price: recipeCost != null ? Number(recipeCost.toFixed(4)) : (document.getElementById('productPurchasePrice').value ? Number(document.getElementById('productPurchasePrice').value) : null),
         sale_price: document.getElementById('productSalePrice').value ? Number(document.getElementById('productSalePrice').value) : null,
         shelf_life_days: document.getElementById('productShelfLifeDays').value ? Number(document.getElementById('productShelfLifeDays').value) : null,
         expiry_tracking_mode: document.getElementById('productExpiryMode').value,
@@ -2541,6 +2566,7 @@
         .slice(0, 8)
       const saleMovements = stockMovementsV13
         .filter((movement) => String(movement.product_id) === String(productId) && movement.movement_type === 'sale')
+      const costMeta = getProductCostMeta(product)
       currentDetailContext = { type: 'v13', productId }
       detailModalTitle.textContent = product.name || 'Detail zásoby'
       detailModalContent.innerHTML = `
@@ -2564,6 +2590,11 @@
               <div class="detail-metric-label">Umístění</div>
               <div class="detail-metric-value">${escapeHtml(locatedRows.length)}</div>
               <div class="detail-metric-note">${escapeHtml(locatedRows.length ? 'Kolik míst teď produkt používá' : 'Produkt je zatím jen v katalogu')}</div>
+            </article>
+            <article class="detail-metric-card">
+              <div class="detail-metric-label">Nákladová cena</div>
+              <div class="detail-metric-value">${escapeHtml(costMeta.value ? `${costMeta.value.toFixed(2)} Kč` : '0 Kč')}</div>
+              <div class="detail-metric-note">${escapeHtml(costMeta.note)}</div>
             </article>
             <article class="detail-metric-card">
               <div class="detail-metric-label">Sklady / vozidla / automaty</div>
