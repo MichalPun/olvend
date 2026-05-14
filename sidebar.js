@@ -879,9 +879,7 @@
 
       :root[data-olvend-theme="light"] body {
         color: #18202a !important;
-        background:
-          radial-gradient(circle at top left, rgba(213, 16, 26, 0.08), transparent 22%),
-          linear-gradient(135deg, #f7f8fb, #edf1f6, #f8fafc) !important;
+        background: linear-gradient(135deg, #f7f8fb, #eef2f7, #f8fafc) !important;
       }
 
       :root[data-olvend-theme="light"] {
@@ -991,6 +989,17 @@
         background: rgba(15, 23, 42, 0.05) !important;
         border-color: rgba(15, 23, 42, 0.08) !important;
         color: #667085 !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav a.active,
+      :root[data-olvend-theme="light"] .mobile-nav-panel a.active {
+        background: rgba(15, 23, 42, 0.06) !important;
+        border-color: rgba(15, 23, 42, 0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav a.active .nav-dot {
+        background: #d5101a !important;
+        box-shadow: none !important;
       }
 
       :root[data-olvend-theme="light"] .mobile-nav-icon {
@@ -1124,8 +1133,8 @@
       :root[data-olvend-theme="light"] .mobile-tab.active,
       :root[data-olvend-theme="light"] .hero-card.primary,
       :root[data-olvend-theme="light"] .content-card.active {
-        background: rgba(213, 16, 26, 0.08) !important;
-        border-color: rgba(213, 16, 26, 0.22) !important;
+        background: rgba(15, 23, 42, 0.06) !important;
+        border-color: rgba(15, 23, 42, 0.12) !important;
       }
 
       :root[data-olvend-theme="light"] .mobile-shift-tile.done {
