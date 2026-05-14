@@ -18,7 +18,11 @@ create index if not exists purchase_recurring_orders_valid_until_idx
 alter table public.purchase_suppliers
   add column if not exists company_id text,
   add column if not exists tax_id text,
-  add column if not exists address text;
+  add column if not exists address text,
+  add column if not exists bank_account text,
+  add column if not exists bank_code text,
+  add column if not exists iban text,
+  add column if not exists default_due_days integer;
 
 create index if not exists purchase_suppliers_company_id_idx
   on public.purchase_suppliers (company_id);

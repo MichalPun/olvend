@@ -496,6 +496,22 @@
               <label for="supplierQuickPhone">Telefon</label>
               <input id="supplierQuickPhone" />
             </div>
+            <div class="field">
+              <label for="supplierQuickBankAccount">Číslo účtu</label>
+              <input id="supplierQuickBankAccount" placeholder="123456789" />
+            </div>
+            <div class="field">
+              <label for="supplierQuickBankCode">Kód banky</label>
+              <input id="supplierQuickBankCode" inputmode="numeric" maxlength="4" placeholder="0100" />
+            </div>
+            <div class="field">
+              <label for="supplierQuickIban">IBAN</label>
+              <input id="supplierQuickIban" placeholder="CZ..." />
+            </div>
+            <div class="field">
+              <label for="supplierQuickDefaultDueDays">Výchozí splatnost (dny)</label>
+              <input id="supplierQuickDefaultDueDays" type="number" min="0" step="1" placeholder="Např. 14" />
+            </div>
             <div class="field full">
               <label for="supplierQuickNote">Poznámka</label>
               <textarea id="supplierQuickNote"></textarea>
@@ -736,6 +752,10 @@
     const supplierQuickAddress = document.getElementById('supplierQuickAddress')
     const supplierQuickEmail = document.getElementById('supplierQuickEmail')
     const supplierQuickPhone = document.getElementById('supplierQuickPhone')
+    const supplierQuickBankAccount = document.getElementById('supplierQuickBankAccount')
+    const supplierQuickBankCode = document.getElementById('supplierQuickBankCode')
+    const supplierQuickIban = document.getElementById('supplierQuickIban')
+    const supplierQuickDefaultDueDays = document.getElementById('supplierQuickDefaultDueDays')
     const supplierQuickNote = document.getElementById('supplierQuickNote')
     const supplierQuickStatus = document.getElementById('supplierQuickStatus')
     const openSupplierQuickAddBtn = document.getElementById('openSupplierQuickAddBtn')
@@ -1071,6 +1091,15 @@
     function normalizeCompanyId(value) {
       return String(value || '').replace(/\D/g, '').slice(0, 8)
     }
+    function normalizeBankAccount(value) {
+      return String(value || '').replace(/[^\d-]/g, '').slice(0, 24)
+    }
+    function normalizeBankCode(value) {
+      return String(value || '').replace(/\D/g, '').slice(0, 4)
+    }
+    function normalizeIban(value) {
+      return String(value || '').replace(/\s/g, '').toUpperCase().slice(0, 34)
+    }
     function formatAresAddress(subject) {
       const address = subject.sidlo || {}
       return address.textovaAdresa || [
@@ -1099,7 +1128,7 @@
       supplierQuickName.value = subject.obchodniJmeno || supplierQuickName.value
       supplierQuickTaxId.value = subject.dic || supplierQuickTaxId.value || (ico ? `CZ${ico}` : '')
       supplierQuickAddress.value = formatAresAddress(subject) || supplierQuickAddress.value
-      setSupplierQuickStatus('Údaje z ARES jsou načtené. Zkontroluj je a ulož dodavatele.', 'success')
+      setSupplierQuickStatus('Údaje z ARES jsou načtené. Bankovní účet zadej ručně nebo podle registru plátců DPH.', 'success')
     }
     function openSupplierQuickModal() {
       supplierQuickForm.reset()
@@ -1109,6 +1138,10 @@
       supplierQuickName.value = supplierName
       supplierQuickTaxId.value = supplierQuickCompanyId.value ? `CZ${supplierQuickCompanyId.value}` : ''
       supplierQuickAddress.value = ''
+      supplierQuickBankAccount.value = ''
+      supplierQuickBankCode.value = ''
+      supplierQuickIban.value = ''
+      supplierQuickDefaultDueDays.value = ''
       supplierQuickNote.value = supplierName ? 'Dodavatel založený přímo z přijatého dokladu.' : ''
       setSupplierQuickStatus('Zadej IČO a načti údaje z ARES, případně dodavatele vyplň ručně.')
       supplierQuickModalBackdrop.classList.add('show')
@@ -1120,11 +1153,18 @@
     function supplierPayloadWithOptionalFields() {
       const companyId = normalizeCompanyId(supplierQuickCompanyId.value)
       const address = supplierQuickAddress.value.trim()
+      const bankAccount = normalizeBankAccount(supplierQuickBankAccount.value)
+      const bankCode = normalizeBankCode(supplierQuickBankCode.value)
+      const iban = normalizeIban(supplierQuickIban.value)
+      const dueDays = Number(supplierQuickDefaultDueDays.value || 0)
       const noteLines = [
         supplierQuickNote.value.trim(),
         companyId ? `IČO: ${companyId}` : '',
         supplierQuickTaxId.value.trim() ? `DIČ: ${supplierQuickTaxId.value.trim()}` : '',
-        address ? `Adresa: ${address}` : ''
+        address ? `Adresa: ${address}` : '',
+        bankAccount ? `Účet: ${bankAccount}${bankCode ? `/${bankCode}` : ''}` : '',
+        iban ? `IBAN: ${iban}` : '',
+        dueDays > 0 ? `Výchozí splatnost: ${dueDays} dnů` : ''
       ].filter(Boolean)
       return {
         name: supplierQuickName.value.trim(),
@@ -1134,6 +1174,10 @@
         company_id: companyId || null,
         tax_id: supplierQuickTaxId.value.trim() || null,
         address: address || null,
+        bank_account: bankAccount || null,
+        bank_code: bankCode || null,
+        iban: iban || null,
+        default_due_days: dueDays > 0 ? dueDays : null,
         active: true
       }
     }
@@ -1142,13 +1186,17 @@
       delete fallback.company_id
       delete fallback.tax_id
       delete fallback.address
+      delete fallback.bank_account
+      delete fallback.bank_code
+      delete fallback.iban
+      delete fallback.default_due_days
       return fallback
     }
     async function saveQuickSupplier() {
       const payload = supplierPayloadWithOptionalFields()
       if (!payload.name) throw new Error('Doplň název dodavatele.')
       let result = await supabase.from('purchase_suppliers').insert([payload]).select('*').single()
-      if (result.error && /company_id|tax_id|address/i.test(result.error.message || '')) {
+      if (result.error && /company_id|tax_id|address|bank_account|bank_code|iban|default_due_days/i.test(result.error.message || '')) {
         result = await supabase.from('purchase_suppliers').insert([stripOptionalSupplierColumns(payload)]).select('*').single()
       }
       if (result.error) throw result.error
