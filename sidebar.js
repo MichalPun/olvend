@@ -244,10 +244,9 @@
           children: [
             { key: "purchases", href: "purchases.html?view=received", label: "Přijaté faktury" },
             { key: "sales-invoices", href: "purchases.html?view=issued", label: "Vystavené faktury", soon: true },
-            { key: "inventory", href: "inventory.html", label: "Sklad / evidence" },
+            { key: "inventory", href: "inventory.html", label: "Zásoby" },
             { key: "purchases-overview", href: "purchases.html", label: "Nákupy a příjmy" },
-            { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" },
-            { key: "warehouses", href: "warehouses.html", label: "Sklady a umístění" }
+            { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
           ]
         },
         { key: "routes", href: "routes.html", label: "Trasy" },
