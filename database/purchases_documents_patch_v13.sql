@@ -14,3 +14,11 @@ alter table public.purchase_recurring_orders
 
 create index if not exists purchase_recurring_orders_valid_until_idx
   on public.purchase_recurring_orders (valid_until);
+
+alter table public.purchase_suppliers
+  add column if not exists company_id text,
+  add column if not exists tax_id text,
+  add column if not exists address text;
+
+create index if not exists purchase_suppliers_company_id_idx
+  on public.purchase_suppliers (company_id);
