@@ -530,7 +530,7 @@
               <label for="productEan">EAN</label>
               <input id="productEan" />
             </div>
-            <div class="field">
+            <div class="field" id="productStoragePositionField">
               <label for="productStoragePosition">Pozice ve skladu</label>
               <input id="productStoragePosition" placeholder="Např. Regál A2 / police 3" />
             </div>
@@ -1022,6 +1022,10 @@
       if (product?.product_category === 'service_material' || product?.product_category === 'beverage_ready') return 'consumable'
       return product?.product_category || 'ingredient'
     }
+    function productTypeUsesStoragePosition(typeOrProduct) {
+      const type = typeof typeOrProduct === 'string' ? typeOrProduct : getProductKind(typeOrProduct)
+      return type !== 'hot_drink'
+    }
     function stripProductKindMarker(note) {
       return String(note || '').replace(/\s*\[olvend_product_kind:[a-z_]+\]\s*/g, '').trim()
     }
@@ -1121,6 +1125,7 @@
       const type = document.getElementById('productCategory').value
       const helper = document.getElementById('productTypeHelper')
       const productPackageSection = document.getElementById('productPackageSection')
+      const productStoragePositionField = document.getElementById('productStoragePositionField')
       if (type === 'hot_drink') {
         helper.textContent = 'Teplý nápoj je složená karta: prodává se jako produkt, ale nákladově se počítá z receptury surovin.'
       } else if (type === 'water_product') {
@@ -1136,6 +1141,7 @@
       }
       if (productRecipeSection) productRecipeSection.hidden = type !== 'hot_drink'
       if (productPackageSection) productPackageSection.hidden = type !== 'ingredient'
+      if (productStoragePositionField) productStoragePositionField.hidden = !productTypeUsesStoragePosition(type)
       if (productUsageField) productUsageField.hidden = ['ingredient', 'hot_drink', 'water_product'].includes(type)
     }
     function getExpiryModeLabel(value) {
@@ -1351,13 +1357,14 @@
       rows.sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
       productCatalogBody.innerHTML = rows.map((product) => {
         const costMeta = getProductCostMeta(product)
-        const storagePosition = getStoragePosition(product)
+        const usesStoragePosition = productTypeUsesStoragePosition(product)
+        const storagePosition = usesStoragePosition ? getStoragePosition(product) : ''
         const sale = product.sale_price != null ? `${Number(product.sale_price || 0).toFixed(2)} Kč` : 'Bez prodejní ceny'
         return `
           <tr>
             <td data-label="Karta"><strong>${escapeHtml(product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : ''].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
             <td data-label="Typ / použití"><span class="badge ${product.active === false ? 'bad' : 'good'}">${escapeHtml(product.active === false ? 'Neaktivní' : getProductCategoryLabel(getProductKind(product)))}</span><span class="subtext">${escapeHtml(getProductKind(product) === 'hot_drink' ? 'Složená karta s recepturou' : getProductKind(product) === 'ingredient' ? 'Vstupní surovina bez vlastní receptury' : getProductUsageLabel(product.usage_type))}</span></td>
-            <td data-label="Pozice"><strong>${escapeHtml(storagePosition || 'Bez pozice')}</strong><span class="subtext">${escapeHtml(storagePosition ? 'Skladová pozice' : 'Doplň v kartě zásoby')}</span></td>
+            <td data-label="Pozice"><strong>${escapeHtml(usesStoragePosition ? (storagePosition || 'Bez pozice') : 'Neeviduje se')}</strong><span class="subtext">${escapeHtml(usesStoragePosition ? (storagePosition ? 'Skladová pozice' : 'Doplň v kartě zásoby') : 'Složená karta bez fyzické pozice')}</span></td>
             <td data-label="Jednotka a balení"><strong>${escapeHtml(product.base_unit || 'ks')}</strong><span class="subtext">${escapeHtml(getPackageSummary(product.id, product.base_unit))}</span></td>
             <td data-label="Ceny"><strong>${escapeHtml(costMeta.label)}</strong><span class="subtext">${escapeHtml(`${sale} · ${costMeta.note}`)}</span></td>
             <td data-label="Expirace / šarže"><strong>${escapeHtml(getExpiryModeLabel(product.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(product.requires_batch_tracking ? 'Šarže povinná' : 'Bez povinné šarže')}${product.expiry_warning_days ? ` · ${escapeHtml(product.expiry_warning_days)} dní varování` : ''}</span></td>
@@ -2061,7 +2068,7 @@
       document.getElementById('productName').value = product.name || ''
       document.getElementById('productSku').value = product.sku || ''
       document.getElementById('productEan').value = product.ean || ''
-      document.getElementById('productStoragePosition').value = getStoragePosition(product)
+      document.getElementById('productStoragePosition').value = productTypeUsesStoragePosition(product) ? getStoragePosition(product) : ''
       document.getElementById('productCategory').value = getProductFormType(product)
       document.getElementById('productUsageType').value = product.usage_type || 'recipe_consumption'
       document.getElementById('productBaseUnit').value = product.base_unit || 'ks'
@@ -2093,6 +2100,7 @@
       const usesPackageConversions = selectedType === 'ingredient'
       const packageRows = usesPackageConversions ? getProductPackageFormRows() : []
       const recipeCost = selectedType === 'hot_drink' ? updateProductRecipeCostSummary() : null
+      const storagePosition = productTypeUsesStoragePosition(selectedType) ? document.getElementById('productStoragePosition').value : ''
       if (packageRows.some((row) => !row.package_name || row.units_per_package <= 0)) {
         throw new Error('U každého balení doplň název a kladné množství.')
       }
@@ -2115,7 +2123,7 @@
         expiry_warning_days: Number(document.getElementById('productExpiryWarningDays').value || 0),
         requires_batch_tracking: document.getElementById('productBatchTracking').checked,
         active: document.getElementById('productActive').checked,
-        note: composeProductNote(document.getElementById('productNote').value.trim(), productKind, document.getElementById('productStoragePosition').value)
+        note: composeProductNote(document.getElementById('productNote').value.trim(), productKind, storagePosition)
       }
       if (!payload.name) throw new Error('Doplň název karty zásoby.')
       if (!payload.sku) {
@@ -2600,7 +2608,8 @@
       const saleMovements = stockMovementsV13
         .filter((movement) => String(movement.product_id) === String(productId) && movement.movement_type === 'sale')
       const costMeta = getProductCostMeta(product)
-      const storagePosition = getStoragePosition(product)
+      const usesStoragePosition = productTypeUsesStoragePosition(product)
+      const storagePosition = usesStoragePosition ? getStoragePosition(product) : ''
       currentDetailContext = { type: 'v13', productId }
       detailModalTitle.textContent = product.name || 'Detail zásoby'
       detailModalContent.innerHTML = `
@@ -2630,11 +2639,13 @@
               <div class="detail-metric-value">${escapeHtml(costMeta.value ? `${costMeta.value.toFixed(2)} Kč` : '0 Kč')}</div>
               <div class="detail-metric-note">${escapeHtml(costMeta.note)}</div>
             </article>
-            <article class="detail-metric-card">
-              <div class="detail-metric-label">Pozice ve skladu</div>
-              <div class="detail-metric-value">${escapeHtml(storagePosition || 'Bez pozice')}</div>
-              <div class="detail-metric-note">Regál, police nebo interní místo</div>
-            </article>
+            ${usesStoragePosition ? `
+              <article class="detail-metric-card">
+                <div class="detail-metric-label">Pozice ve skladu</div>
+                <div class="detail-metric-value">${escapeHtml(storagePosition || 'Bez pozice')}</div>
+                <div class="detail-metric-note">Regál, police nebo interní místo</div>
+              </article>
+            ` : ''}
             <article class="detail-metric-card">
               <div class="detail-metric-label">Sklady / vozidla / automaty</div>
               <div class="detail-metric-value">${escapeHtml(String(locatedRows.filter((row) => row.location?.location_type === 'warehouse').length))} / ${escapeHtml(String(locatedRows.filter((row) => row.location?.location_type === 'vehicle').length))} / ${escapeHtml(String(locatedRows.filter((row) => ['machine', 'machine_slot'].includes(row.location?.location_type)).length))}</div>
