@@ -63,6 +63,10 @@
     table { width:100%; min-width:1120px; border-collapse:collapse; }
     th, td { text-align:left; padding:14px 12px; border-bottom:1px solid rgba(255,255,255,0.06); vertical-align:top; }
     th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+    .sortable-th { appearance:none; border:0; background:transparent; color:inherit; padding:0; margin:0; font:inherit; text-transform:inherit; letter-spacing:inherit; cursor:pointer; display:inline-flex; align-items:center; gap:7px; text-align:left; }
+    .sortable-th::after { content:""; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid currentColor; opacity:0.32; transform:translateY(1px); }
+    .sortable-th.active::after { opacity:0.9; }
+    .sortable-th.desc::after { transform:rotate(180deg) translateY(-1px); }
     .subtext { display:block; margin-top:4px; color:var(--muted); font-size:12px; line-height:1.45; }
     .badge { display:inline-flex; align-items:center; padding:6px 10px; border-radius:999px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.05); }
     .badge.good { color:#baf3cf; border-color:rgba(46,204,113,0.24); background:rgba(46,204,113,0.12); }
@@ -253,12 +257,12 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Karta</th>
-                    <th>Typ / použití</th>
-                    <th>Pozice</th>
-                    <th>Jednotka a balení</th>
-                    <th>Ceny</th>
-                    <th>Expirace / šarže</th>
+                    <th><button class="sortable-th" type="button" data-product-sort="name">Karta</button></th>
+                    <th><button class="sortable-th" type="button" data-product-sort="type">Typ / použití</button></th>
+                    <th><button class="sortable-th" type="button" data-product-sort="position">Pozice</button></th>
+                    <th><button class="sortable-th" type="button" data-product-sort="unit">Jednotka a balení</button></th>
+                    <th><button class="sortable-th" type="button" data-product-sort="cost">Ceny</button></th>
+                    <th><button class="sortable-th" type="button" data-product-sort="expiry">Expirace / šarže</button></th>
                     <th>Akce</th>
                   </tr>
                 </thead>
@@ -912,6 +916,7 @@
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
     let isProductEditMode = false
+    let productCatalogSort = { key: 'name', direction: 'asc' }
     const productKindMarker = 'olvend_product_kind'
     const storagePositionMarker = 'olvend_storage_position'
     const recipeProductMarker = 'olvend_recipe_product_id'
@@ -1400,6 +1405,40 @@
         { label:'Náhradní díly', value: sparePartCount, note:'Díly pro servis a opravy.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
+    function getProductSortValue(product, key) {
+      if (key === 'name') return normalizeText(product.name || '')
+      if (key === 'type') return normalizeText(getProductCategoryLabel(getProductKind(product)))
+      if (key === 'position') return normalizeText(productTypeUsesStoragePosition(product) ? (getStoragePosition(product) || 'zzz bez pozice') : 'zzzz neeviduje se')
+      if (key === 'unit') return normalizeText(`${product.base_unit || ''} ${getPackageSummary(product.id, product.base_unit)}`)
+      if (key === 'cost') return Number(getProductCostMeta(product).value || 0)
+      if (key === 'expiry') return normalizeText(`${getExpiryModeLabel(product.expiry_tracking_mode)} ${product.requires_batch_tracking ? 'šarže' : ''} ${product.expiry_warning_days || 0}`)
+      return normalizeText(product.name || '')
+    }
+    function sortProductCatalogRows(rows) {
+      const { key, direction } = productCatalogSort
+      const modifier = direction === 'desc' ? -1 : 1
+      rows.sort((a, b) => {
+        const activeDiff = Number(b.active !== false) - Number(a.active !== false)
+        if (activeDiff) return activeDiff
+        const aValue = getProductSortValue(a, key)
+        const bValue = getProductSortValue(b, key)
+        if (typeof aValue === 'number' || typeof bValue === 'number') {
+          const numericDiff = (Number(aValue) || 0) - (Number(bValue) || 0)
+          if (numericDiff) return numericDiff * modifier
+        } else {
+          const textDiff = String(aValue).localeCompare(String(bValue), 'cs')
+          if (textDiff) return textDiff * modifier
+        }
+        return normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs')
+      })
+    }
+    function updateProductSortHeaders() {
+      document.querySelectorAll('[data-product-sort]').forEach((button) => {
+        const active = button.dataset.productSort === productCatalogSort.key
+        button.classList.toggle('active', active)
+        button.classList.toggle('desc', active && productCatalogSort.direction === 'desc')
+      })
+    }
     function renderProductCatalogRows() {
       const query = normalizeText(productCatalogSearch.value)
       const category = productCategoryFilter.value
@@ -1416,7 +1455,8 @@
       if (usage) rows = rows.filter((product) => product.usage_type === usage)
       if (active === 'active') rows = rows.filter((product) => product.active !== false)
       if (active === 'inactive') rows = rows.filter((product) => product.active === false)
-      rows.sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
+      sortProductCatalogRows(rows)
+      updateProductSortHeaders()
       productCatalogBody.innerHTML = rows.map((product) => {
         const costMeta = getProductCostMeta(product)
         const usesStoragePosition = productTypeUsesStoragePosition(product)
@@ -2859,6 +2899,17 @@
     productCategoryFilter.addEventListener('change', renderProductCatalogRows)
     productUsageFilter.addEventListener('change', renderProductCatalogRows)
     productActiveFilter.addEventListener('change', renderProductCatalogRows)
+    document.querySelectorAll('[data-product-sort]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const key = button.dataset.productSort
+        if (!key) return
+        productCatalogSort = {
+          key,
+          direction: productCatalogSort.key === key && productCatalogSort.direction === 'asc' ? 'desc' : 'asc'
+        }
+        renderProductCatalogRows()
+      })
+    })
     warehouseFilter.addEventListener('change', applyFilters)
     machineFilter.addEventListener('change', applyFilters)
     slotFilter.addEventListener('change', applyFilters)
