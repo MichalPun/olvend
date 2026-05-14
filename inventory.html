@@ -1308,6 +1308,60 @@
       const quantityUnit = getPackageQuantityUnit(baseUnit)
       return packages.map((pack) => `${pack.package_name} = ${Number(pack.units_per_package || 0).toFixed(3)} ${quantityUnit}${pack.is_default ? ' · výchozí' : ''}`).join(' / ')
     }
+    function formatQuantityValue(quantity, unit) {
+      const value = Number(quantity || 0)
+      const normalizedUnit = normalizeText(unit || 'ks')
+      const digits = normalizedUnit === 'ks' ? 0 : 2
+      return `${value.toFixed(digits)} ${unit || 'ks'}`
+    }
+    function getDisplayPackages(productId) {
+      return getProductPackages(productId)
+        .filter((pack) => Number(pack.units_per_package || 0) > 0)
+        .sort((a, b) => Number(b.units_per_package || 0) - Number(a.units_per_package || 0))
+    }
+    function decomposeQuantityByPackages(productId, quantity, unit) {
+      const amount = Number(quantity || 0)
+      const packages = getDisplayPackages(productId)
+      if (!packages.length) return ''
+      let remainder = amount
+      const parts = []
+      packages.forEach((pack) => {
+        const size = Number(pack.units_per_package || 0)
+        if (size <= 0 || remainder < size) return
+        const count = Math.floor(remainder / size)
+        remainder -= count * size
+        if (count > 0) parts.push(`${count} × ${pack.package_name || 'balení'}`)
+      })
+      if (remainder > 0) parts.push(formatQuantityValue(remainder, unit))
+      return parts.join(' + ')
+    }
+    function formatWarehouseQuantity(productId, quantity, unit) {
+      const amount = Number(quantity || 0)
+      const packageBreakdown = decomposeQuantityByPackages(productId, amount, unit)
+      if (!packageBreakdown) {
+        return { primary: formatQuantityValue(amount, unit), secondary: 'Bez definovaného balení' }
+      }
+      return {
+        primary: packageBreakdown,
+        secondary: `Celkem ${formatQuantityValue(amount, unit)}`
+      }
+    }
+    function formatVehicleQuantity(productId, quantity, unit) {
+      const amount = Number(quantity || 0)
+      const packageBreakdown = decomposeQuantityByPackages(productId, amount, unit)
+      if (!packageBreakdown) {
+        return { primary: formatQuantityValue(amount, unit), secondary: 'Na autě v základní jednotce' }
+      }
+      return {
+        primary: formatQuantityValue(amount, unit),
+        secondary: packageBreakdown
+      }
+    }
+    function formatLocationQuantity(productId, quantity, unit, locationType) {
+      if (locationType === 'warehouse') return formatWarehouseQuantity(productId, quantity, unit)
+      if (locationType === 'vehicle') return formatVehicleQuantity(productId, quantity, unit)
+      return { primary: formatQuantityValue(quantity, unit), secondary: locationType ? 'Základní jednotka místa' : 'Bez naskladnění' }
+    }
     function ensureProductSku() {
       const input = document.getElementById('productSku')
       if (String(input.value || '').trim()) return
@@ -1481,15 +1535,18 @@
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
     function renderVehicleLoadRows(rows) {
-      vehicleLoadBody.innerHTML = rows.map((row) => `
-        <tr>
-          <td data-label="Vozidlo"><strong>${escapeHtml(row.vehicle_name || 'Vozidlo')}</strong><span class="subtext">${escapeHtml(row.vehicle_plate || 'Bez SPZ')}</span></td>
-          <td data-label="Položka"><strong>${escapeHtml(row.product_name || 'Položka')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')}</span></td>
-          <td data-label="Na vozidle"><strong>${escapeHtml(Number(row.quantity_on_hand || 0).toFixed(0))}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')} právě na autě</span></td>
-          <td data-label="Poslední pohyb"><strong>${escapeHtml(row.last_movement_type || 'Bez pohybu')}</strong><span class="subtext">${row.last_movement_at ? escapeHtml(new Date(row.last_movement_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
-          <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-vehicle-load-action="load" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Dopsat naložení</button><button class="btn secondary" type="button" data-vehicle-load-action="return" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Vrátit</button><button class="btn secondary" type="button" data-vehicle-load-action="waste" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Odpad</button></div></td>
-        </tr>
-      `).join('')
+      vehicleLoadBody.innerHTML = rows.map((row) => {
+        const quantityMeta = formatVehicleQuantity(row.product_id, row.quantity_on_hand, row.base_unit || 'ks')
+        return `
+          <tr>
+            <td data-label="Vozidlo"><strong>${escapeHtml(row.vehicle_name || 'Vozidlo')}</strong><span class="subtext">${escapeHtml(row.vehicle_plate || 'Bez SPZ')}</span></td>
+            <td data-label="Položka"><strong>${escapeHtml(row.product_name || 'Položka')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')}</span></td>
+            <td data-label="Na vozidle"><strong>${escapeHtml(quantityMeta.primary)}</strong><span class="subtext">${escapeHtml(quantityMeta.secondary)}</span></td>
+            <td data-label="Poslední pohyb"><strong>${escapeHtml(row.last_movement_type || 'Bez pohybu')}</strong><span class="subtext">${row.last_movement_at ? escapeHtml(new Date(row.last_movement_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
+            <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-vehicle-load-action="load" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Dopsat naložení</button><button class="btn secondary" type="button" data-vehicle-load-action="return" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Vrátit</button><button class="btn secondary" type="button" data-vehicle-load-action="waste" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Odpad</button></div></td>
+          </tr>
+        `
+      }).join('')
       vehicleLoadEmpty.style.display = rows.length ? 'none' : 'block'
     }
     function openVehicleLoadCorrection(mode = 'load', productId = '', vehicleId = '') {
@@ -1641,11 +1698,13 @@
         const daysCover = row.estimated_days_cover == null ? '—' : `${Number(row.estimated_days_cover).toFixed(1)} dne`
         const recommendationLabel = recommended > 0 ? `Objednat ${recommended.toFixed(0)} ${row.base_unit || 'ks'}` : 'Zatím bez zásahu'
         const recommendationClass = recommended > 0 ? 'bad' : 'good'
+        const warehouseQty = formatWarehouseQuantity(row.product_id, row.warehouse_qty, row.base_unit || 'ks')
+        const vehicleQty = formatVehicleQuantity(row.product_id, row.vehicle_qty, row.base_unit || 'ks')
         return `
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')} · pilot ${escapeHtml(row.pilot_scope || 'general')}</span></td>
             <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Bez dodavatele')}</strong><span class="subtext">Běžná objednávka ${escapeHtml(Number(row.base_order_quantity || 0).toFixed(0))} ${escapeHtml(row.base_unit || 'ks')}</span></td>
-            <td data-label="Na skladě / ve vozech"><strong>${escapeHtml(Number(row.warehouse_qty || 0).toFixed(0))} / ${escapeHtml(Number(row.vehicle_qty || 0).toFixed(0))}</strong><span class="subtext">Celkem dostupné ${escapeHtml(Number(row.available_qty || 0).toFixed(0))} · příchozí ${escapeHtml(Number(row.incoming_qty || 0).toFixed(0))}</span></td>
+            <td data-label="Na skladě / ve vozech"><strong>${escapeHtml(warehouseQty.primary)} / ${escapeHtml(vehicleQty.primary)}</strong><span class="subtext">Sklad ${escapeHtml(warehouseQty.secondary)} · auta ${escapeHtml(vehicleQty.secondary)}</span></td>
             <td data-label="Spotřeba"><strong>${escapeHtml(Number(row.avg_daily_usage_14d || 0).toFixed(1))} / den</strong><span class="subtext">14 dní: ${escapeHtml(Number(row.estimated_usage_14d || 0).toFixed(0))} · krytí ${escapeHtml(daysCover)}</span></td>
             <td data-label="Další termíny"><strong>Obj.: ${escapeHtml(formatWeekdayList(row.order_weekdays))}</strong><span class="subtext">Další objednávka ${escapeHtml(formatNextDateLabel(row.order_weekdays))} · závoz ${escapeHtml(formatWeekdayList(row.delivery_weekdays))}${row.next_delivery_date ? ` · nejbližší ${escapeHtml(new Date(row.next_delivery_date).toLocaleDateString('cs-CZ'))}` : ''}</span></td>
             <td data-label="Doporučení"><span class="badge ${recommendationClass}">${escapeHtml(recommendationLabel)}</span><span class="subtext">Rezerva ${escapeHtml(Number(row.safety_stock_quantity || 0).toFixed(0))} · cíl ${escapeHtml(String(row.target_cover_days || 0))} dny</span></td>
@@ -1884,6 +1943,7 @@
       stockV13Body.innerHTML = rows.map((row) => {
         const quantity = Number(row.balance.quantity_on_hand || 0)
         const unit = row.product?.base_unit || 'ks'
+        const quantityMeta = formatLocationQuantity(row.product?.id, quantity, unit, row.location?.location_type)
         const min = Number(row.profile?.min_quantity || 0)
         const target = Number(row.profile?.target_quantity || 0)
         const risk = getLocationRisk(row.balance, row.profile)
@@ -1893,7 +1953,7 @@
             <td data-label="Produkt"><strong>${escapeHtml(row.product?.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(unit)}</span></td>
             <td data-label="Umístění"><strong>${escapeHtml(row.location?.name || 'Zatím bez naskladnění')}</strong><span class="subtext">${escapeHtml(row.location?.note || (isCatalogOnly ? 'Produkt je už v katalogu OLVENDu.' : ''))}</span></td>
             <td data-label="Typ místa"><span class="badge ${isCatalogOnly ? 'neutral' : (risk === 'low' ? 'bad' : 'good')}">${escapeHtml(isCatalogOnly ? 'Katalog' : getLocationTypeLabel(row.location?.location_type))}</span></td>
-            <td data-label="Stav"><strong>${escapeHtml(quantity.toFixed(2))} ${escapeHtml(unit)}</strong><span class="subtext">${escapeHtml(isCatalogOnly ? 'Bez naskladnění' : (risk === 'low' ? 'Pod minimem' : 'V pořádku'))}</span></td>
+            <td data-label="Stav"><strong>${escapeHtml(quantityMeta.primary)}</strong><span class="subtext">${escapeHtml(isCatalogOnly ? 'Bez naskladnění' : `${quantityMeta.secondary} · ${risk === 'low' ? 'Pod minimem' : 'V pořádku'}`)}</span></td>
             <td data-label="Min / cíl"><strong>${escapeHtml(min.toFixed(2))} / ${escapeHtml(target.toFixed(2))}</strong><span class="subtext">${escapeHtml(isCatalogOnly ? 'Nastavíš až při ostrém přechodu.' : 'Minimum / cílový stav')}</span></td>
             <td data-label="Poslední pohyb"><strong>${escapeHtml(formatLastV13Movement(row))}</strong><span class="subtext"><button class="btn secondary" type="button" data-action="detail-v13" data-product-id="${escapeHtml(String(row.product?.id || ''))}">Detail zásoby</button></span></td>
           </tr>
@@ -2661,7 +2721,7 @@
             <h5>Kde produkt právě je</h5>
             ${locatedRows.length ? renderDetailSectionRows(locatedRows.map((row) => ({
               label: `${getLocationTypeLabel(row.location.location_type)} · ${row.location.name}`,
-              value: `${Number(row.balance.quantity_on_hand || 0).toFixed(2)} ${product.base_unit || 'ks'}${row.profile ? ` · min ${Number(row.profile.min_quantity || 0).toFixed(2)} / cíl ${Number(row.profile.target_quantity || 0).toFixed(2)}` : ''}`
+              value: `${formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary}${row.profile ? ` · min ${formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks')} / cíl ${formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks')}` : ''}`
             }))) : '<div class="detail-chart-empty">Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.</div>'}
           </section>
           <section class="detail-section">
