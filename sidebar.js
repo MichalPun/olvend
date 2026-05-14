@@ -3,6 +3,7 @@
   const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
+  const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
   const APP_VERSION = "OLVEND 1.42";
   const MIN_RELEASE_ANNOUNCEMENT = "1.42";
   const RELEASE_NOTES = {
@@ -386,21 +387,47 @@
     return Array.isArray(item.children) && item.children.some(isItemActive);
   }
 
+  function getCollapsedNavGroups() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(NAV_COLLAPSE_KEY) || "[]");
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch (error) {
+      return new Set();
+    }
+  }
+
+  function setNavGroupCollapsed(key, collapsed) {
+    const collapsedGroups = getCollapsedNavGroups();
+    if (collapsed) {
+      collapsedGroups.add(key);
+    } else {
+      collapsedGroups.delete(key);
+    }
+    localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedGroups)));
+  }
+
   function renderNavLinks(items) {
+    const collapsedGroups = getCollapsedNavGroups();
     return items.map((item) => {
       const isActive = isItemActive(item);
       const activeClass = isActive ? "active" : "";
       const status = item.soon ? '<span class="nav-status">Brzy</span>' : "";
+      const hasChildren = Array.isArray(item.children) && item.children.length;
+      const collapsed = hasChildren && collapsedGroups.has(item.key) && !isActive;
+      const expanded = hasChildren && !collapsed;
       const childLinks = Array.isArray(item.children) && item.children.length
-        ? `<div class="nav-subitems">${renderNavLinks(item.children)}</div>`
+        ? `<div class="nav-subitems" id="nav-children-${item.key}">${renderNavLinks(item.children)}</div>`
         : "";
       return `
-        <div class="nav-item-shell ${childLinks ? "has-children" : ""}">
-          <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
-            <span class="nav-dot"></span>
-            <span>${item.label}</span>
-            ${status}
-          </a>
+        <div class="nav-item-shell ${hasChildren ? "has-children" : ""} ${collapsed ? "collapsed" : ""}">
+          <div class="nav-link-row">
+            <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
+              <span class="nav-dot"></span>
+              <span>${item.label}</span>
+              ${status}
+            </a>
+            ${hasChildren ? `<button class="nav-collapse-toggle" type="button" data-collapse-nav="${item.key}" aria-expanded="${expanded ? "true" : "false"}" aria-controls="nav-children-${item.key}" title="${expanded ? "Sbalit" : "Rozbalit"}"><span></span></button>` : ""}
+          </div>
           ${childLinks}
         </div>
       `;
@@ -548,6 +575,13 @@
         gap: 6px;
       }
 
+      .nav-link-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+        align-items: center;
+      }
+
       .nav a {
         display: flex;
         align-items: center;
@@ -597,12 +631,50 @@
         border: 1px solid rgba(255,255,255,0.06);
       }
 
+      .nav-collapse-toggle {
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        background: rgba(255,255,255,0.04);
+        color: #fff;
+        cursor: pointer;
+        transition: 0.2s ease;
+      }
+
+      .nav-collapse-toggle:hover {
+        background: rgba(255,255,255,0.08);
+      }
+
+      .nav-collapse-toggle span {
+        width: 8px;
+        height: 8px;
+        border-right: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: rotate(45deg);
+        margin-top: -3px;
+        transition: transform 0.2s ease, margin 0.2s ease;
+      }
+
+      .nav-item-shell.collapsed .nav-collapse-toggle span {
+        transform: rotate(-45deg);
+        margin-top: 0;
+        margin-left: -2px;
+      }
+
       .nav-subitems {
         display: grid;
         gap: 4px;
         margin: -2px 0 4px 18px;
         padding-left: 12px;
         border-left: 1px solid rgba(255,255,255,0.08);
+      }
+
+      .nav-item-shell.collapsed .nav-subitems {
+        display: none;
       }
 
       .nav-subitems a {
@@ -1050,6 +1122,16 @@
         color: #667085 !important;
       }
 
+      :root[data-olvend-theme="light"] .nav-collapse-toggle {
+        color: #18202a !important;
+        background: rgba(15, 23, 42, 0.04) !important;
+        border-color: rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] .nav-collapse-toggle:hover {
+        background: rgba(15, 23, 42, 0.08) !important;
+      }
+
       :root[data-olvend-theme="light"] .nav a.active,
       :root[data-olvend-theme="light"] .mobile-nav-panel a.active {
         background: rgba(15, 23, 42, 0.06) !important;
@@ -1343,12 +1425,28 @@
     });
   }
 
+  function setupSidebarCollapsing(root) {
+    root.querySelectorAll("[data-collapse-nav]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.collapseNav;
+        const shell = button.closest(".nav-item-shell");
+        if (!key || !shell) return;
+        const nextCollapsed = !shell.classList.contains("collapsed");
+        shell.classList.toggle("collapsed", nextCollapsed);
+        button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+        button.setAttribute("title", nextCollapsed ? "Rozbalit" : "Sbalit");
+        setNavGroupCollapsed(key, nextCollapsed);
+      });
+    });
+  }
+
   initTheme();
 
   const sidebar = document.querySelector(".sidebar");
   if (sidebar) {
     injectSidebarReorderStyles();
     sidebar.innerHTML = renderSidebar();
+    setupSidebarCollapsing(sidebar);
   }
 
   const mobileShell = document.querySelector(".mobile-nav-shell");
