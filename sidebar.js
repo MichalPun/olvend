@@ -256,8 +256,19 @@
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
         },
-        { key: "operations", href: "operations.html", label: "Lokality" },
         { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
+        {
+          key: "logistics-management",
+          href: "routes.html",
+          label: "Logistika",
+          children: [
+            { key: "operations", href: "operations.html", label: "Lokality" },
+            { key: "routes", href: "routes.html", label: "Trasy" },
+            { key: "routes-create", href: "routes-create.html", label: "Vytvořit trasu" },
+            { key: "routes-history", href: "routes-history.html", label: "Historie tras" },
+            { key: "fleet", href: "vehicles.html", label: "Vozový park" }
+          ]
+        },
         {
           key: "stock-management",
           href: "inventory.html",
@@ -269,9 +280,7 @@
             { key: "purchases-overview", href: "purchases.html", label: "Nákupy a příjmy" },
             { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
           ]
-        },
-        { key: "routes", href: "routes.html", label: "Trasy" },
-        { key: "fleet", href: "vehicles.html", label: "Vozový park" }
+        }
       ]
     },
     {
