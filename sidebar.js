@@ -100,14 +100,14 @@
     },
     "service-requests.html": {
       currentLabel: "Servisní požadavky",
-      activeKey: "service",
+      activeKey: "service-requests",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
     },
     "technical-jobs.html": {
       currentLabel: "Technické zásahy",
-      activeKey: "service",
+      activeKey: "technical-jobs",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -121,7 +121,14 @@
     },
     "machine-qr-print.html": {
       currentLabel: "QR štítky",
-      activeKey: "machines",
+      activeKey: "qr-labels",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "machine-qr.html": {
+      currentLabel: "QR servis",
+      activeKey: "qr-service",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -234,7 +241,21 @@
       key: "operations",
       title: "Provoz",
       items: [
-        { key: "service", href: "technical-jobs.html", label: "Technické zásahy" },
+        {
+          key: "technical-management",
+          href: "technical-jobs.html",
+          label: "Technické zásahy",
+          children: [
+            { key: "technical-jobs", href: "technical-jobs.html", label: "Technické karty" },
+            { key: "service-requests", href: "service-requests.html", label: "Servisní požadavky" },
+            { key: "installations", href: "technical-jobs.html?tab=installation", label: "Instalace" },
+            { key: "deinstallations", href: "technical-jobs.html?tab=deinstallation", label: "Deinstalace" },
+            { key: "transfers", href: "technical-jobs.html?tab=transfer", label: "Přesuny" },
+            { key: "revisions", href: "technical-jobs.html?tab=revision", label: "Revize" },
+            { key: "service-cards", href: "technical-jobs.html?tab=service", label: "Servisní karty" },
+            { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
+          ]
+        },
         { key: "operations", href: "operations.html", label: "Lokality" },
         { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
         {
@@ -380,9 +401,10 @@
   function isItemActive(item) {
     const href = String(item.href || "");
     const hrefPath = href.split("?")[0];
+    const hasExactQueryMatch = Boolean(window.location.search) && navItems.some((navItem) => String(navItem.href || "") === currentPathWithQuery);
     if (href.includes("?") && href === currentPathWithQuery) return true;
     if (!href.includes("?") && hrefPath && hrefPath === currentPath && !window.location.search) return true;
-    if (item.key === meta.activeKey && (currentPath !== "purchases.html" || !window.location.search)) return true;
+    if (item.key === meta.activeKey && !hasExactQueryMatch) return true;
     return Array.isArray(item.children) && item.children.some(isItemActive);
   }
 
