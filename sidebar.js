@@ -283,10 +283,9 @@
           href: "inventory.html",
           label: "Skladové hospodářství",
           children: [
-            { key: "purchases", href: "purchases.html?view=received", label: "Přijaté faktury" },
+            { key: "purchases", href: "purchases.html?view=received", label: "Přijaté doklady" },
             { key: "sales-invoices", href: "purchases.html?view=issued", label: "Vystavené faktury", soon: true },
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
-            { key: "purchases-overview", href: "purchases.html", label: "Nákupy a příjmy" },
             { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
           ]
         }
