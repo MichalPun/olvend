@@ -1,5 +1,6 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
+  const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
   const APP_THEME_KEY = "olvendThemePreference";
   const APP_VERSION = "OLVEND 1.42";
@@ -41,8 +42,8 @@
       versionNote: ""
     },
     "warehouses.html": {
-      currentLabel: "Nastavení",
-      activeKey: "settings",
+      currentLabel: "Sklady",
+      activeKey: "warehouses",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -133,7 +134,7 @@
     },
     "purchases.html": {
       currentLabel: "Nákupy",
-      activeKey: "purchases",
+      activeKey: "purchases-overview",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -235,9 +236,19 @@
         { key: "service", href: "technical-jobs.html", label: "Technické zásahy" },
         { key: "operations", href: "operations.html", label: "Lokality" },
         { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
-        { key: "inventory", href: "inventory.html", label: "Inventář / zásoby" },
-        { key: "purchases", href: "purchases.html", label: "Nákupy" },
-        { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" },
+        {
+          key: "stock-management",
+          href: "inventory.html",
+          label: "Skladové hospodářství",
+          children: [
+            { key: "purchases", href: "purchases.html?view=received", label: "Přijaté faktury" },
+            { key: "sales-invoices", href: "purchases.html?view=issued", label: "Vystavené faktury", soon: true },
+            { key: "inventory", href: "inventory.html", label: "Sklad / evidence" },
+            { key: "purchases-overview", href: "purchases.html", label: "Nákupy a příjmy" },
+            { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" },
+            { key: "warehouses", href: "warehouses.html", label: "Sklady a umístění" }
+          ]
+        },
         { key: "routes", href: "routes.html", label: "Trasy" },
         { key: "fleet", href: "vehicles.html", label: "Vozový park" }
       ]
@@ -255,7 +266,11 @@
     }
   ];
 
-  const navItems = navGroups.flatMap((group) => group.items);
+  function flattenNavItems(items) {
+    return items.flatMap((item) => [item, ...(item.children ? flattenNavItems(item.children) : [])]);
+  }
+
+  const navItems = navGroups.flatMap((group) => flattenNavItems(group.items));
 
   function getStoredThemePreference() {
     const stored = localStorage.getItem(APP_THEME_KEY);
@@ -362,16 +377,32 @@
     return 0;
   }
 
+  function isItemActive(item) {
+    const href = String(item.href || "");
+    const hrefPath = href.split("?")[0];
+    if (href.includes("?") && href === currentPathWithQuery) return true;
+    if (!href.includes("?") && hrefPath && hrefPath === currentPath && !window.location.search) return true;
+    if (item.key === meta.activeKey && (currentPath !== "purchases.html" || !window.location.search)) return true;
+    return Array.isArray(item.children) && item.children.some(isItemActive);
+  }
+
   function renderNavLinks(items) {
     return items.map((item) => {
-      const activeClass = item.key === meta.activeKey ? "active" : "";
+      const isActive = isItemActive(item);
+      const activeClass = isActive ? "active" : "";
       const status = item.soon ? '<span class="nav-status">Brzy</span>' : "";
+      const childLinks = Array.isArray(item.children) && item.children.length
+        ? `<div class="nav-subitems">${renderNavLinks(item.children)}</div>`
+        : "";
       return `
-        <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
-          <span class="nav-dot"></span>
-          <span>${item.label}</span>
-          ${status}
-        </a>
+        <div class="nav-item-shell ${childLinks ? "has-children" : ""}">
+          <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
+            <span class="nav-dot"></span>
+            <span>${item.label}</span>
+            ${status}
+          </a>
+          ${childLinks}
+        </div>
       `;
     }).join("");
   }
@@ -389,7 +420,8 @@
 
   function renderMobileLinks() {
     return navGroups.map((group) => {
-      const filteredItems = group.items.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "service", "fleet", "hr", "settings"].includes(item.key));
+      const flattenedItems = flattenNavItems(group.items);
+      const filteredItems = flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
       if (!filteredItems.length) return "";
 
       return `
@@ -397,7 +429,7 @@
           <div class="mobile-nav-section-title">${group.title}</div>
           <div class="mobile-nav-section-links">
             ${filteredItems.map((item) => {
-              const activeClass = item.key === meta.activeKey ? "active" : "";
+              const activeClass = isItemActive(item) ? "active" : "";
               return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
             }).join("")}
           </div>
@@ -447,7 +479,7 @@
 
   function renderMobileGlobalNav() {
     return navItems.map((item) => {
-      const activeClass = item.key === meta.activeKey ? "active" : "";
+      const activeClass = isItemActive(item) ? "active" : "";
       return `<a href="${item.href}" class="${activeClass}">${item.label}</a>`;
     }).join("");
   }
@@ -511,6 +543,11 @@
         gap: 8px;
       }
 
+      .nav-item-shell {
+        display: grid;
+        gap: 6px;
+      }
+
       .nav a {
         display: flex;
         align-items: center;
@@ -558,6 +595,28 @@
         background: rgba(255,255,255,0.06);
         color: #979daa;
         border: 1px solid rgba(255,255,255,0.06);
+      }
+
+      .nav-subitems {
+        display: grid;
+        gap: 4px;
+        margin: -2px 0 4px 18px;
+        padding-left: 12px;
+        border-left: 1px solid rgba(255,255,255,0.08);
+      }
+
+      .nav-subitems a {
+        padding: 9px 11px;
+        border-radius: 11px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #d7dae0;
+      }
+
+      .nav-subitems .nav-dot {
+        width: 6px;
+        height: 6px;
+        flex-basis: 6px;
       }
 
       .sidebar-bottom {
