@@ -512,10 +512,20 @@
               <label for="supplierQuickDefaultDueDays">Výchozí splatnost (dny)</label>
               <input id="supplierQuickDefaultDueDays" type="number" min="0" step="1" placeholder="Např. 14" />
             </div>
+            <div class="field full doc-field-hidden" id="supplierQuickPublishedAccountsField">
+              <label for="supplierQuickPublishedAccounts">Zveřejněné účty z registru DPH</label>
+              <div class="inline-field-action">
+                <select id="supplierQuickPublishedAccounts"></select>
+                <button class="btn secondary small" id="useSupplierPublishedAccountBtn" type="button">Použít účet</button>
+              </div>
+            </div>
             <div class="field full">
               <label for="supplierQuickNote">Poznámka</label>
               <textarea id="supplierQuickNote"></textarea>
             </div>
+          </div>
+          <div class="action-row" style="margin-top:16px;">
+            <button class="btn secondary small" id="fetchSupplierVatBtn" type="button">Ověřit DPH / účty</button>
           </div>
           <div class="status-line" id="supplierQuickStatus" style="margin-top:16px;">Zadej IČO a načti údaje z ARES, případně dodavatele vyplň ručně.</div>
         </div>
@@ -756,10 +766,14 @@
     const supplierQuickBankCode = document.getElementById('supplierQuickBankCode')
     const supplierQuickIban = document.getElementById('supplierQuickIban')
     const supplierQuickDefaultDueDays = document.getElementById('supplierQuickDefaultDueDays')
+    const supplierQuickPublishedAccountsField = document.getElementById('supplierQuickPublishedAccountsField')
+    const supplierQuickPublishedAccounts = document.getElementById('supplierQuickPublishedAccounts')
     const supplierQuickNote = document.getElementById('supplierQuickNote')
     const supplierQuickStatus = document.getElementById('supplierQuickStatus')
     const openSupplierQuickAddBtn = document.getElementById('openSupplierQuickAddBtn')
     const fetchSupplierAresBtn = document.getElementById('fetchSupplierAresBtn')
+    const fetchSupplierVatBtn = document.getElementById('fetchSupplierVatBtn')
+    const useSupplierPublishedAccountBtn = document.getElementById('useSupplierPublishedAccountBtn')
     const saveSupplierQuickBtn = document.getElementById('saveSupplierQuickBtn')
 
     const profileModalBackdrop = document.getElementById('profileModalBackdrop')
@@ -808,6 +822,7 @@
     let currentReceiptReadonly = false
     let currentRecurringOrder = null
     let documentSort = { key: 'date', direction: 'desc' }
+    let supplierPublishedAccounts = []
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -1100,6 +1115,28 @@
     function normalizeIban(value) {
       return String(value || '').replace(/\s/g, '').toUpperCase().slice(0, 34)
     }
+    function normalizeVatId(value, companyId = '') {
+      const raw = String(value || '').trim().toUpperCase().replace(/\s/g, '')
+      if (raw.startsWith('CZ')) return raw
+      const ico = normalizeCompanyId(companyId || raw)
+      return ico ? `CZ${ico}` : ''
+    }
+    function accountOptionLabel(account) {
+      if (account.iban) return `${account.iban}${account.publishedAt ? ` · zveřejněno ${formatDate(account.publishedAt)}` : ''}`
+      return `${account.accountNumber}${account.bankCode ? `/${account.bankCode}` : ''}${account.publishedAt ? ` · zveřejněno ${formatDate(account.publishedAt)}` : ''}`
+    }
+    function fillSupplierAccountFields(account) {
+      if (!account) return
+      supplierQuickBankAccount.value = account.accountNumber || ''
+      supplierQuickBankCode.value = account.bankCode || ''
+      supplierQuickIban.value = account.iban || ''
+    }
+    function renderSupplierPublishedAccounts(accounts = []) {
+      supplierPublishedAccounts = accounts
+      supplierQuickPublishedAccountsField.classList.toggle('doc-field-hidden', !accounts.length)
+      supplierQuickPublishedAccounts.innerHTML = accounts.map((account, index) => `<option value="${index}">${escapeHtml(accountOptionLabel(account))}</option>`).join('')
+      if (accounts.length) fillSupplierAccountFields(accounts[0])
+    }
     function formatAresAddress(subject) {
       const address = subject.sidlo || {}
       return address.textovaAdresa || [
@@ -1142,6 +1179,7 @@
       supplierQuickBankCode.value = ''
       supplierQuickIban.value = ''
       supplierQuickDefaultDueDays.value = ''
+      renderSupplierPublishedAccounts([])
       supplierQuickNote.value = supplierName ? 'Dodavatel založený přímo z přijatého dokladu.' : ''
       setSupplierQuickStatus('Zadej IČO a načti údaje z ARES, případně dodavatele vyplň ručně.')
       supplierQuickModalBackdrop.classList.add('show')
@@ -1149,6 +1187,30 @@
     function closeSupplierQuickModal() {
       supplierQuickModalBackdrop.classList.remove('show')
       supplierQuickForm.reset()
+      renderSupplierPublishedAccounts([])
+    }
+    async function fetchSupplierVatAccounts() {
+      const vatId = normalizeVatId(supplierQuickTaxId.value, supplierQuickCompanyId.value)
+      if (!vatId) throw new Error('Doplň DIČ nebo IČO dodavatele.')
+      supplierQuickTaxId.value = vatId
+      setSupplierQuickStatus('Ověřuji plátce DPH a zveřejněné účty...')
+      const { data, error } = await supabase.functions.invoke('check-vat-accounts', { body: { dic: vatId } })
+      if (error) throw new Error(error.message || 'Registr DPH se nepodařilo načíst.')
+      if (data?.error) throw new Error(data.error)
+      const accounts = Array.isArray(data?.accounts) ? data.accounts : []
+      renderSupplierPublishedAccounts(accounts)
+      const statusParts = [
+        data?.payerFound ? 'Plátce DPH nalezen' : 'Plátce DPH nenalezen',
+        data?.unreliable === true ? 'nespolehlivý plátce' : data?.unreliable === false ? 'spolehlivý plátce' : '',
+        accounts.length ? `${accounts.length} zveřejněných účtů` : 'bez zveřejněného účtu'
+      ].filter(Boolean)
+      const noteLines = [
+        supplierQuickNote.value.trim(),
+        `DPH ověření: ${statusParts.join(' · ')}`,
+        data?.checkedAt ? `Ověřeno: ${formatDate(data.checkedAt)}` : ''
+      ].filter(Boolean)
+      supplierQuickNote.value = Array.from(new Set(noteLines)).join('\n')
+      setSupplierQuickStatus(statusParts.join(' · '), data?.unreliable ? 'error' : 'success')
     }
     function supplierPayloadWithOptionalFields() {
       const companyId = normalizeCompanyId(supplierQuickCompanyId.value)
@@ -2215,6 +2277,27 @@
         fetchSupplierAresBtn.disabled = false
         fetchSupplierAresBtn.textContent = 'Načíst ARES'
       }
+    })
+    fetchSupplierVatBtn.addEventListener('click', async () => {
+      try {
+        fetchSupplierVatBtn.disabled = true
+        fetchSupplierVatBtn.textContent = 'Ověřuji...'
+        await fetchSupplierVatAccounts()
+      } catch (error) {
+        console.error(error)
+        setSupplierQuickStatus(`Registr DPH se nepodařilo ověřit: ${error.message}`, 'error')
+      } finally {
+        fetchSupplierVatBtn.disabled = false
+        fetchSupplierVatBtn.textContent = 'Ověřit DPH / účty'
+      }
+    })
+    useSupplierPublishedAccountBtn.addEventListener('click', () => {
+      const selected = supplierPublishedAccounts[Number(supplierQuickPublishedAccounts.value || 0)]
+      fillSupplierAccountFields(selected)
+    })
+    supplierQuickPublishedAccounts.addEventListener('change', () => {
+      const selected = supplierPublishedAccounts[Number(supplierQuickPublishedAccounts.value || 0)]
+      fillSupplierAccountFields(selected)
     })
     supplierQuickForm.addEventListener('submit', async (event) => {
       event.preventDefault()
