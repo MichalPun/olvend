@@ -113,7 +113,7 @@
       versionNote: ""
     },
     "machines.html": {
-      currentLabel: "Stroje / Automaty",
+      currentLabel: "Stroje",
       activeKey: "machines",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -256,7 +256,16 @@
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
         },
-        { key: "machines", href: "machines.html", label: "Stroje / Automaty" },
+        {
+          key: "machines-management",
+          href: "machines.html",
+          label: "Stroje",
+          children: [
+            { key: "machines", href: "machines.html", label: "Všechny stroje" },
+            { key: "machines-placed", href: "machines.html?placement=placed", label: "Umístěné automaty" },
+            { key: "machines-storage", href: "machines.html?placement=storage", label: "Automaty ve skladu" }
+          ]
+        },
         {
           key: "logistics-management",
           href: "routes.html",
