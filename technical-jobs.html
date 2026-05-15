@@ -144,6 +144,9 @@
     table { width: 100%; border-collapse: collapse; min-width: 980px; }
     th, td { padding: 14px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); text-align: left; vertical-align: top; }
     th { color: var(--soft); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }
+    .excel-wrap { max-height: 58vh; overflow: auto; border-top: 1px solid var(--border); background: rgba(255,255,255,0.018); }
+    .excel-table thead th { position: sticky; top: 0; z-index: 2; background: #151820; color: #c2c8d3; border-bottom: 1px solid rgba(255,255,255,0.12); }
+    .excel-table tbody tr:hover { background: rgba(213,16,26,0.045); }
     td strong { display: block; font-size: 14px; margin-bottom: 4px; }
     .subtext { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -386,6 +389,9 @@
       background: rgba(241,245,249,0.95);
       border-color: rgba(18,24,35,0.08);
     }
+    html[data-olvend-theme="light"] .excel-wrap { background: #fff; }
+    html[data-olvend-theme="light"] .excel-table thead th { background: #f8fafc; color: #475467; border-bottom-color: rgba(15,23,42,0.12); }
+    html[data-olvend-theme="light"] .excel-table tbody tr:hover { background: #fff5f5; }
     html[data-olvend-theme="light"] .empty-state {
       background: rgba(255,255,255,0.82);
       border-color: rgba(18,24,35,0.1);
@@ -510,6 +516,22 @@
                 </div>
               </article>
             </div>
+            <div class="table-wrap excel-wrap" style="margin-top:16px;">
+              <table class="excel-table">
+                <thead>
+                  <tr>
+                    <th>Stav</th>
+                    <th>Karta</th>
+                    <th>Typ</th>
+                    <th>Lokalita / stroj</th>
+                    <th>Technik</th>
+                    <th>Termín</th>
+                    <th>Další krok</th>
+                  </tr>
+                </thead>
+                <tbody id="overviewWorkTableBody"></tbody>
+              </table>
+            </div>
           </div>
         </section>
 
@@ -575,8 +597,8 @@
               </select>
             </div>
 
-            <div class="table-wrap">
-              <table>
+            <div class="table-wrap excel-wrap">
+              <table class="excel-table">
                 <thead>
                   <tr>
                     <th>Karta</th>
@@ -1015,6 +1037,7 @@
     const serviceQuickStats = document.getElementById('serviceQuickStats')
     const servicePanelStats = document.getElementById('servicePanelStats')
     const serviceBridgeList = document.getElementById('serviceBridgeList')
+    const overviewWorkTableBody = document.getElementById('overviewWorkTableBody')
     const searchInput = document.getElementById('searchInput')
     const statusFilter = document.getElementById('statusFilter')
     const priorityFilter = document.getElementById('priorityFilter')
@@ -1607,6 +1630,48 @@
         technicianQueue.classList.add('hidden')
         technicianQueue.innerHTML = ''
       }
+      renderOverviewWorkTable()
+    }
+
+    function nextStepForJob(item, checklist = []) {
+      if (item.status === 'pending_confirmation') return 'Potvrdit a přesunout do historie'
+      if (item.status === 'closed') return 'Hotovo v historii'
+      if (!item.workshop_ready) return 'Příprava na dílně'
+      if (!item.assigned_employee_id) return 'Přiřadit technika'
+      if (['on_the_way', 'on_site', 'in_progress'].includes(String(item.status || ''))) return 'Technik pracuje'
+      const required = checklist.filter((row) => row.required !== false)
+      if (required.some((row) => !row.completed)) return 'Doplnit checklist'
+      return 'Odeslat ke schválení'
+    }
+
+    function renderOverviewWorkTable() {
+      const rows = jobs
+        .filter((item) => !HISTORY_STATUSES.includes(String(item.status || '')))
+        .sort((a, b) => {
+          const statusRank = { pending_confirmation: 0, blocked: 1, in_progress: 2, on_site: 3, on_the_way: 4, workshop_ready: 5, assigned: 6, planned: 7, new: 8 }
+          const rankDiff = (statusRank[String(a.status || '')] ?? 20) - (statusRank[String(b.status || '')] ?? 20)
+          if (rankDiff) return rankDiff
+          return new Date(a.planned_date || a.created_at || 0).getTime() - new Date(b.planned_date || b.created_at || 0).getTime()
+        })
+        .slice(0, 16)
+      overviewWorkTableBody.innerHTML = rows.length
+        ? rows.map((item) => {
+          const checklist = getChecklistForJob(item.id)
+          const doneCount = checklist.filter((row) => row.completed).length
+          const requiredCount = checklist.filter((row) => row.required !== false).length || checklist.length
+          return `
+            <tr>
+              <td data-label="Stav"><span class="badge ${escapeHtml(String(item.status || 'new'))}">${escapeHtml(getStatusLabel(item.status))}</span></td>
+              <td data-label="Karta"><strong>${escapeHtml(item.title || 'Technická karta')}</strong><span class="subtext">Checklist ${doneCount}/${requiredCount || 0}</span></td>
+              <td data-label="Typ"><span class="badge ${escapeHtml(String(item.job_type || 'service'))}">${escapeHtml(getJobTypeLabel(item.job_type))}</span></td>
+              <td data-label="Lokalita / stroj"><strong>${escapeHtml(getLocationLabel(item.location_id))}</strong><span class="subtext">${escapeHtml(getMachineLabel(item.machine_id))}</span></td>
+              <td data-label="Technik"><strong>${escapeHtml(getEmployeeLabel(item.assigned_employee_id))}</strong><span class="subtext">${item.workshop_ready ? 'Připraveno' : 'Čeká na dílnu'}</span></td>
+              <td data-label="Termín"><strong>${escapeHtml(formatDate(item.planned_date))}</strong><span class="subtext">${escapeHtml(formatDateTime(item.updated_at || item.created_at))}</span></td>
+              <td data-label="Další krok"><strong>${escapeHtml(nextStepForJob(item, checklist))}</strong><span class="subtext"><button class="btn secondary" type="button" data-action="detail" data-id="${item.id}">Otevřít</button></span></td>
+            </tr>
+          `
+        }).join('')
+        : '<tr><td colspan="7"><div class="empty-state">Aktuálně nejsou žádné otevřené technické karty.</div></td></tr>'
     }
 
     function populateSupportOptions() {
@@ -3075,8 +3140,11 @@
       if (error) throw error
       await applyMachineUpdateForClosedJob(job)
       await loadData()
-      renderDetail(activeDetailId)
-      setStatus('Technická karta byla potvrzená a uzavřená.', 'success')
+      closeDetailModal()
+      activeDetailId = null
+      activeTab = 'history'
+      renderActiveTab()
+      setStatus('Technická karta byla potvrzená, uzavřená a přesunutá do historie.', 'success')
     }
 
     async function openProtocolPrint() {
@@ -3306,6 +3374,10 @@
         const createServiceButton = event.target.closest('[data-action="create-service-job"]')
         if (!createServiceButton) return
         openCreateJob('service')
+      })
+      overviewWorkTableBody.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action="detail"]')
+        if (button) renderDetail(button.dataset.id)
       })
 
       jobsTableBody.addEventListener('click', (event) => {

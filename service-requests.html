@@ -301,6 +301,9 @@
     table { width: 100%; min-width: 1180px; border-collapse: collapse; }
     th, td { text-align: left; padding: 14px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .excel-wrap { max-height: 62vh; overflow: auto; border-top: 1px solid var(--border); background: rgba(255,255,255,0.018); }
+    .excel-table thead th { position: sticky; top: 0; z-index: 2; background: #151820; color: #c2c8d3; border-bottom: 1px solid rgba(255,255,255,0.12); }
+    .excel-table tbody tr:hover { background: rgba(213,16,26,0.045); }
     .subtext { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .badge {
       display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px;
@@ -515,7 +518,7 @@
             <div class="toolbar">
               <input id="searchInput" type="text" placeholder="Hledat podle lokality, zaměstnance nebo názvu problému..." />
               <select id="statusFilter">
-                <option value="open" selected>Jen neopravené</option>
+                <option value="open" selected>Otevřené včetně čeká na díl</option>
                 <option value="">Všechny stavy</option>
                 <option value="new">Nové</option>
                 <option value="assigned">Přiřazené</option>
@@ -547,8 +550,8 @@
               </div>
             </details>
 
-            <div class="table-wrap">
-              <table>
+            <div class="table-wrap excel-wrap">
+              <table class="excel-table">
                 <thead>
                   <tr>
                     <th>Požadavek</th>
@@ -659,6 +662,7 @@
                 <option value="need_machine_replacement">Nutná výměna stroje</option>
                 <option value="not_found">Nezjištěno</option>
                 <option value="return_later">Vrátit se později</option>
+                <option value="return_with_part">Vrátit se s dílem</option>
               </select>
             </div>
             <div class="field full">
@@ -727,6 +731,7 @@
       <form id="doneForm">
         <div class="modal-body">
           <input type="hidden" id="doneRequestId" />
+          <div class="helper-line">Když výsledek není skutečně opraveno, požadavek zůstane otevřený. Například „Nutný náhradní díl“ ho uloží jako blokovaný servis čekající na díl.</div>
           <div class="form-grid">
             <div class="field">
               <label for="doneServiceResult">Výsledek zásahu</label>
@@ -1152,6 +1157,7 @@
 
       const oldest = assignedOpen[0] || null
       const delayed = assignedOpen.filter((row) => row.delay.delayRequired && !row.delay.isBlocked)
+      const blocked = assignedOpen.filter((row) => row.delay.isBlocked || String(row.item.status || '') === 'blocked')
       const urgentLate = assignedOpen.filter((row) => row.sla.isUrgentLate)
 
       technicianDashboard.className = 'technician-dashboard show'
@@ -1170,6 +1176,11 @@
           <div class="dashboard-card-label">Vyjádření ke zdržení</div>
           <div class="dashboard-card-value">${delayed.length}</div>
           <div class="dashboard-card-note">${delayed.length ? 'Vyřeš nebo napiš důvod zdržení.' : 'Všechny starší servisy mají stav nebo vysvětlení.'}</div>
+        </article>
+        <article class="dashboard-card ${blocked.length ? 'warning' : 'good'}">
+          <div class="dashboard-card-label">Čeká na díl / blokace</div>
+          <div class="dashboard-card-value">${blocked.length}</div>
+          <div class="dashboard-card-note">${blocked.length ? 'Zůstává otevřené, dokud se díl nebo blokace nevyřeší.' : 'Žádný tvůj servis teď nečeká na díl.'}</div>
         </article>
       `
     }
@@ -1270,6 +1281,10 @@
         const aQrBoost = a.status === 'new' && isQrReportedRequest(a) ? 1 : 0
         const bQrBoost = b.status === 'new' && isQrReportedRequest(b) ? 1 : 0
         if (bQrBoost !== aQrBoost) return bQrBoost - aQrBoost
+
+        const statusRank = { blocked: 0, new: 1, assigned: 2, on_site: 3, in_progress: 4, return_with_part: 5, done: 20, cancelled: 21 }
+        const rankDiff = (statusRank[String(a.status || '')] ?? 10) - (statusRank[String(b.status || '')] ?? 10)
+        if (rankDiff) return rankDiff
 
         const aTimestamp = new Date(a.created_at || a.updated_at || 0).getTime()
         const bTimestamp = new Date(b.created_at || b.updated_at || 0).getTime()
@@ -1762,6 +1777,27 @@
 
       if (!serviceResultValue) throw new Error('Vyber výsledek zásahu.')
       if (!workPerformedValue) throw new Error('Doplň, co bylo na místě provedeno.')
+      const blockingResultMap = {
+        need_spare_part: { status: 'blocked', delay_reason: 'waiting_part', note: 'Čeká na náhradní díl.' },
+        need_machine_replacement: { status: 'blocked', delay_reason: 'waiting_part', note: 'Čeká na výměnu stroje nebo potřebný díl.' },
+        return_later: { status: 'blocked', delay_reason: 'other', note: 'Je potřeba návrat technika.' },
+        return_with_part: { status: 'blocked', delay_reason: 'waiting_part', note: 'Technik se má vrátit s dílem.' }
+      }
+      const blockingResult = blockingResultMap[serviceResultValue]
+
+      if (blockingResult) {
+        await updateRequestWithFallback(id, {
+          status: blockingResult.status,
+          service_result: serviceResultValue,
+          last_service_result: serviceResultValue,
+          work_performed: workPerformedValue,
+          resolution_note: resolutionNoteValue || blockingResult.note,
+          delay_reason: item.delay_reason || blockingResult.delay_reason,
+          delay_note: resolutionNoteValue || blockingResult.note,
+          service_departed_at: departedAtValue
+        })
+        return { closed: false, status: blockingResult.status }
+      }
 
       await updateRequestWithFallback(id, {
         status: 'done',
@@ -1772,6 +1808,7 @@
         service_departed_at: departedAtValue,
         service_finished_at: departedAtValue
       })
+      return { closed: true, status: 'done' }
     }
 
     function getServiceCompatibilityHint(error) {
@@ -1914,10 +1951,10 @@
       try {
         confirmDoneBtn.disabled = true
         confirmDoneBtn.textContent = 'Ukončuji...'
-        await markDone(doneRequestId.value)
+        const result = await markDone(doneRequestId.value)
         closeDoneModal()
         await loadRequests()
-        setStatus('Servisní požadavek byl označený jako hotový.', 'success')
+        setStatus(result?.closed ? 'Servisní požadavek byl označený jako hotový.' : 'Zásah byl uložený jako blokovaný a zůstává otevřený.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se ukončit zásah: ${error.message}.${getServiceCompatibilityHint(error)}`, 'error')
