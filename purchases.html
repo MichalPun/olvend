@@ -41,6 +41,7 @@
     .summary-box-label { color:var(--soft); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:7px; }
     .summary-box-value { font-size:22px; font-weight:800; margin-bottom:4px; }
     .summary-box-note { color:var(--muted); font-size:13px; line-height:1.5; }
+    .series-preview { padding:12px 14px; border-radius:12px; background:rgba(255,255,255,0.045); border:1px solid var(--border); font-size:14px; font-weight:800; min-height:45px; display:flex; align-items:center; }
     .filters { display:grid; grid-template-columns:minmax(300px,1.5fr) 210px 190px 190px 190px; gap:10px; margin-bottom:12px; }
     input, select, textarea { width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:white; padding:12px 14px; border-radius:12px; outline:none; font-size:14px; font-family:inherit; }
     input:focus, select:focus, textarea:focus { border-color:rgba(213,16,26,0.5); box-shadow:0 0 0 3px rgba(213,16,26,0.12); }
@@ -136,7 +137,8 @@
     :root[data-olvend-theme="light"] .badge { background:rgba(15,23,42,0.04); border-color:rgba(15,23,42,0.08); color:#344054; }
     :root[data-olvend-theme="light"] input,
     :root[data-olvend-theme="light"] select,
-    :root[data-olvend-theme="light"] textarea { background:#fff; border-color:rgba(15,23,42,0.12); color:#17212b; }
+    :root[data-olvend-theme="light"] textarea,
+    :root[data-olvend-theme="light"] .series-preview { background:#fff; border-color:rgba(15,23,42,0.12); color:#17212b; }
     :root[data-olvend-theme="light"] input::placeholder,
     :root[data-olvend-theme="light"] textarea::placeholder { color:#98a2b3; }
     :root[data-olvend-theme="light"] th { color:#667085; }
@@ -412,6 +414,10 @@
                 <option value="cash_receipt">Účtenka / hotově</option>
                 <option value="internal_receipt">Interní příjemka</option>
               </select>
+            </div>
+            <div class="field">
+              <label>Interní číslo</label>
+              <div class="series-preview" id="invoiceImportInternalNumber">OVP26-0001</div>
             </div>
             <div class="field">
               <label for="invoiceImportSupplierId">Dodavatel</label>
@@ -735,6 +741,7 @@
     const invoiceImportForm = document.getElementById('invoiceImportForm')
     const invoiceImportSummary = document.getElementById('invoiceImportSummary')
     const invoiceImportDocumentType = document.getElementById('invoiceImportDocumentType')
+    const invoiceImportInternalNumber = document.getElementById('invoiceImportInternalNumber')
     const invoiceImportSupplierId = document.getElementById('invoiceImportSupplierId')
     const invoiceImportWarehouseId = document.getElementById('invoiceImportWarehouseId')
     const invoiceImportNumber = document.getElementById('invoiceImportNumber')
@@ -867,10 +874,52 @@
     }
     function documentTypeMeta(value) {
       const type = value || 'invoice'
-      if (type === 'delivery_note') return { label: 'Dodací list', short: 'DL' }
-      if (type === 'cash_receipt') return { label: 'Účtenka', short: 'Účtenka' }
-      if (type === 'internal_receipt') return { label: 'Interní příjemka', short: 'Příjemka' }
-      return { label: 'Faktura', short: 'FA' }
+      if (type === 'delivery_note') return { label: 'Dodací list', short: 'DL', prefix: 'OVDL' }
+      if (type === 'cash_receipt') return { label: 'Účtenka', short: 'Účtenka', prefix: 'OVU' }
+      if (type === 'internal_receipt') return { label: 'Interní příjemka', short: 'Příjemka', prefix: 'OVPR' }
+      return { label: 'Faktura', short: 'FA', prefix: 'OVP' }
+    }
+    function documentSeriesYear(row = {}) {
+      const dateValue = row.order_date || row.delivery_date || row.received_at || invoiceImportDate?.value || new Date().toISOString().slice(0, 10)
+      const year = new Date(dateValue).getFullYear()
+      return Number.isNaN(year) ? new Date().getFullYear() : year
+    }
+    function storedDocumentSeries(row) {
+      const match = String(row.note || '').match(/\[rada:([^\]]+)\]/)
+      return match?.[1] || ''
+    }
+    function cleanDocumentNote(row) {
+      return String(row.note || '')
+        .replace(/\[rada:[^\]]+\]/g, '')
+        .replace(/\[typ:[^\]]+\]/g, '')
+        .replace(/\[splatnost:[^\]]+\]/g, '')
+        .trim()
+    }
+    function sameSeriesYear(row, type, year) {
+      return getDocumentType(row) === type && documentSeriesYear(row) === year
+    }
+    function documentSeriesSequence(row, type, year) {
+      if (!row?.id) return orders.filter((item) => sameSeriesYear(item, type, year)).length + 1
+      const seriesRows = orders
+        .filter((item) => sameSeriesYear(item, type, year))
+        .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+      const index = seriesRows.findIndex((item) => String(item.id) === String(row.id))
+      if (index >= 0) return index + 1
+      return seriesRows.filter((item) => Number(item.id || 0) < Number(row.id || 0)).length + 1
+    }
+    function formatDocumentSeries(type, year, sequence) {
+      const prefix = documentTypeMeta(type).prefix
+      const shortYear = String(year).slice(-2)
+      return `${prefix}${shortYear}-${String(sequence).padStart(4, '0')}`
+    }
+    function internalDocumentNumber(row = null, typeOverride = null) {
+      if (row) {
+        const stored = storedDocumentSeries(row)
+        if (stored) return stored
+      }
+      const type = typeOverride || (row ? getDocumentType(row) : invoiceImportDocumentType?.value || 'invoice')
+      const year = documentSeriesYear(row || {})
+      return formatDocumentSeries(type, year, documentSeriesSequence(row || null, type, year))
     }
     function setFieldVisible(field, visible) {
       field?.classList.toggle('doc-field-hidden', !visible)
@@ -1279,7 +1328,10 @@
       applyDocumentTypeRules('import')
       const supplierId = invoiceImportSupplierId.value
       const documentMeta = documentTypeMeta(invoiceImportDocumentType.value)
+      const previewInternalNumber = internalDocumentNumber(null, invoiceImportDocumentType.value)
+      invoiceImportInternalNumber.textContent = previewInternalNumber
       invoiceImportSummary.innerHTML = [
+        { label: 'Interní číslo', value: previewInternalNumber, note: `${documentMeta.label} · číselná řada ${documentMeta.prefix}` },
         { label: 'Typ dokladu', value: documentMeta.label, note: invoiceImportDocumentType.value === 'invoice' ? (invoiceImportDueDate.value ? `Splatnost ${formatDate(invoiceImportDueDate.value)}` : 'Splatnost není zadaná') : 'Bez fakturační splatnosti' },
         { label: 'Dodavatel', value: currentInvoiceImport.supplierName || suppliers.find((supplier) => String(supplier.id) === String(supplierId))?.name || 'Neuvedeno', note: currentInvoiceImport.supplierCompanyId ? `IČO ${currentInvoiceImport.supplierCompanyId}` : 'Ruční nebo XML doklad' },
         { label: documentMeta.short, value: invoiceImportNumber.value || currentInvoiceImport.invoiceNumber || 'Bez čísla', note: invoiceImportDate.value ? new Date(invoiceImportDate.value).toLocaleDateString('cs-CZ') : 'Bez data' },
@@ -1501,6 +1553,7 @@
         ...line,
         unitCost: line.receivedQuantity > 0 ? Number((line.costTotal / line.receivedQuantity).toFixed(2)) : null
       }))
+      const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''} ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
       const { data: order, error: orderError } = await insertPurchaseOrder({
           supplier_id: supplierId,
           order_scope: 'general',
@@ -1512,9 +1565,17 @@
           delivery_note_number: ['invoice', 'delivery_note'].includes(documentType) ? (invoiceImportDeliveryNote.value.trim() || null) : null,
           invoice_number: ['invoice', 'cash_receipt'].includes(documentType) ? (documentNumber || null) : null,
           received_stock_location_id: stockLocationId,
-          note: `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''} ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
+          note: baseNote
         })
       if (orderError) throw orderError
+      const assignedSeries = internalDocumentNumber({
+        id: order.id,
+        document_type: documentType,
+        order_date: invoiceImportDate.value || new Date().toISOString().slice(0, 10),
+        delivery_date: invoiceImportDeliveryDate.value || invoiceImportDate.value || new Date().toISOString().slice(0, 10),
+        note: baseNote
+      })
+      await updatePurchaseOrder(order.id, { note: `[rada:${assignedSeries}] ${baseNote}`.trim() })
       const { error: itemsError } = await supabase.from('purchase_order_items').insert(groupedLines.map((line) => ({
         purchase_order_id: order.id,
         product_id: line.productId,
@@ -1887,7 +1948,7 @@
     }
     function ledgerSortValue(row, key) {
       if (key === 'status') return orderStatusMeta(row.status).label
-      if (key === 'document') return row.invoice_number || row.delivery_note_number || `PO-${row.id}`
+      if (key === 'document') return internalDocumentNumber(row)
       if (key === 'supplier') return row.supplier_name || ''
       if (key === 'date') return new Date(orderDateForLedger(row) || 0).getTime()
       if (key === 'items') return (row.items || []).length
@@ -1924,11 +1985,13 @@
         const total = orderTotal(row)
         const documentMeta = documentTypeMeta(getDocumentType(row))
         const dueDate = getDueDate(row)
+        const internalNumber = internalDocumentNumber(row)
+        const externalNumber = row.invoice_number || row.delivery_note_number || 'Bez externího čísla'
         return `
           <tr>
             <td data-label="Stav"><span class="badge ${statusMeta.badge}">${escapeHtml(statusMeta.label)}</span></td>
-            <td data-label="Doklad"><div class="doc-number">${escapeHtml(row.invoice_number || row.delivery_note_number || `PO-${row.id}`)}</div><div class="doc-kind">${escapeHtml(documentMeta.label)} · ${escapeHtml(orderScopeLabel(row))}</div></td>
-            <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">${escapeHtml(row.note || 'Bez poznámky')}</span></td>
+            <td data-label="Doklad"><div class="doc-number">${escapeHtml(internalNumber)}</div><div class="doc-kind">${escapeHtml(documentMeta.label)} · externí ${escapeHtml(externalNumber)}</div></td>
+            <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">${escapeHtml(cleanDocumentNote(row) || 'Bez poznámky')}</span></td>
             <td data-label="Datum"><strong>${escapeHtml(formatDate(orderDateForLedger(row)))}</strong><span class="subtext">Obj. ${escapeHtml(formatDate(row.order_date))} · Splat. ${escapeHtml(formatDate(dueDate))}</span></td>
             <td data-label="Položky"><strong>${escapeHtml(String((row.items || []).length))} položek</strong><span class="subtext doc-items">${escapeHtml(orderItemPreview(row))}</span></td>
             <td data-label="Sklad"><strong>${escapeHtml(row.received_stock_location_id ? 'Přijato na sklad' : row.status === 'ordered' ? 'Čeká na sklad' : 'Neurčeno')}</strong><span class="subtext">DL ${escapeHtml(row.delivery_note_number || '—')}</span></td>
@@ -2326,6 +2389,8 @@
       renderInvoiceImport()
     })
     invoiceImportDueDate.addEventListener('change', renderInvoiceImport)
+    invoiceImportDate.addEventListener('change', renderInvoiceImport)
+    invoiceImportDeliveryDate.addEventListener('change', renderInvoiceImport)
     receiptDocumentType.addEventListener('change', () => applyDocumentTypeRules('receipt'))
     invoiceImportLines.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="remove-import-line"]')
