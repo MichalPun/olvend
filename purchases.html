@@ -834,6 +834,14 @@
     let currentRecurringOrder = null
     let documentSort = { key: 'date', direction: 'desc' }
     let supplierPublishedAccounts = []
+    const DOCUMENT_SERIES_STORAGE_KEY = 'olvend.purchaseDocumentSeries.v1'
+    const DEFAULT_DOCUMENT_SERIES = {
+      invoice: { label: 'Faktury přijaté', prefix: 'OVP', nextNumber: 1, padding: 4 },
+      delivery_note: { label: 'Dodací listy', prefix: 'OVDL', nextNumber: 1, padding: 4 },
+      cash_receipt: { label: 'Účtenky / hotově', prefix: 'OVU', nextNumber: 1, padding: 4 },
+      internal_receipt: { label: 'Interní příjemky', prefix: 'OVPR', nextNumber: 1, padding: 4 }
+    }
+    let documentSeriesSettings = loadDocumentSeriesSettings()
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -876,12 +884,35 @@
       const date = new Date(value)
       return Number.isNaN(date.getTime()) ? 'Bez data' : date.toLocaleDateString('cs-CZ')
     }
+    function loadDocumentSeriesSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(DOCUMENT_SERIES_STORAGE_KEY) || '{}')
+        return Object.fromEntries(Object.entries(DEFAULT_DOCUMENT_SERIES).map(([type, defaults]) => {
+          const custom = saved[type] || {}
+          return [type, {
+            ...defaults,
+            prefix: String(custom.prefix || defaults.prefix).trim().toUpperCase(),
+            nextNumber: Math.max(1, Number(custom.nextNumber || defaults.nextNumber)),
+            padding: Math.min(8, Math.max(1, Number(custom.padding || defaults.padding)))
+          }]
+        }))
+      } catch (error) {
+        return structuredClone(DEFAULT_DOCUMENT_SERIES)
+      }
+    }
+    function saveDocumentSeriesSettings() {
+      localStorage.setItem(DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(documentSeriesSettings))
+    }
+    function seriesConfig(type) {
+      return documentSeriesSettings[type] || DEFAULT_DOCUMENT_SERIES.invoice
+    }
     function documentTypeMeta(value) {
       const type = value || 'invoice'
-      if (type === 'delivery_note') return { label: 'Dodací list', short: 'DL', prefix: 'OVDL' }
-      if (type === 'cash_receipt') return { label: 'Účtenka', short: 'Účtenka', prefix: 'OVU' }
-      if (type === 'internal_receipt') return { label: 'Interní příjemka', short: 'Příjemka', prefix: 'OVPR' }
-      return { label: 'Faktura', short: 'FA', prefix: 'OVP' }
+      const config = seriesConfig(type)
+      if (type === 'delivery_note') return { label: 'Dodací list', short: 'DL', prefix: config.prefix }
+      if (type === 'cash_receipt') return { label: 'Účtenka', short: 'Účtenka', prefix: config.prefix }
+      if (type === 'internal_receipt') return { label: 'Interní příjemka', short: 'Příjemka', prefix: config.prefix }
+      return { label: 'Faktura', short: 'FA', prefix: config.prefix }
     }
     function documentSeriesYear(row = {}) {
       const dateValue = row.order_date || row.delivery_date || row.received_at || invoiceImportDate?.value || new Date().toISOString().slice(0, 10)
@@ -903,18 +934,20 @@
       return getDocumentType(row) === type && documentSeriesYear(row) === year
     }
     function documentSeriesSequence(row, type, year) {
-      if (!row?.id) return orders.filter((item) => sameSeriesYear(item, type, year)).length + 1
+      const base = Number(seriesConfig(type).nextNumber || 1)
+      if (!row?.id) return base + orders.filter((item) => sameSeriesYear(item, type, year)).length
       const seriesRows = orders
         .filter((item) => sameSeriesYear(item, type, year))
         .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
       const index = seriesRows.findIndex((item) => String(item.id) === String(row.id))
-      if (index >= 0) return index + 1
-      return seriesRows.filter((item) => Number(item.id || 0) < Number(row.id || 0)).length + 1
+      if (index >= 0) return base + index
+      return base + seriesRows.filter((item) => Number(item.id || 0) < Number(row.id || 0)).length
     }
     function formatDocumentSeries(type, year, sequence) {
-      const prefix = documentTypeMeta(type).prefix
+      const config = seriesConfig(type)
+      const prefix = config.prefix
       const shortYear = String(year).slice(-2)
-      return `${prefix}${shortYear}-${String(sequence).padStart(4, '0')}`
+      return `${prefix}${shortYear}-${String(sequence).padStart(Number(config.padding || 4), '0')}`
     }
     function internalDocumentNumber(row = null, typeOverride = null) {
       if (row) {
