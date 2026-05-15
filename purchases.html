@@ -110,6 +110,9 @@
     .import-line-meta { color:var(--muted); font-size:12px; line-height:1.45; margin-top:5px; }
     .import-line-status { margin-top:8px; }
     .import-line-total { padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:rgba(255,255,255,0.035); min-height:45px; display:flex; align-items:center; font-weight:800; white-space:nowrap; }
+    .price-watch { min-height:18px; margin-top:6px; font-size:12px; color:var(--muted); line-height:1.4; }
+    .price-watch.warn { color:#f8b4b4; font-weight:800; }
+    .price-watch.good { color:#9ae6b4; font-weight:800; }
     .file-input-hidden { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     :root[data-olvend-theme="light"] .title h1,
     :root[data-olvend-theme="light"] .panel-header h2,
@@ -829,6 +832,7 @@
     let supplierProductMappings = []
     let currentInvoiceImport = null
     let productRecommendationMap = new Map()
+    let productLastPurchasePriceMap = new Map()
     let currentReceiptOrder = null
     let currentReceiptReadonly = false
     let currentRecurringOrder = null
@@ -1373,9 +1377,58 @@
         gross: net * (1 + (vatRate / 100))
       }
     }
+    function getLastPurchasePrice(productId) {
+      return Number(productLastPurchasePriceMap.get(String(productId)) || 0)
+    }
+    function priceWatchMessage(productId, unitCost) {
+      const lastPrice = getLastPurchasePrice(productId)
+      if (!productId || !lastPrice || !unitCost) return { type: '', text: '' }
+      const diff = unitCost - lastPrice
+      const pct = lastPrice ? (diff / lastPrice) * 100 : 0
+      if (diff > 0.009) {
+        return {
+          type: pct >= 5 ? 'warn' : '',
+          text: `Poslední cena ${formatCurrency(lastPrice)} · nově ${formatCurrency(unitCost)} · rozdíl +${formatCurrency(diff)} (${pct.toFixed(1)} %).`
+        }
+      }
+      if (diff < -0.009) {
+        return {
+          type: 'good',
+          text: `Poslední cena ${formatCurrency(lastPrice)} · nově levnější o ${formatCurrency(Math.abs(diff))}.`
+        }
+      }
+      return { type: '', text: `Stejné jako poslední nákup: ${formatCurrency(lastPrice)}.` }
+    }
+    function updateImportLinePriceWatch(row) {
+      const productId = row.querySelector('[data-import-product]')?.value || ''
+      const unitCost = Number(row.querySelector('[data-import-unit-cost]')?.value || 0)
+      const target = row.querySelector('[data-import-price-watch]')
+      if (!target) return
+      const message = priceWatchMessage(productId, unitCost)
+      target.textContent = message.text
+      target.className = `price-watch${message.type ? ` ${message.type}` : ''}`
+      return message
+    }
+    function syncInvoiceImportLineFromRow(row) {
+      if (!currentInvoiceImport || !row) return
+      const index = Number(row.dataset.importLine)
+      const source = currentInvoiceImport.lines[index]
+      if (!source) return
+      const productId = row.querySelector('[data-import-product]')?.value || ''
+      const amounts = importLineAmounts(row)
+      source.productId = productId ? Number(productId) : null
+      source.description = row.querySelector('[data-import-description]')?.value.trim() || source.description || ''
+      source.quantity = amounts.quantity || 0
+      source.unitPriceNet = amounts.unitCost || 0
+      source.vatRate = amounts.vatRate || 0
+    }
+    function syncInvoiceImportLinesFromDom() {
+      invoiceImportLines.querySelectorAll('[data-import-line]').forEach(syncInvoiceImportLineFromRow)
+    }
     function updateInvoiceImportTotals() {
       let totalNet = 0
       let totalGross = 0
+      let priceWarningCount = 0
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach((row) => {
         const amounts = importLineAmounts(row)
         totalNet += amounts.net
@@ -1384,11 +1437,15 @@
         const grossTarget = row.querySelector('[data-import-total-gross]')
         if (netTarget) netTarget.textContent = formatCurrency(amounts.net)
         if (grossTarget) grossTarget.textContent = formatCurrency(amounts.gross)
+        const priceWatch = updateImportLinePriceWatch(row)
+        if (priceWatch?.type === 'warn') priceWarningCount += 1
       })
       const netSummary = document.getElementById('invoiceImportTotalNet')
       const grossSummary = document.getElementById('invoiceImportTotalGross')
+      const priceWatchSummary = document.getElementById('invoiceImportPriceWatch')
       if (netSummary) netSummary.textContent = formatCurrency(totalNet)
       if (grossSummary) grossSummary.textContent = formatCurrency(totalGross)
+      if (priceWatchSummary) priceWatchSummary.textContent = priceWarningCount ? `${priceWarningCount} položek` : 'Bez rizika'
     }
     function renderInvoiceImport() {
       if (!currentInvoiceImport) return
@@ -1405,7 +1462,8 @@
         { label: 'Dodací list', value: currentInvoiceImport.deliveryNoteNumber || 'Neuvedeno', note: currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}` : 'Bez objednávky' },
         { label: 'Položky', value: String(currentInvoiceImport.lines.length), note: 'Řádky připravené k párování.' },
         { label: 'Celkem bez DPH', value: '0,00 Kč', note: 'Součet nákupních cen.', id: 'invoiceImportTotalNet' },
-        { label: 'Celkem s DPH', value: '0,00 Kč', note: 'Kontrola proti dokladu.', id: 'invoiceImportTotalGross' }
+        { label: 'Celkem s DPH', value: '0,00 Kč', note: 'Kontrola proti dokladu.', id: 'invoiceImportTotalGross' },
+        { label: 'Cenová kontrola', value: 'Bez rizika', note: 'Zdražení proti poslední nákupní ceně.', id: 'invoiceImportPriceWatch' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value"${card.id ? ` id="${escapeHtml(card.id)}"` : ''}>${escapeHtml(card.value)}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       const productOptions = products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}${product.ean ? ` · EAN ${escapeHtml(product.ean)}` : ''}</option>`).join('')
       if (!currentInvoiceImport.lines.length) {
@@ -1447,6 +1505,7 @@
             <div class="field">
               <label>Cena bez DPH / ks</label>
               <input data-import-unit-cost type="number" min="0" step="0.01" value="${escapeHtml(String(unitCost || 0))}" />
+              <div class="price-watch" data-import-price-watch></div>
             </div>
             <div class="field">
               <label>DPH %</label>
@@ -1470,7 +1529,14 @@
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach((row) => {
         const index = Number(row.dataset.importLine)
         const match = findProductMatch(currentInvoiceImport.lines[index], supplierId)
-        row.querySelector('[data-import-product]').value = match.productId ? String(match.productId) : ''
+        const selectedProductId = currentInvoiceImport.lines[index]?.productId || match.productId || ''
+        row.querySelector('[data-import-product]').value = selectedProductId ? String(selectedProductId) : ''
+        const unitCostInput = row.querySelector('[data-import-unit-cost]')
+        const lastPrice = getLastPurchasePrice(selectedProductId)
+        if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
+          unitCostInput.value = String(lastPrice)
+          currentInvoiceImport.lines[index].unitPriceNet = lastPrice
+        }
       })
       const unmatchedCount = Array.from(invoiceImportLines.querySelectorAll('[data-import-product]')).filter((select) => !select.value).length
       setInvoiceImportStatus(unmatchedCount ? `${unmatchedCount} položek ještě potřebuje ručně spárovat.` : 'Všechny položky jsou spárované. Můžeš připravit příjem.', unmatchedCount ? 'error' : 'success')
@@ -1509,6 +1575,7 @@
     }
     function addManualInvoiceLine() {
       if (!currentInvoiceImport) openManualDocumentModal()
+      syncInvoiceImportLinesFromDom()
       currentInvoiceImport.lines.push({
         index: currentInvoiceImport.lines.length,
         lineId: String(currentInvoiceImport.lines.length + 1),
@@ -1591,6 +1658,7 @@
     }
     async function createReceiptFromInvoiceImport() {
       if (!currentInvoiceImport) throw new Error('Chybí rozpracovaný doklad.')
+      syncInvoiceImportLinesFromDom()
       const supplierId = parseRequiredEntityId(invoiceImportSupplierId.value, 'Dodavatel')
       const warehouseId = parseRequiredEntityId(invoiceImportWarehouseId.value, 'Sklad')
       const documentType = invoiceImportDocumentType.value || 'invoice'
@@ -1615,15 +1683,20 @@
         const productSelect = row.querySelector('[data-import-product]')
         const productName = productSelect?.selectedOptions?.[0]?.textContent?.trim() || ''
         const amounts = importLineAmounts(row)
+        const productId = parseRequiredEntityId(productSelect.value, 'Karta zásoby')
+        const lastUnitCost = getLastPurchasePrice(productId)
+        const priceCheck = priceWatchMessage(productId, amounts.unitCost)
         return {
           ...source,
           description: row.querySelector('[data-import-description]')?.value.trim() || source.description || productName || `Položka ${index + 1}`,
-          productId: parseRequiredEntityId(productSelect.value, 'Karta zásoby'),
+          productId,
           receivedQuantity: amounts.quantity,
           unitCost: amounts.unitCost,
           vatRate: amounts.vatRate,
           totalNet: amounts.net,
-          totalGross: amounts.gross
+          totalGross: amounts.gross,
+          lastUnitCost,
+          priceCheck: priceCheck.text
         }
       }).filter((line) => line.receivedQuantity > 0)
       if (!importLines.length) throw new Error('Doklad nemá žádné položky s množstvím k příjmu.')
@@ -1638,14 +1711,16 @@
             costTotal: line.receivedQuantity * Number(line.unitCost || 0),
             vatRate: Number(line.vatRate || 0),
             grossTotal: Number(line.totalGross || 0),
-            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : ''].filter(Boolean).join(' · ')]
+            priceChecks: line.priceCheck ? [line.priceCheck] : [],
+            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
           })
           return
         }
         existing.receivedQuantity += line.receivedQuantity
         existing.costTotal += line.receivedQuantity * Number(line.unitCost || 0)
         existing.grossTotal += Number(line.totalGross || 0)
-        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : ''].filter(Boolean).join(' · '))
+        if (line.priceCheck) existing.priceChecks.push(line.priceCheck)
+        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
       })
       const groupedLines = Array.from(groupedLineMap.values()).map((line) => ({
         ...line,
@@ -1680,7 +1755,7 @@
         ordered_quantity: line.receivedQuantity,
         received_quantity: 0,
         unit_cost: line.unitCost || null,
-        note: [`[dph:${Number(line.vatRate || 0)}][celkem-bez-dph:${Number(line.costTotal || 0).toFixed(2)}][celkem-s-dph:${Number(line.grossTotal || 0).toFixed(2)}]`, line.notes.slice(0, 4).join('\n')].filter(Boolean).join('\n')
+        note: [`[dph:${Number(line.vatRate || 0)}][celkem-bez-dph:${Number(line.costTotal || 0).toFixed(2)}][celkem-s-dph:${Number(line.grossTotal || 0).toFixed(2)}]`, line.priceChecks?.length ? `[kontrola-ceny] ${line.priceChecks.slice(0, 3).join(' | ')}` : '', line.notes.slice(0, 4).join('\n')].filter(Boolean).join('\n')
       })))
       if (itemsError) throw itemsError
       await saveSupplierMappingsFromImport(supplierId, importLines.map((line) => ({
@@ -2377,6 +2452,15 @@
           .select('id, supplier_id, product_id, supplier_item_code, ean, supplier_item_name, invoice_unit_code, base_units_per_invoice_unit, last_unit_price, active')
           .eq('active', true)
         supplierProductMappings = mappingsResult.error ? [] : (mappingsResult.data || [])
+        productLastPurchasePriceMap = new Map()
+        ;(itemsResult.data || []).forEach((item) => {
+          const price = Number(item.unit_cost || 0)
+          if (item.product_id && price > 0) productLastPurchasePriceMap.set(String(item.product_id), price)
+        })
+        supplierProductMappings.forEach((mapping) => {
+          const price = Number(mapping.last_unit_price || 0)
+          if (mapping.product_id && price > 0) productLastPurchasePriceMap.set(String(mapping.product_id), price)
+        })
         productRecommendationMap = new Map()
         ;(recommendationsResult.data || []).forEach((row) => {
           productRecommendationMap.set(`${row.product_id}:${row.pilot_scope || 'general'}`, row)
@@ -2501,15 +2585,32 @@
       }
     })
     invoiceImportDocumentType.addEventListener('change', () => {
+      syncInvoiceImportLinesFromDom()
       applyDocumentTypeRules('import')
       renderInvoiceImport()
     })
-    invoiceImportDueDate.addEventListener('change', renderInvoiceImport)
-    invoiceImportDate.addEventListener('change', renderInvoiceImport)
-    invoiceImportDeliveryDate.addEventListener('change', renderInvoiceImport)
+    invoiceImportDueDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
+    invoiceImportDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
+    invoiceImportDeliveryDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     receiptDocumentType.addEventListener('change', () => applyDocumentTypeRules('receipt'))
     invoiceImportLines.addEventListener('input', (event) => {
-      if (event.target.closest('[data-import-line]')) updateInvoiceImportTotals()
+      const row = event.target.closest('[data-import-line]')
+      if (!row) return
+      syncInvoiceImportLineFromRow(row)
+      updateInvoiceImportTotals()
+    })
+    invoiceImportLines.addEventListener('change', (event) => {
+      const row = event.target.closest('[data-import-line]')
+      if (!row) return
+      if (event.target.matches('[data-import-product]')) {
+        const unitCostInput = row.querySelector('[data-import-unit-cost]')
+        const lastPrice = getLastPurchasePrice(event.target.value)
+        if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
+          unitCostInput.value = String(lastPrice)
+        }
+      }
+      syncInvoiceImportLineFromRow(row)
+      updateInvoiceImportTotals()
     })
     invoiceImportLines.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="remove-import-line"]')
@@ -2536,7 +2637,7 @@
         setStatus(`Nepodařilo se načíst fakturu: ${error.message}`, 'error')
       }
     })
-    invoiceImportSupplierId.addEventListener('change', renderInvoiceImport)
+    invoiceImportSupplierId.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     generateBtn.addEventListener('click', async () => {
       try {
         generateBtn.disabled = true
