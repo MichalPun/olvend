@@ -1380,6 +1380,9 @@
     function getLastPurchasePrice(productId) {
       return Number(productLastPurchasePriceMap.get(String(productId)) || 0)
     }
+    function nextInvoiceImportLineKey() {
+      return `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    }
     function priceWatchMessage(productId, unitCost) {
       const lastPrice = getLastPurchasePrice(productId)
       if (!productId || !lastPrice || !unitCost) return { type: '', text: '' }
@@ -1411,8 +1414,9 @@
     }
     function syncInvoiceImportLineFromRow(row) {
       if (!currentInvoiceImport || !row) return
+      const rowKey = row.dataset.importLineKey || ''
       const index = Number(row.dataset.importLine)
-      const source = currentInvoiceImport.lines[index]
+      const source = currentInvoiceImport.lines.find((line) => String(line.rowKey || '') === rowKey) || currentInvoiceImport.lines[index]
       if (!source) return
       const productId = row.querySelector('[data-import-product]')?.value || ''
       const amounts = importLineAmounts(row)
@@ -1424,6 +1428,13 @@
     }
     function syncInvoiceImportLinesFromDom() {
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach(syncInvoiceImportLineFromRow)
+    }
+    function productOptionsHtml(selectedId = '') {
+      return products.map((product) => {
+        const value = String(product.id)
+        const label = `${product.name}${product.sku ? ` · SKU ${product.sku}` : ''}${product.ean ? ` · EAN ${product.ean}` : ''}`
+        return `<option value="${escapeHtml(value)}" ${value === String(selectedId || '') ? 'selected' : ''}>${escapeHtml(label)}</option>`
+      }).join('')
     }
     function updateInvoiceImportTotals() {
       let totalNet = 0
@@ -1465,7 +1476,6 @@
         { label: 'Celkem s DPH', value: '0,00 Kč', note: 'Kontrola proti dokladu.', id: 'invoiceImportTotalGross' },
         { label: 'Cenová kontrola', value: 'Bez rizika', note: 'Zdražení proti poslední nákupní ceně.', id: 'invoiceImportPriceWatch' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value"${card.id ? ` id="${escapeHtml(card.id)}"` : ''}>${escapeHtml(card.value)}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
-      const productOptions = products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}${product.ean ? ` · EAN ${escapeHtml(product.ean)}` : ''}</option>`).join('')
       if (!currentInvoiceImport.lines.length) {
         invoiceImportLines.innerHTML = '<div class="empty-state">Přidej aspoň jednu položku ručně, nebo načti ISDOC XML.</div>'
         setInvoiceImportStatus('Doklad zatím nemá žádné položky.', 'error')
@@ -1475,6 +1485,10 @@
         const match = findProductMatch(line, supplierId)
         const badgeClass = match.productId ? (match.reason.includes('Zkontroluj') ? 'warn' : 'good') : 'bad'
         const hasSource = Boolean(line.description || line.ean || line.supplierCode)
+        line.rowKey = line.rowKey || nextInvoiceImportLineKey()
+        const selectedProductId = line.productId || match.productId || ''
+        const lastPrice = getLastPurchasePrice(selectedProductId)
+        if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = lastPrice
         const quantity = Number(line.quantity || 0)
         const unitCost = Number(line.unitPriceNet || 0)
         const vatRate = Number(line.vatRate || 0)
@@ -1489,13 +1503,13 @@
             </div>
         ` : `<input type="hidden" data-import-description value="" />`
         return `
-          <div class="import-line${hasSource ? ' has-source' : ''}" data-import-line="${index}">
+          <div class="import-line${hasSource ? ' has-source' : ''}" data-import-line="${index}" data-import-line-key="${escapeHtml(line.rowKey)}">
             ${sourceBlock}
             <div class="field">
               <label>${hasSource ? 'Naše karta zásoby' : 'Položka ze skladu'}</label>
               <select data-import-product required>
                 <option value="">Vyber položku</option>
-                ${productOptions}
+                ${productOptionsHtml(selectedProductId)}
               </select>
             </div>
             <div class="field">
@@ -1528,15 +1542,7 @@
       }).join('')
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach((row) => {
         const index = Number(row.dataset.importLine)
-        const match = findProductMatch(currentInvoiceImport.lines[index], supplierId)
-        const selectedProductId = currentInvoiceImport.lines[index]?.productId || match.productId || ''
-        row.querySelector('[data-import-product]').value = selectedProductId ? String(selectedProductId) : ''
-        const unitCostInput = row.querySelector('[data-import-unit-cost]')
-        const lastPrice = getLastPurchasePrice(selectedProductId)
-        if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
-          unitCostInput.value = String(lastPrice)
-          currentInvoiceImport.lines[index].unitPriceNet = lastPrice
-        }
+        if (!currentInvoiceImport.lines[index]?.rowKey) currentInvoiceImport.lines[index].rowKey = row.dataset.importLineKey || nextInvoiceImportLineKey()
       })
       const unmatchedCount = Array.from(invoiceImportLines.querySelectorAll('[data-import-product]')).filter((select) => !select.value).length
       setInvoiceImportStatus(unmatchedCount ? `${unmatchedCount} položek ještě potřebuje ručně spárovat.` : 'Všechny položky jsou spárované. Můžeš připravit příjem.', unmatchedCount ? 'error' : 'success')
@@ -1579,15 +1585,16 @@
       currentInvoiceImport.lines.push({
         index: currentInvoiceImport.lines.length,
         lineId: String(currentInvoiceImport.lines.length + 1),
-          deliveryLineId: '',
-          supplierCode: '',
-          ean: '',
-          description: '',
-          quantity: 1,
-          unitCode: 'ks',
-          unitPriceNet: 0,
-          unitPriceGross: 0,
-          vatRate: 21
+        rowKey: nextInvoiceImportLineKey(),
+        deliveryLineId: '',
+        supplierCode: '',
+        ean: '',
+        description: '',
+        quantity: 1,
+        unitCode: 'ks',
+        unitPriceNet: 0,
+        unitPriceGross: 0,
+        vatRate: 21
       })
       renderInvoiceImport()
     }
@@ -2615,6 +2622,7 @@
     invoiceImportLines.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="remove-import-line"]')
       if (!button || !currentInvoiceImport) return
+      syncInvoiceImportLinesFromDom()
       const row = button.closest('[data-import-line]')
       const index = Number(row?.dataset.importLine)
       currentInvoiceImport.lines.splice(index, 1)
