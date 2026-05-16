@@ -2639,7 +2639,7 @@
     async function getBalanceRecord(stockLocationId, productId) {
       const { data, error } = await supabase
         .from('stock_location_balances')
-        .select('id, quantity_on_hand')
+        .select('id, quantity_on_hand, batch_id, updated_at')
         .eq('stock_location_id', stockLocationId)
         .eq('product_id', productId)
         .is('batch_id', null)
@@ -2648,7 +2648,43 @@
       if (error) throw error
       return data || null
     }
+    async function getBalanceRecords(stockLocationId, productId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, quantity_on_hand, batch_id, updated_at')
+        .eq('stock_location_id', stockLocationId)
+        .eq('product_id', productId)
+        .order('batch_id', { ascending: true, nullsFirst: true })
+        .order('updated_at', { ascending: true })
+      if (error) throw error
+      return data || []
+    }
+    async function getAvailableQuantity(stockLocationId, productId) {
+      const records = await getBalanceRecords(stockLocationId, productId)
+      return records.reduce((sum, record) => sum + Number(record.quantity_on_hand || 0), 0)
+    }
     async function applyBalanceDelta(stockLocationId, productId, delta) {
+      if (delta < 0) {
+        const records = await getBalanceRecords(stockLocationId, productId)
+        const available = records.reduce((sum, item) => sum + Number(item.quantity_on_hand || 0), 0)
+        const required = Math.abs(delta)
+        if (available + 0.0001 < required) throw new Error('Na zdrojovém místě není dost kusů pro zadaný pohyb.')
+        let remaining = required
+        for (const record of records) {
+          if (remaining <= 0) break
+          const currentQty = Number(record.quantity_on_hand || 0)
+          if (currentQty <= 0) continue
+          const used = Math.min(currentQty, remaining)
+          const nextQty = Number((currentQty - used).toFixed(3))
+          const { error } = await supabase
+            .from('stock_location_balances')
+            .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+            .eq('id', record.id)
+          if (error) throw error
+          remaining = Number((remaining - used).toFixed(3))
+        }
+        return
+      }
       const record = await getBalanceRecord(stockLocationId, productId)
       const currentQty = Number(record?.quantity_on_hand || 0)
       const nextQty = Number((currentQty + delta).toFixed(3))
@@ -3123,10 +3159,10 @@
       const toStockLocationId = direction === 'vehicle_to_warehouse' ? warehouseLocationId : vehicleLocationId
       const movementType = direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle'
       for (const line of lines) {
-        const sourceBalance = await getBalanceRecord(fromStockLocationId, line.productId)
-        if (Number(sourceBalance?.quantity_on_hand || 0) < line.quantity) {
+        const available = await getAvailableQuantity(fromStockLocationId, line.productId)
+        if (available + 0.0001 < line.quantity) {
           const product = productsV13.find((item) => String(item.id) === String(line.productId))
-          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || `řádek ${line.index + 1}`}.`)
+          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || `řádek ${line.index + 1}`} (dostupné ${available.toFixed(3)}).`)
         }
       }
       const transferReference = `manual-transfer:${Date.now()}`
