@@ -927,6 +927,7 @@
     let currentReceiptOrder = null
     let currentReceiptReadonly = false
     let currentReceiptEditOnly = false
+    let currentReceiptMovementMap = new Map()
     let currentRecurringOrder = null
     let documentSort = { key: 'date', direction: 'desc' }
     let supplierPublishedAccounts = []
@@ -1987,6 +1988,37 @@
     function getRecommendationForItem(item) {
       return productRecommendationMap.get(`${item.product_id}:${item.pilot_scope || 'general'}`) || {}
     }
+    async function loadReceiptBatchFields(order) {
+      currentReceiptMovementMap = new Map()
+      if (!order?.id) return
+      const { data: movements, error: movementsError } = await supabase
+        .from('stock_movements_v13')
+        .select('id, product_id, batch_id, to_stock_location_id, quantity_base_units')
+        .eq('reference_type', 'purchase_order')
+        .eq('reference_id', String(order.id))
+        .eq('movement_type', 'receipt')
+      if (movementsError) throw movementsError
+      const batchIds = [...new Set((movements || []).map((movement) => movement.batch_id).filter(Boolean))]
+      let batchMap = new Map()
+      if (batchIds.length) {
+        const { data: batches, error: batchesError } = await supabase
+          .from('inventory_batches')
+          .select('id, lot_code, best_before_date, use_by_date')
+          .in('id', batchIds)
+        if (batchesError) throw batchesError
+        batchMap = new Map((batches || []).map((batch) => [String(batch.id), batch]))
+      }
+      ;(order.items || []).forEach((item, index) => {
+        const movement = (movements || []).find((row) => String(row.product_id) === String(item.product_id))
+        if (!movement) return
+        const batch = movement.batch_id ? batchMap.get(String(movement.batch_id)) : null
+        currentReceiptMovementMap.set(String(index), { ...movement, batch })
+        const expiryInput = receiptLineItems.querySelector(`[data-received-expiry-index="${index}"]`)
+        const batchInput = receiptLineItems.querySelector(`[data-received-batch-index="${index}"]`)
+        if (expiryInput && batch) expiryInput.value = batch.best_before_date || batch.use_by_date || ''
+        if (batchInput && batch) batchInput.value = batch.lot_code || ''
+      })
+    }
     function openReceiptModal(orderId, { readOnly = false, editOnly = false } = {}) {
       const order = orders.find((item) => String(item.id) === String(orderId))
       if (!order) return
@@ -2013,16 +2045,17 @@
         const product = productForReceiptItem(item)
         const needsExpiry = productNeedsExpiry(product)
         const needsBatch = productNeedsBatch(product)
-        const expiryBlock = (needsExpiry || needsBatch) && !editOnly ? `
+        const showExpiryFields = needsExpiry || needsBatch || editOnly
+        const expiryBlock = showExpiryFields ? `
           <div class="receipt-expiry-grid">
             <div class="field">
               <label>${escapeHtml(productExpiryLabel(product))}${needsExpiry ? ' *' : ''}</label>
-                <input type="date" data-received-expiry-index="${index}" ${needsExpiry ? 'required' : ''} ${readOnly || editOnly ? 'disabled' : ''} />
-              <div class="expiry-hint">${escapeHtml(needsExpiry ? 'Datum se uloží na šarži a propíše do skladové evidence.' : 'Uložení šarže bez povinné expirace.')}</div>
+              <input type="date" data-received-expiry-index="${index}" ${needsExpiry ? 'required' : ''} ${readOnly ? 'disabled' : ''} />
+              <div class="expiry-hint">${escapeHtml(editOnly ? 'Úprava se uloží ke skladové šarži.' : needsExpiry ? 'Datum se uloží na šarži a propíše do skladové evidence.' : 'Uložení šarže bez povinné expirace.')}</div>
             </div>
             <div class="field">
               <label>Šarže${needsBatch ? ' *' : ''}</label>
-              <input data-received-batch-index="${index}" ${needsBatch ? 'required' : ''} ${readOnly || editOnly ? 'disabled' : ''} placeholder="Např. LOT / výrobní šarže" />
+              <input data-received-batch-index="${index}" ${needsBatch ? 'required' : ''} ${readOnly ? 'disabled' : ''} placeholder="Např. LOT / výrobní šarže" />
             </div>
           </div>
         ` : ''
@@ -2046,12 +2079,19 @@
       saveReceiptBtn.style.display = readOnly ? 'none' : 'inline-flex'
       saveReceiptBtn.textContent = editOnly ? 'Uložit úpravy' : 'Potvrdit příjem'
       receiptModalBackdrop.classList.add('show')
+      if (readOnly || editOnly) {
+        loadReceiptBatchFields(order).catch((error) => {
+          console.error(error)
+          setStatus(`Nepodařilo se načíst expirace k příjmu: ${error.message}`, 'error')
+        })
+      }
     }
     function closeReceiptModal() {
       receiptModalBackdrop.classList.remove('show')
       currentReceiptOrder = null
       currentReceiptReadonly = false
       currentReceiptEditOnly = false
+      currentReceiptMovementMap = new Map()
       receiptForm.reset()
       receiptWarehouseId.disabled = false
       receiptDocumentType.disabled = false
@@ -2240,13 +2280,14 @@
     async function ensureInventoryBatch(product, { expiryDate = '', lotCode = '', supplierName = '', receivedAt = '', note = '' } = {}) {
       const needsExpiry = productNeedsExpiry(product)
       const needsBatch = productNeedsBatch(product)
-      if (!needsExpiry && !needsBatch) return null
+      const hasManualBatchData = Boolean(expiryDate || lotCode.trim())
+      if (!needsExpiry && !needsBatch && !hasManualBatchData) return null
       if (needsExpiry && !expiryDate) throw new Error(`Doplň expiraci u položky ${product?.name || 'zásoby'}.`)
       if (needsBatch && !lotCode.trim()) throw new Error(`Doplň šarži u položky ${product?.name || 'zásoby'}.`)
       const payload = {
         product_id: product.id,
         lot_code: lotCode.trim() || null,
-        best_before_date: product.expiry_tracking_mode === 'best_before' ? expiryDate : null,
+        best_before_date: product.expiry_tracking_mode === 'best_before' || (!productNeedsExpiry(product) && expiryDate) ? expiryDate : null,
         use_by_date: product.expiry_tracking_mode === 'use_by' ? expiryDate : null,
         received_at: receivedAt || new Date().toISOString(),
         supplier_name: supplierName || null,
@@ -2259,6 +2300,21 @@
         .single()
       if (error) throw error
       return data.id
+    }
+    async function updateInventoryBatch(batchId, product, { expiryDate = '', lotCode = '', note = '' } = {}) {
+      if (!batchId) return null
+      const payload = {
+        lot_code: lotCode.trim() || null,
+        best_before_date: product.expiry_tracking_mode === 'best_before' || (!productNeedsExpiry(product) && expiryDate) ? expiryDate : null,
+        use_by_date: product.expiry_tracking_mode === 'use_by' ? expiryDate : null,
+        note: note || null
+      }
+      const { error } = await supabase
+        .from('inventory_batches')
+        .update(payload)
+        .eq('id', batchId)
+      if (error) throw error
+      return batchId
     }
     async function upsertBalance(stockLocationId, productId, delta, batchId = null) {
       const { data: existing, error: existingError } = await supabase
@@ -2275,6 +2331,7 @@
         const { error } = await supabase.from('stock_location_balances').update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() }).eq('id', existing.id)
         if (error) throw error
       } else {
+        if (delta <= 0) return
         const { error } = await supabase.from('stock_location_balances').insert([{ stock_location_id: stockLocationId, product_id: productId, batch_id: batchId, quantity_on_hand: nextQty, reserved_quantity: 0 }])
         if (error) throw error
       }
@@ -2359,6 +2416,64 @@
         note: `${notePrefix} ${noteBody}`.trim() || null
       })
       if (error) throw error
+      await updateReceiptBatchMetadata()
+    }
+    async function updateReceiptBatchMetadata() {
+      if (!currentReceiptOrder) return
+      const lines = Array.from(receiptLineItems.querySelectorAll('[data-received-index]')).map((input) => ({
+        index: Number(input.dataset.receivedIndex),
+        received: Number(input.value || 0),
+        expiryDate: receiptLineItems.querySelector(`[data-received-expiry-index="${input.dataset.receivedIndex}"]`)?.value || '',
+        lotCode: receiptLineItems.querySelector(`[data-received-batch-index="${input.dataset.receivedIndex}"]`)?.value?.trim() || ''
+      }))
+      for (const line of lines) {
+        const item = currentReceiptOrder.items[line.index]
+        const product = productForReceiptItem(item)
+        const hasManualBatchData = Boolean(line.expiryDate || line.lotCode)
+        if (!productNeedsExpiry(product) && !productNeedsBatch(product) && !hasManualBatchData) continue
+        if (Number(line.received || 0) <= 0) continue
+        if (productNeedsExpiry(product) && !line.expiryDate) throw new Error(`Doplň expiraci u položky ${product.name || item.product_name || 'zásoby'}.`)
+        if (productNeedsBatch(product) && !line.lotCode) throw new Error(`Doplň šarži u položky ${product.name || item.product_name || 'zásoby'}.`)
+        let movement = currentReceiptMovementMap.get(String(line.index))
+        if (!movement) {
+          const { data: movements, error: movementError } = await supabase
+            .from('stock_movements_v13')
+            .select('id, product_id, batch_id, to_stock_location_id, quantity_base_units')
+            .eq('reference_type', 'purchase_order')
+            .eq('reference_id', String(currentReceiptOrder.id))
+            .eq('movement_type', 'receipt')
+            .eq('product_id', item.product_id)
+            .limit(1)
+          if (movementError) throw movementError
+          movement = movements?.[0] || null
+        }
+        if (!movement) continue
+        if (movement.batch_id) {
+          await updateInventoryBatch(movement.batch_id, product, {
+            expiryDate: line.expiryDate,
+            lotCode: line.lotCode,
+            note: `Upraveno z dokladu ${currentReceiptOrder.id}`
+          })
+          continue
+        }
+        const batchId = await ensureInventoryBatch(product, {
+          expiryDate: line.expiryDate,
+          lotCode: line.lotCode,
+          supplierName: currentReceiptOrder.supplier_name || '',
+          receivedAt: currentReceiptOrder.received_at || new Date().toISOString(),
+          note: `Doplněno z úpravy dokladu ${currentReceiptOrder.id}`
+        })
+        const { error: movementUpdateError } = await supabase
+          .from('stock_movements_v13')
+          .update({ batch_id: batchId })
+          .eq('id', movement.id)
+        if (movementUpdateError) throw movementUpdateError
+        const quantity = Number(movement.quantity_base_units || line.received || 0)
+        if (movement.to_stock_location_id && quantity > 0) {
+          await upsertBalance(movement.to_stock_location_id, item.product_id, -quantity, null)
+          await upsertBalance(movement.to_stock_location_id, item.product_id, quantity, batchId)
+        }
+      }
     }
     function orderRowsByFilters(list) {
       const query = normalizeText(searchInput.value)
