@@ -102,6 +102,12 @@
     .detail-metric-note { color:var(--muted); font-size:13px; line-height:1.5; }
     .detail-section { padding:16px; border-radius:18px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
     .detail-section h5 { margin:0 0 12px; font-size:18px; }
+    .detail-table { width:100%; border-collapse:collapse; min-width:0; }
+    .detail-table th, .detail-table td { padding:10px 8px; border-bottom:1px solid rgba(255,255,255,0.06); text-align:left; vertical-align:top; }
+    .detail-table th { color:var(--soft); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.08em; }
+    .detail-table td { color:#fff; font-size:14px; }
+    .detail-table td strong { display:block; font-size:15px; }
+    .detail-table .subtext { display:block; margin-top:4px; }
     .detail-list { display:grid; gap:10px; }
     .detail-list-row { display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.06); }
     .detail-list-row:last-child { border-bottom:none; }
@@ -413,6 +419,7 @@
             <div class="action-row">
               <button class="btn secondary" type="button" id="openWarehouseToVehicleBtn">Sklad → vozidlo</button>
               <button class="btn secondary" type="button" id="openVehicleToWarehouseBtn">Vozidlo → sklad</button>
+              <button class="btn secondary" type="button" id="openVehicleSaleBtn">Prodej z vozidla</button>
             </div>
           </div>
           <div class="panel-body">
@@ -938,6 +945,7 @@
     const openMovementBtn = document.getElementById('openMovementBtn')
     const openWarehouseToVehicleBtn = document.getElementById('openWarehouseToVehicleBtn')
     const openVehicleToWarehouseBtn = document.getElementById('openVehicleToWarehouseBtn')
+    const openVehicleSaleBtn = document.getElementById('openVehicleSaleBtn')
     const itemModalBackdrop = document.getElementById('itemModalBackdrop')
     const productModalBackdrop = document.getElementById('productModalBackdrop')
     const movementModalBackdrop = document.getElementById('movementModalBackdrop')
@@ -2015,6 +2023,62 @@
       const movement = row.lastMovement
       return `${movement.movement_type} · ${Number(movement.quantity_base_units || 0).toFixed(2)} · ${new Date(movement.created_at).toLocaleString('cs-CZ')}`
     }
+    function getBatchExpiryDate(batch) {
+      return batch?.use_by_date || batch?.best_before_date || ''
+    }
+    function formatBatchLabel(batch) {
+      if (!batch) return 'Bez expirace'
+      const expiry = getBatchExpiryDate(batch)
+      const parts = []
+      if (expiry) parts.push(`Exp. ${new Date(expiry).toLocaleDateString('cs-CZ')}`)
+      if (batch.lot_code) parts.push(`Šarže ${batch.lot_code}`)
+      return parts.join(' · ') || 'Šarže bez data'
+    }
+    function getBalanceBatch(balance) {
+      return balance.inventory_batches || balance.batch || null
+    }
+    function sortBalancesByExpiry(a, b) {
+      const aBatch = getBalanceBatch(a)
+      const bBatch = getBalanceBatch(b)
+      const aExpiry = getBatchExpiryDate(aBatch) || '9999-12-31'
+      const bExpiry = getBatchExpiryDate(bBatch) || '9999-12-31'
+      const expiryDiff = aExpiry.localeCompare(bExpiry)
+      if (expiryDiff) return expiryDiff
+      return String(a.updated_at || '').localeCompare(String(b.updated_at || ''))
+    }
+    function getProductLocationBreakdown(productId) {
+      const locationMap = new Map(stockLocationsV13.map((location) => [String(location.id), location]))
+      const profileMap = new Map(replenishmentProfilesV13.map((profile) => [`${profile.stock_location_id}:${profile.product_id}`, profile]))
+      return stockBalancesV13
+        .filter((balance) => String(balance.product_id) === String(productId) && Number(balance.quantity_on_hand || 0) !== 0)
+        .map((balance) => ({
+          balance,
+          batch: getBalanceBatch(balance),
+          location: locationMap.get(String(balance.stock_location_id)) || null,
+          profile: profileMap.get(`${balance.stock_location_id}:${balance.product_id}`) || null
+        }))
+        .filter((row) => row.location)
+        .sort((a, b) => {
+          const typeDiff = String(a.location.location_type || '').localeCompare(String(b.location.location_type || ''), 'cs')
+          if (typeDiff) return typeDiff
+          const nameDiff = normalizeText(a.location.name).localeCompare(normalizeText(b.location.name), 'cs')
+          if (nameDiff) return nameDiff
+          return sortBalancesByExpiry(a.balance, b.balance)
+        })
+    }
+    function renderDetailTable(columns, rows, emptyText) {
+      if (!rows.length) return `<div class="detail-chart-empty">${escapeHtml(emptyText)}</div>`
+      return `
+        <div class="table-wrap">
+          <table class="detail-table">
+            <thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${rows.map((row) => `<tr>${columns.map((column) => `<td data-label="${escapeHtml(column.label)}">${column.render(row)}</td>`).join('')}</tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+    }
     function getV13Rows() {
       const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
       const locationMap = new Map(stockLocationsV13.map((location) => [String(location.id), location]))
@@ -2069,6 +2133,7 @@
           vehicle_qty: 0,
           machine_qty: 0,
           other_qty: 0,
+          warehouse_batches: [],
           location_names: [],
           lastMovement: movementMap.get(String(product.id)) || null
         })
@@ -2079,11 +2144,14 @@
         const location = locationMap.get(String(balance.stock_location_id))
         const qty = Number(balance.quantity_on_hand || 0)
         if (!rowMap.has(String(product.id))) {
-          rowMap.set(String(product.id), { product, warehouse_qty: 0, vehicle_qty: 0, machine_qty: 0, other_qty: 0, location_names: [], lastMovement: movementMap.get(String(product.id)) || null })
+          rowMap.set(String(product.id), { product, warehouse_qty: 0, vehicle_qty: 0, machine_qty: 0, other_qty: 0, warehouse_batches: [], location_names: [], lastMovement: movementMap.get(String(product.id)) || null })
         }
         const row = rowMap.get(String(product.id))
         if (location?.name) row.location_names.push(location.name)
-        if (location?.location_type === 'warehouse') row.warehouse_qty += qty
+        if (location?.location_type === 'warehouse') {
+          row.warehouse_qty += qty
+          row.warehouse_batches.push({ balance, batch: getBalanceBatch(balance), location })
+        }
         else if (location?.location_type === 'vehicle') row.vehicle_qty += qty
         else if (['machine', 'machine_slot'].includes(location?.location_type)) row.machine_qty += qty
         else row.other_qty += qty
@@ -2153,6 +2221,12 @@
         const vehicleQty = formatVehicleQuantity(product?.id, row.vehicle_qty, unit)
         const machineQty = formatLocationQuantity(product?.id, row.machine_qty, unit, 'machine')
         const totalQty = formatLocationQuantity(product?.id, row.total_qty, unit, '')
+        const expiryRows = row.warehouse_batches
+          .filter((item) => Number(item.balance.quantity_on_hand || 0) > 0)
+          .sort((a, b) => sortBalancesByExpiry(a.balance, b.balance))
+        const expiryPreview = expiryRows.length
+          ? expiryRows.slice(0, 2).map((item) => `${Number(item.balance.quantity_on_hand || 0).toFixed(0)} ${unit} · ${formatBatchLabel(item.batch)}`).join(' / ')
+          : (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none' ? 'Zatím není na skladě' : 'Neeviduje se')
         return `
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(product?.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(product?.sku ? `SKU ${product.sku}` : 'Bez SKU')}${product?.ean ? ` · EAN ${escapeHtml(product.ean)}` : ''}</span></td>
@@ -2162,9 +2236,9 @@
             <td data-label="Vozidla"><strong>${escapeHtml(vehicleQty.primary)}</strong><span class="subtext">${escapeHtml(vehicleQty.secondary)}</span></td>
             <td data-label="Automaty"><strong>${escapeHtml(machineQty.primary)}</strong><span class="subtext">${escapeHtml(machineQty.secondary)}</span></td>
             <td data-label="Celkem"><strong>${escapeHtml(totalQty.primary)}</strong><span class="subtext">${escapeHtml(row.total_qty > 0 ? 'Evidovaná zásoba' : 'Bez zásoby')}</span></td>
-            <td data-label="Expirace"><strong>${escapeHtml(getExpiryModeLabel(product?.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(product?.requires_batch_tracking ? 'Šarže povinná' : 'Šarže volitelná')}</span></td>
+            <td data-label="Expirace"><strong>${escapeHtml(getExpiryModeLabel(product?.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(expiryPreview)}</span></td>
             <td data-label="Poslední pohyb"><strong>${escapeHtml(row.lastMovement ? row.lastMovement.movement_type : 'Bez pohybu')}</strong><span class="subtext">${row.lastMovement?.created_at ? escapeHtml(new Date(row.lastMovement.created_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
-            <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-transfer-direction="warehouse_to_vehicle" data-product-id="${escapeHtml(String(product?.id || ''))}">Na vozidlo</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_to_warehouse" data-product-id="${escapeHtml(String(product?.id || ''))}">Vrátit</button><button class="btn secondary" type="button" data-action="detail-v13" data-product-id="${escapeHtml(String(product?.id || ''))}">Detail</button></div></td>
+            <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-transfer-direction="warehouse_to_vehicle" data-product-id="${escapeHtml(String(product?.id || ''))}">Na vozidlo</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_to_warehouse" data-product-id="${escapeHtml(String(product?.id || ''))}">Vrátit</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_sale" data-product-id="${escapeHtml(String(product?.id || ''))}">Prodej</button><button class="btn secondary" type="button" data-action="detail-v13" data-product-id="${escapeHtml(String(product?.id || ''))}">Detail</button></div></td>
           </tr>
         `
       }).join('')
@@ -2189,7 +2263,7 @@
           supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending: true }),
           supabase.from('recipe_items').select('id, recipe_id, product_id, quantity, unit').order('id', { ascending: true }),
           supabase.from('stock_locations').select('id, name, location_type, warehouse_id, vehicle_id, machine_id, note, active').eq('active', true).order('name', { ascending: true }),
-          supabase.from('stock_location_balances').select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity').order('updated_at', { ascending: false }),
+          supabase.from('stock_location_balances').select('id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)').order('updated_at', { ascending: false }),
           supabase.from('replenishment_profiles').select('id, stock_location_id, product_id, min_quantity, target_quantity, active').eq('active', true),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, created_at').order('created_at', { ascending: false }).limit(500)
         ])
@@ -2597,18 +2671,29 @@
       document.getElementById('simpleTransferDirection').value = direction
       document.getElementById('simpleTransferDate').value = new Date().toISOString().slice(0, 10)
       const isReturn = direction === 'vehicle_to_warehouse'
-      document.getElementById('simpleTransferModalTitle').textContent = isReturn ? 'Převodka vozidlo → sklad' : 'Převodka sklad → vozidlo'
+      const isSale = direction === 'vehicle_sale'
+      document.getElementById('simpleTransferModalTitle').textContent = isSale ? 'Ruční prodej z vozidla' : (isReturn ? 'Převodka vozidlo → sklad' : 'Převodka sklad → vozidlo')
       document.getElementById('simpleTransferHelper').textContent = isReturn
         ? 'Vrátí množství z vozidla zpět na sklad. Expirace se v první fázi drží na skladové evidenci.'
-        : 'Převede množství ze skladu na vozidlo. Pro v1.5 zatím nevybíráme expiraci na vozidle.'
-      saveSimpleTransferBtn.textContent = isReturn ? 'Vrátit na sklad' : 'Převést na vozidlo'
+        : (isSale ? 'Ručně odečte prodané kusy z vozidla. Slouží jako dočasná náhrada telemetrie / DEX dat.' : 'Převede množství ze skladu na vozidlo. Sklad odečítáme podle nejbližší expirace.')
+      document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = isSale ? 'none' : ''
+      document.getElementById('simpleTransferWarehouseId').required = !isSale
+      saveSimpleTransferBtn.textContent = isSale ? 'Zapsat prodej' : (isReturn ? 'Vrátit na sklad' : 'Převést na vozidlo')
       addSimpleTransferLine({ productId })
       simpleTransferModalBackdrop.classList.add('show')
     }
     function closeSimpleTransferModal() {
       simpleTransferModalBackdrop.classList.remove('show')
       simpleTransferForm.reset()
+      document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = ''
+      document.getElementById('simpleTransferWarehouseId').required = true
       simpleTransferLines.innerHTML = ''
+    }
+    function syncSimpleTransferSubmitLabel() {
+      const direction = document.getElementById('simpleTransferDirection').value || 'warehouse_to_vehicle'
+      if (direction === 'vehicle_sale') saveSimpleTransferBtn.textContent = 'Zapsat prodej'
+      else if (direction === 'vehicle_to_warehouse') saveSimpleTransferBtn.textContent = 'Vrátit na sklad'
+      else saveSimpleTransferBtn.textContent = 'Převést na vozidlo'
     }
     async function ensureStockLocation(locationType, entityId, fallbackName) {
       const columnMap = { warehouse: 'warehouse_id', vehicle: 'vehicle_id' }
@@ -2651,13 +2736,12 @@
     async function getBalanceRecords(stockLocationId, productId) {
       const { data, error } = await supabase
         .from('stock_location_balances')
-        .select('id, quantity_on_hand, batch_id, updated_at')
+        .select('id, quantity_on_hand, batch_id, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)')
         .eq('stock_location_id', stockLocationId)
         .eq('product_id', productId)
-        .order('batch_id', { ascending: true, nullsFirst: true })
         .order('updated_at', { ascending: true })
       if (error) throw error
-      return data || []
+      return [...(data || [])].sort(sortBalancesByExpiry)
     }
     async function getAvailableQuantity(stockLocationId, productId) {
       const records = await getBalanceRecords(stockLocationId, productId)
@@ -2973,9 +3057,10 @@
     function openV13ProductDetail(productId) {
       const product = productsV13.find((item) => String(item.id) === String(productId))
       if (!product) return
-      const rows = getV13Rows().filter((row) => String(row.product?.id) === String(productId))
-      const locatedRows = rows.filter((row) => row.location)
-      const totalQuantity = rows.reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
+      const breakdownRows = getProductLocationBreakdown(productId)
+      const locatedRows = breakdownRows
+      const warehouseBatchRows = breakdownRows.filter((row) => row.location?.location_type === 'warehouse')
+      const totalQuantity = breakdownRows.reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
       const lowCount = locatedRows.filter((row) => getLocationRisk(row.balance, row.profile) === 'low').length
       const recentMovements = stockMovementsV13
         .filter((movement) => String(movement.product_id) === String(productId))
@@ -3033,11 +3118,20 @@
             </article>
           </section>
           <section class="detail-section">
-            <h5>Kde produkt právě je</h5>
-            ${locatedRows.length ? renderDetailSectionRows(locatedRows.map((row) => ({
-              label: `${getLocationTypeLabel(row.location.location_type)} · ${row.location.name}`,
-              value: `${formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary}${row.profile ? ` · min ${formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks')} / cíl ${formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks')}` : ''}`
-            }))) : '<div class="detail-chart-empty">Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.</div>'}
+            <h5>Sklad podle expirací</h5>
+            ${renderDetailTable([
+              { label: 'Místo', render: (row) => `<strong>${escapeHtml(row.location.name || 'Sklad')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span>` },
+              { label: 'Expirace / šarže', render: (row) => `<strong>${escapeHtml(formatBatchLabel(row.batch))}</strong><span class="subtext">${escapeHtml(row.batch?.received_at ? `Přijato ${new Date(row.batch.received_at).toLocaleDateString('cs-CZ')}` : 'Bez data příjmu')}</span>` },
+              { label: 'Množství', render: (row) => `<strong>${escapeHtml(formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary)}</strong><span class="subtext">${escapeHtml(product.base_unit || 'ks')}</span>` }
+            ], warehouseBatchRows, 'Na skladu teď u této položky není žádná evidovaná šarže ani expirace.')}
+          </section>
+          <section class="detail-section">
+            <h5>Rozpad podle míst</h5>
+            ${renderDetailTable([
+              { label: 'Místo', render: (row) => `<strong>${escapeHtml(row.location.name || 'Místo')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span>` },
+              { label: 'Množství', render: (row) => `<strong>${escapeHtml(formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary)}</strong><span class="subtext">${escapeHtml(formatBatchLabel(row.batch))}</span>` },
+              { label: 'Minimum / cíl', render: (row) => row.profile ? `<strong>${escapeHtml(formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks'))} / ${escapeHtml(formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks'))}</strong><span class="subtext">Doplňovací profil</span>` : '<span class="subtext">Bez profilu</span>' }
+            ], locatedRows, 'Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.')}
           </section>
           <section class="detail-section">
             <h5>Vývoj prodeje v čase</h5>
@@ -3147,25 +3241,28 @@
       const vehicleId = Number(document.getElementById('simpleTransferVehicleId').value || 0)
       const note = document.getElementById('simpleTransferNote').value.trim() || null
       const lines = collectSimpleTransferLines()
-      if (!warehouseId || !vehicleId) throw new Error('Vyber sklad a vozidlo.')
+      const isSale = direction === 'vehicle_sale'
+      if (!vehicleId || (!isSale && !warehouseId)) throw new Error(isSale ? 'Vyber vozidlo.' : 'Vyber sklad a vozidlo.')
       if (!lines.length) throw new Error('Přidej aspoň jeden řádek převodky.')
       const invalidLine = lines.find((line) => !line.productId || line.quantity <= 0)
       if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku a kladné množství.`)
       const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
       const vehicle = vehicles.find((item) => String(item.id) === String(vehicleId))
-      const warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, vehicle?.name || `Vozidlo ${vehicleId}`)
-      const fromStockLocationId = direction === 'vehicle_to_warehouse' ? vehicleLocationId : warehouseLocationId
-      const toStockLocationId = direction === 'vehicle_to_warehouse' ? warehouseLocationId : vehicleLocationId
-      const movementType = direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle'
-      for (const line of lines) {
-        const available = await getAvailableQuantity(fromStockLocationId, line.productId)
-        if (available + 0.0001 < line.quantity) {
-          const product = productsV13.find((item) => String(item.id) === String(line.productId))
-          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || `řádek ${line.index + 1}`} (dostupné ${available.toFixed(3)}).`)
+      const warehouseLocationId = isSale ? null : await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
+      const fromStockLocationId = direction === 'warehouse_to_vehicle' ? warehouseLocationId : vehicleLocationId
+      const toStockLocationId = direction === 'warehouse_to_vehicle' ? vehicleLocationId : (isSale ? null : warehouseLocationId)
+      const movementType = isSale ? 'sale' : (direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle')
+      const quantityByProduct = new Map()
+      lines.forEach((line) => quantityByProduct.set(String(line.productId), Number((Number(quantityByProduct.get(String(line.productId)) || 0) + line.quantity).toFixed(3))))
+      for (const [productId, requestedQty] of quantityByProduct.entries()) {
+        const available = await getAvailableQuantity(fromStockLocationId, Number(productId))
+        if (available + 0.0001 < requestedQty) {
+          const product = productsV13.find((item) => String(item.id) === String(productId))
+          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${requestedQty.toFixed(3)}).`)
         }
       }
-      const transferReference = `manual-transfer:${Date.now()}`
+      const transferReference = `${isSale ? 'manual-sale' : 'manual-transfer'}:${Date.now()}`
       const transferDate = document.getElementById('simpleTransferDate').value || new Date().toISOString().slice(0, 10)
       const { error: movementError } = await supabase
         .from('stock_movements_v13')
@@ -3175,14 +3272,14 @@
           to_stock_location_id: toStockLocationId,
           movement_type: movementType,
           quantity_base_units: line.quantity,
-          reference_type: 'manual_transfer',
+          reference_type: isSale ? 'manual_sale' : 'manual_transfer',
           reference_id: transferReference,
           note: [transferDate, note, line.note].filter(Boolean).join(' · ') || null
         })))
       if (movementError) throw movementError
       for (const line of lines) {
         await applyBalanceDelta(fromStockLocationId, line.productId, -line.quantity)
-        await applyBalanceDelta(toStockLocationId, line.productId, line.quantity)
+        if (toStockLocationId) await applyBalanceDelta(toStockLocationId, line.productId, line.quantity)
       }
     }
 
@@ -3231,6 +3328,7 @@
     openMovementBtn.addEventListener('click', () => openMovementModal())
     openWarehouseToVehicleBtn.addEventListener('click', () => openSimpleTransferModal('warehouse_to_vehicle'))
     openVehicleToWarehouseBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_to_warehouse'))
+    openVehicleSaleBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_sale'))
     addSimpleTransferLineBtn.addEventListener('click', () => addSimpleTransferLine())
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'catalog'))
@@ -3470,16 +3568,18 @@
         saveSimpleTransferBtn.disabled = true
         saveSimpleTransferBtn.textContent = 'Ukládám...'
         await saveSimpleTransfer()
+        const direction = document.getElementById('simpleTransferDirection').value || 'warehouse_to_vehicle'
         closeSimpleTransferModal()
         await Promise.all([loadInventoryV13Overview(), loadVehicleInventoryOverview()])
         populateReferenceOptions()
-        setStockV13Status('Převodka byla uložená a stavy zásob jsou přepočítané.', 'success')
+        setStockV13Status(direction === 'vehicle_sale' ? 'Prodej byl zapsaný a stav vozidla je přepočítaný.' : 'Převodka byla uložená a stavy zásob jsou přepočítané.', 'success')
       } catch (error) {
         console.error(error)
-        setStockV13Status(`Převodku se nepodařilo uložit: ${error.message}`, 'error')
+        const direction = document.getElementById('simpleTransferDirection').value || 'warehouse_to_vehicle'
+        setStockV13Status(`${direction === 'vehicle_sale' ? 'Prodej' : 'Převodku'} se nepodařilo uložit: ${error.message}`, 'error')
       } finally {
         saveSimpleTransferBtn.disabled = false
-        saveSimpleTransferBtn.textContent = 'Uložit převodku'
+        syncSimpleTransferSubmitLabel()
       }
     })
     bagettePilotForm.addEventListener('submit', async (event) => {
