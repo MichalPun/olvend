@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v3';
+const CACHE_NAME = 'olvend-v15';
 const APP_SHELL = [
   './',
   './index.html',

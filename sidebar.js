@@ -1,21 +1,22 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
-  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotes";
+  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV15";
   const APP_THEME_KEY = "olvendThemePreference";
   const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
-  const APP_VERSION = "OLVEND 1.42";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.42";
+  const APP_VERSION = "OLVEND 1.5";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.5";
   const RELEASE_NOTES = {
-    "1.42": {
-      title: "Nová verze 1.42",
-      subtitle: "Tahleta verze dorovnává kritické provozní kroky, hlavně Moje směna v mobilu, ukončení směny a stabilitu hlavních přehledů.",
+    "1.5": {
+      title: "Nová verze 1.5",
+      subtitle: "Nasadili jsme větší provozní aktualizaci. Nejvíc se mění sklad, příjem dokladů, zásoby a pohyby zboží mezi skladem a vozidly.",
       items: [
-        "Moje směna v mobilu je stabilnější: lépe funguje ukončení směny, konečné km, tankování i kontrolní krok vykládky.",
-        "Ukončení směny už nepadá na vedlejší aktualizaci vozidla a lépe ukazuje konkrétní důvod, pokud něco skutečně chybí.",
-        "Dashboard, servis a další přehledy byly dorovnané tak, aby nepadaly na chybějících sloupcích nebo starších datech.",
-        "Spodní mobilní navigace je znovu zjednodušená podle role, takže není přeplněná a zůstává použitelná v provozu.",
-        "Verze 1.42 je hlavně stabilizační vydání pro každodenní práci operátorů i vedení."
+        "Příjem dodacích listů umí evidovat expirace a šarže u položek, kde to potřebujeme hlídat.",
+        "Stránka Zásoby je přehlednější: ukazuje sklad, vozidla, automaty, celkový stav a detail podle expirací.",
+        "Přibyly vícepoložkové převodky Sklad → Vozidlo a Vozidlo → Sklad včetně přehledu ručních dokladů.",
+        "Ruční Prodej z vozidla dočasně nahrazuje telemetrii / DEX data, než bude automatické napojení hotové.",
+        "Opravy převodek fungují rozdílově, takže lze narovnat i doklad, který byl zapsaný špatně nebo jen částečně.",
+        "Prosíme, hlaste cokoliv divného. Verze 1.5 je ostrý krok do provozu a chceme rychle vychytat neduhy."
       ]
     }
   };
