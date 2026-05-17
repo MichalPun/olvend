@@ -472,6 +472,32 @@
               </table>
             </div>
             <div class="empty-state" id="stockV13Empty" style="display:none;">Žádné zásoby neodpovídají filtrům.</div>
+            <div class="panel" style="margin-top:16px; background:rgba(255,255,255,0.02);">
+              <div class="panel-header">
+                <div>
+                  <h2 style="font-size:18px;">Ruční doklady pohybů</h2>
+                  <p>Převodky a ruční prodeje zapsané z této obrazovky. Když něco proběhne napůl, otevři doklad jako opravu a uloží se vyrovnávací pohyby.</p>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Doklad</th>
+                        <th>Směr</th>
+                        <th>Odkud / kam</th>
+                        <th>Položky</th>
+                        <th>Datum</th>
+                        <th>Akce</th>
+                      </tr>
+                    </thead>
+                    <tbody id="manualTransferDocsBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty-state" id="manualTransferDocsEmpty" style="display:none;">Zatím tu nejsou žádné ruční převodky ani prodeje.</div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -923,6 +949,8 @@
     const stockV13StateFilter = document.getElementById('stockV13StateFilter')
     const stockV13Body = document.getElementById('stockV13Body')
     const stockV13Empty = document.getElementById('stockV13Empty')
+    const manualTransferDocsBody = document.getElementById('manualTransferDocsBody')
+    const manualTransferDocsEmpty = document.getElementById('manualTransferDocsEmpty')
     const productCatalogStatus = document.getElementById('productCatalogStatus')
     const productCatalogSummary = document.getElementById('productCatalogSummary')
     const productCatalogSearch = document.getElementById('productCatalogSearch')
@@ -1014,6 +1042,7 @@
     let purchaseProductProfiles = []
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
+    let editingTransferDoc = null
     let isProductEditMode = false
     let productCatalogSort = { key: 'name', direction: 'asc' }
     const productKindMarker = 'olvend_product_kind'
@@ -2244,6 +2273,69 @@
       }).join('')
       stockV13Empty.style.display = rows.length ? 'none' : 'block'
       renderStockV13Summary(rows)
+      renderManualTransferDocs()
+    }
+    function getManualTransferDocs() {
+      const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
+      const locationMap = new Map(stockLocationsV13.map((location) => [String(location.id), location]))
+      const grouped = new Map()
+      stockMovementsV13
+        .filter((movement) => ['manual_transfer', 'manual_sale', 'manual_correction'].includes(movement.reference_type) && movement.reference_id)
+        .forEach((movement) => {
+          const key = String(movement.reference_id)
+          if (!grouped.has(key)) {
+            grouped.set(key, {
+              referenceId: key,
+              referenceType: movement.reference_type,
+              movementType: movement.movement_type,
+              createdAt: movement.created_at,
+              movements: []
+            })
+          }
+          const doc = grouped.get(key)
+          doc.createdAt = doc.createdAt && doc.createdAt > movement.created_at ? doc.createdAt : movement.created_at
+          doc.movements.push({
+            ...movement,
+            product: productMap.get(String(movement.product_id)) || null,
+            fromLocation: movement.from_stock_location_id ? locationMap.get(String(movement.from_stock_location_id)) || null : null,
+            toLocation: movement.to_stock_location_id ? locationMap.get(String(movement.to_stock_location_id)) || null : null
+          })
+        })
+      return Array.from(grouped.values()).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    }
+    function getTransferDocDirection(doc) {
+      const movement = doc.movements[0]
+      if (doc.referenceType === 'manual_sale' || movement?.movement_type === 'sale') return 'vehicle_sale'
+      if (movement?.movement_type === 'return') return 'vehicle_to_warehouse'
+      return 'warehouse_to_vehicle'
+    }
+    function getTransferDocDirectionLabel(direction) {
+      if (direction === 'vehicle_sale') return 'Prodej z vozidla'
+      if (direction === 'vehicle_to_warehouse') return 'Vozidlo → sklad'
+      return 'Sklad → vozidlo'
+    }
+    function renderManualTransferDocs() {
+      if (!manualTransferDocsBody) return
+      const docs = getManualTransferDocs().slice(0, 20)
+      manualTransferDocsBody.innerHTML = docs.map((doc) => {
+        const direction = getTransferDocDirection(doc)
+        const first = doc.movements[0] || {}
+        const source = first.fromLocation?.name || 'Bez zdroje'
+        const target = first.toLocation?.name || (direction === 'vehicle_sale' ? 'Prodej' : 'Bez cíle')
+        const quantity = doc.movements.reduce((sum, movement) => sum + Number(movement.quantity_base_units || 0), 0)
+        const items = doc.movements.slice(0, 3).map((movement) => `${movement.product?.name || 'Produkt'} ${Number(movement.quantity_base_units || 0).toFixed(0)} ${movement.product?.base_unit || 'ks'}`).join(' / ')
+        return `
+          <tr>
+            <td data-label="Doklad"><strong>${escapeHtml(doc.referenceId.replace(/^manual-(transfer|sale):/, '#'))}</strong><span class="subtext">${escapeHtml(doc.referenceType === 'manual_correction' ? 'Vyrovnávací oprava' : 'Ruční doklad')}</span></td>
+            <td data-label="Směr"><strong>${escapeHtml(getTransferDocDirectionLabel(direction))}</strong><span class="subtext">${escapeHtml(doc.movements.length)} řádků · ${escapeHtml(quantity.toFixed(0))} ks</span></td>
+            <td data-label="Odkud / kam"><strong>${escapeHtml(source)}</strong><span class="subtext">${escapeHtml(target)}</span></td>
+            <td data-label="Položky"><strong>${escapeHtml(items || 'Bez položek')}</strong></td>
+            <td data-label="Datum"><strong>${doc.createdAt ? escapeHtml(new Date(doc.createdAt).toLocaleString('cs-CZ')) : 'Bez data'}</strong></td>
+            <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-transfer-doc-action="edit" data-transfer-doc-id="${escapeHtml(doc.referenceId)}">Opravit</button></div></td>
+          </tr>
+        `
+      }).join('')
+      manualTransferDocsEmpty.style.display = docs.length ? 'none' : 'block'
     }
     async function loadInventoryV13Overview() {
       try {
@@ -2265,7 +2357,7 @@
           supabase.from('stock_locations').select('id, name, location_type, warehouse_id, vehicle_id, machine_id, note, active').eq('active', true).order('name', { ascending: true }),
           supabase.from('stock_location_balances').select('id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)').order('updated_at', { ascending: false }),
           supabase.from('replenishment_profiles').select('id, stock_location_id, product_id, min_quantity, target_quantity, active').eq('active', true),
-          supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, created_at').order('created_at', { ascending: false }).limit(500)
+          supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, reference_type, reference_id, note, created_at').order('created_at', { ascending: false }).limit(500)
         ])
 
         if (productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error) {
@@ -2665,21 +2757,41 @@
         }))
         .filter((row) => row.productId || row.quantity > 0 || row.note)
     }
-    function openSimpleTransferModal(direction = 'warehouse_to_vehicle', productId = '') {
+    function openSimpleTransferModal(direction = 'warehouse_to_vehicle', productId = '', correctionDoc = null) {
+      editingTransferDoc = correctionDoc
       simpleTransferForm.reset()
       simpleTransferLines.innerHTML = ''
       document.getElementById('simpleTransferDirection').value = direction
       document.getElementById('simpleTransferDate').value = new Date().toISOString().slice(0, 10)
       const isReturn = direction === 'vehicle_to_warehouse'
       const isSale = direction === 'vehicle_sale'
-      document.getElementById('simpleTransferModalTitle').textContent = isSale ? 'Ruční prodej z vozidla' : (isReturn ? 'Převodka vozidlo → sklad' : 'Převodka sklad → vozidlo')
+      document.getElementById('simpleTransferModalTitle').textContent = correctionDoc ? `Opravit doklad ${correctionDoc.referenceId.replace(/^manual-(transfer|sale):/, '#')}` : (isSale ? 'Ruční prodej z vozidla' : (isReturn ? 'Převodka vozidlo → sklad' : 'Převodka sklad → vozidlo'))
       document.getElementById('simpleTransferHelper').textContent = isReturn
         ? 'Vrátí množství z vozidla zpět na sklad. Expirace se v první fázi drží na skladové evidenci.'
         : (isSale ? 'Ručně odečte prodané kusy z vozidla. Slouží jako dočasná náhrada telemetrie / DEX dat.' : 'Převede množství ze skladu na vozidlo. Sklad odečítáme podle nejbližší expirace.')
+      if (correctionDoc) document.getElementById('simpleTransferHelper').textContent = 'Uložením se nejdřív vyrovná původní doklad opačnými pohyby a potom se zapíše tato opravená verze.'
       document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = isSale ? 'none' : ''
       document.getElementById('simpleTransferWarehouseId').required = !isSale
-      saveSimpleTransferBtn.textContent = isSale ? 'Zapsat prodej' : (isReturn ? 'Vrátit na sklad' : 'Převést na vozidlo')
-      addSimpleTransferLine({ productId })
+      saveSimpleTransferBtn.textContent = correctionDoc ? 'Uložit opravu' : (isSale ? 'Zapsat prodej' : (isReturn ? 'Vrátit na sklad' : 'Převést na vozidlo'))
+      if (correctionDoc) {
+        const first = correctionDoc.movements[0] || {}
+        const warehouseLocation = direction === 'warehouse_to_vehicle' ? first.fromLocation : first.toLocation
+        const vehicleLocation = direction === 'warehouse_to_vehicle' || direction === 'vehicle_sale' ? first.toLocation || first.fromLocation : first.fromLocation
+        document.getElementById('simpleTransferWarehouseId').value = warehouseLocation?.warehouse_id ? String(warehouseLocation.warehouse_id) : ''
+        document.getElementById('simpleTransferVehicleId').value = vehicleLocation?.vehicle_id ? String(vehicleLocation.vehicle_id) : ''
+        const noteParts = String(first.note || '').split(' · ')
+        if (/^\d{4}-\d{2}-\d{2}$/.test(noteParts[0] || '')) {
+          document.getElementById('simpleTransferDate').value = noteParts.shift()
+        }
+        document.getElementById('simpleTransferNote').value = noteParts.join(' · ')
+        correctionDoc.movements.forEach((movement) => addSimpleTransferLine({
+          productId: movement.product_id,
+          quantity: Number(movement.quantity_base_units || 0),
+          note: ''
+        }))
+      } else {
+        addSimpleTransferLine({ productId })
+      }
       simpleTransferModalBackdrop.classList.add('show')
     }
     function closeSimpleTransferModal() {
@@ -2688,12 +2800,29 @@
       document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = ''
       document.getElementById('simpleTransferWarehouseId').required = true
       simpleTransferLines.innerHTML = ''
+      editingTransferDoc = null
     }
     function syncSimpleTransferSubmitLabel() {
+      if (editingTransferDoc) {
+        saveSimpleTransferBtn.textContent = 'Uložit opravu'
+        return
+      }
       const direction = document.getElementById('simpleTransferDirection').value || 'warehouse_to_vehicle'
       if (direction === 'vehicle_sale') saveSimpleTransferBtn.textContent = 'Zapsat prodej'
       else if (direction === 'vehicle_to_warehouse') saveSimpleTransferBtn.textContent = 'Vrátit na sklad'
       else saveSimpleTransferBtn.textContent = 'Převést na vozidlo'
+    }
+    function openManualTransferDocCorrection(referenceId) {
+      const doc = getManualTransferDocs().find((item) => item.referenceId === referenceId)
+      if (!doc) {
+        setStockV13Status('Doklad už není v načteném seznamu. Dej obnovit a zkus to znovu.', 'error')
+        return
+      }
+      if (doc.referenceType === 'manual_correction') {
+        setStockV13Status('Vyrovnávací opravu už znovu neopravujeme. Otevři původní ruční doklad nebo zapiš novou korekci.', 'error')
+        return
+      }
+      openSimpleTransferModal(getTransferDocDirection(doc), '', doc)
     }
     async function ensureStockLocation(locationType, entityId, fallbackName) {
       const columnMap = { warehouse: 'warehouse_id', vehicle: 'vehicle_id' }
@@ -2790,6 +2919,28 @@
           }])
         if (error) throw error
       }
+    }
+    async function reverseManualTransferDoc(doc) {
+      const correctionReference = `manual-correction:${Date.now()}`
+      for (const movement of doc.movements) {
+        const qty = Number(movement.quantity_base_units || 0)
+        if (qty <= 0) continue
+        if (movement.to_stock_location_id) await applyBalanceDelta(movement.to_stock_location_id, movement.product_id, -qty)
+        if (movement.from_stock_location_id) await applyBalanceDelta(movement.from_stock_location_id, movement.product_id, qty)
+      }
+      const { error } = await supabase
+        .from('stock_movements_v13')
+        .insert(doc.movements.map((movement) => ({
+          product_id: movement.product_id,
+          from_stock_location_id: movement.to_stock_location_id || null,
+          to_stock_location_id: movement.from_stock_location_id || null,
+          movement_type: 'adjustment',
+          quantity_base_units: Number(movement.quantity_base_units || 0),
+          reference_type: 'manual_correction',
+          reference_id: correctionReference,
+          note: `Oprava/storno dokladu ${doc.referenceId}`
+        })))
+      if (error) throw error
     }
     async function saveBagettePilotAction() {
       const productId = Number(document.getElementById('bagetteProductId').value || 0)
@@ -3255,15 +3406,30 @@
       const movementType = isSale ? 'sale' : (direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle')
       const quantityByProduct = new Map()
       lines.forEach((line) => quantityByProduct.set(String(line.productId), Number((Number(quantityByProduct.get(String(line.productId)) || 0) + line.quantity).toFixed(3))))
+      const correctionDoc = editingTransferDoc
       for (const [productId, requestedQty] of quantityByProduct.entries()) {
-        const available = await getAvailableQuantity(fromStockLocationId, Number(productId))
+        let available = await getAvailableQuantity(fromStockLocationId, Number(productId))
+        if (correctionDoc) {
+          correctionDoc.movements
+            .filter((movement) => String(movement.product_id) === String(productId))
+            .forEach((movement) => {
+              const qty = Number(movement.quantity_base_units || 0)
+              if (String(movement.from_stock_location_id || '') === String(fromStockLocationId)) available += qty
+              if (String(movement.to_stock_location_id || '') === String(fromStockLocationId)) available -= qty
+            })
+        }
         if (available + 0.0001 < requestedQty) {
           const product = productsV13.find((item) => String(item.id) === String(productId))
           throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${requestedQty.toFixed(3)}).`)
         }
       }
+      if (correctionDoc) await reverseManualTransferDoc(correctionDoc)
       const transferReference = `${isSale ? 'manual-sale' : 'manual-transfer'}:${Date.now()}`
       const transferDate = document.getElementById('simpleTransferDate').value || new Date().toISOString().slice(0, 10)
+      for (const line of lines) {
+        await applyBalanceDelta(fromStockLocationId, line.productId, -line.quantity)
+        if (toStockLocationId) await applyBalanceDelta(toStockLocationId, line.productId, line.quantity)
+      }
       const { error: movementError } = await supabase
         .from('stock_movements_v13')
         .insert(lines.map((line) => ({
@@ -3274,13 +3440,9 @@
           quantity_base_units: line.quantity,
           reference_type: isSale ? 'manual_sale' : 'manual_transfer',
           reference_id: transferReference,
-          note: [transferDate, note, line.note].filter(Boolean).join(' · ') || null
+          note: [transferDate, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
         })))
       if (movementError) throw movementError
-      for (const line of lines) {
-        await applyBalanceDelta(fromStockLocationId, line.productId, -line.quantity)
-        if (toStockLocationId) await applyBalanceDelta(toStockLocationId, line.productId, line.quantity)
-      }
     }
 
     searchInput.addEventListener('input', applyFilters)
@@ -3462,6 +3624,11 @@
       )
     })
     openVehicleLoadCorrectionBtn.addEventListener('click', () => openVehicleLoadCorrection('load'))
+    manualTransferDocsBody.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-transfer-doc-action]')
+      if (!button) return
+      if (button.dataset.transferDocAction === 'edit') openManualTransferDocCorrection(button.dataset.transferDocId || '')
+    })
     detailModalContent.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-detail-action]')
       if (!button || !currentDetailContext) return
