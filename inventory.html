@@ -2920,14 +2920,51 @@
         if (error) throw error
       }
     }
-    async function reverseManualTransferDoc(doc) {
-      const correctionReference = `manual-correction:${Date.now()}`
+    function addBalanceDelta(deltaMap, stockLocationId, productId, delta) {
+      if (!stockLocationId || !productId || !delta) return
+      const key = `${stockLocationId}:${productId}`
+      const current = deltaMap.get(key) || { stockLocationId, productId, delta: 0 }
+      current.delta = Number((current.delta + delta).toFixed(3))
+      deltaMap.set(key, current)
+    }
+    async function buildCorrectionReverseDeltas(doc) {
+      const deltaMap = new Map()
+      const availableCache = new Map()
       for (const movement of doc.movements) {
         const qty = Number(movement.quantity_base_units || 0)
-        if (qty <= 0) continue
-        if (movement.to_stock_location_id) await applyBalanceDelta(movement.to_stock_location_id, movement.product_id, -qty)
-        if (movement.from_stock_location_id) await applyBalanceDelta(movement.from_stock_location_id, movement.product_id, qty)
+        if (qty <= 0 || !movement.to_stock_location_id) continue
+        const availableKey = `${movement.to_stock_location_id}:${movement.product_id}`
+        if (!availableCache.has(availableKey)) {
+          availableCache.set(availableKey, await getAvailableQuantity(movement.to_stock_location_id, movement.product_id))
+        }
+        const available = Number(availableCache.get(availableKey) || 0)
+        const reversibleQty = Math.min(qty, available)
+        if (reversibleQty <= 0) continue
+        availableCache.set(availableKey, Number((available - reversibleQty).toFixed(3)))
+        addBalanceDelta(deltaMap, movement.to_stock_location_id, movement.product_id, -reversibleQty)
+        addBalanceDelta(deltaMap, movement.from_stock_location_id, movement.product_id, reversibleQty)
       }
+      return deltaMap
+    }
+    async function applyBalanceDeltaMap(deltaMap) {
+      const deltas = Array.from(deltaMap.values()).filter((item) => Math.abs(Number(item.delta || 0)) > 0.0001)
+      for (const item of deltas.filter((delta) => delta.delta < 0)) {
+        const available = await getAvailableQuantity(item.stockLocationId, item.productId)
+        const required = Math.abs(item.delta)
+        if (available + 0.0001 < required) {
+          const product = productsV13.find((row) => String(row.id) === String(item.productId))
+          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${required.toFixed(3)}).`)
+        }
+      }
+      for (const item of deltas.filter((delta) => delta.delta < 0)) {
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+      }
+      for (const item of deltas.filter((delta) => delta.delta > 0)) {
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+      }
+    }
+    async function logManualTransferCorrectionDoc(doc) {
+      const correctionReference = `manual-correction:${Date.now()}`
       const { error } = await supabase
         .from('stock_movements_v13')
         .insert(doc.movements.map((movement) => ({
@@ -2938,7 +2975,7 @@
           quantity_base_units: Number(movement.quantity_base_units || 0),
           reference_type: 'manual_correction',
           reference_id: correctionReference,
-          note: `Oprava/storno dokladu ${doc.referenceId}`
+          note: `Oprava/storno dokladu ${doc.referenceId}. Zůstatky se opravují rozdílově podle aktuální evidence.`
         })))
       if (error) throw error
     }
@@ -3404,32 +3441,16 @@
       const fromStockLocationId = direction === 'warehouse_to_vehicle' ? warehouseLocationId : vehicleLocationId
       const toStockLocationId = direction === 'warehouse_to_vehicle' ? vehicleLocationId : (isSale ? null : warehouseLocationId)
       const movementType = isSale ? 'sale' : (direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle')
-      const quantityByProduct = new Map()
-      lines.forEach((line) => quantityByProduct.set(String(line.productId), Number((Number(quantityByProduct.get(String(line.productId)) || 0) + line.quantity).toFixed(3))))
       const correctionDoc = editingTransferDoc
-      for (const [productId, requestedQty] of quantityByProduct.entries()) {
-        let available = await getAvailableQuantity(fromStockLocationId, Number(productId))
-        if (correctionDoc) {
-          correctionDoc.movements
-            .filter((movement) => String(movement.product_id) === String(productId))
-            .forEach((movement) => {
-              const qty = Number(movement.quantity_base_units || 0)
-              if (String(movement.from_stock_location_id || '') === String(fromStockLocationId)) available += qty
-              if (String(movement.to_stock_location_id || '') === String(fromStockLocationId)) available -= qty
-            })
-        }
-        if (available + 0.0001 < requestedQty) {
-          const product = productsV13.find((item) => String(item.id) === String(productId))
-          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${requestedQty.toFixed(3)}).`)
-        }
-      }
-      if (correctionDoc) await reverseManualTransferDoc(correctionDoc)
+      const balanceDeltas = correctionDoc ? await buildCorrectionReverseDeltas(correctionDoc) : new Map()
       const transferReference = `${isSale ? 'manual-sale' : 'manual-transfer'}:${Date.now()}`
       const transferDate = document.getElementById('simpleTransferDate').value || new Date().toISOString().slice(0, 10)
       for (const line of lines) {
-        await applyBalanceDelta(fromStockLocationId, line.productId, -line.quantity)
-        if (toStockLocationId) await applyBalanceDelta(toStockLocationId, line.productId, line.quantity)
+        addBalanceDelta(balanceDeltas, fromStockLocationId, line.productId, -line.quantity)
+        addBalanceDelta(balanceDeltas, toStockLocationId, line.productId, line.quantity)
       }
+      await applyBalanceDeltaMap(balanceDeltas)
+      if (correctionDoc) await logManualTransferCorrectionDoc(correctionDoc)
       const { error: movementError } = await supabase
         .from('stock_movements_v13')
         .insert(lines.map((line) => ({
