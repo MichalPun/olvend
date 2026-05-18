@@ -345,6 +345,9 @@
     const SALES_CUSTOMERS_KEY = 'olvend.salesCustomers.v1'
     const SALES_PAYMENT_KEY = 'olvend.salesPaymentSettings.v1'
     const COMPANY_PROFILE_KEY = 'olvendCompanyProfile'
+    const SALES_SERIES_DB_KEY = 'sales_document_series'
+    const COMPANY_PROFILE_DB_KEY = 'company_profile'
+    const SALES_PAYMENT_DB_KEY = 'sales_payment_defaults'
     const DEFAULT_SALES_SERIES = {
       invoice: { label:'Faktury vydané', prefix:'OVF', nextNumber:1, padding:4 },
       cash_receipt: { label:'Účtenky vydané', prefix:'OVU', nextNumber:1, padding:4 },
@@ -355,6 +358,9 @@
     let products = []
     let customers = loadCustomers()
     let currentDocumentId = null
+    let salesSeriesSettingsCache = null
+    let companyProfileCache = null
+    let salesPaymentCache = null
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')
@@ -395,7 +401,42 @@
     function safeJson(value, fallback = null) {
       try { return JSON.parse(value) } catch { return fallback }
     }
+    async function loadSettingFromDb(key) {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', key)
+        .maybeSingle()
+      if (error) throw error
+      return data?.value || null
+    }
+    async function saveSettingToDb(key, value, note) {
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ key, value, note }, { onConflict:'key' })
+      if (error) throw error
+    }
+    async function loadInvoiceSettingsFromDb() {
+      const [series, company, payment] = await Promise.all([
+        loadSettingFromDb(SALES_SERIES_DB_KEY),
+        loadSettingFromDb(COMPANY_PROFILE_DB_KEY),
+        loadSettingFromDb(SALES_PAYMENT_DB_KEY)
+      ])
+      if (series) {
+        salesSeriesSettingsCache = series
+        localStorage.setItem(SALES_SERIES_KEY, JSON.stringify(series))
+      }
+      if (company) {
+        companyProfileCache = company
+        localStorage.setItem(COMPANY_PROFILE_KEY, JSON.stringify(company))
+      }
+      if (payment) {
+        salesPaymentCache = payment
+        localStorage.setItem(SALES_PAYMENT_KEY, JSON.stringify(payment))
+      }
+    }
     function loadSalesSeries() {
+      if (salesSeriesSettingsCache) return salesSeriesSettingsCache
       const saved = safeJson(localStorage.getItem(SALES_SERIES_KEY), {}) || {}
       return Object.fromEntries(Object.entries(DEFAULT_SALES_SERIES).map(([type, defaults]) => {
         const custom = saved[type] || {}
@@ -429,8 +470,8 @@
       return `CZ${check}${bban}`
     }
     function loadPaymentSettings() {
-      const company = safeJson(localStorage.getItem(COMPANY_PROFILE_KEY), {}) || {}
-      const saved = safeJson(localStorage.getItem(SALES_PAYMENT_KEY), {}) || {}
+      const company = companyProfileCache || safeJson(localStorage.getItem(COMPANY_PROFILE_KEY), {}) || {}
+      const saved = salesPaymentCache || safeJson(localStorage.getItem(SALES_PAYMENT_KEY), {}) || {}
       const account = company.bank_account || company.account || saved.account || ''
       return {
         iban: company.iban || saved.iban || czechIbanFromAccount(account),
@@ -443,14 +484,21 @@
         sellerEmail: saved.sellerEmail || company.accounting_contact || company.main_email || ''
       }
     }
-    function savePaymentSettings() {
+    async function savePaymentSettings() {
       const current = loadPaymentSettings()
-      localStorage.setItem(SALES_PAYMENT_KEY, JSON.stringify({
+      const next = {
         ...current,
         iban: paymentIban.value.trim(),
         account: paymentAccount.value.trim(),
         constantSymbol: constantSymbol.value.trim() || '0308'
-      }))
+      }
+      salesPaymentCache = next
+      localStorage.setItem(SALES_PAYMENT_KEY, JSON.stringify(next))
+      try {
+        await saveSettingToDb(SALES_PAYMENT_DB_KEY, next, 'Výchozí platební údaje pro vystavené faktury.')
+      } catch (error) {
+        console.warn('Sales payment database settings unavailable', error)
+      }
     }
     function customerByName(name) {
       const normalized = normalizeText(name)
@@ -877,7 +925,7 @@
         : documentSeriesNumber(null, documentType.value)
       const customer = currentCustomerDetail()
       upsertCustomer(customer)
-      savePaymentSettings()
+      await savePaymentSettings()
       const meta = {
         customer,
         dueDate: dueDate.value || null,
@@ -1051,8 +1099,17 @@
       window.OlvendSidebar.initMobileNav(mobileNavShell)
       window.OlvendSidebar.setActive('sales-invoices')
     }
-    renderCustomerList()
-    loadPage()
+    async function initIssuedInvoicesPage() {
+      try {
+        await loadInvoiceSettingsFromDb()
+      } catch (error) {
+        console.warn('Invoice database settings unavailable, using browser fallback', error)
+      }
+      renderCustomerList()
+      await loadPage()
+    }
+
+    initIssuedInvoicesPage()
   </script>
 </body>
 </html>

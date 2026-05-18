@@ -942,7 +942,9 @@
   </div>
 
   <script src="./sidebar.js?v=20260518v15"></script>
-  <script>
+  <script type="module">
+    import { supabase } from './supabase.js';
+
     const settingsData = {
       organization: {
         title: 'Firma a organizace',
@@ -1140,6 +1142,8 @@
     const mobileNavToggle = document.getElementById('mobileNavToggle');
     const DOCUMENT_SERIES_STORAGE_KEY = 'olvend.purchaseDocumentSeries.v1';
     const SALES_DOCUMENT_SERIES_STORAGE_KEY = 'olvend.salesDocumentSeries.v1';
+    const DOCUMENT_SERIES_DB_KEY = 'purchase_document_series';
+    const SALES_DOCUMENT_SERIES_DB_KEY = 'sales_document_series';
     const DEFAULT_DOCUMENT_SERIES = {
       invoice: { label: 'Faktury přijaté', prefix: 'OVP', nextNumber: 1, padding: 4 },
       delivery_note: { label: 'Dodací listy', prefix: 'OVDL', nextNumber: 1, padding: 4 },
@@ -1151,12 +1155,15 @@
       cash_receipt: { label: 'Účtenky vydané', prefix: 'OVU', nextNumber: 1, padding: 4 },
       credit_note: { label: 'Dobropisy vydané', prefix: 'OVD', nextNumber: 1, padding: 4 }
     };
+    let documentSeriesSettingsCache = null;
+    let salesDocumentSeriesSettingsCache = null;
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
     function loadDocumentSeriesSettings() {
+      if (documentSeriesSettingsCache) return documentSeriesSettingsCache;
       try {
         const saved = JSON.parse(localStorage.getItem(DOCUMENT_SERIES_STORAGE_KEY) || '{}');
         return Object.fromEntries(Object.entries(DEFAULT_DOCUMENT_SERIES).map(([type, defaults]) => {
@@ -1173,11 +1180,46 @@
       }
     }
 
-    function saveDocumentSeriesSettings(settings) {
+    async function loadSettingFromDb(key) {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', key)
+        .maybeSingle();
+      if (error) throw error;
+      return data?.value || null;
+    }
+
+    async function saveSettingToDb(key, value, note) {
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ key, value, note }, { onConflict: 'key' });
+      if (error) throw error;
+    }
+
+    async function loadSeriesSettingsFromDb() {
+      const [purchaseSeries, salesSeries] = await Promise.all([
+        loadSettingFromDb(DOCUMENT_SERIES_DB_KEY),
+        loadSettingFromDb(SALES_DOCUMENT_SERIES_DB_KEY)
+      ]);
+      if (purchaseSeries) {
+        localStorage.setItem(DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(purchaseSeries));
+        documentSeriesSettingsCache = null;
+      }
+      if (salesSeries) {
+        localStorage.setItem(SALES_DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(salesSeries));
+        salesDocumentSeriesSettingsCache = null;
+      }
+    }
+
+    async function saveDocumentSeriesSettings(settings) {
       localStorage.setItem(DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(settings));
+      documentSeriesSettingsCache = settings;
+      await saveSettingToDb(DOCUMENT_SERIES_DB_KEY, settings, 'Číselné řady přijatých dokladů.');
     }
 
     function loadSalesDocumentSeriesSettings() {
+      if (salesDocumentSeriesSettingsCache) return salesDocumentSeriesSettingsCache;
       try {
         const saved = JSON.parse(localStorage.getItem(SALES_DOCUMENT_SERIES_STORAGE_KEY) || '{}');
         return Object.fromEntries(Object.entries(DEFAULT_SALES_DOCUMENT_SERIES).map(([type, defaults]) => {
@@ -1194,8 +1236,10 @@
       }
     }
 
-    function saveSalesDocumentSeriesSettings(settings) {
+    async function saveSalesDocumentSeriesSettings(settings) {
       localStorage.setItem(SALES_DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(settings));
+      salesDocumentSeriesSettingsCache = settings;
+      await saveSettingToDb(SALES_DOCUMENT_SERIES_DB_KEY, settings, 'Číselné řady vystavených dokladů.');
     }
 
     function formatSeriesPreview(config, year = new Date().getFullYear()) {
@@ -1325,12 +1369,18 @@
       const rows = document.getElementById('documentSeriesRows');
       const status = document.getElementById('documentSeriesStatus');
       rows?.addEventListener('input', updateDocumentSeriesPreviews);
-      document.getElementById('saveDocumentSeriesBtn')?.addEventListener('click', () => {
-        saveDocumentSeriesSettings(collectDocumentSeriesSettings());
-        if (status) status.textContent = 'Číselné řady byly uložené.';
+      document.getElementById('saveDocumentSeriesBtn')?.addEventListener('click', async () => {
+        try {
+          await saveDocumentSeriesSettings(collectDocumentSeriesSettings());
+          if (status) status.textContent = 'Číselné řady byly uložené do databáze.';
+        } catch (error) {
+          console.error(error);
+          localStorage.setItem(DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(collectDocumentSeriesSettings()));
+          if (status) status.textContent = `Databáze zatím není dostupná: ${error.message}. Nastavení zůstalo v tomto prohlížeči.`;
+        }
       });
-      document.getElementById('resetDocumentSeriesBtn')?.addEventListener('click', () => {
-        saveDocumentSeriesSettings(DEFAULT_DOCUMENT_SERIES);
+      document.getElementById('resetDocumentSeriesBtn')?.addEventListener('click', async () => {
+        try { await saveDocumentSeriesSettings(DEFAULT_DOCUMENT_SERIES); } catch (error) { console.warn(error); }
         renderCategory('documents');
       });
     }
@@ -1366,12 +1416,18 @@
       const rows = document.getElementById('salesDocumentSeriesRows');
       const status = document.getElementById('salesDocumentSeriesStatus');
       rows?.addEventListener('input', updateSalesDocumentSeriesPreviews);
-      document.getElementById('saveSalesDocumentSeriesBtn')?.addEventListener('click', () => {
-        saveSalesDocumentSeriesSettings(collectSalesDocumentSeriesSettings());
-        if (status) status.textContent = 'Číselné řady vystavených dokladů byly uložené.';
+      document.getElementById('saveSalesDocumentSeriesBtn')?.addEventListener('click', async () => {
+        try {
+          await saveSalesDocumentSeriesSettings(collectSalesDocumentSeriesSettings());
+          if (status) status.textContent = 'Číselné řady vystavených dokladů byly uložené do databáze.';
+        } catch (error) {
+          console.error(error);
+          localStorage.setItem(SALES_DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(collectSalesDocumentSeriesSettings()));
+          if (status) status.textContent = `Databáze zatím není dostupná: ${error.message}. Nastavení zůstalo v tomto prohlížeči.`;
+        }
       });
-      document.getElementById('resetSalesDocumentSeriesBtn')?.addEventListener('click', () => {
-        saveSalesDocumentSeriesSettings(DEFAULT_SALES_DOCUMENT_SERIES);
+      document.getElementById('resetSalesDocumentSeriesBtn')?.addEventListener('click', async () => {
+        try { await saveSalesDocumentSeriesSettings(DEFAULT_SALES_DOCUMENT_SERIES); } catch (error) { console.warn(error); }
         renderCategory('documents');
       });
     }
@@ -1528,7 +1584,16 @@
       });
     }
 
-    renderCategory('organization');
+    async function initSettingsPage() {
+      try {
+        await loadSeriesSettingsFromDb();
+      } catch (error) {
+        console.warn('Database settings unavailable, using browser fallback', error);
+      }
+      renderCategory('organization');
+    }
+
+    initSettingsPage();
 
     document.addEventListener('olvend:themechange', () => {
       if (document.querySelector('.settings-tab.active')?.dataset.category === 'system') {

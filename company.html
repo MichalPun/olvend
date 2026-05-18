@@ -745,6 +745,7 @@
 
     const STORAGE_KEY = 'olvendCompanyProfile';
     const SALES_PAYMENT_STORAGE_KEY = 'olvend.salesPaymentSettings.v1';
+    const COMPANY_SETTINGS_KEY = 'company_profile';
 
     const DEFAULT_DATA = {
       system_name: 'OLVEND',
@@ -890,6 +891,23 @@
       return { ...DEFAULT_DATA, ...(parsed || {}) };
     }
 
+    async function loadDataFromDb() {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', COMPANY_SETTINGS_KEY)
+        .maybeSingle();
+      if (error) throw error;
+      return { ...DEFAULT_DATA, ...(data?.value || {}) };
+    }
+
+    async function saveDataToDb(data) {
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ key: COMPANY_SETTINGS_KEY, value: data, note: 'Firemní profil a platební údaje pro doklady.' }, { onConflict: 'key' });
+      if (error) throw error;
+    }
+
     function loadAvailablePaymentDetails() {
       const company = loadData();
       const savedPayment = safeParse(localStorage.getItem(SALES_PAYMENT_STORAGE_KEY)) || {};
@@ -953,26 +971,48 @@
       document.getElementById('summaryPaymentsNote').textContent = paymentNote;
     }
 
-    function saveData() {
+    async function saveData() {
       const data = getFormData();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      updateSummary(data);
-      setStatus('Informace o firmě byly uloženy do tohoto prohlížeče.', 'success');
+      try {
+        await saveDataToDb(data);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        updateSummary(data);
+        setStatus('Informace o firmě byly uloženy do databáze.', 'success');
+      } catch (error) {
+        console.error(error);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        updateSummary(data);
+        setStatus(`Databázové uložení zatím nejde: ${error.message}. Údaje jsou dočasně uložené v tomto prohlížeči.`, 'error');
+      }
     }
 
-    function resetData() {
+    async function resetData() {
       localStorage.removeItem(STORAGE_KEY);
       fillForm(DEFAULT_DATA);
       updateSummary(DEFAULT_DATA);
-      setStatus('Výchozí stav byl obnoven. Můžeme pokračovat znovu od čisté verze.', 'success');
+      try {
+        await saveDataToDb(DEFAULT_DATA);
+        setStatus('Výchozí stav byl uložený do databáze.', 'success');
+      } catch (error) {
+        console.error(error);
+        setStatus('Výchozí stav byl obnovený jen v tomto prohlížeči. Databáze zatím není dostupná.', 'error');
+      }
     }
 
     saveButtons.forEach((button) => {
-      button.addEventListener('click', saveData);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        await saveData();
+        button.disabled = false;
+      });
     });
 
     resetButtons.forEach((button) => {
-      button.addEventListener('click', resetData);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        await resetData();
+        button.disabled = false;
+      });
     });
 
     loadPaymentDetailsBtn?.addEventListener('click', async () => {
@@ -1012,13 +1052,24 @@
       updateSummary(getFormData());
     });
 
-    const initialData = { ...loadData() };
-    const availablePayment = loadAvailablePaymentDetails();
-    if (!initialData.bank_account && availablePayment.bank_account) initialData.bank_account = availablePayment.bank_account;
-    if (!initialData.iban && availablePayment.iban) initialData.iban = availablePayment.iban;
-    if (!initialData.constant_symbol && availablePayment.constant_symbol) initialData.constant_symbol = availablePayment.constant_symbol;
-    fillForm(initialData);
-    updateSummary(initialData);
+    async function initCompanyProfile() {
+      let initialData = { ...loadData() };
+      try {
+        initialData = await loadDataFromDb();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(initialData));
+        setStatus('Firemní údaje byly načtené z databáze.', 'success');
+      } catch (error) {
+        console.warn('Company profile database settings unavailable', error);
+      }
+      const availablePayment = loadAvailablePaymentDetails();
+      if (!initialData.bank_account && availablePayment.bank_account) initialData.bank_account = availablePayment.bank_account;
+      if (!initialData.iban && availablePayment.iban) initialData.iban = availablePayment.iban;
+      if (!initialData.constant_symbol && availablePayment.constant_symbol) initialData.constant_symbol = availablePayment.constant_symbol;
+      fillForm(initialData);
+      updateSummary(initialData);
+    }
+
+    initCompanyProfile();
   </script>
   <script src="./pwa.js?v=20260518v15" defer></script>
 </body>
