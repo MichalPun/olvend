@@ -674,6 +674,11 @@
               </div>
 
               <div class="field">
+                <label>&nbsp;</label>
+                <button class="btn secondary" id="loadPaymentDetailsBtn" type="button">Načíst dostupné platební údaje</button>
+              </div>
+
+              <div class="field">
                 <label for="working_hours">Pracovní doba</label>
                 <input id="working_hours" name="working_hours" type="text" placeholder="Po–Pá 8:00–16:30" />
               </div>
@@ -716,6 +721,7 @@
   <script src="./sidebar.js?v=20260518v15"></script>
   <script>
     const STORAGE_KEY = 'olvendCompanyProfile';
+    const SALES_PAYMENT_STORAGE_KEY = 'olvend.salesPaymentSettings.v1';
 
     const DEFAULT_DATA = {
       system_name: 'OLVEND',
@@ -745,6 +751,7 @@
     const statusLine = document.getElementById('statusLine');
     const saveButtons = [document.getElementById('saveTopBtn'), document.getElementById('saveBottomBtn')];
     const resetButtons = [document.getElementById('resetBtn'), document.getElementById('resetBottomBtn')];
+    const loadPaymentDetailsBtn = document.getElementById('loadPaymentDetailsBtn');
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -760,10 +767,38 @@
       }
     }
 
+    function ibanMod97(value) {
+      return String(value).split('').reduce((remainder, digit) => (remainder * 10 + Number(digit)) % 97, 0);
+    }
+
+    function czechIbanFromAccount(value) {
+      const normalized = String(value || '').replace(/\s/g, '');
+      const match = normalized.match(/^(?:(\d{1,6})-)?(\d{1,10})\/(\d{4})$/);
+      if (!match) return '';
+      const prefix = String(match[1] || '').padStart(6, '0');
+      const account = String(match[2] || '').padStart(10, '0');
+      const bank = match[3];
+      const bban = `${bank}${prefix}${account}`;
+      const check = String(98 - ibanMod97(`${bban}123500`)).padStart(2, '0');
+      return `CZ${check}${bban}`;
+    }
+
     function loadData() {
       const raw = localStorage.getItem(STORAGE_KEY);
       const parsed = raw ? safeParse(raw) : null;
       return { ...DEFAULT_DATA, ...(parsed || {}) };
+    }
+
+    function loadAvailablePaymentDetails() {
+      const company = loadData();
+      const savedPayment = safeParse(localStorage.getItem(SALES_PAYMENT_STORAGE_KEY)) || {};
+      const account = company.bank_account || company.account || savedPayment.account || '';
+      const iban = company.iban || savedPayment.iban || czechIbanFromAccount(account);
+      return {
+        bank_account: account,
+        iban,
+        constant_symbol: company.constant_symbol || savedPayment.constantSymbol || '0308'
+      };
     }
 
     function getFormData() {
@@ -777,6 +812,16 @@
         if (!field) return;
         field.value = data[key] || '';
       });
+    }
+
+    function applyPaymentDetails(details) {
+      const accountField = document.getElementById('bank_account');
+      const ibanField = document.getElementById('iban');
+      const constantField = document.getElementById('constant_symbol');
+      if (accountField && details.bank_account) accountField.value = details.bank_account;
+      if (ibanField && details.iban) ibanField.value = details.iban;
+      if (constantField && details.constant_symbol) constantField.value = details.constant_symbol;
+      updateSummary(getFormData());
     }
 
     function updateSummary(data) {
@@ -829,11 +874,25 @@
       button.addEventListener('click', resetData);
     });
 
-    form.addEventListener('input', () => {
+    loadPaymentDetailsBtn?.addEventListener('click', () => {
+      const details = loadAvailablePaymentDetails();
+      applyPaymentDetails(details);
+      setStatus(details.bank_account || details.iban ? 'Platební údaje byly načtené z dostupných údajů. Ulož změny, aby zůstaly ve firemní kartě.' : 'Zatím nemám odkud platební údaje načíst.', details.bank_account || details.iban ? 'success' : '');
+    });
+
+    form.addEventListener('input', (event) => {
+      if (event.target?.id === 'bank_account') {
+        const ibanField = document.getElementById('iban');
+        if (ibanField && !ibanField.value.trim()) ibanField.value = czechIbanFromAccount(event.target.value);
+      }
       updateSummary(getFormData());
     });
 
-    const initialData = loadData();
+    const initialData = { ...loadData() };
+    const availablePayment = loadAvailablePaymentDetails();
+    if (!initialData.bank_account && availablePayment.bank_account) initialData.bank_account = availablePayment.bank_account;
+    if (!initialData.iban && availablePayment.iban) initialData.iban = availablePayment.iban;
+    if (!initialData.constant_symbol && availablePayment.constant_symbol) initialData.constant_symbol = availablePayment.constant_symbol;
     fillForm(initialData);
     updateSummary(initialData);
   </script>
