@@ -399,6 +399,7 @@
     }
 
     input,
+    select,
     textarea {
       width: 100%;
       background: rgba(255,255,255,0.04);
@@ -417,6 +418,7 @@
     }
 
     input:focus,
+    select:focus,
     textarea:focus {
       border-color: rgba(213,16,26,0.5);
       box-shadow: 0 0 0 3px rgba(213,16,26,0.12);
@@ -437,6 +439,17 @@
       color: var(--muted);
       font-size: 13px;
       line-height: 1.55;
+    }
+
+    .inline-field-action {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .doc-field-hidden {
+      display: none;
     }
 
     @media (max-width: 1120px) {
@@ -678,6 +691,14 @@
                 <button class="btn secondary" id="loadPaymentDetailsBtn" type="button">Načíst dostupné platební údaje</button>
               </div>
 
+              <div class="field full doc-field-hidden" id="publishedAccountsField">
+                <label for="publishedAccounts">Zveřejněné účty z registru DPH</label>
+                <div class="inline-field-action">
+                  <select id="publishedAccounts"></select>
+                  <button class="btn secondary" id="usePublishedAccountBtn" type="button">Použít účet</button>
+                </div>
+              </div>
+
               <div class="field">
                 <label for="working_hours">Pracovní doba</label>
                 <input id="working_hours" name="working_hours" type="text" placeholder="Po–Pá 8:00–16:30" />
@@ -719,7 +740,9 @@
   </div>
 
   <script src="./sidebar.js?v=20260518v15"></script>
-  <script>
+  <script type="module">
+    import { supabase } from './supabase.js';
+
     const STORAGE_KEY = 'olvendCompanyProfile';
     const SALES_PAYMENT_STORAGE_KEY = 'olvend.salesPaymentSettings.v1';
 
@@ -752,6 +775,10 @@
     const saveButtons = [document.getElementById('saveTopBtn'), document.getElementById('saveBottomBtn')];
     const resetButtons = [document.getElementById('resetBtn'), document.getElementById('resetBottomBtn')];
     const loadPaymentDetailsBtn = document.getElementById('loadPaymentDetailsBtn');
+    const publishedAccountsField = document.getElementById('publishedAccountsField');
+    const publishedAccounts = document.getElementById('publishedAccounts');
+    const usePublishedAccountBtn = document.getElementById('usePublishedAccountBtn');
+    let registryAccounts = [];
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -765,6 +792,10 @@
       } catch {
         return null;
       }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
     function ibanMod97(value) {
@@ -781,6 +812,76 @@
       const bban = `${bank}${prefix}${account}`;
       const check = String(98 - ibanMod97(`${bban}123500`)).padStart(2, '0');
       return `CZ${check}${bban}`;
+    }
+
+    function normalizeCompanyId(value) {
+      return String(value || '').replace(/\D/g, '').slice(0, 8);
+    }
+
+    function normalizeVatId(value, companyId = '') {
+      const raw = String(value || '').trim().toUpperCase().replace(/\s/g, '');
+      if (raw.startsWith('CZ')) return raw;
+      const ico = normalizeCompanyId(companyId || raw);
+      return ico ? `CZ${ico}` : '';
+    }
+
+    function accountLabel(account) {
+      if (account.iban) return `${account.iban}${account.publishedAt ? ` · zveřejněno ${formatDate(account.publishedAt)}` : ''}`;
+      return `${account.accountNumber || ''}${account.bankCode ? `/${account.bankCode}` : ''}${account.publishedAt ? ` · zveřejněno ${formatDate(account.publishedAt)}` : ''}`;
+    }
+
+    function formatDate(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('cs-CZ');
+    }
+
+    function accountValue(account) {
+      if (!account) return '';
+      return [account.accountNumber, account.bankCode].filter(Boolean).join('/');
+    }
+
+    function renderPublishedAccounts(accounts = []) {
+      registryAccounts = accounts;
+      publishedAccountsField.classList.toggle('doc-field-hidden', !accounts.length);
+      publishedAccounts.innerHTML = accounts.map((account, index) => `<option value="${index}">${escapeHtml(accountLabel(account))}</option>`).join('');
+      if (accounts.length) applyRegistryAccount(accounts[0]);
+    }
+
+    function applyRegistryAccount(account) {
+      if (!account) return;
+      const accountField = document.getElementById('bank_account');
+      const ibanField = document.getElementById('iban');
+      const accountText = accountValue(account);
+      if (accountField && accountText) accountField.value = accountText;
+      if (ibanField) ibanField.value = account.iban || czechIbanFromAccount(accountText) || ibanField.value;
+      updateSummary(getFormData());
+    }
+
+    async function fetchVatAccounts() {
+      const data = getFormData();
+      const vatId = normalizeVatId(data.dic, data.ico);
+      if (!vatId) throw new Error('Doplň DIČ nebo IČO firmy.');
+      document.getElementById('dic').value = vatId;
+      const { data: response, error } = await supabase.functions.invoke('check-vat-accounts', { body: { dic: vatId } });
+      if (error) {
+        const message = String(error.message || '');
+        if (/failed to send|not found|404|function/i.test(message)) {
+          throw new Error('Funkce check-vat-accounts není nasazená v Supabase.');
+        }
+        throw new Error(message || 'Registr DPH se nepodařilo načíst.');
+      }
+      if (response?.error) throw new Error(response.error);
+      const accounts = Array.isArray(response?.accounts) ? response.accounts : [];
+      renderPublishedAccounts(accounts);
+      return {
+        accounts,
+        status: [
+          response?.payerFound ? 'Plátce DPH nalezen' : 'Plátce DPH nenalezen',
+          response?.unreliable === true ? 'nespolehlivý plátce' : response?.unreliable === false ? 'spolehlivý plátce' : '',
+          accounts.length ? `${accounts.length} zveřejněných účtů` : 'bez zveřejněného účtu'
+        ].filter(Boolean).join(' · ')
+      };
     }
 
     function loadData() {
@@ -874,10 +975,33 @@
       button.addEventListener('click', resetData);
     });
 
-    loadPaymentDetailsBtn?.addEventListener('click', () => {
-      const details = loadAvailablePaymentDetails();
-      applyPaymentDetails(details);
-      setStatus(details.bank_account || details.iban ? 'Platební údaje byly načtené z dostupných údajů. Ulož změny, aby zůstaly ve firemní kartě.' : 'Zatím nemám odkud platební údaje načíst.', details.bank_account || details.iban ? 'success' : '');
+    loadPaymentDetailsBtn?.addEventListener('click', async () => {
+      try {
+        loadPaymentDetailsBtn.disabled = true;
+        loadPaymentDetailsBtn.textContent = 'Načítám...';
+        const details = loadAvailablePaymentDetails();
+        applyPaymentDetails(details);
+        const registry = await fetchVatAccounts();
+        setStatus(registry.status || 'Platební údaje byly načtené.', registry.accounts.length ? 'success' : '');
+      } catch (error) {
+        console.error(error);
+        const details = loadAvailablePaymentDetails();
+        applyPaymentDetails(details);
+        setStatus(details.bank_account || details.iban ? `Registr DPH se nepodařilo ověřit: ${error.message}. Použil jsem aspoň lokálně dostupné údaje.` : `Platební údaje se nepodařilo načíst: ${error.message}`, details.bank_account || details.iban ? 'success' : 'error');
+      } finally {
+        loadPaymentDetailsBtn.disabled = false;
+        loadPaymentDetailsBtn.textContent = 'Načíst dostupné platební údaje';
+      }
+    });
+
+    usePublishedAccountBtn?.addEventListener('click', () => {
+      const selected = registryAccounts[Number(publishedAccounts.value || 0)];
+      applyRegistryAccount(selected);
+    });
+
+    publishedAccounts?.addEventListener('change', () => {
+      const selected = registryAccounts[Number(publishedAccounts.value || 0)];
+      applyRegistryAccount(selected);
     });
 
     form.addEventListener('input', (event) => {
