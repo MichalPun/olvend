@@ -1565,7 +1565,7 @@
       let result = await supabase
         .from('products')
         .insert([payload])
-        .select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, expiry_tracking_mode, requires_batch_tracking, active, note')
+        .select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note')
         .single()
       if (result.error && /vat_rate|purchase_price|note|usage_type/i.test(result.error.message || '')) {
         result = await supabase
@@ -2004,6 +2004,27 @@
     }
     function getRecommendationForItem(item) {
       return productRecommendationMap.get(`${item.product_id}:${item.pilot_scope || 'general'}`) || {}
+    }
+    function getProductById(productId) {
+      return products.find((product) => String(product.id) === String(productId)) || null
+    }
+    function recurringItemUnitCost(item) {
+      const lastPrice = Number(productLastPurchasePriceMap.get(String(item.product_id)) || 0)
+      if (lastPrice > 0) return lastPrice
+      return Number(getProductById(item.product_id)?.purchase_price || 0)
+    }
+    function recurringItemVatRate(item) {
+      return Number(getProductById(item.product_id)?.vat_rate || 0)
+    }
+    function recurringItemPriceNote(item, quantity, label) {
+      const vatRate = recurringItemVatRate(item)
+      const unitCost = recurringItemUnitCost(item)
+      const totalNet = roundMoney(Number(quantity || 0) * unitCost)
+      const totalGross = roundMoney(totalNet * (1 + (vatRate / 100)))
+      const priceMeta = unitCost > 0
+        ? `[dph:${vatRate}][celkem-bez-dph:${totalNet.toFixed(2)}][celkem-s-dph:${totalGross.toFixed(2)}]`
+        : `[dph:${vatRate}]`
+      return `${priceMeta} ${label}`
     }
     async function loadReceiptBatchFields(order) {
       currentReceiptMovementMap = new Map()
@@ -2658,7 +2679,7 @@
       const filteredOrders = orderRowsByFilters(orders)
       const draftCount = filteredOrders.filter((order) => order.status === 'draft').length
       const orderedCount = filteredOrders.filter((order) => order.status === 'ordered').length
-      const receivedTodayCount = filteredOrders.filter((order) => order.status === 'received' && order.received_at && String(order.received_at).slice(0, 10) === new Date().toISOString().slice(0, 10)).length
+      const receivedTodayCount = filteredOrders.filter((order) => order.status === 'received' && order.received_at && String(order.received_at).slice(0, 10) === toLocalIsoDate(new Date())).length
       const receivedRecentCount = filteredOrders.filter((order) => order.status === 'received').length
       const recommended = visibleRecurringOrders.filter((row) => {
         const items = getRecurringItemsForOrder(row.id)
@@ -2743,7 +2764,7 @@
     }
     async function generateTodayDrafts({ silent = false } = {}) {
       const day = todayIsoDay()
-      const today = new Date().toISOString().slice(0, 10)
+      const today = toLocalIsoDate(new Date())
       const dueOrders = recurringOrders.filter((row) => {
         const expiryDays = daysUntil(getRecurringValidUntil(row))
         return row.active !== false && (expiryDays == null || expiryDays >= 0) && Array.isArray(row.order_weekdays) && row.order_weekdays.includes(day)
@@ -2771,8 +2792,8 @@
             product_id: item.product_id,
             ordered_quantity: quantity,
             received_quantity: 0,
-            unit_cost: null,
-            note: 'Automatický návrh ze stálé dodávky.'
+            unit_cost: recurringItemUnitCost(item) || null,
+            note: recurringItemPriceNote(item, quantity, 'Automatický návrh ze stálé dodávky.')
           }
         }).filter((item) => Number(item.ordered_quantity || 0) > 0)
         if (!payloadItems.length) continue
@@ -2803,7 +2824,7 @@
       return createdCount
     }
     async function generateTodayReceipts({ silent = false } = {}) {
-      const today = new Date().toISOString().slice(0, 10)
+      const today = toLocalIsoDate(new Date())
       const deliveryIsoDay = todayIsoDay()
       const dueDeliveries = recurringOrders.filter((row) => row.active !== false && (daysUntil(getRecurringValidUntil(row)) === null || daysUntil(getRecurringValidUntil(row)) >= 0) && Array.isArray(row.delivery_weekdays) && row.delivery_weekdays.includes(deliveryIsoDay))
       if (!dueDeliveries.length) return 0
@@ -2823,8 +2844,8 @@
           product_id: item.product_id,
           ordered_quantity: getBaseOrderQuantityForDay(item, sourceOrderDay),
           received_quantity: 0,
-          unit_cost: null,
-          note: 'Automaticky připravený příjem ze stálé dodávky.'
+          unit_cost: recurringItemUnitCost(item) || null,
+          note: recurringItemPriceNote(item, getBaseOrderQuantityForDay(item, sourceOrderDay), 'Automaticky připravený příjem ze stálé dodávky.')
         })).filter((item) => Number(item.ordered_quantity || 0) > 0)
         if (!payloadItems.length) continue
         const { data: order, error: orderError } = await supabase
@@ -2866,7 +2887,7 @@
           supabase.from('purchase_orders').select('*').order('order_date', { ascending: false }),
           supabase.from('purchase_order_items').select('id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_cost, note, recurring_order_item_id, products(name)').order('id', { ascending: true }),
           supabase.from('warehouses').select('id, name, active').eq('active', true).order('name', { ascending: true }),
-          supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true })
+          supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true })
         ])
         if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error) {
           throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error
