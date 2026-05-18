@@ -688,6 +688,33 @@
         vatRows: vatBreakdown(lines)
       }
     }
+    function mergeInvoiceLines(lines = []) {
+      const map = new Map()
+      const recalculate = (line) => {
+        const unitPrice = Number(line.unitPrice ?? line.unit_price ?? 0)
+        const vatRate = Number(line.vatRate ?? line.vat_rate ?? 0)
+        const net = roundMoney(Number(line.quantity || 0) * unitPrice)
+        return { ...line, net, gross: roundMoney(net * (1 + vatRate / 100)) }
+      }
+      lines.forEach((line) => {
+        const productId = line.productId ?? line.product_id ?? ''
+        const unitPrice = Number(line.unitPrice ?? line.unit_price ?? 0)
+        const vatRate = Number(line.vatRate ?? line.vat_rate ?? 0)
+        const key = [productId, unitPrice.toFixed(4), vatRate.toFixed(2)].join('|')
+        const current = map.get(key)
+        const quantity = Number(line.quantity || 0)
+        if (current) {
+          current.quantity = Math.round((Number(current.quantity || 0) + quantity) * 1000) / 1000
+          map.set(key, recalculate(current))
+          return
+        }
+        map.set(key, recalculate({ ...line, quantity }))
+      })
+      return Array.from(map.values())
+    }
+    function invoiceItems(row) {
+      return mergeInvoiceLines(row?.items || [])
+    }
     function getModalLines() {
       return Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).map((row) => {
         const productInput = row.querySelector('[data-line-product-id]')
@@ -814,7 +841,7 @@
       constantSymbol.value = meta.payment?.constantSymbol || payment.constantSymbol || '0308'
       documentNote.value = cleanNote(row?.note || '')
       invoiceModalTitle.textContent = currentDocumentId ? `Upravit doklad · ${documentNumber(row)}` : 'Vystavit doklad'
-      const items = row?.items || []
+      const items = invoiceItems(row)
       if (items.length) items.forEach(addInvoiceLine)
       else addInvoiceLine()
       invoiceModalBackdrop.classList.add('show')
@@ -827,20 +854,20 @@
       invoiceLines.innerHTML = ''
     }
     function itemPreview(row) {
-      const items = row.items || []
+      const items = invoiceItems(row)
       if (!items.length) return 'Bez položek'
-      const preview = items.slice(0, 4).map((item) => `${item.product_name || 'Položka'} (${Number(item.quantity || 0).toLocaleString('cs-CZ')})`).join(' · ')
-      return items.length > 4 ? `${preview} · +${items.length - 4}` : preview
+      const quantity = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+      return `${quantity.toLocaleString('cs-CZ')} ks celkem`
     }
     function rowTotal(row) {
       if (row.total_amount != null) return Number(row.total_amount || 0)
-      return (row.items || []).reduce((sum, item) => {
+      return invoiceItems(row).reduce((sum, item) => {
         const net = Number(item.quantity || 0) * Number(item.unit_price || 0)
         return sum + roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
       }, 0)
     }
     function rowVatRows(row) {
-      return vatBreakdown((row.items || []).map((item) => {
+      return vatBreakdown(invoiceItems(row).map((item) => {
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
         return { vatRate:Number(item.vat_rate || 0), net, gross }
@@ -890,7 +917,7 @@
             <td data-label="Doklad"><strong>${escapeHtml(documentNumber(row))}</strong><span class="subtext">${escapeHtml(type.label)}</span></td>
             <td data-label="Odběratel"><strong>${escapeHtml(row.customer_name || 'Odběratel')}</strong><span class="subtext">${escapeHtml(cleanNote(row.note) || 'Bez poznámky')}</span></td>
             <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">Vystaveno</span></td>
-            <td data-label="Položky"><strong>${escapeHtml((row.items || []).length ? `${row.items.length} položek` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
+            <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatCurrency(rowTotal(row)))}</span><span class="subtext">s DPH</span></td>
             <td data-label="Akce"><div class="action-row"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></td>
           </tr>
@@ -929,7 +956,7 @@
       const rounding = Number(meta.roundingAmount || 0)
       const qrData = qrPaymentPayload(row)
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrData)}`
-      const items = row.items || []
+      const items = invoiceItems(row)
       const vatRows = rowVatRows(row)
       const netTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.net, 0))
       const vatTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.vat, 0))
@@ -992,6 +1019,7 @@
                 </div>
               </div>
               <div class="muted" style="text-align:right;">
+                <h2>Dodavatel</h2>
                 <strong>${escapeHtml(seller.sellerName)}</strong><br>
                 ${escapeHtml(seller.sellerAddress || '')}<br>
                 ${seller.sellerCompanyId ? `IČO ${escapeHtml(seller.sellerCompanyId)}<br>` : ''}
@@ -1065,7 +1093,7 @@
       }
     }
     async function saveDocument() {
-      const lines = getModalLines().filter((line) => line.quantity > 0)
+      const lines = mergeInvoiceLines(getModalLines().filter((line) => line.quantity > 0))
       const invalid = lines.find((line) => !line.productId || line.unitPrice < 0)
       if (!customerName.value.trim()) throw new Error('Doplň odběratele.')
       if (!lines.length) throw new Error('Přidej aspoň jednu položku.')
