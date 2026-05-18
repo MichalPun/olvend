@@ -604,3 +604,9 @@ for update
 to authenticated, anon
 using (true)
 with check (true);
+
+create policy "Allow delete sales document items"
+on public.sales_document_items
+for delete
+to authenticated, anon
+using (true);
