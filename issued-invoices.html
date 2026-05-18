@@ -223,6 +223,12 @@
               <input id="dueDate" type="date" />
             </div>
             <div class="field">
+              <label for="stockIssueLocation">Sklad výdeje</label>
+              <select id="stockIssueLocation">
+                <option value="">Bez skladového odečtu</option>
+              </select>
+            </div>
+            <div class="field">
               <label for="invoiceCurrency">Měna</label>
               <select id="invoiceCurrency">
                 <option value="CZK">CZK</option>
@@ -367,6 +373,7 @@
     const issuedDate = document.getElementById('issuedDate')
     const taxableSupplyDate = document.getElementById('taxableSupplyDate')
     const dueDate = document.getElementById('dueDate')
+    const stockIssueLocation = document.getElementById('stockIssueLocation')
     const invoiceCurrency = document.getElementById('invoiceCurrency')
     const exchangeRate = document.getElementById('exchangeRate')
     const roundingMode = document.getElementById('roundingMode')
@@ -409,11 +416,15 @@
     let documents = []
     let documentItems = []
     let products = []
+    let stockLocations = []
+    let recipes = []
+    let recipeItems = []
     let customers = loadCustomers()
     let currentDocumentId = null
     let salesSeriesSettingsCache = null
     let companyProfileCache = null
     let salesPaymentCache = null
+    const recipeProductMarker = 'olvend_recipe_product_id'
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')
@@ -589,6 +600,32 @@
       if (customer) return { ...customer, address: customerBillingAddress(customer), billingAddress: customerBillingAddress(customer), deliveryAddress: customerDeliveryAddress(customer) }
       return { name: customerName.value.trim(), address:'', billingAddress:'', deliveryAddress:'', companyId:'', taxId:'', email:'', phone:'', contactName:'', defaultDueDays:null, note:'' }
     }
+    function stockLocationLabel(location) {
+      const type = location?.location_type === 'warehouse' ? 'Sklad' : location?.location_type === 'vehicle' ? 'Vozidlo' : 'Místo'
+      return `${type} · ${location?.name || 'Bez názvu'}`
+    }
+    function renderStockIssueLocations(selectedId = '') {
+      const warehouseLocations = stockLocations.filter((location) => location.active !== false && location.location_type === 'warehouse')
+      stockIssueLocation.innerHTML = '<option value="">Bez skladového odečtu</option>' + warehouseLocations
+        .map((location) => `<option value="${escapeHtml(String(location.id))}">${escapeHtml(stockLocationLabel(location))}</option>`)
+        .join('')
+      const selected = selectedId || warehouseLocations[0]?.id || ''
+      if (selected) stockIssueLocation.value = String(selected)
+    }
+    function isStockImpactStatus(status) {
+      return ['issued', 'paid'].includes(status)
+    }
+    function getRecipeForProduct(productId) {
+      return recipes.find((recipe) => {
+        const note = String(recipe.note || '')
+        return note.includes(`[${recipeProductMarker}:${productId}]`) || String(recipe.selection_code || '') === `product:${productId}`
+      }) || null
+    }
+    function getRecipeItemsForProduct(productId) {
+      const recipe = getRecipeForProduct(productId)
+      if (!recipe) return []
+      return recipeItems.filter((item) => String(item.recipe_id) === String(recipe.id))
+    }
     function upsertCustomer(customer) {
       if (!customer?.name) return
       const index = customers.findIndex((item) => normalizeText(item.name) === normalizeText(customer.name))
@@ -715,6 +752,39 @@
     function invoiceItems(row) {
       return mergeInvoiceLines(row?.items || [])
     }
+    function stockLinesForSalesLines(lines = []) {
+      const map = new Map()
+      lines.forEach((line) => {
+        const productId = line.productId ?? line.product_id
+        const quantity = Number(line.quantity || 0)
+        if (!productId || quantity <= 0) return
+        const components = getRecipeItemsForProduct(productId)
+        if (components.length) {
+          components.forEach((component) => {
+            const componentQuantity = Number((quantity * Number(component.quantity || 0)).toFixed(3))
+            if (!component.product_id || componentQuantity <= 0) return
+            const key = String(component.product_id)
+            const current = map.get(key) || {
+              productId: Number(component.product_id),
+              quantity: 0,
+              source: `receptura ${productById(productId)?.name || productId}`
+            }
+            current.quantity = Number((current.quantity + componentQuantity).toFixed(3))
+            map.set(key, current)
+          })
+          return
+        }
+        const key = String(productId)
+        const current = map.get(key) || {
+          productId: Number(productId),
+          quantity: 0,
+          source: productById(productId)?.name || line.productName || 'Položka'
+        }
+        current.quantity = Number((current.quantity + quantity).toFixed(3))
+        map.set(key, current)
+      })
+      return Array.from(map.values())
+    }
     function getModalLines() {
       return Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).map((row) => {
         const productInput = row.querySelector('[data-line-product-id]')
@@ -832,6 +902,7 @@
       const customer = customerByName(customerName.value)
       const defaultDueDays = Number(customer?.defaultDueDays ?? 14)
       dueDate.value = meta.dueDate || (row ? '' : addDaysIso(issuedDate.value, Number.isFinite(defaultDueDays) ? defaultDueDays : 14))
+      renderStockIssueLocations(meta.stockLocationId || '')
       invoiceCurrency.value = meta.currency || 'CZK'
       exchangeRate.value = meta.exchangeRate || ''
       roundingMode.value = meta.roundingMode || 'none'
@@ -886,6 +957,162 @@
         rounding: roundMoney(rounding),
         total: roundMoney(grossBeforeRounding + rounding)
       }
+    }
+    function sortBalancesByExpiry(a, b) {
+      const batchA = a.inventory_batches || {}
+      const batchB = b.inventory_batches || {}
+      const dateA = batchA.use_by_date || batchA.best_before_date || batchA.received_at || a.updated_at || ''
+      const dateB = batchB.use_by_date || batchB.best_before_date || batchB.received_at || b.updated_at || ''
+      return String(dateA || '9999-12-31').localeCompare(String(dateB || '9999-12-31'))
+    }
+    async function getBalanceRecord(stockLocationId, productId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, quantity_on_hand, batch_id, updated_at')
+        .eq('stock_location_id', stockLocationId)
+        .eq('product_id', productId)
+        .is('batch_id', null)
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      return data || null
+    }
+    async function getBalanceRecords(stockLocationId, productId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, quantity_on_hand, batch_id, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)')
+        .eq('stock_location_id', stockLocationId)
+        .eq('product_id', productId)
+        .order('updated_at', { ascending:true })
+      if (error) throw error
+      return [...(data || [])].sort(sortBalancesByExpiry)
+    }
+    async function getAvailableQuantity(stockLocationId, productId) {
+      const records = await getBalanceRecords(stockLocationId, productId)
+      return records.reduce((sum, item) => sum + Number(item.quantity_on_hand || 0), 0)
+    }
+    async function applyBalanceDelta(stockLocationId, productId, delta) {
+      if (!stockLocationId || !productId || !delta) return
+      if (delta < 0) {
+        const records = await getBalanceRecords(stockLocationId, productId)
+        const available = records.reduce((sum, item) => sum + Number(item.quantity_on_hand || 0), 0)
+        const required = Math.abs(delta)
+        if (available + 0.0001 < required) {
+          const product = productById(productId)
+          throw new Error(`Na skladu není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${required.toFixed(3)}).`)
+        }
+        let remaining = required
+        for (const record of records) {
+          if (remaining <= 0) break
+          const currentQty = Number(record.quantity_on_hand || 0)
+          if (currentQty <= 0) continue
+          const used = Math.min(currentQty, remaining)
+          const nextQty = Number((currentQty - used).toFixed(3))
+          const { error } = await supabase
+            .from('stock_location_balances')
+            .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+            .eq('id', record.id)
+          if (error) throw error
+          remaining = Number((remaining - used).toFixed(3))
+        }
+        return
+      }
+      const record = await getBalanceRecord(stockLocationId, productId)
+      const currentQty = Number(record?.quantity_on_hand || 0)
+      const nextQty = Number((currentQty + delta).toFixed(3))
+      if (record?.id) {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+          .eq('id', record.id)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .insert([{
+            stock_location_id: stockLocationId,
+            product_id: productId,
+            quantity_on_hand: Math.max(0, nextQty),
+            reserved_quantity: 0
+          }])
+        if (error) throw error
+      }
+    }
+    function addBalanceDelta(deltaMap, stockLocationId, productId, delta) {
+      if (!stockLocationId || !productId || !delta) return
+      const key = `${stockLocationId}:${productId}`
+      const current = deltaMap.get(key) || { stockLocationId, productId, delta: 0 }
+      current.delta = Number((current.delta + delta).toFixed(3))
+      deltaMap.set(key, current)
+    }
+    async function applyBalanceDeltaMap(deltaMap) {
+      const deltas = Array.from(deltaMap.values()).filter((item) => Math.abs(Number(item.delta || 0)) > 0.0001)
+      for (const item of deltas.filter((delta) => delta.delta < 0)) {
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+      }
+      for (const item of deltas.filter((delta) => delta.delta > 0)) {
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+      }
+    }
+    async function getDocumentStockMovements(referenceId) {
+      if (!referenceId) return []
+      const { data, error } = await supabase
+        .from('stock_movements_v13')
+        .select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, reference_type, reference_id, note, created_at')
+        .eq('reference_type', 'sales_document')
+        .eq('reference_id', referenceId)
+        .order('created_at', { ascending:true })
+      if (error) throw error
+      return data || []
+    }
+    async function reverseDocumentStockImpact(row) {
+      const meta = extractMeta(row)
+      const referenceId = meta.stockMovementReference || (row?.id ? String(row.id) : '')
+      const movements = await getDocumentStockMovements(referenceId)
+      if (!movements.length) return
+      const deltaMap = new Map()
+      movements.forEach((movement) => {
+        const qty = Number(movement.quantity_base_units || 0)
+        addBalanceDelta(deltaMap, movement.from_stock_location_id, movement.product_id, qty)
+        addBalanceDelta(deltaMap, movement.to_stock_location_id, movement.product_id, -qty)
+      })
+      await applyBalanceDeltaMap(deltaMap)
+      const { error } = await supabase.from('stock_movements_v13').insert(movements.map((movement) => ({
+        product_id: movement.product_id,
+        from_stock_location_id: movement.to_stock_location_id || null,
+        to_stock_location_id: movement.from_stock_location_id || null,
+        movement_type: 'adjustment',
+        quantity_base_units: Number(movement.quantity_base_units || 0),
+        reference_type: 'sales_document_reversal',
+        reference_id: referenceId,
+        note: `Storno skladového dopadu vystaveného dokladu ${documentNumber(row)}.`
+      })))
+      if (error) throw error
+    }
+    async function applyDocumentStockImpact(documentId, lines, options) {
+      if (!isStockImpactStatus(options.status)) return
+      const stockLocationId = Number(options.stockLocationId || 0)
+      if (!stockLocationId) throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
+      const stockLines = stockLinesForSalesLines(lines)
+      if (!stockLines.length) return
+      const isReturn = options.documentType === 'credit_note'
+      const deltaMap = new Map()
+      stockLines.forEach((line) => {
+        addBalanceDelta(deltaMap, stockLocationId, line.productId, isReturn ? line.quantity : -line.quantity)
+      })
+      await applyBalanceDeltaMap(deltaMap)
+      const { error } = await supabase.from('stock_movements_v13').insert(stockLines.map((line) => ({
+        product_id: line.productId,
+        from_stock_location_id: isReturn ? null : stockLocationId,
+        to_stock_location_id: isReturn ? stockLocationId : null,
+        movement_type: isReturn ? 'return' : 'sale',
+        quantity_base_units: line.quantity,
+        unit_price: null,
+        reference_type: 'sales_document',
+        reference_id: options.movementReference,
+        note: `${documentNumber({ id: documentId, document_type: options.documentType, issued_at: options.issuedAt, note: `[rada:${options.seriesNumber}]` })} · ${line.source}`
+      })))
+      if (error) throw error
     }
     function filteredRows() {
       const query = normalizeText(searchInput.value)
@@ -1081,13 +1308,20 @@
     async function loadPage() {
       try {
         setStatus('Načítám vystavené faktury...')
-        const [documentsResult, itemsResult, productsResult] = await Promise.all([
+        const [documentsResult, itemsResult, productsResult, locationsResult, recipesResult, recipeItemsResult] = await Promise.all([
           supabase.from('sales_documents').select('*').order('issued_at', { ascending:false }),
           supabase.from('sales_document_items').select('id, document_id, product_id, quantity, unit_price, vat_rate, source_type, source_id, products(name)').order('id', { ascending:true }),
-          supabase.from('products').select('id, name, sku, ean, base_unit, purchase_price, sale_price, vat_rate, active').eq('active', true).order('name', { ascending:true })
+          supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, purchase_price, sale_price, vat_rate, active, note').eq('active', true).order('name', { ascending:true }),
+          supabase.from('stock_locations').select('id, name, location_type, warehouse_id, vehicle_id, active, note').eq('active', true).order('name', { ascending:true }),
+          supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending:true }),
+          supabase.from('recipe_items').select('id, recipe_id, product_id, quantity, unit').order('id', { ascending:true })
         ])
-        if (documentsResult.error || itemsResult.error || productsResult.error) throw documentsResult.error || itemsResult.error || productsResult.error
+        if (documentsResult.error || itemsResult.error || productsResult.error || locationsResult.error) throw documentsResult.error || itemsResult.error || productsResult.error || locationsResult.error
         products = productsResult.data || []
+        stockLocations = locationsResult.data || []
+        recipes = recipesResult.error ? [] : (recipesResult.data || [])
+        recipeItems = recipeItemsResult.error ? [] : (recipeItemsResult.data || [])
+        renderStockIssueLocations(stockIssueLocation.value)
         documentItems = (itemsResult.data || []).map((item) => ({
           ...item,
           product_name: item.products?.name || productById(item.product_id)?.name || 'Položka'
@@ -1113,11 +1347,16 @@
       if (!customerName.value.trim()) throw new Error('Doplň odběratele.')
       if (!lines.length) throw new Error('Přidej aspoň jednu položku.')
       if (invalid) throw new Error('U každé položky vyber kartu zásoby a zadej cenu.')
+      if (isStockImpactStatus(documentStatus.value || 'issued') && !stockIssueLocation.value) {
+        throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
+      }
       const totals = documentTotals(lines)
       const total = totals.total
       const seriesNumber = currentDocumentId
         ? documentNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || {})
         : documentSeriesNumber(null, documentType.value)
+      const existingDocument = currentDocumentId ? documents.find((item) => String(item.id) === String(currentDocumentId)) : null
+      const movementReference = `sales-document:${seriesNumber}:${Date.now()}`
       const customer = currentCustomerDetail()
       upsertCustomer(customer)
       await savePaymentSettings()
@@ -1129,6 +1368,8 @@
         exchangeRate: exchangeRate.value ? Number(exchangeRate.value) : null,
         roundingMode: roundingMode.value || 'none',
         roundingAmount: totals.rounding,
+        stockLocationId: stockIssueLocation.value || null,
+        stockMovementReference: movementReference,
         vatRows: totals.vatRows,
         variableSymbol: variableSymbol.value.trim() || seriesNumber.replace(/\D/g, '').slice(-10),
         payment: {
@@ -1174,11 +1415,24 @@
         source_type: 'manual'
       })))
       if (itemsError) throw itemsError
+      if (existingDocument) await reverseDocumentStockImpact(existingDocument)
+      await applyDocumentStockImpact(documentId, lines, {
+        status: documentStatus.value || 'issued',
+        documentType: documentType.value,
+        stockLocationId: stockIssueLocation.value,
+        movementReference,
+        seriesNumber,
+        issuedAt: `${issuedDate.value || todayIso()}T00:00:00`
+      })
       closeInvoiceModal()
       await loadPage()
       setStatus('Vystavený doklad byl uložený.', 'success')
     }
     async function updateDocumentStatus(id, status) {
+      const row = documents.find((item) => String(item.id) === String(id))
+      if (row && isStockImpactStatus(row.status) && !isStockImpactStatus(status)) {
+        await reverseDocumentStockImpact(row)
+      }
       const { error } = await supabase.from('sales_documents').update({ status }).eq('id', id)
       if (error) throw error
       await loadPage()
@@ -1199,7 +1453,8 @@
       if (!dueDate.value) dueDate.value = addDaysIso(issuedDate.value, 14)
       updateLineTotals()
     })
-    ;[taxableSupplyDate, dueDate, invoiceCurrency, exchangeRate, roundingMode, variableSymbol, paymentIban, paymentAccount, constantSymbol].forEach((input) => input.addEventListener('input', updateLineTotals))
+    ;[taxableSupplyDate, dueDate, stockIssueLocation, invoiceCurrency, exchangeRate, roundingMode, variableSymbol, paymentIban, paymentAccount, constantSymbol].forEach((input) => input.addEventListener('input', updateLineTotals))
+    stockIssueLocation.addEventListener('change', updateLineTotals)
     roundingMode.addEventListener('change', updateLineTotals)
     paymentAccount.addEventListener('input', () => {
       if (!paymentIban.value.trim()) paymentIban.value = czechIbanFromAccount(paymentAccount.value)
