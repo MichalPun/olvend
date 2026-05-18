@@ -148,6 +148,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "issued-invoices.html": {
+      currentLabel: "Vystavené faktury",
+      activeKey: "sales-invoices",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "suppliers.html": {
       currentLabel: "Dodavatelé",
       activeKey: "suppliers",
@@ -285,7 +292,7 @@
           label: "Skladové hospodářství",
           children: [
             { key: "purchases", href: "purchases.html?view=received", label: "Přijaté doklady" },
-            { key: "sales-invoices", href: "purchases.html?view=issued", label: "Vystavené faktury", soon: true },
+            { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
             { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
           ]
@@ -487,7 +494,7 @@
   function renderMobileLinks() {
     return navGroups.map((group) => {
       const flattenedItems = flattenNavItems(group.items);
-      const filteredItems = flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
+      const filteredItems = flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "sales-invoices", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
       if (!filteredItems.length) return "";
 
       return `
