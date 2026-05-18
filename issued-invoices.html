@@ -215,8 +215,27 @@
               <input id="issuedDate" type="date" required />
             </div>
             <div class="field">
+              <label for="taxableSupplyDate">DUZP</label>
+              <input id="taxableSupplyDate" type="date" />
+            </div>
+            <div class="field">
               <label for="dueDate">Datum splatnosti</label>
               <input id="dueDate" type="date" />
+            </div>
+            <div class="field">
+              <label for="invoiceCurrency">Měna</label>
+              <select id="invoiceCurrency">
+                <option value="CZK">CZK</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="exchangeRate">Kurz vůči CZK</label>
+              <input id="exchangeRate" type="number" min="0" step="0.001" placeholder="Jen pro cizí měnu" />
+            </div>
+            <div class="field">
+              <label for="roundingAmount">Zaokrouhlení</label>
+              <input id="roundingAmount" type="number" step="0.01" value="0" />
             </div>
             <div class="field">
               <label for="variableSymbol">Variabilní symbol</label>
@@ -342,7 +361,11 @@
     const customerList = document.getElementById('customerList')
     const openCustomerBtn = document.getElementById('openCustomerBtn')
     const issuedDate = document.getElementById('issuedDate')
+    const taxableSupplyDate = document.getElementById('taxableSupplyDate')
     const dueDate = document.getElementById('dueDate')
+    const invoiceCurrency = document.getElementById('invoiceCurrency')
+    const exchangeRate = document.getElementById('exchangeRate')
+    const roundingAmount = document.getElementById('roundingAmount')
     const variableSymbol = document.getElementById('variableSymbol')
     const paymentIban = document.getElementById('paymentIban')
     const paymentAccount = document.getElementById('paymentAccount')
@@ -405,6 +428,10 @@
     }
     function formatCurrency(value) {
       return `${Number(value || 0).toLocaleString('cs-CZ', { minimumFractionDigits:2, maximumFractionDigits:2 })} Kč`
+    }
+    function formatMoney(value, currency = 'CZK') {
+      const suffix = currency === 'EUR' ? 'EUR' : 'Kč'
+      return `${Number(value || 0).toLocaleString('cs-CZ', { minimumFractionDigits:2, maximumFractionDigits:2 })} ${suffix}`
     }
     function formatDate(value) {
       if (!value) return 'Bez data'
@@ -620,6 +647,30 @@
       const missingCostCount = lines.filter((line) => line.productId && Number(line.unitCost || 0) <= 0).length
       return { cost, net, profit, margin, missingCostCount }
     }
+    function vatBreakdown(lines) {
+      const map = new Map()
+      lines.forEach((line) => {
+        const rate = Number(line.vatRate || 0)
+        const current = map.get(rate) || { rate, net:0, vat:0, gross:0 }
+        current.net = roundMoney(current.net + Number(line.net || 0))
+        current.gross = roundMoney(current.gross + Number(line.gross || 0))
+        current.vat = roundMoney(current.gross - current.net)
+        map.set(rate, current)
+      })
+      return Array.from(map.values()).sort((a, b) => a.rate - b.rate)
+    }
+    function documentTotals(lines) {
+      const rounding = Number(roundingAmount?.value || 0)
+      const net = roundMoney(lines.reduce((sum, line) => sum + Number(line.net || 0), 0))
+      const grossBeforeRounding = roundMoney(lines.reduce((sum, line) => sum + Number(line.gross || 0), 0))
+      return {
+        net,
+        grossBeforeRounding,
+        rounding: roundMoney(rounding),
+        total: roundMoney(grossBeforeRounding + rounding),
+        vatRows: vatBreakdown(lines)
+      }
+    }
     function getModalLines() {
       return Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).map((row) => {
         const productInput = row.querySelector('[data-line-product-id]')
@@ -636,6 +687,8 @@
     function updateLineTotals() {
       const lines = getModalLines()
       const profit = profitForLines(lines)
+      const totals = documentTotals(lines)
+      const currency = invoiceCurrency.value || 'CZK'
       let totalNet = 0
       let totalGross = 0
       invoiceLines.querySelectorAll('[data-invoice-line]').forEach((row) => {
@@ -649,16 +702,17 @@
         { label:'Doklad', value: currentDocumentId ? documentNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || {}) : 'Nový doklad', note: documentTypeMeta(documentType.value).label },
         { label:'Číslo', value: documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value), note:'Číselná řada.' },
         { label:'Položky', value: invoiceLines.querySelectorAll('[data-invoice-line]').length, note:'Řádky na dokladu.' },
-        { label:'Celkem bez DPH', value: formatCurrency(totalNet), note:'Součet položek.' },
-        { label:'Celkem s DPH', value: formatCurrency(totalGross), note:'Částka k úhradě.' },
-        { label:'Očekávaný zisk', value: formatCurrency(profit.profit), note:`Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} % bez DPH.` },
-        { label:'Náklad', value: formatCurrency(profit.cost), note: profit.missingCostCount ? `${profit.missingCostCount} položek bez nákupní ceny.` : 'Podle nákupních cen v zásobách.' }
+        { label:'Celkem bez DPH', value: formatMoney(totalNet, currency), note:'Součet položek.' },
+        { label:'DPH', value: formatMoney(totals.vatRows.reduce((sum, row) => sum + row.vat, 0), currency), note:'Součet podle sazeb.' },
+        { label:'K úhradě', value: formatMoney(totals.total, currency), note: totals.rounding ? `Včetně zaokrouhlení ${formatMoney(totals.rounding, currency)}.` : 'Částka k úhradě.' },
+        { label:'Očekávaný zisk', value: formatMoney(profit.profit, currency), note:`Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} % bez DPH.` },
+        { label:'Měna', value: currency, note: currency === 'EUR' ? `Kurz ${Number(exchangeRate.value || 0).toLocaleString('cs-CZ')}. DPH eviduj v CZK.` : 'Tuzemský doklad v Kč.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       documentNumberPreview.textContent = documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value)
       if (!variableSymbol.value.trim()) variableSymbol.value = documentNumberPreview.textContent.replace(/\D/g, '').slice(-10)
       const unmatched = Array.from(invoiceLines.querySelectorAll('[data-line-product-id]')).filter((input) => !input.value).length
       setLineStatus(unmatched ? `${unmatched} položek ještě nemá vybranou kartu zásoby.` : 'Položky jsou připravené k uložení.', unmatched ? 'error' : 'success')
-      return { totalNet, totalGross }
+      return { totalNet, totalGross: totals.total }
     }
     function syncLineProduct(row) {
       const product = productBySearchValue(row.querySelector('[data-line-product-search]')?.value || '')
@@ -730,9 +784,13 @@
       documentStatus.value = row?.status || 'issued'
       customerName.value = row?.customer_name || ''
       issuedDate.value = row?.issued_at ? String(row.issued_at).slice(0, 10) : todayIso()
+      taxableSupplyDate.value = meta.taxableSupplyDate || issuedDate.value
       const customer = customerByName(customerName.value)
       const defaultDueDays = Number(customer?.defaultDueDays ?? 14)
       dueDate.value = meta.dueDate || (row ? '' : addDaysIso(issuedDate.value, Number.isFinite(defaultDueDays) ? defaultDueDays : 14))
+      invoiceCurrency.value = meta.currency || 'CZK'
+      exchangeRate.value = meta.exchangeRate || ''
+      roundingAmount.value = meta.roundingAmount ?? 0
       variableSymbol.value = meta.variableSymbol || ''
       paymentIban.value = meta.payment?.iban || payment.iban || ''
       paymentAccount.value = meta.payment?.account || payment.account || ''
@@ -763,6 +821,13 @@
         const net = Number(item.quantity || 0) * Number(item.unit_price || 0)
         return sum + roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
       }, 0)
+    }
+    function rowVatRows(row) {
+      return vatBreakdown((row.items || []).map((item) => {
+        const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
+        const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
+        return { vatRate:Number(item.vat_rate || 0), net, gross }
+      }))
     }
     function filteredRows() {
       const query = normalizeText(searchInput.value)
@@ -828,7 +893,7 @@
         'SPD*1.0',
         payment.iban ? `ACC:${payment.iban.replace(/\s/g, '').toUpperCase()}` : '',
         `AM:${amount}`,
-        'CC:CZK',
+        `CC:${meta.currency || 'CZK'}`,
         variable ? `X-VS:${variable}` : '',
         payment.constantSymbol ? `X-KS:${payment.constantSymbol}` : '',
         due ? `DT:${due}` : '',
@@ -841,9 +906,24 @@
       const payment = meta.payment || loadPaymentSettings()
       const seller = loadPaymentSettings()
       const number = documentNumber(row)
+      const currency = meta.currency || 'CZK'
+      const rounding = Number(meta.roundingAmount || 0)
       const qrData = qrPaymentPayload(row)
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrData)}`
       const items = row.items || []
+      const vatRows = rowVatRows(row)
+      const netTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.net, 0))
+      const vatTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.vat, 0))
+      const grossBeforeRounding = roundMoney(vatRows.reduce((sum, item) => sum + item.gross, 0))
+      const totalToPay = roundMoney(grossBeforeRounding + rounding)
+      const vatSummaryRows = vatRows.map((item) => `
+          <tr>
+            <td>${escapeHtml(Number(item.rate || 0).toLocaleString('cs-CZ'))} %</td>
+            <td class="num">${escapeHtml(formatMoney(item.net, currency))}</td>
+            <td class="num">${escapeHtml(formatMoney(item.vat, currency))}</td>
+            <td class="num">${escapeHtml(formatMoney(item.gross, currency))}</td>
+          </tr>
+        `).join('')
       const rows = items.map((item) => {
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
@@ -851,10 +931,10 @@
           <tr>
             <td>${escapeHtml(item.product_name || 'Položka')}</td>
             <td class="num">${escapeHtml(Number(item.quantity || 0).toLocaleString('cs-CZ'))}</td>
-            <td class="num">${escapeHtml(formatCurrency(item.unit_price))}</td>
+            <td class="num">${escapeHtml(formatMoney(item.unit_price, currency))}</td>
             <td class="num">${escapeHtml(Number(item.vat_rate || 0).toLocaleString('cs-CZ'))} %</td>
-            <td class="num">${escapeHtml(formatCurrency(net))}</td>
-            <td class="num">${escapeHtml(formatCurrency(gross))}</td>
+            <td class="num">${escapeHtml(formatMoney(net, currency))}</td>
+            <td class="num">${escapeHtml(formatMoney(gross, currency))}</td>
           </tr>
         `
       }).join('')
@@ -864,14 +944,17 @@
           <meta charset="utf-8">
           <title>${escapeHtml(number)}</title>
           <style>
-            body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff;}
-            .page{max-width:960px;margin:0 auto;padding:36px;}
-            .top{display:flex;justify-content:space-between;gap:28px;border-bottom:3px solid #d5101a;padding-bottom:22px;}
-            h1{margin:0;font-size:34px;} h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:#667085;margin:0 0 8px;}
-            .muted{color:#667085;font-size:13px;line-height:1.5;} .box{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:18px;}
-            .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px;}
-            table{width:100%;border-collapse:collapse;margin-top:24px;} th,td{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:13px;} th{color:#667085;text-transform:uppercase;font-size:11px;letter-spacing:.06em;} .num{text-align:right;white-space:nowrap;}
-            .pay{display:grid;grid-template-columns:1fr 190px;gap:18px;align-items:center;margin-top:24px;} .total{font-size:28px;font-weight:900;color:#d5101a;}
+            body{font-family:Inter,Arial,sans-serif;margin:0;color:#101828;background:#f5f7fb;}
+            .page{max-width:1000px;margin:0 auto;padding:34px;background:#fff;min-height:100vh;}
+            .top{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:start;border-bottom:4px solid #d5101a;padding-bottom:22px;}
+            .brand{font-weight:900;color:#d5101a;letter-spacing:.08em;font-size:13px;text-transform:uppercase;margin-bottom:14px;}
+            h1{margin:0;font-size:34px;letter-spacing:0;} h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#667085;margin:0 0 8px;}
+            .muted{color:#667085;font-size:13px;line-height:1.55;} .box{border:1px solid #e5e7eb;border-radius:14px;padding:16px;margin-top:18px;background:#fff;}
+            .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px;}
+            .doc-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;margin-top:16px;color:#344054;font-size:13px;}
+            table{width:100%;border-collapse:separate;border-spacing:0;margin-top:24px;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;} th,td{padding:11px 12px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:13px;} tr:last-child td{border-bottom:none;} th{background:#f8fafc;color:#667085;text-transform:uppercase;font-size:11px;letter-spacing:.06em;} .num{text-align:right;white-space:nowrap;}
+            .totals{display:grid;grid-template-columns:1fr 330px;gap:18px;align-items:start;margin-top:22px;} .total-line{display:flex;justify-content:space-between;gap:18px;padding:7px 0;border-bottom:1px solid #eef2f6;font-size:13px;} .grand{font-size:24px;font-weight:900;color:#d5101a;border-bottom:none;padding-top:12px;}
+            .pay{display:grid;grid-template-columns:1fr 190px;gap:18px;align-items:center;margin-top:18px;} .note{font-size:12px;color:#667085;margin-top:12px;line-height:1.5;}
             @media print{.page{padding:18px;} button{display:none;}}
           </style>
         </head>
@@ -879,8 +962,14 @@
           <div class="page">
             <div class="top">
               <div>
+                <div class="brand">OLVEND</div>
                 <h1>${escapeHtml(documentTypeMeta(row.document_type).label)} ${escapeHtml(number)}</h1>
-                <div class="muted">Datum vystavení: ${escapeHtml(formatDate(row.issued_at))}${meta.dueDate ? ` · Splatnost: ${escapeHtml(formatDate(meta.dueDate))}` : ''}</div>
+                <div class="doc-meta">
+                  <div>Datum vystavení: <strong>${escapeHtml(formatDate(row.issued_at))}</strong></div>
+                  <div>DUZP: <strong>${escapeHtml(formatDate(meta.taxableSupplyDate || row.issued_at))}</strong></div>
+                  <div>Splatnost: <strong>${escapeHtml(formatDate(meta.dueDate))}</strong></div>
+                  <div>Měna: <strong>${escapeHtml(currency)}</strong>${currency !== 'CZK' && meta.exchangeRate ? ` · kurz ${escapeHtml(meta.exchangeRate)}` : ''}</div>
+                </div>
               </div>
               <div class="muted" style="text-align:right;">
                 <strong>${escapeHtml(seller.sellerName)}</strong><br>
@@ -895,8 +984,21 @@
               <div class="box"><h2>Platba</h2><div class="muted">Variabilní symbol: <strong>${escapeHtml(meta.variableSymbol || '')}</strong><br>Konstantní symbol: ${escapeHtml(payment.constantSymbol || '')}<br>Účet: ${escapeHtml(payment.account || '')}<br>IBAN: ${escapeHtml(payment.iban || '')}</div></div>
             </div>
             <table><thead><tr><th>Položka</th><th class="num">Množství</th><th class="num">Cena</th><th class="num">DPH</th><th class="num">Bez DPH</th><th class="num">S DPH</th></tr></thead><tbody>${rows}</tbody></table>
+            <div class="totals">
+              <div>
+                <table style="margin-top:0;"><thead><tr><th>Sazba DPH</th><th class="num">Základ</th><th class="num">DPH</th><th class="num">Celkem</th></tr></thead><tbody>${vatSummaryRows}</tbody></table>
+                ${currency !== 'CZK' ? `<div class="note">Pozn.: u daňových dokladů v cizí měně je potřeba evidovat základ daně a DPH také v Kč podle použitého účetního/daňového kurzu. Kurz zde ukládáme k dokladu pro kontrolu.</div>` : ''}
+              </div>
+              <div class="box" style="margin-top:0;">
+                <div class="total-line"><span>Celkem bez DPH</span><strong>${escapeHtml(formatMoney(netTotal, currency))}</strong></div>
+                <div class="total-line"><span>DPH celkem</span><strong>${escapeHtml(formatMoney(vatTotal, currency))}</strong></div>
+                <div class="total-line"><span>Celkem s DPH</span><strong>${escapeHtml(formatMoney(grossBeforeRounding, currency))}</strong></div>
+                <div class="total-line"><span>Zaokrouhlení</span><strong>${escapeHtml(formatMoney(rounding, currency))}</strong></div>
+                <div class="total-line grand"><span>K úhradě</span><strong>${escapeHtml(formatMoney(totalToPay, currency))}</strong></div>
+              </div>
+            </div>
             <div class="pay">
-              <div class="box"><h2>K úhradě</h2><div class="total">${escapeHtml(formatCurrency(rowTotal(row)))}</div><div class="muted">${escapeHtml(cleanNote(row.note) || '')}</div></div>
+              <div class="box"><h2>Poznámka</h2><div class="muted">${escapeHtml(cleanNote(row.note) || 'Bez poznámky')}</div></div>
               <div class="box" style="text-align:center;"><img src="${qrUrl}" alt="QR platba" width="180" height="180"><div class="muted">QR platba</div></div>
             </div>
           </div>
@@ -947,7 +1049,8 @@
       if (!customerName.value.trim()) throw new Error('Doplň odběratele.')
       if (!lines.length) throw new Error('Přidej aspoň jednu položku.')
       if (invalid) throw new Error('U každé položky vyber kartu zásoby a zadej cenu.')
-      const total = roundMoney(lines.reduce((sum, line) => sum + line.gross, 0))
+      const totals = documentTotals(lines)
+      const total = totals.total
       const seriesNumber = currentDocumentId
         ? documentNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || {})
         : documentSeriesNumber(null, documentType.value)
@@ -957,6 +1060,11 @@
       const meta = {
         customer,
         dueDate: dueDate.value || null,
+        taxableSupplyDate: taxableSupplyDate.value || issuedDate.value || todayIso(),
+        currency: invoiceCurrency.value || 'CZK',
+        exchangeRate: exchangeRate.value ? Number(exchangeRate.value) : null,
+        roundingAmount: Number(roundingAmount.value || 0),
+        vatRows: totals.vatRows,
         variableSymbol: variableSymbol.value.trim() || seriesNumber.replace(/\D/g, '').slice(-10),
         payment: {
           iban: paymentIban.value.trim(),
@@ -1014,10 +1122,11 @@
     addLineBtn.addEventListener('click', () => addInvoiceLine())
     documentType.addEventListener('change', updateLineTotals)
     issuedDate.addEventListener('change', () => {
+      if (!taxableSupplyDate.value) taxableSupplyDate.value = issuedDate.value
       if (!dueDate.value) dueDate.value = addDaysIso(issuedDate.value, 14)
       updateLineTotals()
     })
-    ;[dueDate, variableSymbol, paymentIban, paymentAccount, constantSymbol].forEach((input) => input.addEventListener('input', updateLineTotals))
+    ;[taxableSupplyDate, dueDate, invoiceCurrency, exchangeRate, roundingAmount, variableSymbol, paymentIban, paymentAccount, constantSymbol].forEach((input) => input.addEventListener('input', updateLineTotals))
     paymentAccount.addEventListener('input', () => {
       if (!paymentIban.value.trim()) paymentIban.value = czechIbanFromAccount(paymentAccount.value)
     })
