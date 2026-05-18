@@ -102,15 +102,19 @@
     .weekday-qty-card { padding:12px; border-radius:14px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); display:flex; flex-direction:column; gap:8px; }
     .weekday-qty-card span { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:0.08em; }
     .weekday-qty-card input { padding:10px 12px; }
-    .line-items { display:grid; gap:12px; }
+    .line-items { display:grid; gap:12px; overflow-x:auto; padding-bottom:4px; }
     .line-item { padding:14px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
     .line-item h4 { margin:0 0 8px; font-size:16px; }
     .import-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:16px; }
-    .import-line { display:grid; grid-template-columns:minmax(320px,2fr) minmax(108px,0.55fr) minmax(160px,0.8fr) minmax(88px,0.45fr) minmax(132px,0.65fr) minmax(132px,0.65fr) auto; gap:10px; align-items:end; padding:14px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
-    .import-line.has-source { grid-template-columns:minmax(180px,0.72fr) minmax(300px,1.35fr) minmax(108px,0.48fr) minmax(154px,0.68fr) minmax(86px,0.38fr) minmax(124px,0.55fr) minmax(124px,0.55fr) auto; }
+    .import-line { display:grid; grid-template-columns:minmax(390px,1.55fr) 112px 164px 88px 136px 136px 76px; gap:10px; align-items:start; min-width:1160px; padding:14px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
+    .import-line.has-source { grid-template-columns:minmax(190px,0.72fr) minmax(360px,1.35fr) 108px 154px 86px 124px 124px 76px; min-width:1320px; }
     .import-line .field { min-width:0; }
+    .import-line .field label { min-height:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .import-line select,
     .import-line input { min-width:0; }
+    .product-picker { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }
+    .product-picker-main { display:grid; gap:6px; min-width:0; }
+    .product-search { padding:8px 10px; border-radius:10px; font-size:12px; }
     .import-line-title { font-weight:800; line-height:1.35; }
     .import-line-meta { color:var(--muted); font-size:12px; line-height:1.45; margin-top:5px; }
     .import-line-status { margin-top:8px; }
@@ -1627,15 +1631,26 @@
       source.quantity = amounts.quantity || 0
       source.unitPriceNet = amounts.unitCost || 0
       source.vatRate = amounts.vatRate || 0
+      source.productSearch = row.querySelector('[data-import-product-search]')?.value || ''
     }
     function syncInvoiceImportLinesFromDom() {
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach(syncInvoiceImportLineFromRow)
     }
-    function productOptionsHtml(selectedId = '') {
-      return products.map((product) => {
+    function productOptionsForSearch(selectedId = '', query = '') {
+      const normalizedQuery = normalizeText(query)
+      const selected = String(selectedId || '')
+      let rows = products
+      if (normalizedQuery) {
+        rows = rows.filter((product) => normalizeText([product.name, product.sku, product.ean, product.note].join(' ')).includes(normalizedQuery))
+      }
+      if (selected && !rows.some((product) => String(product.id) === selected)) {
+        const selectedProduct = getProductById(selected)
+        if (selectedProduct) rows = [selectedProduct, ...rows]
+      }
+      return rows.slice(0, 80).map((product) => {
         const value = String(product.id)
         const label = `${product.name}${product.sku ? ` · SKU ${product.sku}` : ''}${product.ean ? ` · EAN ${product.ean}` : ''}`
-        return `<option value="${escapeHtml(value)}" ${value === String(selectedId || '') ? 'selected' : ''}>${escapeHtml(label)}</option>`
+        return `<option value="${escapeHtml(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`
       }).join('')
     }
     function getProductById(productId) {
@@ -1731,11 +1746,14 @@
             ${sourceBlock}
             <div class="field">
               <label>${hasSource ? 'Naše karta zásoby' : 'Položka ze skladu'}</label>
-              <div class="inline-field-action">
+              <div class="product-picker">
+                <div class="product-picker-main">
+                  <input class="product-search" data-import-product-search type="search" placeholder="Hledat název, SKU nebo EAN..." value="${escapeHtml(line.productSearch || '')}" />
                 <select data-import-product required>
                   <option value="">Vyber položku</option>
-                  ${productOptionsHtml(selectedProductId)}
+                    ${productOptionsForSearch(selectedProductId, line.productSearch || '')}
                 </select>
+                </div>
                 <button class="btn secondary small" type="button" data-action="quick-product">+ Zásoba</button>
               </div>
             </div>
@@ -1809,10 +1827,11 @@
     function addManualInvoiceLine() {
       if (!currentInvoiceImport) openManualDocumentModal()
       syncInvoiceImportLinesFromDom()
+      const rowKey = nextInvoiceImportLineKey()
       currentInvoiceImport.lines.push({
         index: currentInvoiceImport.lines.length,
         lineId: String(currentInvoiceImport.lines.length + 1),
-        rowKey: nextInvoiceImportLineKey(),
+        rowKey,
         deliveryLineId: '',
         supplierCode: '',
         ean: '',
@@ -1824,6 +1843,11 @@
         vatRate: 21
       })
       renderInvoiceImport()
+      setTimeout(() => {
+        const row = invoiceImportLines.querySelector(`[data-import-line-key="${CSS.escape(rowKey)}"]`)
+        row?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+        row?.querySelector('[data-import-product-search]')?.focus()
+      }, 0)
     }
     async function openInvoiceImportFromFile(file) {
       const xml = await readXmlFile(file)
@@ -3074,6 +3098,12 @@
     invoiceImportLines.addEventListener('input', (event) => {
       const row = event.target.closest('[data-import-line]')
       if (!row) return
+      if (event.target.matches('[data-import-product-search]')) {
+        const select = row.querySelector('[data-import-product]')
+        if (select) {
+          select.innerHTML = `<option value="">Vyber položku</option>${productOptionsForSearch(select.value, event.target.value)}`
+        }
+      }
       syncInvoiceImportLineFromRow(row)
       updateInvoiceImportTotals()
     })

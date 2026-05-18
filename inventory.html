@@ -63,6 +63,10 @@
     table { width:100%; min-width:1120px; border-collapse:collapse; }
     th, td { text-align:left; padding:14px 12px; border-bottom:1px solid rgba(255,255,255,0.06); vertical-align:top; }
     th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+    th[draggable="true"] { cursor:grab; user-select:none; }
+    th[draggable="true"]:active { cursor:grabbing; }
+    th.column-drag-over { outline:2px solid rgba(213,16,26,0.55); outline-offset:-4px; background:rgba(213,16,26,0.08); }
+    .column-hint { display:inline-block; margin-left:6px; color:var(--soft); font-size:11px; letter-spacing:0; text-transform:none; opacity:0.75; }
     .sortable-th { appearance:none; border:0; background:transparent; color:inherit; padding:0; margin:0; font:inherit; text-transform:inherit; letter-spacing:inherit; cursor:pointer; display:inline-flex; align-items:center; gap:7px; text-align:left; }
     .sortable-th::after { content:""; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid currentColor; opacity:0.32; transform:translateY(1px); }
     .sortable-th.active::after { opacity:0.9; }
@@ -453,20 +457,9 @@
               </select>
             </div>
             <div class="table-wrap">
-              <table>
+              <table id="stockV13Table">
                 <thead>
-                  <tr>
-                    <th>Produkt</th>
-                    <th>Typ / kód</th>
-                    <th>Pozice</th>
-                    <th>Sklad</th>
-                    <th>Vozidla</th>
-                    <th>Automaty</th>
-                    <th>Celkem</th>
-                    <th>Expirace</th>
-                    <th>Poslední pohyb</th>
-                    <th>Akce</th>
-                  </tr>
+                  <tr id="stockV13Head"></tr>
                 </thead>
                 <tbody id="stockV13Body"></tbody>
               </table>
@@ -947,6 +940,7 @@
     const stockV13LocationTypeFilter = document.getElementById('stockV13LocationTypeFilter')
     const stockV13LocationFilter = document.getElementById('stockV13LocationFilter')
     const stockV13StateFilter = document.getElementById('stockV13StateFilter')
+    const stockV13Head = document.getElementById('stockV13Head')
     const stockV13Body = document.getElementById('stockV13Body')
     const stockV13Empty = document.getElementById('stockV13Empty')
     const manualTransferDocsBody = document.getElementById('manualTransferDocsBody')
@@ -1043,6 +1037,20 @@
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
     let editingTransferDoc = null
+    const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v1'
+    const STOCK_V13_COLUMNS = [
+      { key: 'product', label: 'Produkt' },
+      { key: 'type', label: 'Typ / kód' },
+      { key: 'position', label: 'Pozice' },
+      { key: 'warehouse', label: 'Sklad' },
+      { key: 'vehicles', label: 'Vozidla' },
+      { key: 'machines', label: 'Automaty' },
+      { key: 'total', label: 'Celkem' },
+      { key: 'expiry', label: 'Expirace' },
+      { key: 'lastMovement', label: 'Poslední pohyb' },
+      { key: 'actions', label: 'Akce' }
+    ]
+    let stockV13ColumnOrder = loadStockV13ColumnOrder()
     let isProductEditMode = false
     let productCatalogSort = { key: 'name', direction: 'asc' }
     const productKindMarker = 'olvend_product_kind'
@@ -1079,6 +1087,37 @@
     }
     function normalizeText(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+    }
+    function loadStockV13ColumnOrder() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STOCK_V13_COLUMN_STORAGE_KEY) || '[]')
+        const validKeys = new Set(STOCK_V13_COLUMNS.map((column) => column.key))
+        const ordered = Array.isArray(saved) ? saved.filter((key) => validKeys.has(key)) : []
+        return [...ordered, ...STOCK_V13_COLUMNS.map((column) => column.key).filter((key) => !ordered.includes(key))]
+      } catch {
+        return STOCK_V13_COLUMNS.map((column) => column.key)
+      }
+    }
+    function saveStockV13ColumnOrder() {
+      localStorage.setItem(STOCK_V13_COLUMN_STORAGE_KEY, JSON.stringify(stockV13ColumnOrder))
+    }
+    function getStockV13Columns() {
+      const map = new Map(STOCK_V13_COLUMNS.map((column) => [column.key, column]))
+      return stockV13ColumnOrder.map((key) => map.get(key)).filter(Boolean)
+    }
+    function moveStockV13Column(sourceKey, targetKey) {
+      if (!sourceKey || !targetKey || sourceKey === targetKey) return
+      const next = stockV13ColumnOrder.filter((key) => key !== sourceKey)
+      const targetIndex = next.indexOf(targetKey)
+      next.splice(targetIndex < 0 ? next.length : targetIndex, 0, sourceKey)
+      stockV13ColumnOrder = next
+      saveStockV13ColumnOrder()
+      renderStockV13Rows()
+    }
+    function renderStockV13Header() {
+      stockV13Head.innerHTML = getStockV13Columns().map((column) => `
+        <th draggable="true" data-stock-column="${escapeHtml(column.key)}">${escapeHtml(column.label)}<span class="column-hint">↔</span></th>
+      `).join('')
     }
     function getWarehouseLabel(id) {
       const item = warehouses.find((warehouse) => String(warehouse.id) === String(id))
@@ -2243,6 +2282,7 @@
         if (stockDiff) return stockDiff
         return normalizeText(a.product?.name).localeCompare(normalizeText(b.product?.name), 'cs')
       })
+      renderStockV13Header()
       stockV13Body.innerHTML = rows.map((row) => {
         const product = row.product
         const unit = product?.base_unit || 'ks'
@@ -2256,18 +2296,21 @@
         const expiryPreview = expiryRows.length
           ? expiryRows.slice(0, 2).map((item) => `${Number(item.balance.quantity_on_hand || 0).toFixed(0)} ${unit} · ${formatBatchLabel(item.batch)}`).join(' / ')
           : (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none' ? 'Zatím není na skladě' : 'Neeviduje se')
+        const cells = {
+          product: `<td data-label="Produkt"><strong>${escapeHtml(product?.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(product?.sku ? `SKU ${product.sku}` : 'Bez SKU')}${product?.ean ? ` · EAN ${escapeHtml(product.ean)}` : ''}</span></td>`,
+          type: `<td data-label="Typ / kód"><span class="badge ${product?.active === false ? 'bad' : 'good'}">${escapeHtml(getProductCategoryLabel(getProductKind(product)))}</span><span class="subtext">${escapeHtml(product?.base_unit || 'ks')}</span></td>`,
+          position: `<td data-label="Pozice"><strong>${escapeHtml(getStoragePosition(product) || 'Bez pozice')}</strong><span class="subtext">${escapeHtml(row.location_names.slice(0, 3).join(' · ') || 'Bez umístění')}</span></td>`,
+          warehouse: `<td data-label="Sklad"><strong>${escapeHtml(warehouseQty.primary)}</strong><span class="subtext">${escapeHtml(warehouseQty.secondary)}</span></td>`,
+          vehicles: `<td data-label="Vozidla"><strong>${escapeHtml(vehicleQty.primary)}</strong><span class="subtext">${escapeHtml(vehicleQty.secondary)}</span></td>`,
+          machines: `<td data-label="Automaty"><strong>${escapeHtml(machineQty.primary)}</strong><span class="subtext">${escapeHtml(machineQty.secondary)}</span></td>`,
+          total: `<td data-label="Celkem"><strong>${escapeHtml(totalQty.primary)}</strong><span class="subtext">${escapeHtml(row.total_qty > 0 ? 'Evidovaná zásoba' : 'Bez zásoby')}</span></td>`,
+          expiry: `<td data-label="Expirace"><strong>${escapeHtml(getExpiryModeLabel(product?.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(expiryPreview)}</span></td>`,
+          lastMovement: `<td data-label="Poslední pohyb"><strong>${escapeHtml(row.lastMovement ? row.lastMovement.movement_type : 'Bez pohybu')}</strong><span class="subtext">${row.lastMovement?.created_at ? escapeHtml(new Date(row.lastMovement.created_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>`,
+          actions: `<td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-transfer-direction="warehouse_to_vehicle" data-product-id="${escapeHtml(String(product?.id || ''))}">Na vozidlo</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_to_warehouse" data-product-id="${escapeHtml(String(product?.id || ''))}">Vrátit</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_sale" data-product-id="${escapeHtml(String(product?.id || ''))}">Prodej</button><button class="btn secondary" type="button" data-action="detail-v13" data-product-id="${escapeHtml(String(product?.id || ''))}">Detail</button></div></td>`
+        }
         return `
           <tr>
-            <td data-label="Produkt"><strong>${escapeHtml(product?.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(product?.sku ? `SKU ${product.sku}` : 'Bez SKU')}${product?.ean ? ` · EAN ${escapeHtml(product.ean)}` : ''}</span></td>
-            <td data-label="Typ / kód"><span class="badge ${product?.active === false ? 'bad' : 'good'}">${escapeHtml(getProductCategoryLabel(getProductKind(product)))}</span><span class="subtext">${escapeHtml(product?.base_unit || 'ks')}</span></td>
-            <td data-label="Pozice"><strong>${escapeHtml(getStoragePosition(product) || 'Bez pozice')}</strong><span class="subtext">${escapeHtml(row.location_names.slice(0, 3).join(' · ') || 'Bez umístění')}</span></td>
-            <td data-label="Sklad"><strong>${escapeHtml(warehouseQty.primary)}</strong><span class="subtext">${escapeHtml(warehouseQty.secondary)}</span></td>
-            <td data-label="Vozidla"><strong>${escapeHtml(vehicleQty.primary)}</strong><span class="subtext">${escapeHtml(vehicleQty.secondary)}</span></td>
-            <td data-label="Automaty"><strong>${escapeHtml(machineQty.primary)}</strong><span class="subtext">${escapeHtml(machineQty.secondary)}</span></td>
-            <td data-label="Celkem"><strong>${escapeHtml(totalQty.primary)}</strong><span class="subtext">${escapeHtml(row.total_qty > 0 ? 'Evidovaná zásoba' : 'Bez zásoby')}</span></td>
-            <td data-label="Expirace"><strong>${escapeHtml(getExpiryModeLabel(product?.expiry_tracking_mode))}</strong><span class="subtext">${escapeHtml(expiryPreview)}</span></td>
-            <td data-label="Poslední pohyb"><strong>${escapeHtml(row.lastMovement ? row.lastMovement.movement_type : 'Bez pohybu')}</strong><span class="subtext">${row.lastMovement?.created_at ? escapeHtml(new Date(row.lastMovement.created_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
-            <td data-label="Akce"><div class="action-row"><button class="btn secondary" type="button" data-transfer-direction="warehouse_to_vehicle" data-product-id="${escapeHtml(String(product?.id || ''))}">Na vozidlo</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_to_warehouse" data-product-id="${escapeHtml(String(product?.id || ''))}">Vrátit</button><button class="btn secondary" type="button" data-transfer-direction="vehicle_sale" data-product-id="${escapeHtml(String(product?.id || ''))}">Prodej</button><button class="btn secondary" type="button" data-action="detail-v13" data-product-id="${escapeHtml(String(product?.id || ''))}">Detail</button></div></td>
+            ${getStockV13Columns().map((column) => cells[column.key]).join('')}
           </tr>
         `
       }).join('')
@@ -3472,6 +3515,31 @@
     stockV13LocationTypeFilter.addEventListener('change', renderStockV13Rows)
     stockV13LocationFilter.addEventListener('change', renderStockV13Rows)
     stockV13StateFilter.addEventListener('change', renderStockV13Rows)
+    stockV13Head.addEventListener('dragstart', (event) => {
+      const header = event.target.closest('[data-stock-column]')
+      if (!header) return
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', header.dataset.stockColumn)
+    })
+    stockV13Head.addEventListener('dragover', (event) => {
+      const header = event.target.closest('[data-stock-column]')
+      if (!header) return
+      event.preventDefault()
+      header.classList.add('column-drag-over')
+    })
+    stockV13Head.addEventListener('dragleave', (event) => {
+      event.target.closest('[data-stock-column]')?.classList.remove('column-drag-over')
+    })
+    stockV13Head.addEventListener('drop', (event) => {
+      const header = event.target.closest('[data-stock-column]')
+      if (!header) return
+      event.preventDefault()
+      stockV13Head.querySelectorAll('.column-drag-over').forEach((item) => item.classList.remove('column-drag-over'))
+      moveStockV13Column(event.dataTransfer.getData('text/plain'), header.dataset.stockColumn)
+    })
+    stockV13Head.addEventListener('dragend', () => {
+      stockV13Head.querySelectorAll('.column-drag-over').forEach((item) => item.classList.remove('column-drag-over'))
+    })
     productCatalogSearch.addEventListener('input', renderProductCatalogRows)
     productCategoryFilter.addEventListener('change', renderProductCatalogRows)
     productUsageFilter.addEventListener('change', renderProductCatalogRows)
