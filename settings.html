@@ -1093,6 +1093,14 @@
             text: 'Faktury přijaté, dodací listy, účtenky a interní příjemky mají vlastní prefix, další číslo a počet číslic.',
             href: '#',
             linkLabel: 'Níže'
+          },
+          {
+            title: 'Řady vystavených dokladů',
+            state: 'Nové',
+            stateClass: 'live',
+            text: 'Faktury vydané, účtenky a dobropisy mají vlastní číselnou řadu pro fakturaci.',
+            href: '#',
+            linkLabel: 'Níže'
           }
         ]
       },
@@ -1131,11 +1139,17 @@
     const mobileNavShell = document.getElementById('mobileNavShell');
     const mobileNavToggle = document.getElementById('mobileNavToggle');
     const DOCUMENT_SERIES_STORAGE_KEY = 'olvend.purchaseDocumentSeries.v1';
+    const SALES_DOCUMENT_SERIES_STORAGE_KEY = 'olvend.salesDocumentSeries.v1';
     const DEFAULT_DOCUMENT_SERIES = {
       invoice: { label: 'Faktury přijaté', prefix: 'OVP', nextNumber: 1, padding: 4 },
       delivery_note: { label: 'Dodací listy', prefix: 'OVDL', nextNumber: 1, padding: 4 },
       cash_receipt: { label: 'Účtenky / hotově', prefix: 'OVU', nextNumber: 1, padding: 4 },
       internal_receipt: { label: 'Interní příjemky', prefix: 'OVPR', nextNumber: 1, padding: 4 }
+    };
+    const DEFAULT_SALES_DOCUMENT_SERIES = {
+      invoice: { label: 'Faktury vydané', prefix: 'OVF', nextNumber: 1, padding: 4 },
+      cash_receipt: { label: 'Účtenky vydané', prefix: 'OVU', nextNumber: 1, padding: 4 },
+      credit_note: { label: 'Dobropisy vydané', prefix: 'OVD', nextNumber: 1, padding: 4 }
     };
 
     function escapeHtml(value) {
@@ -1161,6 +1175,27 @@
 
     function saveDocumentSeriesSettings(settings) {
       localStorage.setItem(DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(settings));
+    }
+
+    function loadSalesDocumentSeriesSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SALES_DOCUMENT_SERIES_STORAGE_KEY) || '{}');
+        return Object.fromEntries(Object.entries(DEFAULT_SALES_DOCUMENT_SERIES).map(([type, defaults]) => {
+          const custom = saved[type] || {};
+          return [type, {
+            ...defaults,
+            prefix: String(custom.prefix || defaults.prefix).trim().toUpperCase(),
+            nextNumber: Math.max(1, Number(custom.nextNumber || defaults.nextNumber)),
+            padding: Math.min(8, Math.max(1, Number(custom.padding || defaults.padding)))
+          }];
+        }));
+      } catch (error) {
+        return JSON.parse(JSON.stringify(DEFAULT_SALES_DOCUMENT_SERIES));
+      }
+    }
+
+    function saveSalesDocumentSeriesSettings(settings) {
+      localStorage.setItem(SALES_DOCUMENT_SERIES_STORAGE_KEY, JSON.stringify(settings));
     }
 
     function formatSeriesPreview(config, year = new Date().getFullYear()) {
@@ -1213,6 +1248,52 @@
       `;
     }
 
+    function renderSalesDocumentSeriesCard() {
+      const settings = loadSalesDocumentSeriesSettings();
+      const rows = Object.entries(DEFAULT_SALES_DOCUMENT_SERIES).map(([type, defaults]) => {
+        const config = settings[type] || defaults;
+        return `
+          <div class="series-row" data-sales-series-type="${escapeHtml(type)}">
+            <div>
+              <strong>${escapeHtml(defaults.label)}</strong>
+              <span class="subnav-desc">Používá se při vystavení faktury, účtenky nebo dobropisu.</span>
+            </div>
+            <div>
+              <label>Prefix</label>
+              <input data-sales-series-prefix value="${escapeHtml(config.prefix)}" />
+            </div>
+            <div>
+              <label>Další číslo</label>
+              <input data-sales-series-next type="number" min="1" step="1" value="${escapeHtml(String(config.nextNumber || 1))}" />
+            </div>
+            <div>
+              <label>Číslic</label>
+              <input data-sales-series-padding type="number" min="1" max="8" step="1" value="${escapeHtml(String(config.padding || 4))}" />
+            </div>
+            <div>
+              <span class="series-preview-label">Náhled</span>
+              <div class="series-preview" data-sales-series-preview>${escapeHtml(formatSeriesPreview(config))}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <section class="settings-form-card" id="salesDocumentSeriesCard">
+          <div>
+            <h3>Číselné řady vystavených dokladů</h3>
+            <p>Nastavuješ interní čísla pro Vystavené faktury. Tuhle řadu potom používá tisk faktury, variabilní symbol a přehled vydaných dokladů.</p>
+          </div>
+          <div class="series-grid" id="salesDocumentSeriesRows">${rows}</div>
+          <div class="settings-actions">
+            <button class="settings-action-btn secondary" type="button" id="resetSalesDocumentSeriesBtn">Vrátit výchozí</button>
+            <button class="settings-action-btn" type="button" id="saveSalesDocumentSeriesBtn">Uložit číselné řady</button>
+          </div>
+          <div class="settings-status" id="salesDocumentSeriesStatus"></div>
+        </section>
+      `;
+    }
+
     function updateDocumentSeriesPreviews() {
       document.querySelectorAll('[data-series-type]').forEach((row) => {
         const type = row.dataset.seriesType;
@@ -1250,6 +1331,47 @@
       });
       document.getElementById('resetDocumentSeriesBtn')?.addEventListener('click', () => {
         saveDocumentSeriesSettings(DEFAULT_DOCUMENT_SERIES);
+        renderCategory('documents');
+      });
+    }
+
+    function updateSalesDocumentSeriesPreviews() {
+      document.querySelectorAll('[data-sales-series-type]').forEach((row) => {
+        const type = row.dataset.salesSeriesType;
+        const defaults = DEFAULT_SALES_DOCUMENT_SERIES[type];
+        const config = {
+          prefix: String(row.querySelector('[data-sales-series-prefix]')?.value || defaults.prefix).trim().toUpperCase(),
+          nextNumber: Math.max(1, Number(row.querySelector('[data-sales-series-next]')?.value || defaults.nextNumber)),
+          padding: Math.min(8, Math.max(1, Number(row.querySelector('[data-sales-series-padding]')?.value || defaults.padding)))
+        };
+        row.querySelector('[data-sales-series-preview]').textContent = formatSeriesPreview(config);
+      });
+    }
+
+    function collectSalesDocumentSeriesSettings() {
+      const settings = JSON.parse(JSON.stringify(DEFAULT_SALES_DOCUMENT_SERIES));
+      document.querySelectorAll('[data-sales-series-type]').forEach((row) => {
+        const type = row.dataset.salesSeriesType;
+        settings[type] = {
+          ...settings[type],
+          prefix: String(row.querySelector('[data-sales-series-prefix]')?.value || settings[type].prefix).trim().toUpperCase(),
+          nextNumber: Math.max(1, Number(row.querySelector('[data-sales-series-next]')?.value || settings[type].nextNumber)),
+          padding: Math.min(8, Math.max(1, Number(row.querySelector('[data-sales-series-padding]')?.value || settings[type].padding)))
+        };
+      });
+      return settings;
+    }
+
+    function bindSalesDocumentSeriesControls() {
+      const rows = document.getElementById('salesDocumentSeriesRows');
+      const status = document.getElementById('salesDocumentSeriesStatus');
+      rows?.addEventListener('input', updateSalesDocumentSeriesPreviews);
+      document.getElementById('saveSalesDocumentSeriesBtn')?.addEventListener('click', () => {
+        saveSalesDocumentSeriesSettings(collectSalesDocumentSeriesSettings());
+        if (status) status.textContent = 'Číselné řady vystavených dokladů byly uložené.';
+      });
+      document.getElementById('resetSalesDocumentSeriesBtn')?.addEventListener('click', () => {
+        saveSalesDocumentSeriesSettings(DEFAULT_SALES_DOCUMENT_SERIES);
         renderCategory('documents');
       });
     }
@@ -1362,7 +1484,7 @@
       contentGrid.innerHTML = categoryKey === 'system'
         ? `${renderThemeCard()}${cardsMarkup}`
         : categoryKey === 'documents'
-        ? `${renderDocumentSeriesCard()}${cardsMarkup}`
+        ? `${renderDocumentSeriesCard()}${renderSalesDocumentSeriesCard()}${cardsMarkup}`
         : cardsMarkup;
 
       tabs.forEach((tab) => {
@@ -1374,6 +1496,7 @@
       }
       if (categoryKey === 'documents') {
         bindDocumentSeriesControls();
+        bindSalesDocumentSeriesControls();
       }
     }
 
