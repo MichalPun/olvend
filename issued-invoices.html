@@ -520,6 +520,17 @@
       const gross = roundMoney(net * (1 + (vatRate / 100)))
       return { quantity, unitPrice, vatRate, net, gross }
     }
+    function productUnitCost(product) {
+      return Number(product?.purchase_price || 0)
+    }
+    function profitForLines(lines) {
+      const cost = roundMoney(lines.reduce((sum, line) => sum + (Number(line.quantity || 0) * Number(line.unitCost || 0)), 0))
+      const net = roundMoney(lines.reduce((sum, line) => sum + Number(line.net || 0), 0))
+      const profit = roundMoney(net - cost)
+      const margin = net > 0 ? roundMoney((profit / net) * 100) : 0
+      const missingCostCount = lines.filter((line) => line.productId && Number(line.unitCost || 0) <= 0).length
+      return { cost, net, profit, margin, missingCostCount }
+    }
     function getModalLines() {
       return Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).map((row) => {
         const productInput = row.querySelector('[data-line-product-id]')
@@ -528,11 +539,14 @@
         return {
           productId: productInput?.value ? Number(productInput.value) : null,
           productName: productLabel(product) || row.querySelector('[data-line-product-search]')?.value || 'Položka',
+          unitCost: productUnitCost(product),
           ...amounts
         }
       })
     }
     function updateLineTotals() {
+      const lines = getModalLines()
+      const profit = profitForLines(lines)
       let totalNet = 0
       let totalGross = 0
       invoiceLines.querySelectorAll('[data-invoice-line]').forEach((row) => {
@@ -547,7 +561,9 @@
         { label:'Číslo', value: documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value), note:'Číselná řada.' },
         { label:'Položky', value: invoiceLines.querySelectorAll('[data-invoice-line]').length, note:'Řádky na dokladu.' },
         { label:'Celkem bez DPH', value: formatCurrency(totalNet), note:'Součet položek.' },
-        { label:'Celkem s DPH', value: formatCurrency(totalGross), note:'Částka k úhradě.' }
+        { label:'Celkem s DPH', value: formatCurrency(totalGross), note:'Částka k úhradě.' },
+        { label:'Očekávaný zisk', value: formatCurrency(profit.profit), note:`Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} % bez DPH.` },
+        { label:'Náklad', value: formatCurrency(profit.cost), note: profit.missingCostCount ? `${profit.missingCostCount} položek bez nákupní ceny.` : 'Podle nákupních cen v zásobách.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       documentNumberPreview.textContent = documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value)
       if (!variableSymbol.value.trim()) variableSymbol.value = documentNumberPreview.textContent.replace(/\D/g, '').slice(-10)
@@ -811,7 +827,7 @@
         const [documentsResult, itemsResult, productsResult] = await Promise.all([
           supabase.from('sales_documents').select('*').order('issued_at', { ascending:false }),
           supabase.from('sales_document_items').select('id, document_id, product_id, quantity, unit_price, vat_rate, source_type, source_id, products(name)').order('id', { ascending:true }),
-          supabase.from('products').select('id, name, sku, ean, base_unit, sale_price, vat_rate, active').eq('active', true).order('name', { ascending:true })
+          supabase.from('products').select('id, name, sku, ean, base_unit, purchase_price, sale_price, vat_rate, active').eq('active', true).order('name', { ascending:true })
         ])
         if (documentsResult.error || itemsResult.error || productsResult.error) throw documentsResult.error || itemsResult.error || productsResult.error
         products = productsResult.data || []
