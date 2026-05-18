@@ -114,7 +114,7 @@
     .import-line input { min-width:0; }
     .product-picker { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }
     .product-picker-main { display:grid; gap:6px; min-width:0; }
-    .product-search { padding:8px 10px; border-radius:10px; font-size:12px; }
+    .product-search { padding:12px 14px; border-radius:12px; font-size:14px; }
     .import-line-title { font-weight:800; line-height:1.35; }
     .import-line-meta { color:var(--muted); font-size:12px; line-height:1.45; margin-top:5px; }
     .import-line-status { margin-top:8px; }
@@ -1584,6 +1584,7 @@
       const targetLine = currentInvoiceImport?.lines?.find((line) => String(line.rowKey || '') === String(currentQuickProductLineKey))
       if (targetLine) {
         targetLine.productId = result.data.id
+        targetLine.productSearch = productLabel(result.data)
         if (!targetLine.unitPriceNet && Number(payload.purchase_price || 0) > 0) targetLine.unitPriceNet = Number(payload.purchase_price)
       }
       renderInvoiceImport()
@@ -1636,22 +1637,31 @@
     function syncInvoiceImportLinesFromDom() {
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach(syncInvoiceImportLineFromRow)
     }
-    function productOptionsForSearch(selectedId = '', query = '') {
-      const normalizedQuery = normalizeText(query)
-      const selected = String(selectedId || '')
-      let rows = products
-      if (normalizedQuery) {
-        rows = rows.filter((product) => normalizeText([product.name, product.sku, product.ean, product.note].join(' ')).includes(normalizedQuery))
+    function productLabel(product) {
+      if (!product) return ''
+      return `${product.name}${product.sku ? ` · SKU ${product.sku}` : ''}${product.ean ? ` · EAN ${product.ean}` : ''}`
+    }
+    function productDatalistOptions() {
+      return products.map((product) => `<option value="${escapeHtml(productLabel(product))}"></option>`).join('')
+    }
+    function productBySearchValue(value) {
+      const normalizedValue = normalizeText(value)
+      return products.find((product) => normalizeText(productLabel(product)) === normalizedValue) || null
+    }
+    function syncImportProductAutocomplete(row) {
+      const product = productBySearchValue(row.querySelector('[data-import-product-search]')?.value || '')
+      const hidden = row.querySelector('[data-import-product]')
+      if (!hidden) return
+      hidden.value = product ? String(product.id) : ''
+      if (!product) return
+      const unitCostInput = row.querySelector('[data-import-unit-cost]')
+      const lastPrice = getLastPurchasePrice(product.id)
+      if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
+        unitCostInput.value = String(lastPrice)
       }
-      if (selected && !rows.some((product) => String(product.id) === selected)) {
-        const selectedProduct = getProductById(selected)
-        if (selectedProduct) rows = [selectedProduct, ...rows]
-      }
-      return rows.slice(0, 80).map((product) => {
-        const value = String(product.id)
-        const label = `${product.name}${product.sku ? ` · SKU ${product.sku}` : ''}${product.ean ? ` · EAN ${product.ean}` : ''}`
-        return `<option value="${escapeHtml(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`
-      }).join('')
+      syncInvoiceImportLineFromRow(row)
+      updateInvoiceImportTotals()
+      updateInvoiceImportMatchStatus()
     }
     function getProductById(productId) {
       return products.find((product) => String(product.id) === String(productId)) || null
@@ -1697,6 +1707,10 @@
       if (grossSummary) grossSummary.textContent = formatCurrency(totalGross)
       if (priceWatchSummary) priceWatchSummary.textContent = priceWarningCount ? `${priceWarningCount} položek` : 'Bez rizika'
     }
+    function updateInvoiceImportMatchStatus() {
+      const unmatchedCount = Array.from(invoiceImportLines.querySelectorAll('[data-import-product]')).filter((input) => !input.value).length
+      setInvoiceImportStatus(unmatchedCount ? `${unmatchedCount} položek ještě potřebuje ručně spárovat.` : 'Všechny položky jsou spárované. Můžeš připravit příjem.', unmatchedCount ? 'error' : 'success')
+    }
     function renderInvoiceImport() {
       if (!currentInvoiceImport) return
       applyDocumentTypeRules('import')
@@ -1725,7 +1739,10 @@
         const badgeClass = match.productId ? (match.reason.includes('Zkontroluj') ? 'warn' : 'good') : 'bad'
         const hasSource = Boolean(line.description || line.ean || line.supplierCode)
         line.rowKey = line.rowKey || nextInvoiceImportLineKey()
+        const productListId = `product-list-${line.rowKey}`
         const selectedProductId = line.productId || match.productId || ''
+        const selectedProduct = getProductById(selectedProductId)
+        const productSearchValue = line.productSearch || productLabel(selectedProduct)
         const lastPrice = getLastPurchasePrice(selectedProductId)
         if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = lastPrice
         const quantity = Number(line.quantity || 0)
@@ -1748,11 +1765,9 @@
               <label>${hasSource ? 'Naše karta zásoby' : 'Položka ze skladu'}</label>
               <div class="product-picker">
                 <div class="product-picker-main">
-                  <input class="product-search" data-import-product-search type="search" placeholder="Hledat název, SKU nebo EAN..." value="${escapeHtml(line.productSearch || '')}" />
-                <select data-import-product required>
-                  <option value="">Vyber položku</option>
-                    ${productOptionsForSearch(selectedProductId, line.productSearch || '')}
-                </select>
+                  <input type="hidden" data-import-product value="${escapeHtml(String(selectedProductId || ''))}" />
+                  <input class="product-search" data-import-product-search type="search" list="${escapeHtml(productListId)}" autocomplete="off" placeholder="Začni psát název, SKU nebo EAN..." value="${escapeHtml(productSearchValue)}" />
+                  <datalist id="${escapeHtml(productListId)}">${productDatalistOptions()}</datalist>
                 </div>
                 <button class="btn secondary small" type="button" data-action="quick-product">+ Zásoba</button>
               </div>
@@ -1789,9 +1804,8 @@
         const index = Number(row.dataset.importLine)
         if (!currentInvoiceImport.lines[index]?.rowKey) currentInvoiceImport.lines[index].rowKey = row.dataset.importLineKey || nextInvoiceImportLineKey()
       })
-      const unmatchedCount = Array.from(invoiceImportLines.querySelectorAll('[data-import-product]')).filter((select) => !select.value).length
-      setInvoiceImportStatus(unmatchedCount ? `${unmatchedCount} položek ještě potřebuje ručně spárovat.` : 'Všechny položky jsou spárované. Můžeš připravit příjem.', unmatchedCount ? 'error' : 'success')
       updateInvoiceImportTotals()
+      updateInvoiceImportMatchStatus()
     }
     function closeInvoiceImportModal() {
       invoiceImportModalBackdrop.classList.remove('show')
@@ -1938,10 +1952,11 @@
       const importLines = Array.from(invoiceImportLines.querySelectorAll('[data-import-line]')).map((row) => {
         const index = Number(row.dataset.importLine)
         const source = currentInvoiceImport.lines[index]
-        const productSelect = row.querySelector('[data-import-product]')
-        const productName = productSelect?.selectedOptions?.[0]?.textContent?.trim() || ''
+        const productInput = row.querySelector('[data-import-product]')
+        const product = getProductById(productInput?.value)
+        const productName = productLabel(product)
         const amounts = importLineAmounts(row)
-        const productId = parseRequiredEntityId(productSelect.value, 'Karta zásoby')
+        const productId = parseRequiredEntityId(productInput.value, 'Karta zásoby')
         const lastUnitCost = getLastPurchasePrice(productId)
         const priceCheck = priceWatchMessage(productId, amounts.unitCost)
         return {
@@ -3099,23 +3114,17 @@
       const row = event.target.closest('[data-import-line]')
       if (!row) return
       if (event.target.matches('[data-import-product-search]')) {
-        const select = row.querySelector('[data-import-product]')
-        if (select) {
-          select.innerHTML = `<option value="">Vyber položku</option>${productOptionsForSearch(select.value, event.target.value)}`
-        }
+        syncImportProductAutocomplete(row)
       }
       syncInvoiceImportLineFromRow(row)
       updateInvoiceImportTotals()
+      updateInvoiceImportMatchStatus()
     })
     invoiceImportLines.addEventListener('change', (event) => {
       const row = event.target.closest('[data-import-line]')
       if (!row) return
-      if (event.target.matches('[data-import-product]')) {
-        const unitCostInput = row.querySelector('[data-import-unit-cost]')
-        const lastPrice = getLastPurchasePrice(event.target.value)
-        if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
-          unitCostInput.value = String(lastPrice)
-        }
+      if (event.target.matches('[data-import-product-search]')) {
+        syncImportProductAutocomplete(row)
       }
       syncInvoiceImportLineFromRow(row)
       updateInvoiceImportTotals()
