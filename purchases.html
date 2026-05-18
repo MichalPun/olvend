@@ -990,6 +990,13 @@
       const date = new Date(value)
       return Number.isNaN(date.getTime()) ? 'Bez data' : date.toLocaleDateString('cs-CZ')
     }
+    function toLocalIsoDate(date) {
+      if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      return `${year}-${month}-${day}`
+    }
     function loadDocumentSeriesSettings() {
       try {
         const saved = JSON.parse(localStorage.getItem(DOCUMENT_SERIES_STORAGE_KEY) || '{}')
@@ -1041,13 +1048,14 @@
     }
     function documentSeriesSequence(row, type, year) {
       const base = Number(seriesConfig(type).nextNumber || 1)
-      if (!row?.id) return base + orders.filter((item) => sameSeriesYear(item, type, year)).length
+      const countsInSeries = (item) => sameSeriesYear(item, type, year) && !['cancelled', 'draft'].includes(String(item.status || ''))
+      if (!row?.id) return base + orders.filter(countsInSeries).length
       const seriesRows = orders
-        .filter((item) => sameSeriesYear(item, type, year))
+        .filter((item) => countsInSeries(item) || String(item.id) === String(row.id))
         .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
       const index = seriesRows.findIndex((item) => String(item.id) === String(row.id))
       if (index >= 0) return base + index
-      return base + seriesRows.filter((item) => Number(item.id || 0) < Number(row.id || 0)).length
+      return base + seriesRows.filter((item) => Number(item.id || 0) < Number(row.id || 0) && countsInSeries(item)).length
     }
     function formatDocumentSeries(type, year, sequence) {
       const config = seriesConfig(type)
@@ -1169,11 +1177,11 @@
     function nextDeliveryDate(deliveryWeekdays = [], fromDateString) {
       if (!Array.isArray(deliveryWeekdays) || !deliveryWeekdays.length) return null
       const fromDate = fromDateString ? new Date(`${fromDateString}T00:00:00`) : new Date()
-      for (let offset = 0; offset < 14; offset += 1) {
+      for (let offset = 1; offset < 15; offset += 1) {
         const probe = new Date(fromDate)
         probe.setDate(fromDate.getDate() + offset)
         const isoDay = probe.getDay() === 0 ? 7 : probe.getDay()
-        if (deliveryWeekdays.includes(isoDay)) return probe.toISOString().slice(0, 10)
+        if (deliveryWeekdays.includes(isoDay)) return toLocalIsoDate(probe)
       }
       return null
     }
@@ -2717,11 +2725,8 @@
     }
     function resolveSourceOrderDay(recurringOrder, deliveryIsoDate) {
       const orderDays = Array.isArray(recurringOrder.order_weekdays) ? recurringOrder.order_weekdays : []
-      const deliveryDays = Array.isArray(recurringOrder.delivery_weekdays) ? recurringOrder.delivery_weekdays : []
       const deliveryDate = new Date(`${deliveryIsoDate}T00:00:00`)
       const deliveryIsoDay = deliveryDate.getDay() === 0 ? 7 : deliveryDate.getDay()
-      const pairedIndex = deliveryDays.indexOf(deliveryIsoDay)
-      if (pairedIndex >= 0 && orderDays[pairedIndex] != null) return Number(orderDays[pairedIndex])
       const sorted = [...orderDays].sort((a, b) => a - b)
       const fallback = [...sorted].reverse().find((day) => day < deliveryIsoDay)
       return Number(fallback || sorted[sorted.length - 1] || deliveryIsoDay)
@@ -2731,7 +2736,7 @@
       const probe = new Date(`${deliveryIsoDate}T00:00:00`)
       for (let offset = 0; offset < 8; offset += 1) {
         const isoDay = probe.getDay() === 0 ? 7 : probe.getDay()
-        if (isoDay === sourceOrderDay) return probe.toISOString().slice(0, 10)
+        if (isoDay === sourceOrderDay) return toLocalIsoDate(probe)
         probe.setDate(probe.getDate() - 1)
       }
       return deliveryIsoDate
