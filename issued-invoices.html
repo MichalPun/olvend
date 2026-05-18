@@ -860,11 +860,7 @@
       return `${quantity.toLocaleString('cs-CZ')} ks celkem`
     }
     function rowTotal(row) {
-      if (row.total_amount != null) return Number(row.total_amount || 0)
-      return invoiceItems(row).reduce((sum, item) => {
-        const net = Number(item.quantity || 0) * Number(item.unit_price || 0)
-        return sum + roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
-      }, 0)
+      return invoiceItems(row).length ? rowAmounts(row).total : Number(row.total_amount || 0)
     }
     function rowVatRows(row) {
       return vatBreakdown(invoiceItems(row).map((item) => {
@@ -872,6 +868,24 @@
         const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
         return { vatRate:Number(item.vat_rate || 0), net, gross }
       }))
+    }
+    function rowAmounts(row) {
+      const meta = extractMeta(row)
+      const vatRows = rowVatRows(row)
+      const net = roundMoney(vatRows.reduce((sum, item) => sum + item.net, 0))
+      const vat = roundMoney(vatRows.reduce((sum, item) => sum + item.vat, 0))
+      const grossBeforeRounding = roundMoney(vatRows.reduce((sum, item) => sum + item.gross, 0))
+      const rounding = meta.roundingMode
+        ? roundingForTotal(grossBeforeRounding, meta.roundingMode)
+        : Number(meta.roundingAmount || 0)
+      return {
+        vatRows,
+        net,
+        vat,
+        grossBeforeRounding,
+        rounding: roundMoney(rounding),
+        total: roundMoney(grossBeforeRounding + rounding)
+      }
     }
     function filteredRows() {
       const query = normalizeText(searchInput.value)
@@ -953,15 +967,16 @@
       const seller = loadPaymentSettings()
       const number = documentNumber(row)
       const currency = meta.currency || 'CZK'
-      const rounding = Number(meta.roundingAmount || 0)
       const qrData = qrPaymentPayload(row)
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrData)}`
       const items = invoiceItems(row)
-      const vatRows = rowVatRows(row)
-      const netTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.net, 0))
-      const vatTotal = roundMoney(vatRows.reduce((sum, item) => sum + item.vat, 0))
-      const grossBeforeRounding = roundMoney(vatRows.reduce((sum, item) => sum + item.gross, 0))
-      const totalToPay = roundMoney(grossBeforeRounding + rounding)
+      const amounts = rowAmounts(row)
+      const vatRows = amounts.vatRows
+      const netTotal = amounts.net
+      const vatTotal = amounts.vat
+      const grossBeforeRounding = amounts.grossBeforeRounding
+      const rounding = amounts.rounding
+      const totalToPay = amounts.total
       const vatSummaryRows = vatRows.map((item) => `
           <tr>
             <td>${escapeHtml(Number(item.rate || 0).toLocaleString('cs-CZ'))} %</td>
