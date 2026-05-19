@@ -297,7 +297,10 @@
             </div>
             <div class="field">
               <label for="customerQuickCompanyId">IČO</label>
-              <input id="customerQuickCompanyId" inputmode="numeric" />
+              <div class="inline-field-action">
+                <input id="customerQuickCompanyId" inputmode="numeric" />
+                <button class="btn secondary small" id="fetchCustomerAresBtn" type="button">Načíst ARES</button>
+              </div>
             </div>
             <div class="field">
               <label for="customerQuickTaxId">DIČ</label>
@@ -389,6 +392,7 @@
     const customerForm = document.getElementById('customerForm')
     const customerQuickName = document.getElementById('customerQuickName')
     const customerQuickCompanyId = document.getElementById('customerQuickCompanyId')
+    const fetchCustomerAresBtn = document.getElementById('fetchCustomerAresBtn')
     const customerQuickTaxId = document.getElementById('customerQuickTaxId')
     const customerQuickEmail = document.getElementById('customerQuickEmail')
     const customerQuickPhone = document.getElementById('customerQuickPhone')
@@ -432,6 +436,9 @@
     function normalizeText(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
     }
+    function normalizeCompanyId(value) {
+      return String(value || '').replace(/\D/g, '').slice(0, 8)
+    }
     function todayIso() {
       const date = new Date()
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -465,6 +472,41 @@
       invoiceLineStatus.textContent = message
       invoiceLineStatus.className = 'status-line'
       if (type) invoiceLineStatus.classList.add(type)
+    }
+    function setCustomerQuickStatus(message, type = '') {
+      customerQuickStatus.textContent = message
+      customerQuickStatus.className = 'status-line'
+      if (type) customerQuickStatus.classList.add(type)
+    }
+    function formatAresAddress(subject) {
+      const address = subject?.sidlo || {}
+      return address.textovaAdresa || [
+        [address.nazevUlice, address.cisloDomovni, address.cisloOrientacni ? `/${address.cisloOrientacni}` : ''].filter(Boolean).join(' '),
+        address.nazevObce,
+        address.psc
+      ].filter(Boolean).join(', ')
+    }
+    async function fetchAresSubject(companyId) {
+      const ico = normalizeCompanyId(companyId)
+      if (ico.length !== 8) throw new Error('IČO musí mít 8 číslic.')
+      const response = await fetch(`https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/${ico}`, {
+        headers: { accept: 'application/json' }
+      })
+      if (!response.ok) {
+        if (response.status === 404) throw new Error('ARES pro toto IČO nenašel subjekt.')
+        throw new Error(`ARES vrátil chybu ${response.status}.`)
+      }
+      return response.json()
+    }
+    async function fillCustomerFromAres() {
+      const ico = normalizeCompanyId(customerQuickCompanyId.value)
+      customerQuickCompanyId.value = ico
+      setCustomerQuickStatus('Načítám odběratele z ARES...')
+      const subject = await fetchAresSubject(ico)
+      customerQuickName.value = subject.obchodniJmeno || customerQuickName.value
+      customerQuickTaxId.value = subject.dic || customerQuickTaxId.value || (ico ? `CZ${ico}` : '')
+      customerQuickAddress.value = formatAresAddress(subject) || customerQuickAddress.value
+      setCustomerQuickStatus('Údaje z ARES jsou načtené. Zkontroluj fakturační adresu a doplň e-mail pro odesílání faktur.', 'success')
     }
     function safeJson(value, fallback = null) {
       try { return JSON.parse(value) } catch { return fallback }
@@ -1479,10 +1521,10 @@
       customerQuickAddress.value = customerBillingAddress(existing || {})
       customerQuickDeliveryAddress.value = customerDeliveryAddress(existing || {})
       customerQuickNote.value = existing?.note || ''
-      customerQuickStatus.textContent = 'Ulož odběratele do lokálního adresáře pro další faktury.'
-      customerQuickStatus.className = 'status-line'
+      setCustomerQuickStatus('Zadej IČO a načti údaje z ARES, případně odběratele vyplň ručně.')
       customerModalBackdrop.classList.add('show')
-      customerQuickName.focus()
+      if (customerQuickCompanyId.value) customerQuickCompanyId.focus()
+      else customerQuickName.focus()
     })
     function closeCustomerModal() {
       customerModalBackdrop.classList.remove('show')
@@ -1493,11 +1535,23 @@
     customerModalBackdrop.addEventListener('click', (event) => {
       if (event.target === customerModalBackdrop) closeCustomerModal()
     })
+    fetchCustomerAresBtn.addEventListener('click', async () => {
+      fetchCustomerAresBtn.disabled = true
+      fetchCustomerAresBtn.textContent = 'Načítám...'
+      try {
+        await fillCustomerFromAres()
+      } catch (error) {
+        setCustomerQuickStatus(`ARES se nepodařilo načíst: ${error.message}`, 'error')
+      } finally {
+        fetchCustomerAresBtn.disabled = false
+        fetchCustomerAresBtn.textContent = 'Načíst ARES'
+      }
+    })
     customerForm.addEventListener('submit', (event) => {
       event.preventDefault()
       const customer = {
         name: customerQuickName.value.trim(),
-        companyId: customerQuickCompanyId.value.trim(),
+        companyId: normalizeCompanyId(customerQuickCompanyId.value),
         taxId: customerQuickTaxId.value.trim(),
         email: customerQuickEmail.value.trim(),
         phone: customerQuickPhone.value.trim(),
@@ -1509,8 +1563,7 @@
         note: customerQuickNote.value.trim()
       }
       if (!customer.name) {
-        customerQuickStatus.textContent = 'Doplň název odběratele.'
-        customerQuickStatus.className = 'status-line error'
+        setCustomerQuickStatus('Doplň název odběratele.', 'error')
         return
       }
       upsertCustomer(customer)
