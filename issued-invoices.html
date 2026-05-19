@@ -412,6 +412,7 @@
     const SALES_SERIES_DB_KEY = 'sales_document_series'
     const COMPANY_PROFILE_DB_KEY = 'company_profile'
     const SALES_PAYMENT_DB_KEY = 'sales_payment_defaults'
+    const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
     const DEFAULT_SALES_SERIES = {
       invoice: { label:'Faktury vydané', prefix:'OVF', nextNumber:1, padding:4 },
       cash_receipt: { label:'Účtenky vydané', prefix:'OVU', nextNumber:1, padding:4 },
@@ -429,6 +430,7 @@
     let companyProfileCache = null
     let salesPaymentCache = null
     const recipeProductMarker = 'olvend_recipe_product_id'
+    let jsPdfLoadPromise = null
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')
@@ -455,6 +457,12 @@
       const suffix = currency === 'EUR' ? 'EUR' : 'Kč'
       return `${Number(value || 0).toLocaleString('cs-CZ', { minimumFractionDigits:2, maximumFractionDigits:2 })} ${suffix}`
     }
+    function moneyS3Number(value) {
+      return Number(value || 0).toFixed(2)
+    }
+    function xmlEscape(value) {
+      return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+    }
     function formatDate(value) {
       if (!value) return 'Bez data'
       const date = new Date(value)
@@ -477,6 +485,30 @@
       customerQuickStatus.textContent = message
       customerQuickStatus.className = 'status-line'
       if (type) customerQuickStatus.classList.add(type)
+    }
+    function downloadTextFile(fileName, content, mime = 'application/xml;charset=utf-8') {
+      const blob = new Blob([content], { type: mime })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    }
+    async function loadJsPdf() {
+      if (window.jspdf?.jsPDF) return window.jspdf.jsPDF
+      if (!jsPdfLoadPromise) {
+        jsPdfLoadPromise = new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = JSPDF_URL
+          script.onload = () => window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('Knihovna jsPDF se nenačetla.'))
+          script.onerror = () => reject(new Error('Nepodařilo se načíst knihovnu pro PDF.'))
+          document.head.appendChild(script)
+        })
+      }
+      return jsPdfLoadPromise
     }
     function formatAresAddress(subject) {
       const address = subject?.sidlo || {}
@@ -630,6 +662,10 @@
     }
     function cleanNote(note) {
       return String(note || '').replace(/\[meta:[^\]]+\]/g, '').replace(/\[rada:[^\]]+\]/g, '').trim()
+    }
+    function noteWithMeta(row, meta) {
+      const series = documentNumber(row)
+      return [`[rada:${series}]`, `[meta:${encodeMeta(meta)}]`, cleanNote(row?.note)].filter(Boolean).join(' ')
     }
     function customerBillingAddress(customer = {}) {
       return customer.billingAddress || customer.invoiceAddress || customer.billing_address || customer.address || ''
@@ -1202,7 +1238,7 @@
             <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">Vystaveno</span></td>
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatCurrency(rowTotal(row)))}</span><span class="subtext">s DPH</span></td>
-            <td data-label="Akce"><div class="action-row"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></td>
+            <td data-label="Akce"><div class="action-row"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></td>
           </tr>
         `
       }).join('')
@@ -1346,6 +1382,221 @@
       printWindow.document.open()
       printWindow.document.write(html)
       printWindow.document.close()
+    }
+    function pdfText(doc, text, x, y, options = {}) {
+      doc.text(String(text || ''), x, y, options)
+      return y
+    }
+    function addPdfWrappedText(doc, text, x, y, width, lineHeight = 5) {
+      const lines = doc.splitTextToSize(String(text || ''), width)
+      lines.forEach((line) => {
+        doc.text(line, x, y)
+        y += lineHeight
+      })
+      return y
+    }
+    async function createInvoicePdf(row) {
+      const jsPDF = await loadJsPdf()
+      const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+      const meta = extractMeta(row)
+      const customer = meta.customer || { name: row.customer_name || '' }
+      const payment = meta.payment || loadPaymentSettings()
+      const seller = loadPaymentSettings()
+      const number = documentNumber(row)
+      const currency = meta.currency || 'CZK'
+      const amounts = rowAmounts(row)
+      const items = invoiceItems(row)
+      let y = 18
+
+      doc.setTextColor(213, 16, 26)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(13)
+      doc.text('OLVEND', 14, y)
+      doc.setTextColor(16, 24, 40)
+      doc.setFontSize(24)
+      doc.text(`${documentTypeMeta(row.document_type).label} ${number}`, 14, y + 13)
+      doc.setDrawColor(213, 16, 26)
+      doc.setLineWidth(1.2)
+      doc.line(14, y + 20, 196, y + 20)
+      y += 30
+
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Datum vystaveni: ${formatDate(row.issued_at)}`, 14, y)
+      doc.text(`DUZP: ${formatDate(meta.taxableSupplyDate || row.issued_at)}`, 82, y)
+      doc.text(`Splatnost: ${formatDate(meta.dueDate)}`, 140, y)
+      y += 12
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Dodavatel', 14, y)
+      doc.text('Odberatel', 110, y)
+      y += 6
+      doc.setFont('helvetica', 'normal')
+      let leftY = y
+      leftY = addPdfWrappedText(doc, [seller.sellerName, seller.sellerAddress, seller.sellerCompanyId ? `ICO ${seller.sellerCompanyId}` : '', seller.sellerTaxId ? `DIC ${seller.sellerTaxId}` : '', seller.sellerEmail].filter(Boolean).join('\n'), 14, leftY, 78)
+      let rightY = y
+      rightY = addPdfWrappedText(doc, [customer.name || row.customer_name || '', customerBillingAddress(customer), customer.companyId ? `ICO ${customer.companyId}` : '', customer.taxId ? `DIC ${customer.taxId}` : '', [customer.contactName, customer.email, customer.phone].filter(Boolean).join(' · ')].filter(Boolean).join('\n'), 110, rightY, 86)
+      y = Math.max(leftY, rightY) + 8
+
+      doc.setFont('helvetica', 'bold')
+      doc.text('Polozka', 14, y)
+      doc.text('Mnoz.', 94, y, { align: 'right' })
+      doc.text('Cena', 118, y, { align: 'right' })
+      doc.text('DPH', 137, y, { align: 'right' })
+      doc.text('Bez DPH', 166, y, { align: 'right' })
+      doc.text('S DPH', 196, y, { align: 'right' })
+      doc.setDrawColor(229, 231, 235)
+      doc.line(14, y + 3, 196, y + 3)
+      y += 9
+      doc.setFont('helvetica', 'normal')
+      items.forEach((item) => {
+        if (y > 265) {
+          doc.addPage()
+          y = 18
+        }
+        const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
+        const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
+        const nameLines = doc.splitTextToSize(String(item.product_name || 'Polozka'), 68)
+        doc.text(nameLines, 14, y)
+        doc.text(Number(item.quantity || 0).toLocaleString('cs-CZ'), 94, y, { align: 'right' })
+        doc.text(formatMoney(item.unit_price, currency), 118, y, { align: 'right' })
+        doc.text(`${Number(item.vat_rate || 0).toLocaleString('cs-CZ')} %`, 137, y, { align: 'right' })
+        doc.text(formatMoney(net, currency), 166, y, { align: 'right' })
+        doc.text(formatMoney(gross, currency), 196, y, { align: 'right' })
+        y += Math.max(8, nameLines.length * 5)
+      })
+      y += 6
+      doc.line(110, y - 4, 196, y - 4)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Celkem bez DPH', 130, y)
+      doc.text(formatMoney(amounts.net, currency), 196, y, { align: 'right' })
+      y += 7
+      doc.text('DPH celkem', 130, y)
+      doc.text(formatMoney(amounts.vat, currency), 196, y, { align: 'right' })
+      y += 7
+      doc.text('Zaokrouhleni', 130, y)
+      doc.text(formatMoney(amounts.rounding, currency), 196, y, { align: 'right' })
+      y += 9
+      doc.setTextColor(213, 16, 26)
+      doc.setFontSize(16)
+      doc.text('K uhrade', 130, y)
+      doc.text(formatMoney(amounts.total, currency), 196, y, { align: 'right' })
+      doc.setTextColor(16, 24, 40)
+      doc.setFontSize(10)
+      y += 13
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Variabilni symbol: ${meta.variableSymbol || ''}`, 14, y)
+      doc.text(`Ucet: ${payment.account || ''}`, 80, y)
+      y += 6
+      doc.text(`IBAN: ${payment.iban || ''}`, 14, y)
+      y += 12
+      pdfText(doc, `Vystaveno v internim systemu OLVEND.`, 14, 287)
+      return doc
+    }
+    function buildInvoiceEmailHtml(row) {
+      const meta = extractMeta(row)
+      const customer = meta.customer || {}
+      return `
+        <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#111">
+          <h2 style="margin:0 0 16px">OLVEND</h2>
+          <p>Dobrý den,</p>
+          <p>v příloze zasíláme fakturu <strong>${escapeHtml(documentNumber(row))}</strong>${customer.name ? ` pro ${escapeHtml(customer.name)}` : ''}.</p>
+          <p>Částka k úhradě: <strong>${escapeHtml(formatMoney(rowTotal(row), meta.currency || 'CZK'))}</strong></p>
+          <p style="color:#667085;font-size:13px">Tento e-mail byl odeslán z interního systému OLVEND.</p>
+        </div>
+      `
+    }
+    async function sendDocumentEmail(row) {
+      const meta = extractMeta(row)
+      const customer = meta.customer || {}
+      const defaultEmail = customer.email || ''
+      const to = window.prompt('Na jaký e-mail mám fakturu odeslat?', defaultEmail)
+      if (!to) return
+      setStatus(`Připravuji PDF a odesílám fakturu ${documentNumber(row)}...`)
+      const pdf = await createInvoicePdf(row)
+      const pdfBase64 = pdf.output('datauristring').split(',')[1]
+      const fileName = `${documentNumber(row)}.pdf`
+      const subject = `Faktura ${documentNumber(row)}`
+      const { data, error } = await supabase.functions.invoke('send-issued-invoice-email', {
+        body: {
+          documentId: row.id,
+          to,
+          subject,
+          html: buildInvoiceEmailHtml(row),
+          pdfBase64,
+          fileName
+        }
+      })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+      const nextMeta = {
+        ...meta,
+        customer: { ...customer, email: to },
+        email: {
+          sentAt: new Date().toISOString(),
+          to,
+          providerId: data?.provider_id || null
+        }
+      }
+      const { error: updateError } = await supabase
+        .from('sales_documents')
+        .update({ note: noteWithMeta(row, nextMeta) })
+        .eq('id', row.id)
+      if (updateError) throw updateError
+      setStatus(`Faktura ${documentNumber(row)} byla odeslána na ${to}.`, 'success')
+      await loadPage()
+    }
+    function moneyS3Xml(row) {
+      const meta = extractMeta(row)
+      const customer = meta.customer || {}
+      const amounts = rowAmounts(row)
+      const currency = meta.currency || 'CZK'
+      const itemRows = invoiceItems(row).map((item) => {
+        const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
+        const gross = roundMoney(net * (1 + Number(item.vat_rate || 0) / 100))
+        return `
+      <Polozka>
+        <Nazev>${xmlEscape(item.product_name || 'Položka')}</Nazev>
+        <Mnozstvi>${moneyS3Number(item.quantity)}</Mnozstvi>
+        <Cena>${moneyS3Number(item.unit_price)}</Cena>
+        <SazbaDPH>${moneyS3Number(item.vat_rate)}</SazbaDPH>
+        <Zaklad>${moneyS3Number(net)}</Zaklad>
+        <Celkem>${moneyS3Number(gross)}</Celkem>
+      </Polozka>`
+      }).join('')
+      return `<?xml version="1.0" encoding="utf-8"?>
+<MoneyS3Import source="OLVEND" version="1.0">
+  <FakturyVydane>
+    <FakturaVydana>
+      <Cislo>${xmlEscape(documentNumber(row))}</Cislo>
+      <Typ>${xmlEscape(documentTypeMeta(row.document_type).label)}</Typ>
+      <DatumVystaveni>${xmlEscape(String(row.issued_at || '').slice(0, 10))}</DatumVystaveni>
+      <DUZP>${xmlEscape(meta.taxableSupplyDate || String(row.issued_at || '').slice(0, 10))}</DUZP>
+      <DatumSplatnosti>${xmlEscape(meta.dueDate || '')}</DatumSplatnosti>
+      <Mena>${xmlEscape(currency)}</Mena>
+      <VariabilniSymbol>${xmlEscape(meta.variableSymbol || '')}</VariabilniSymbol>
+      <Odberatel>
+        <Nazev>${xmlEscape(customer.name || row.customer_name || '')}</Nazev>
+        <ICO>${xmlEscape(customer.companyId || '')}</ICO>
+        <DIC>${xmlEscape(customer.taxId || '')}</DIC>
+        <Email>${xmlEscape(customer.email || '')}</Email>
+        <Adresa>${xmlEscape(customerBillingAddress(customer))}</Adresa>
+      </Odberatel>
+      <Polozky>${itemRows}
+      </Polozky>
+      <Soucty>
+        <Zaklad>${moneyS3Number(amounts.net)}</Zaklad>
+        <DPH>${moneyS3Number(amounts.vat)}</DPH>
+        <Zaokrouhleni>${moneyS3Number(amounts.rounding)}</Zaokrouhleni>
+        <Celkem>${moneyS3Number(amounts.total)}</Celkem>
+      </Soucty>
+    </FakturaVydana>
+  </FakturyVydane>
+</MoneyS3Import>`
+    }
+    function exportMoneyS3(row) {
+      downloadTextFile(`${documentNumber(row)}-money-s3.xml`, moneyS3Xml(row))
+      setStatus(`Export Money S3 pro ${documentNumber(row)} byl připraven ke stažení.`, 'success')
     }
     async function loadPage() {
       try {
@@ -1598,6 +1849,8 @@
       try {
         if (button.dataset.action === 'edit') openInvoiceModal(row)
         if (button.dataset.action === 'print') printDocument(row)
+        if (button.dataset.action === 'email') await sendDocumentEmail(row)
+        if (button.dataset.action === 'money-s3') exportMoneyS3(row)
         if (button.dataset.action === 'paid') await updateDocumentStatus(row.id, 'paid')
         if (button.dataset.action === 'cancel') {
           if (!window.confirm('Opravdu chceš doklad zrušit?')) return
