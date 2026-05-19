@@ -1173,12 +1173,7 @@
       if (!stockLocationId || !productId || !delta) return
       if (delta < 0) {
         const records = await getBalanceRecords(stockLocationId, productId)
-        const available = records.reduce((sum, item) => sum + Number(item.quantity_on_hand || 0), 0)
         const required = Math.abs(delta)
-        if (available + 0.0001 < required) {
-          const product = productById(productId)
-          throw new Error(`Na skladu není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${required.toFixed(3)}).`)
-        }
         let remaining = required
         for (const record of records) {
           if (remaining <= 0) break
@@ -1192,6 +1187,28 @@
             .eq('id', record.id)
           if (error) throw error
           remaining = Number((remaining - used).toFixed(3))
+        }
+        if (remaining > 0.0001) {
+          const record = await getBalanceRecord(stockLocationId, productId)
+          const currentQty = Number(record?.quantity_on_hand || 0)
+          const nextQty = Number((currentQty - remaining).toFixed(3))
+          if (record?.id) {
+            const { error } = await supabase
+              .from('stock_location_balances')
+              .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+              .eq('id', record.id)
+            if (error) throw error
+          } else {
+            const { error } = await supabase
+              .from('stock_location_balances')
+              .insert([{
+                stock_location_id: stockLocationId,
+                product_id: productId,
+                quantity_on_hand: Number((-remaining).toFixed(3)),
+                reserved_quantity: 0
+              }])
+            if (error) throw error
+          }
         }
         return
       }
@@ -1210,7 +1227,7 @@
           .insert([{
             stock_location_id: stockLocationId,
             product_id: productId,
-            quantity_on_hand: Math.max(0, nextQty),
+            quantity_on_hand: nextQty,
             reserved_quantity: 0
           }])
         if (error) throw error
@@ -1419,7 +1436,7 @@
             h1{margin:0;font-size:34px;letter-spacing:0;} h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#667085;margin:0 0 8px;}
             .muted{color:#667085;font-size:13px;line-height:1.55;} .box{border:1px solid #e5e7eb;border-radius:14px;padding:16px;margin-top:18px;background:#fff;}
             .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px;}
-            .doc-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;margin-top:16px;color:#344054;font-size:13px;}
+            .doc-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 18px;margin-top:16px;color:#344054;font-size:13px;}
             table{width:100%;border-collapse:separate;border-spacing:0;margin-top:24px;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;} th,td{padding:11px 12px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:13px;} tr:last-child td{border-bottom:none;} th{background:#f8fafc;color:#667085;text-transform:uppercase;font-size:11px;letter-spacing:.06em;} .num{text-align:right;white-space:nowrap;}
             .totals{display:grid;grid-template-columns:1fr 330px;gap:18px;align-items:start;margin-top:22px;} .total-line{display:flex;justify-content:space-between;gap:18px;padding:7px 0;border-bottom:1px solid #eef2f6;font-size:13px;} .grand{font-size:24px;font-weight:900;color:#d5101a;border-bottom:none;padding-top:12px;}
             .pay{display:grid;grid-template-columns:1fr 190px;gap:18px;align-items:center;margin-top:18px;} .note{font-size:12px;color:#667085;margin-top:12px;line-height:1.5;}
@@ -1438,6 +1455,9 @@
                   <div>DUZP: <strong>${escapeHtml(formatDate(meta.taxableSupplyDate || row.issued_at))}</strong></div>
                   <div>Splatnost: <strong>${escapeHtml(formatDate(meta.dueDate))}</strong></div>
                   <div>Měna: <strong>${escapeHtml(currency)}</strong>${currency !== 'CZK' && meta.exchangeRate ? ` · kurz ${escapeHtml(meta.exchangeRate)}` : ''}</div>
+                  <div>Variabilní symbol: <strong>${escapeHtml(meta.variableSymbol || '')}</strong></div>
+                  <div>Účet: <strong>${escapeHtml(payment.account || '')}</strong></div>
+                  <div>IBAN: <strong>${escapeHtml(payment.iban || '')}</strong></div>
                 </div>
               </div>
               <div class="muted" style="text-align:right;">
@@ -1451,7 +1471,7 @@
             </div>
             <div class="grid">
               <div class="box"><h2>Odběratel</h2><strong>${escapeHtml(customer.name || row.customer_name || '')}</strong><div class="muted">${escapeHtml(billingAddress || '').replace(/\n/g, '<br>')}<br>${customer.companyId ? `IČO ${escapeHtml(customer.companyId)} ` : ''}${customer.taxId ? `DIČ ${escapeHtml(customer.taxId)}` : ''}<br>${[customer.contactName, customer.email, customer.phone].filter(Boolean).map(escapeHtml).join(' · ')}${deliveryAddress && deliveryAddress !== billingAddress ? `<br>Dodací adresa: ${escapeHtml(deliveryAddress).replace(/\n/g, '<br>')}` : ''}</div></div>
-              <div class="box"><h2>Platba</h2><div class="muted">Variabilní symbol: <strong>${escapeHtml(meta.variableSymbol || '')}</strong><br>Konstantní symbol: ${escapeHtml(payment.constantSymbol || '')}<br>Účet: ${escapeHtml(payment.account || '')}<br>IBAN: ${escapeHtml(payment.iban || '')}</div></div>
+              <div class="box"><h2>Platební rekapitulace</h2><div class="muted">Konstantní symbol: ${escapeHtml(payment.constantSymbol || '')}<br>K úhradě: <strong>${escapeHtml(formatMoney(totalToPay, currency))}</strong><br>QR platba je uvedená dole u souhrnu dokladu.</div></div>
             </div>
             <table><thead><tr><th>Položka</th><th class="num">Množství</th><th class="num">Cena</th><th class="num">DPH</th><th class="num">Bez DPH</th><th class="num">S DPH</th></tr></thead><tbody>${rows}</tbody></table>
             <div class="totals">
@@ -1533,6 +1553,13 @@
       doc.text(`Datum vystavení: ${formatDate(row.issued_at)}`, 14, y)
       doc.text(`DUZP: ${formatDate(meta.taxableSupplyDate || row.issued_at)}`, 82, y)
       doc.text(`Splatnost: ${formatDate(meta.dueDate)}`, 140, y)
+      y += 7
+      doc.text(`Variabilní symbol: ${meta.variableSymbol || ''}`, 14, y)
+      doc.text(`Konstantní symbol: ${payment.constantSymbol || ''}`, 82, y)
+      doc.text(`Měna: ${currency}`, 140, y)
+      y += 7
+      doc.text(`Účet: ${payment.account || ''}`, 14, y)
+      doc.text(`IBAN: ${payment.iban || ''}`, 82, y)
       y += 12
 
       doc.setFont(pdfFont, 'bold')
@@ -1615,16 +1642,12 @@
       doc.text(formatMoney(amounts.total, currency), 196, y, { align: 'right' })
       doc.setTextColor(16, 24, 40)
       doc.setFontSize(10)
-      y += 13
+      y += 8
       doc.setFont(pdfFont, 'normal')
-      doc.text(`Variabilní symbol: ${meta.variableSymbol || ''}`, 14, y)
-      doc.text(`Účet: ${payment.account || ''}`, 80, y)
-      y += 6
-      doc.text(`IBAN: ${payment.iban || ''}`, 14, y)
       if (qrDataUrl) {
-        doc.addImage(qrDataUrl, 'PNG', 158, Math.min(y + 4, 246), 34, 34)
+        doc.addImage(qrDataUrl, 'PNG', 158, Math.min(y, 246), 34, 34)
         doc.setFont(pdfFont, 'bold')
-        doc.text('QR platba', 175, Math.min(y + 42, 287), { align: 'center' })
+        doc.text('QR platba', 175, Math.min(y + 38, 287), { align: 'center' })
       } else {
         doc.setFont(pdfFont, 'bold')
         doc.text('QR platba neni dostupna', 196, Math.min(y + 8, 287), { align: 'right' })
