@@ -413,6 +413,9 @@
     const COMPANY_PROFILE_DB_KEY = 'company_profile'
     const SALES_PAYMENT_DB_KEY = 'sales_payment_defaults'
     const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+    const QRCODE_URL = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js'
+    const PDF_FONT_REGULAR_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-Regular.ttf'
+    const PDF_FONT_BOLD_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-Bold.ttf'
     const DEFAULT_SALES_SERIES = {
       invoice: { label:'Faktury vydané', prefix:'OVF', nextNumber:1, padding:4 },
       cash_receipt: { label:'Účtenky vydané', prefix:'OVU', nextNumber:1, padding:4 },
@@ -431,6 +434,8 @@
     let salesPaymentCache = null
     const recipeProductMarker = 'olvend_recipe_product_id'
     let jsPdfLoadPromise = null
+    let qrCodeLoadPromise = null
+    let pdfFontLoadPromise = null
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')
@@ -497,18 +502,68 @@
       link.remove()
       URL.revokeObjectURL(url)
     }
+    function loadScriptOnce(url, testFn, errorMessage) {
+      if (testFn()) return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        const existing = Array.from(document.scripts).find((script) => script.src === url)
+        if (existing) {
+          existing.addEventListener('load', () => resolve(), { once: true })
+          existing.addEventListener('error', () => reject(new Error(errorMessage)), { once: true })
+          return
+        }
+        const script = document.createElement('script')
+        script.src = url
+        script.onload = () => testFn() ? resolve() : reject(new Error(errorMessage))
+        script.onerror = () => reject(new Error(errorMessage))
+        document.head.appendChild(script)
+      })
+    }
+    function arrayBufferToBase64(buffer) {
+      let binary = ''
+      const bytes = new Uint8Array(buffer)
+      const chunkSize = 0x8000
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+      }
+      return btoa(binary)
+    }
     async function loadJsPdf() {
       if (window.jspdf?.jsPDF) return window.jspdf.jsPDF
       if (!jsPdfLoadPromise) {
-        jsPdfLoadPromise = new Promise((resolve, reject) => {
-          const script = document.createElement('script')
-          script.src = JSPDF_URL
-          script.onload = () => window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('Knihovna jsPDF se nenačetla.'))
-          script.onerror = () => reject(new Error('Nepodařilo se načíst knihovnu pro PDF.'))
-          document.head.appendChild(script)
-        })
+        jsPdfLoadPromise = loadScriptOnce(JSPDF_URL, () => Boolean(window.jspdf?.jsPDF), 'Nepodařilo se načíst knihovnu pro PDF.').then(() => window.jspdf.jsPDF)
       }
       return jsPdfLoadPromise
+    }
+    async function loadQrCode() {
+      if (window.QRCode?.toDataURL) return window.QRCode
+      if (!qrCodeLoadPromise) {
+        qrCodeLoadPromise = loadScriptOnce(QRCODE_URL, () => Boolean(window.QRCode?.toDataURL), 'Nepodařilo se načíst knihovnu pro QR kód.').then(() => window.QRCode)
+      }
+      return qrCodeLoadPromise
+    }
+    async function addRobotoFonts(doc) {
+      if (doc.__olvendRobotoLoaded) return
+      if (!pdfFontLoadPromise) {
+        pdfFontLoadPromise = Promise.all([
+          fetch(PDF_FONT_REGULAR_URL).then((response) => {
+            if (!response.ok) throw new Error('Nepodařilo se načíst běžný PDF font.')
+            return response.arrayBuffer()
+          }),
+          fetch(PDF_FONT_BOLD_URL).then((response) => {
+            if (!response.ok) throw new Error('Nepodařilo se načíst tučný PDF font.')
+            return response.arrayBuffer()
+          })
+        ]).then(([regular, bold]) => ({
+          regular: arrayBufferToBase64(regular),
+          bold: arrayBufferToBase64(bold)
+        }))
+      }
+      const fonts = await pdfFontLoadPromise
+      doc.addFileToVFS('Roboto-Regular.ttf', fonts.regular)
+      doc.addFileToVFS('Roboto-Bold.ttf', fonts.bold)
+      doc.addFont('Roboto-Regular.ttf', 'Roboto', 'normal')
+      doc.addFont('Roboto-Bold.ttf', 'Roboto', 'bold')
+      doc.__olvendRobotoLoaded = true
     }
     function formatAresAddress(subject) {
       const address = subject?.sidlo || {}
@@ -1397,7 +1452,9 @@
     }
     async function createInvoicePdf(row) {
       const jsPDF = await loadJsPdf()
+      const QRCode = await loadQrCode()
       const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+      await addRobotoFonts(doc)
       const meta = extractMeta(row)
       const customer = meta.customer || { name: row.customer_name || '' }
       const payment = meta.payment || loadPaymentSettings()
@@ -1406,10 +1463,11 @@
       const currency = meta.currency || 'CZK'
       const amounts = rowAmounts(row)
       const items = invoiceItems(row)
+      const qrDataUrl = await QRCode.toDataURL(qrPaymentPayload(row), { margin: 1, width: 320, errorCorrectionLevel: 'M' })
       let y = 18
 
       doc.setTextColor(213, 16, 26)
-      doc.setFont('helvetica', 'bold')
+      doc.setFont('Roboto', 'bold')
       doc.setFontSize(13)
       doc.text('OLVEND', 14, y)
       doc.setTextColor(16, 24, 40)
@@ -1421,26 +1479,26 @@
       y += 30
 
       doc.setFontSize(10)
-      doc.setFont('helvetica', 'normal')
-      doc.text(`Datum vystaveni: ${formatDate(row.issued_at)}`, 14, y)
+      doc.setFont('Roboto', 'normal')
+      doc.text(`Datum vystavení: ${formatDate(row.issued_at)}`, 14, y)
       doc.text(`DUZP: ${formatDate(meta.taxableSupplyDate || row.issued_at)}`, 82, y)
       doc.text(`Splatnost: ${formatDate(meta.dueDate)}`, 140, y)
       y += 12
 
-      doc.setFont('helvetica', 'bold')
+      doc.setFont('Roboto', 'bold')
       doc.text('Dodavatel', 14, y)
-      doc.text('Odberatel', 110, y)
+      doc.text('Odběratel', 110, y)
       y += 6
-      doc.setFont('helvetica', 'normal')
+      doc.setFont('Roboto', 'normal')
       let leftY = y
-      leftY = addPdfWrappedText(doc, [seller.sellerName, seller.sellerAddress, seller.sellerCompanyId ? `ICO ${seller.sellerCompanyId}` : '', seller.sellerTaxId ? `DIC ${seller.sellerTaxId}` : '', seller.sellerEmail].filter(Boolean).join('\n'), 14, leftY, 78)
+      leftY = addPdfWrappedText(doc, [seller.sellerName, seller.sellerAddress, seller.sellerCompanyId ? `IČO ${seller.sellerCompanyId}` : '', seller.sellerTaxId ? `DIČ ${seller.sellerTaxId}` : '', seller.sellerEmail].filter(Boolean).join('\n'), 14, leftY, 78)
       let rightY = y
-      rightY = addPdfWrappedText(doc, [customer.name || row.customer_name || '', customerBillingAddress(customer), customer.companyId ? `ICO ${customer.companyId}` : '', customer.taxId ? `DIC ${customer.taxId}` : '', [customer.contactName, customer.email, customer.phone].filter(Boolean).join(' · ')].filter(Boolean).join('\n'), 110, rightY, 86)
+      rightY = addPdfWrappedText(doc, [customer.name || row.customer_name || '', customerBillingAddress(customer), customer.companyId ? `IČO ${customer.companyId}` : '', customer.taxId ? `DIČ ${customer.taxId}` : '', [customer.contactName, customer.email, customer.phone].filter(Boolean).join(' · ')].filter(Boolean).join('\n'), 110, rightY, 86)
       y = Math.max(leftY, rightY) + 8
 
-      doc.setFont('helvetica', 'bold')
-      doc.text('Polozka', 14, y)
-      doc.text('Mnoz.', 94, y, { align: 'right' })
+      doc.setFont('Roboto', 'bold')
+      doc.text('Položka', 14, y)
+      doc.text('Množ.', 94, y, { align: 'right' })
       doc.text('Cena', 118, y, { align: 'right' })
       doc.text('DPH', 137, y, { align: 'right' })
       doc.text('Bez DPH', 166, y, { align: 'right' })
@@ -1448,7 +1506,7 @@
       doc.setDrawColor(229, 231, 235)
       doc.line(14, y + 3, 196, y + 3)
       y += 9
-      doc.setFont('helvetica', 'normal')
+      doc.setFont('Roboto', 'normal')
       items.forEach((item) => {
         if (y > 265) {
           doc.addPage()
@@ -1467,42 +1525,73 @@
       })
       y += 6
       doc.line(110, y - 4, 196, y - 4)
-      doc.setFont('helvetica', 'bold')
+      doc.setFont('Roboto', 'bold')
       doc.text('Celkem bez DPH', 130, y)
       doc.text(formatMoney(amounts.net, currency), 196, y, { align: 'right' })
       y += 7
       doc.text('DPH celkem', 130, y)
       doc.text(formatMoney(amounts.vat, currency), 196, y, { align: 'right' })
       y += 7
-      doc.text('Zaokrouhleni', 130, y)
+      doc.text('Zaokrouhlení', 130, y)
       doc.text(formatMoney(amounts.rounding, currency), 196, y, { align: 'right' })
       y += 9
       doc.setTextColor(213, 16, 26)
       doc.setFontSize(16)
-      doc.text('K uhrade', 130, y)
+      doc.text('K úhradě', 130, y)
       doc.text(formatMoney(amounts.total, currency), 196, y, { align: 'right' })
       doc.setTextColor(16, 24, 40)
       doc.setFontSize(10)
       y += 13
-      doc.setFont('helvetica', 'normal')
-      doc.text(`Variabilni symbol: ${meta.variableSymbol || ''}`, 14, y)
-      doc.text(`Ucet: ${payment.account || ''}`, 80, y)
+      doc.setFont('Roboto', 'normal')
+      doc.text(`Variabilní symbol: ${meta.variableSymbol || ''}`, 14, y)
+      doc.text(`Účet: ${payment.account || ''}`, 80, y)
       y += 6
       doc.text(`IBAN: ${payment.iban || ''}`, 14, y)
-      y += 12
-      pdfText(doc, `Vystaveno v internim systemu OLVEND.`, 14, 287)
+      doc.addImage(qrDataUrl, 'PNG', 158, Math.min(y + 4, 246), 34, 34)
+      doc.setFont('Roboto', 'bold')
+      doc.text('QR platba', 175, Math.min(y + 42, 287), { align: 'center' })
+      pdfText(doc, `Vystaveno v interním systému OLVEND.`, 14, 287)
       return doc
     }
     function buildInvoiceEmailHtml(row) {
       const meta = extractMeta(row)
       const customer = meta.customer || {}
+      const payment = meta.payment || loadPaymentSettings()
+      const amount = formatMoney(rowTotal(row), meta.currency || 'CZK')
       return `
-        <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#111">
-          <h2 style="margin:0 0 16px">OLVEND</h2>
-          <p>Dobrý den,</p>
-          <p>v příloze zasíláme fakturu <strong>${escapeHtml(documentNumber(row))}</strong>${customer.name ? ` pro ${escapeHtml(customer.name)}` : ''}.</p>
-          <p>Částka k úhradě: <strong>${escapeHtml(formatMoney(rowTotal(row), meta.currency || 'CZK'))}</strong></p>
-          <p style="color:#667085;font-size:13px">Tento e-mail byl odeslán z interního systému OLVEND.</p>
+        <div style="margin:0;padding:0;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;color:#101828;">
+          <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
+            <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
+              <div style="padding:22px 24px;border-bottom:4px solid #d5101a;">
+                <div style="font-size:13px;font-weight:800;letter-spacing:.08em;color:#d5101a;text-transform:uppercase;">OLMIKA fakturace</div>
+                <h1 style="margin:10px 0 0;font-size:24px;line-height:1.25;color:#101828;">Faktura ${escapeHtml(documentNumber(row))}</h1>
+              </div>
+              <div style="padding:24px;">
+                <p style="margin:0 0 14px;font-size:15px;line-height:1.6;">Dobrý den,</p>
+                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">v příloze zasíláme fakturu${customer.name ? ` pro <strong>${escapeHtml(customer.name)}</strong>` : ''}.</p>
+                <table style="width:100%;border-collapse:collapse;margin:0 0 20px;">
+                  <tr>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;color:#667085;">Částka k úhradě</td>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;text-align:right;font-weight:800;color:#d5101a;">${escapeHtml(amount)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;color:#667085;">Variabilní symbol</td>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;text-align:right;font-weight:700;">${escapeHtml(meta.variableSymbol || '')}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;color:#667085;">Splatnost</td>
+                    <td style="padding:10px 0;border-bottom:1px solid #eef2f6;text-align:right;font-weight:700;">${escapeHtml(formatDate(meta.dueDate))}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 0;color:#667085;">Účet</td>
+                    <td style="padding:10px 0;text-align:right;font-weight:700;">${escapeHtml(payment.account || payment.iban || '')}</td>
+                  </tr>
+                </table>
+                <p style="margin:0;font-size:14px;line-height:1.6;color:#475467;">Děkujeme.</p>
+              </div>
+              <div style="padding:14px 24px;background:#f8fafc;color:#98a2b3;font-size:12px;line-height:1.5;">Tento e-mail byl odeslán z interního systému OLVEND.</div>
+            </div>
+          </div>
         </div>
       `
     }
