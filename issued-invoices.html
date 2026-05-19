@@ -537,9 +537,38 @@
     async function loadQrCode() {
       if (window.QRCode?.toDataURL) return window.QRCode
       if (!qrCodeLoadPromise) {
-        qrCodeLoadPromise = loadScriptOnce(QRCODE_URL, () => Boolean(window.QRCode?.toDataURL), 'Nepodařilo se načíst knihovnu pro QR kód.').then(() => window.QRCode)
+        qrCodeLoadPromise = loadScriptOnce(QRCODE_URL, () => Boolean(window.QRCode?.toDataURL), 'Nepodařilo se načíst knihovnu pro QR kód.')
+          .then(() => window.QRCode)
+          .catch((error) => {
+            qrCodeLoadPromise = null
+            throw error
+          })
       }
       return qrCodeLoadPromise
+    }
+    async function qrPaymentDataUrl(row) {
+      const qrData = qrPaymentPayload(row)
+      try {
+        const QRCode = await loadQrCode()
+        return await QRCode.toDataURL(qrData, { margin: 1, width: 320, errorCorrectionLevel: 'M' })
+      } catch (error) {
+        console.warn('QR library unavailable, trying remote QR image', error)
+      }
+      try {
+        const url = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrData)}`
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`QR image request failed: ${response.status}`)
+        const blob = await response.blob()
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result)
+          reader.onerror = () => reject(reader.error || new Error('QR image conversion failed'))
+          reader.readAsDataURL(blob)
+        })
+      } catch (error) {
+        console.warn('Remote QR image unavailable, continuing without QR', error)
+        return ''
+      }
     }
     async function addRobotoFonts(doc) {
       if (doc.__olvendRobotoLoaded) return
@@ -1452,7 +1481,6 @@
     }
     async function createInvoicePdf(row) {
       const jsPDF = await loadJsPdf()
-      const QRCode = await loadQrCode()
       const doc = new jsPDF({ unit: 'mm', format: 'a4' })
       await addRobotoFonts(doc)
       const meta = extractMeta(row)
@@ -1464,7 +1492,7 @@
       const amounts = rowAmounts(row)
       const items = invoiceItems(row)
       const vatRows = amounts.vatRows || []
-      const qrDataUrl = await QRCode.toDataURL(qrPaymentPayload(row), { margin: 1, width: 320, errorCorrectionLevel: 'M' })
+      const qrDataUrl = await qrPaymentDataUrl(row)
       let y = 18
 
       doc.setTextColor(213, 16, 26)
@@ -1574,9 +1602,14 @@
       doc.text(`Účet: ${payment.account || ''}`, 80, y)
       y += 6
       doc.text(`IBAN: ${payment.iban || ''}`, 14, y)
-      doc.addImage(qrDataUrl, 'PNG', 158, Math.min(y + 4, 246), 34, 34)
-      doc.setFont('Roboto', 'bold')
-      doc.text('QR platba', 175, Math.min(y + 42, 287), { align: 'center' })
+      if (qrDataUrl) {
+        doc.addImage(qrDataUrl, 'PNG', 158, Math.min(y + 4, 246), 34, 34)
+        doc.setFont('Roboto', 'bold')
+        doc.text('QR platba', 175, Math.min(y + 42, 287), { align: 'center' })
+      } else {
+        doc.setFont('Roboto', 'bold')
+        doc.text('QR platba neni dostupna', 196, Math.min(y + 8, 287), { align: 'right' })
+      }
       pdfText(doc, `Vystaveno v interním systému OLVEND.`, 14, 287)
       return doc
     }
