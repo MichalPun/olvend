@@ -14,6 +14,10 @@
 - podle prvniho inputu od Global Payments dnes generuji `DEX` soubor a ten periodicky posilaji do VendSoftu
 - pravdepodobny prvni integracni model pro OLVEND tedy neni realtime API, ale prijem a zpracovani pravidelneho `DEX` exportu
 - to je v poradku pro prvni fazi telemetrie, jen musime presne vedet, jak casto soubor chodi, jak se predava a co v nem realne je
+- podle ukazky Kotlin klienta se DEX posila pres HTTP POST jako XML obalka `VDITransaction` s elementem `RawDEX`
+- prvni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
+- endpoint pro dodavatele bude po nasazeni ve tvaru `https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=...`
+- `DeviceID` z XML pouzijeme jako stabilni `external_machine_id` pro mapovani na nas interní automat
 
 ### 1. Zpusob predani dat
 - posilaji data pres API, webhook, SFTP nebo export souboru
@@ -108,11 +112,34 @@ Dobry den, pripravujeme vlastni napojeni telemetrie do OLVEND a chceme zachovat 
 
 ### Faze 1 - mapovani a ingest
 - tabulka `machine_external_links`
+- tabulka `telemetry_dex_ingests` pro ulozeni celeho prijateho VDI/XML a suroveho DEX bez ztraty dat
 - tabulka `telemetry_raw_events`
 - tabulka `machine_telemetry_state`
 - mapovani `provider + external_machine_id -> machine_id`
-- ingest `DEX` souboru do raw vrstvy
+- ingest `DEX` souboru pres HTTP POST do raw vrstvy
 - parser `DEX -> interni telemetry_raw_events`
+
+#### Prijimany XML format
+
+Dodavatel muze pouzit stejny model jako pro VendSoft:
+
+```xml
+<VDITransaction TransactionReason="UploadDEX" ProviderID="IMA" CustomerID="..." TransactionID="...">
+  <DEXList>
+    <DexTransmission DeviceID="..." TransmitTime="...">
+      <DexCollection>
+        <DEX ReadDateTime="..." DexReason="..." ResponseCode="OK">
+          <RawDEX>
+            ...
+          </RawDEX>
+        </DEX>
+      </DexCollection>
+    </DexTransmission>
+  </DEXList>
+</VDITransaction>
+```
+
+Endpoint vraci HTTP 200, aby odesilaci aplikace povazovala davku za prijatou. Pokud bude v Supabase nastaveny `TELEMETRY_INGEST_TOKEN`, token se posila bud v query parametru `?token=...`, nebo v hlavicce `x-olvend-telemetry-token`.
 
 ### Faze 2 - normalizace
 - preklad eventu od Global Payments do interniho modelu
