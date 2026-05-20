@@ -17,7 +17,19 @@
 - podle ukazky Kotlin klienta se DEX posila pres HTTP POST jako XML obalka `VDITransaction` s elementem `RawDEX`
 - prvni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
 - endpoint pro dodavatele bude po nasazeni ve tvaru `https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=...`
-- `DeviceID` z XML pouzijeme jako stabilni `external_machine_id` pro mapovani na nas interní automat
+- pokud prijde XML obalka, `DeviceID` bereme jako identifikator odesilatele, ale pro mapovani automatu preferujeme terminal z raw DEX (`CA1` / `ID7`)
+- endpoint umi prijmout i cisty raw DEX bez XML obalky, pokud soubor zacina zaznamem `DXS*`
+
+## Poznatky z realneho sample DEX 2026-05-20
+
+- sample je cisty raw DEX text s CRLF radky, ne XML obalka
+- stabilni cislo terminalu je v `CA1` a `ID7`, ve vzorku `ICT230800022143`
+- cislo automatu je v `ID1`, ve vzorku `0126`
+- datum cteni je v `ID5`, cas parsujeme jako lokalni cas Praha vcetne letniho/zimniho casu
+- produktove popisky jsou v `PP1`, ve vzorku je 8 zakladnich popisku
+- produktove countery jsou v blocich `PA1` az `PA7`; ve vzorku je 58 raw skupin, po agregaci duplicit 29 unikatnich skupin
+- pro prvni fazi ukladame `dex_upload`, `dex_snapshot` a jednotlive `dex_product_counter` eventy do `telemetry_raw_events`
+- presny vyznam vsech poli `PA2`, `PA3`, `TA*` a `LA*` jeste nechavame v raw payloadu, dokud ho nepotvrdime proti dokumentaci nebo dalsimu vzorku
 
 ### 1. Zpusob predani dat
 - posilaji data pres API, webhook, SFTP nebo export souboru
