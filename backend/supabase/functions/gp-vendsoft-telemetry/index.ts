@@ -192,7 +192,7 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
   const uniqueProductCounters = Array.from(productCounterMap.values());
 
   return {
-    external_machine_id: terminalId || machineNumber || fallbackDeviceId || dxs?.fields[0] || "unknown",
+    external_machine_id: fallbackDeviceId || terminalId || machineNumber || dxs?.fields[0] || "unknown",
     terminal_id: terminalId || null,
     machine_number: machineNumber || null,
     dex_serial: dxs?.fields[0] || null,

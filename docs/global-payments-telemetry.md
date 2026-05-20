@@ -17,7 +17,8 @@
 - podle ukazky Kotlin klienta se DEX posila pres HTTP POST jako XML obalka `VDITransaction` s elementem `RawDEX`
 - prvni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
 - endpoint pro dodavatele bude po nasazeni ve tvaru `https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=...`
-- pokud prijde XML obalka, `DeviceID` bereme jako identifikator odesilatele, ale pro mapovani automatu preferujeme terminal z raw DEX (`CA1` / `ID7`)
+- pokud prijde XML obalka, `DeviceID` bereme jako hlavni identifikator pro mapovani automatu; idealne tam GP nastavi nase stavajici `ID telemetrie` typu `604315`
+- technicke cislo terminalu z raw DEX (`CA1` / `ID7`, napr. `ICT230800022143`) ukladame do payloadu, ale bez mapovaci tabulky ho nelze automaticky spojit s nasim `ID telemetrie`
 - endpoint umi prijmout i cisty raw DEX bez XML obalky, pokud soubor zacina zaznamem `DXS*`
 
 ## Poznatky z realneho sample DEX 2026-05-20
@@ -25,6 +26,8 @@
 - sample je cisty raw DEX text s CRLF radky, ne XML obalka
 - stabilni cislo terminalu je v `CA1` a `ID7`, ve vzorku `ICT230800022143`
 - cislo automatu je v `ID1`, ve vzorku `0126`
+- nase stavajici `ID telemetrie` typu `604315`, `604314`, `602229` se v tomto raw vzorku nevyskytuje
+- pokud GP umi v konfiguraci zvolit `DeviceID`, nastavime tam nase `ID telemetrie`; pokud ne, budeme potrebovat mapu `ICT... -> ID telemetrie`
 - datum cteni je v `ID5`, cas parsujeme jako lokalni cas Praha vcetne letniho/zimniho casu
 - produktove popisky jsou v `PP1`, ve vzorku je 8 zakladnich popisku
 - produktove countery jsou v blocich `PA1` az `PA7`; ve vzorku je 58 raw skupin, po agregaci duplicit 29 unikatnich skupin
