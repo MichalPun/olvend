@@ -253,6 +253,21 @@
       font-size: 17px;
     }
 
+    .hero-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+    }
+
+    .hero-controls .primary-button {
+      grid-column: 1 / -1;
+    }
+
+    .hero-controls.idle .pause-button,
+    .hero-controls.idle .end-button {
+      display: none;
+    }
+
     .secondary-button {
       min-height: 50px;
       border-radius: 15px;
@@ -260,6 +275,18 @@
       background: #262b35;
       border: 1px solid rgba(255,255,255,.12);
       font-weight: 900;
+    }
+
+    .pause-button {
+      background: rgba(243,179,68,.18);
+      border-color: rgba(243,179,68,.25);
+      color: #ffe1a9;
+    }
+
+    .end-button {
+      background: rgba(227,38,47,.18);
+      border-color: rgba(227,38,47,.28);
+      color: #ffd1d4;
     }
 
     .section-title {
@@ -816,7 +843,11 @@
               <div class="hero-action" id="shiftHero">
                 <h2 id="shiftTitle">Začni směnu</h2>
                 <p id="shiftText">Vyber auto, potvrď start a pak se ti otevře dnešní práce.</p>
-                <button class="primary-button" type="button" data-sheet="shift">Zahájit směnu</button>
+                <div class="hero-controls idle" id="shiftControls">
+                  <button class="primary-button" id="shiftMainAction" type="button" data-sheet="shift">Zahájit směnu</button>
+                  <button class="secondary-button pause-button" id="pauseAction" type="button" data-action="togglePause">Pauza</button>
+                  <button class="secondary-button end-button" type="button" data-sheet="endShift">Ukončit</button>
+                </div>
               </div>
 
               <div class="section-title">
@@ -1053,7 +1084,10 @@
       odometerEnd: '',
       selectedVehicleKey: '',
       dailyInstructionsConfirmed: false,
-      shiftStartedAt: null
+      shiftStartedAt: null,
+      pauseStartedAt: null,
+      totalPauseMs: 0,
+      isPaused: false
     }
 
     const vehicles = {
@@ -1069,6 +1103,9 @@
     const shiftHero = document.getElementById('shiftHero')
     const shiftTitle = document.getElementById('shiftTitle')
     const shiftText = document.getElementById('shiftText')
+    const shiftControls = document.getElementById('shiftControls')
+    const shiftMainAction = document.getElementById('shiftMainAction')
+    const pauseAction = document.getElementById('pauseAction')
     const sheet = document.getElementById('actionSheet')
     const sheetTitle = document.getElementById('sheetTitle')
     const sheetContent = document.getElementById('sheetContent')
@@ -1131,6 +1168,10 @@
       vehicleService: {
         title: 'Požadavek na servis auta',
         custom: 'vehicleService'
+      },
+      endShift: {
+        title: 'Ukončit směnu',
+        custom: 'endShift'
       }
     }
 
@@ -1142,16 +1183,33 @@
     }
 
     function updateShift() {
-      const elapsed = state.shiftStartedAt ? formatDuration(Date.now() - state.shiftStartedAt) : ''
+      const elapsed = getWorkedDuration()
+      const pauseElapsed = state.pauseStartedAt ? formatDuration(Date.now() - state.pauseStartedAt) : ''
       shiftPill.classList.toggle('idle', !state.shiftStarted)
-      shiftPill.textContent = state.shiftStarted ? `${state.vehicle || 'Směna'} · ${elapsed}` : 'Směna nezahájena'
+      shiftPill.textContent = state.shiftStarted
+        ? state.isPaused ? `Pauza · ${pauseElapsed}` : `${state.vehicle || 'Směna'} · ${elapsed}`
+        : 'Směna nezahájena'
       shiftHero.dataset.state = state.shiftStarted ? 'running' : 'idle'
-      shiftTitle.textContent = state.shiftStarted ? 'Směna běží' : 'Začni směnu'
+      shiftTitle.textContent = state.shiftStarted ? (state.isPaused ? 'Pauza běží' : 'Směna běží') : 'Začni směnu'
       shiftText.textContent = state.shiftStarted
-        ? `V práci jsi ${elapsed}. Dnešní práce je připravená.`
+        ? state.isPaused
+          ? `Pauza trvá ${pauseElapsed}. Po návratu pokračuj tlačítkem Obnovit práci.`
+          : `V práci jsi ${elapsed}. Pauza celkem ${getPauseDuration()}.`
         : 'Nejdřív potvrď pokyny dne, vyber auto a odsouhlas km.'
-      const button = shiftHero.querySelector('button')
-      button.textContent = state.shiftStarted ? 'Směna a vozidlo' : 'Zahájit směnu'
+      shiftControls.classList.toggle('idle', !state.shiftStarted)
+      shiftMainAction.textContent = state.shiftStarted ? 'Směna a vozidlo' : 'Zahájit směnu'
+      pauseAction.textContent = state.isPaused ? 'Obnovit práci' : 'Pauza'
+    }
+
+    function getWorkedDuration() {
+      if (!state.shiftStartedAt) return ''
+      const currentPauseMs = state.isPaused && state.pauseStartedAt ? Date.now() - state.pauseStartedAt : 0
+      return formatDuration(Date.now() - state.shiftStartedAt - state.totalPauseMs - currentPauseMs)
+    }
+
+    function getPauseDuration() {
+      const currentPauseMs = state.isPaused && state.pauseStartedAt ? Date.now() - state.pauseStartedAt : 0
+      return formatDuration(state.totalPauseMs + currentPauseMs)
     }
 
     function formatDuration(milliseconds) {
@@ -1215,6 +1273,18 @@
           <div class="sheet-field"><label>Popis</label><textarea placeholder="Co je s autem potřeba řešit?"></textarea></div>
           ${renderSheetButton('Odeslat požadavek', 'Uvidí sklad / správce vozidel', 'toast:Požadavek na auto uložen', 'success')}
         `
+      } else if (template.custom === 'endShift') {
+        sheetContent.innerHTML = `
+          <div class="start-summary">
+            <strong>Souhrn směny</strong>
+            <span>Odpracováno ${getWorkedDuration() || '0 min'} · pauza ${getPauseDuration()}</span>
+          </div>
+          <div class="sheet-field"><label>Vozidlo</label><input value="${state.vehicle || 'Bez auta'}" readonly /></div>
+          <div class="sheet-field"><label>Počáteční km</label><input value="${state.odometerStart || 'Bez auta'}" readonly /></div>
+          <div class="sheet-field"><label>Konečné km</label><input id="odometerEndInput" inputmode="numeric" placeholder="Zadej stav tachometru při ukončení" ${state.selectedVehicleKey === 'none' ? 'disabled' : ''} /></div>
+          <div class="sheet-field"><label>Poznámka ke směně</label><textarea placeholder="Vratky, problém na trase nebo zpráva pro sklad."></textarea></div>
+          ${renderSheetButton('Ukončit směnu', 'Uzavře dnešní práci a uloží km', 'endShift', 'danger')}
+        `
       } else {
         sheetContent.innerHTML = template.items.map(([title, desc, action]) => renderSheetButton(title, desc, action)).join('')
       }
@@ -1236,10 +1306,14 @@
         sheetContent.innerHTML = `
           <div class="sheet-field"><label>Vozidlo</label><input value="${state.vehicle || 'Fiat Doblo · 5A-P9000'}" readonly /></div>
           <div class="sheet-field"><label>Počáteční km</label><input inputmode="numeric" value="${state.odometerStart || '184120'}" /></div>
-          <div class="sheet-field"><label>Konečné km</label><input id="odometerEndInput" inputmode="numeric" placeholder="Zadej stav tachometru při ukončení" /></div>
+          <div class="start-summary">
+            <strong>Čas směny</strong>
+            <span>Odpracováno ${getWorkedDuration() || '0 min'} · pauza ${getPauseDuration()}</span>
+          </div>
           ${renderSheetButton('Zadat tankování', 'Litry, částka, km', 'open:fuel')}
           ${renderSheetButton('Požadavek na servis auta', 'Závada nebo plánovaný servis', 'open:vehicleService')}
-          ${renderSheetButton('Ukončit směnu', 'Kontrola km, auta a vratek', 'endShift', 'danger')}
+          ${renderSheetButton(state.isPaused ? 'Obnovit práci' : 'Zadat pauzu', state.isPaused ? 'Pokračovat ve směně' : 'Přestávka během směny', 'togglePause')}
+          ${renderSheetButton('Ukončit směnu', 'Kontrola km, auta a vratek', 'open:endShift', 'danger')}
         `
       } else {
         renderStartShiftForm()
@@ -1333,16 +1407,45 @@
         }
         state.shiftStarted = true
         state.shiftStartedAt = Date.now()
+        state.totalPauseMs = 0
+        state.pauseStartedAt = null
+        state.isPaused = false
         state.vehicle = selectedVehicle.label
         state.odometerStart = odometerValue
         updateShift()
         closeSheet()
         showToast(state.odometerStart ? `Směna zahájena · km ${state.odometerStart}` : 'Směna zahájena')
+      } else if (action === 'togglePause') {
+        if (!state.shiftStarted) return
+        if (state.isPaused) {
+          state.totalPauseMs += Date.now() - state.pauseStartedAt
+          state.pauseStartedAt = null
+          state.isPaused = false
+          closeSheet()
+          showToast('Práce obnovena')
+        } else {
+          state.pauseStartedAt = Date.now()
+          state.isPaused = true
+          closeSheet()
+          showToast('Pauza zahájena')
+        }
+        updateShift()
       } else if (action === 'endShift') {
-        state.odometerEnd = document.getElementById('odometerEndInput')?.value || ''
+        const endOdometerValue = String(document.getElementById('odometerEndInput')?.value || '').trim()
+        if (state.selectedVehicleKey !== 'none' && !endOdometerValue) {
+          showToast('Doplň konečný stav km')
+          return
+        }
+        if (state.isPaused && state.pauseStartedAt) {
+          state.totalPauseMs += Date.now() - state.pauseStartedAt
+        }
+        state.odometerEnd = endOdometerValue
         state.shiftStarted = false
         state.vehicle = ''
         state.shiftStartedAt = null
+        state.pauseStartedAt = null
+        state.totalPauseMs = 0
+        state.isPaused = false
         state.selectedVehicleKey = ''
         updateShift()
         closeSheet()
