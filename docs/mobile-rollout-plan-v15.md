@@ -26,7 +26,15 @@ Zatim ji nikde nelinkujeme z menu a nemenime prihlasovaci logiku v `index.html`.
 2. Skladnik na PC uvidi pozadavek jako `requested`.
 3. Po vychystani se stav zmeni na `ready`.
 4. Operator potvrdi nakladku a doklad prejde na `confirmed`.
-5. Vykladka, prodej z vozidla a vratky pouzivaji stejnou hlavicku dokladu, ale jiny `request_type`.
+5. Pri potvrzeni se zalozi radky ve `stock_movements_v13` a upravi `stock_location_balances`.
+6. Vykladka, prodej z vozidla a vratky pouzivaji stejnou hlavicku dokladu, ale jiny `request_type`.
+
+Mapovani pohybu:
+
+- `vehicle_order` / `vehicle_load`: sklad -> vozidlo, `movement_type = load_vehicle`
+- `vehicle_unload`: vozidlo -> sklad, `movement_type = return`
+- `vehicle_sale`: vozidlo -> prodej, `movement_type = sale`
+- `vehicle_return` / `vehicle_writeoff`: vozidlo -> odpis, `movement_type = waste`
 
 ## Pravidla pred ostrym zapnutim
 

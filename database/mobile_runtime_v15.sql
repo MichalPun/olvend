@@ -9,6 +9,10 @@ alter table public.service_requests
   add column if not exists next_recommendation text,
   add column if not exists internal_service_note text;
 
+alter table public.mobile_stock_requests
+  add column if not exists stock_applied_at timestamp with time zone,
+  add column if not exists stock_reference_id text;
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'shift-documents',

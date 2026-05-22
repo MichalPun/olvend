@@ -613,6 +613,10 @@
             <span class="icon">V</span>
             <span><h3>Vykládka</h3><small>Vrácení použitelného zboží na sklad.</small></span>
           </button>
+          <button class="tile" data-stock-type="vehicle_sale" type="button">
+            <span class="icon green">P</span>
+            <span><h3>Prodej</h3><small>Dočasný odpis prodaných kusů z vozidla.</small></span>
+          </button>
           <button class="tile" data-stock-type="vehicle_writeoff" type="button">
             <span class="icon red">W</span>
             <span><h3>Vratky</h3><small>Prošlé, poškozené nebo odpis.</small></span>
@@ -722,6 +726,7 @@
       instructions: [],
       acknowledgements: [],
       stockRequests: [],
+      stockRequestItems: [],
       selectedStockType: 'vehicle_order',
       fuelReceiptUploading: false
     }
@@ -1041,11 +1046,22 @@
         <div class="row">
           <div>
             <strong>${escapeHtml(stockTypeLabels[request.request_type] || request.request_type)} #${request.id}</strong>
-            <span>${escapeHtml(request.note || 'Bez poznámky')} · ${escapeHtml(request.status)} · ${escapeHtml(request.requested_for_date || '')}</span>
+            <span>${escapeHtml(getStockRequestItemSummary(request.id) || request.note || 'Bez položek')} · ${escapeHtml(request.status)} · ${escapeHtml(request.requested_for_date || '')}</span>
           </div>
-          <span class="badge ${request.status === 'ready' ? '' : request.status === 'cancelled' ? 'red' : 'yellow'}">${escapeHtml(request.status)}</span>
+          ${request.status === 'ready' ? `<button class="secondary-btn" style="width:auto; min-height:48px;" data-stock-request-action="confirm-ready" data-request-id="${request.id}" type="button">Převzít</button>` : `<span class="badge ${request.status === 'confirmed' ? '' : request.status === 'cancelled' ? 'red' : 'yellow'}">${escapeHtml(request.status)}</span>`}
         </div>
       `).join('')
+    }
+
+    function getStockRequestItems(requestId) {
+      return state.stockRequestItems.filter((item) => String(item.request_id) === String(requestId))
+    }
+
+    function getStockRequestItemSummary(requestId) {
+      return getStockRequestItems(requestId)
+        .slice(0, 3)
+        .map((item) => `${item.product_name || 'Produkt'} ${Number(item.prepared_quantity ?? item.confirmed_quantity ?? item.requested_quantity ?? 0).toFixed(0)} ${item.unit || 'ks'}`)
+        .join(' / ')
     }
 
     function renderEmployee() {
@@ -1214,9 +1230,25 @@
         .limit(20)
       if (error) {
         state.stockRequests = []
+        state.stockRequestItems = []
         return
       }
       state.stockRequests = data || []
+      const requestIds = state.stockRequests.map((request) => request.id)
+      if (!requestIds.length) {
+        state.stockRequestItems = []
+        return
+      }
+      const { data: items, error: itemsError } = await supabase
+        .from('mobile_stock_request_items')
+        .select('*')
+        .in('request_id', requestIds)
+        .order('id', { ascending: true })
+      if (itemsError) {
+        state.stockRequestItems = []
+        return
+      }
+      state.stockRequestItems = items || []
     }
 
     async function reloadData() {
@@ -1455,10 +1487,33 @@
       })
       if (itemError) throw itemError
 
+      if (request.status === 'confirmed') {
+        await applyStockRequestToInventory(request, [{
+          request_id: request.id,
+          product_id: product?.id || null,
+          product_name: product?.name || productText,
+          sku: product?.sku || null,
+          unit: product?.base_unit || 'ks',
+          requested_quantity: quantity,
+          confirmed_quantity: quantity
+        }])
+      }
+
       els.stockProductInput.value = ''
       els.stockQuantityInput.value = '1'
       els.stockNoteInput.value = ''
-      showMessage(state.selectedStockType === 'vehicle_order' ? 'Objednávka byla odeslána skladníkovi.' : 'Skladový doklad byl uložen.')
+      showMessage(state.selectedStockType === 'vehicle_order' ? 'Objednávka byla odeslána skladníkovi.' : 'Skladový doklad byl uložený a promítnutý do zásob.')
+      await loadStockRequests()
+      renderStockRequests()
+      renderImportant()
+    }
+
+    async function confirmReadyStockRequest(requestId) {
+      const request = state.stockRequests.find((item) => String(item.id) === String(requestId))
+      if (!request) throw new Error('Doklad už není v načteném seznamu.')
+      if (request.status !== 'ready') throw new Error('Potvrdit lze jen doklad připravený skladníkem.')
+      await applyStockRequestToInventory(request)
+      showMessage('Nakládka byla potvrzená a promítnutá do zásob.')
       await loadStockRequests()
       renderStockRequests()
       renderImportant()
@@ -1514,6 +1569,179 @@
       } finally {
         state.fuelReceiptUploading = false
       }
+    }
+
+    async function ensureStockLocation(locationType, entityId, fallbackName) {
+      const idColumn = locationType === 'warehouse' ? 'warehouse_id' : locationType === 'vehicle' ? 'vehicle_id' : ''
+      if (!idColumn || !entityId) throw new Error('Chybí skladové místo pro pohyb zásob.')
+      const { data: existing, error: existingError } = await supabase
+        .from('stock_locations')
+        .select('id')
+        .eq('location_type', locationType)
+        .eq(idColumn, entityId)
+        .limit(1)
+        .maybeSingle()
+      if (existingError) throw existingError
+      if (existing?.id) return existing.id
+
+      const { data: created, error } = await supabase
+        .from('stock_locations')
+        .insert({
+          location_type: locationType,
+          [idColumn]: entityId,
+          name: fallbackName,
+          active: true
+        })
+        .select('id')
+        .single()
+      if (error) throw error
+      return created.id
+    }
+
+    async function getBalanceRecord(stockLocationId, productId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, quantity_on_hand')
+        .eq('stock_location_id', stockLocationId)
+        .eq('product_id', productId)
+        .is('batch_id', null)
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      return data || null
+    }
+
+    async function applyBalanceDelta(stockLocationId, productId, delta) {
+      if (!stockLocationId || !productId || !delta) return
+      const record = await getBalanceRecord(stockLocationId, productId)
+      const currentQty = Number(record?.quantity_on_hand || 0)
+      const nextQty = Number((currentQty + delta).toFixed(3))
+      if (record?.id) {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+          .eq('id', record.id)
+        if (error) throw error
+        return
+      }
+      const { error } = await supabase.from('stock_location_balances').insert({
+        stock_location_id: stockLocationId,
+        product_id: productId,
+        quantity_on_hand: nextQty,
+        reserved_quantity: 0
+      })
+      if (error) throw error
+    }
+
+    function getRequestQuantity(item) {
+      return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
+    }
+
+    async function applyStockRequestToInventory(request, items = getStockRequestItems(request.id)) {
+      if (!request?.id) throw new Error('Chybí skladový doklad.')
+      if (request.stock_applied_at) return
+      if (!items.length) throw new Error('Skladový doklad nemá žádné položky.')
+
+      const vehicleId = request.vehicle_id || state.attendanceDay?.vehicle_id || state.vehicleLog?.vehicle_id || null
+      const vehicle = state.vehicles.find((item) => String(item.id) === String(vehicleId))
+      const warehouseId = request.warehouse_id || vehicle?.warehouse_id || null
+      const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
+      const movementRows = []
+
+      let warehouseLocationId = null
+      let vehicleLocationId = null
+      if (warehouseId && ['vehicle_load', 'vehicle_order', 'vehicle_unload'].includes(request.request_type)) {
+        warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, `Sklad ${warehouseId}`)
+      }
+      if (vehicleId) {
+        vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : `Vozidlo ${vehicleId}`)
+      }
+
+      for (const item of items) {
+        const productId = item.product_id
+        const quantity = getRequestQuantity(item)
+        if (!productId || quantity <= 0) continue
+
+        if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
+          if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro nakládku chybí sklad nebo vozidlo.')
+          await applyBalanceDelta(warehouseLocationId, productId, -quantity)
+          await applyBalanceDelta(vehicleLocationId, productId, quantity)
+          movementRows.push({
+            product_id: productId,
+            from_stock_location_id: warehouseLocationId,
+            to_stock_location_id: vehicleLocationId,
+            movement_type: 'load_vehicle',
+            quantity_base_units: quantity,
+            reference_type: 'mobile_stock_request',
+            reference_id: referenceId,
+            created_by: state.employee.id,
+            note: `Mobilní nakládka #${request.id}`
+          })
+        }
+
+        if (request.request_type === 'vehicle_unload') {
+          if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro vykládku chybí sklad nebo vozidlo.')
+          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
+          await applyBalanceDelta(warehouseLocationId, productId, quantity)
+          movementRows.push({
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            to_stock_location_id: warehouseLocationId,
+            movement_type: 'return',
+            quantity_base_units: quantity,
+            reference_type: 'mobile_stock_request',
+            reference_id: referenceId,
+            created_by: state.employee.id,
+            note: `Mobilní vykládka #${request.id}`
+          })
+        }
+
+        if (request.request_type === 'vehicle_sale') {
+          if (!vehicleLocationId) throw new Error('Pro prodej chybí vozidlo.')
+          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
+          movementRows.push({
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            movement_type: 'sale',
+            quantity_base_units: quantity,
+            reference_type: 'mobile_stock_request',
+            reference_id: referenceId,
+            created_by: state.employee.id,
+            note: `Mobilní prodej z vozidla #${request.id}`
+          })
+        }
+
+        if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
+          if (!vehicleLocationId) throw new Error('Pro vratku/odpis chybí vozidlo.')
+          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
+          movementRows.push({
+            product_id: productId,
+            from_stock_location_id: vehicleLocationId,
+            movement_type: 'waste',
+            quantity_base_units: quantity,
+            reference_type: 'mobile_stock_request',
+            reference_id: referenceId,
+            created_by: state.employee.id,
+            note: `Mobilní vratka/odpis #${request.id}`
+          })
+        }
+      }
+
+      if (!movementRows.length) throw new Error('Skladový doklad nemá platnou položku se skladovou kartou.')
+      const { error: movementError } = await supabase.from('stock_movements_v13').insert(movementRows)
+      if (movementError) throw movementError
+
+      const { error: requestError } = await supabase
+        .from('mobile_stock_requests')
+        .update({
+          status: 'confirmed',
+          confirmed_by: state.employee.id,
+          confirmed_at: new Date().toISOString(),
+          stock_applied_at: new Date().toISOString(),
+          stock_reference_id: referenceId
+        })
+        .eq('id', request.id)
+      if (requestError) throw requestError
     }
 
     async function handleServiceAction(action, id) {
@@ -1632,6 +1860,11 @@
         const button = event.target.closest('[data-service-action]')
         if (!button) return
         handleServiceAction(button.dataset.serviceAction, button.dataset.id).catch(handleError)
+      })
+      els.stockRequestList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-stock-request-action="confirm-ready"]')
+        if (!button) return
+        confirmReadyStockRequest(button.dataset.requestId).catch(handleError)
       })
     }
 
