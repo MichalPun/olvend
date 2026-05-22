@@ -472,10 +472,25 @@
               <div class="panel-header">
                 <div>
                   <h2 style="font-size:18px;">Ruční doklady pohybů</h2>
-                  <p>Převodky a ruční prodeje zapsané z této obrazovky. Když něco proběhne napůl, otevři doklad jako opravu a uloží se vyrovnávací pohyby.</p>
+                  <p id="manualTransferDocsSummary">Převodky a ruční prodeje zapsané z této obrazovky.</p>
                 </div>
+                <button class="btn secondary" type="button" id="toggleManualTransferDocsBtn">Zobrazit doklady</button>
               </div>
-              <div class="panel-body">
+              <div class="panel-body hidden" id="manualTransferDocsContent">
+                <div class="toolbar">
+                  <input id="manualTransferDocsSearch" type="text" placeholder="Hledat doklad, položku, auto nebo sklad..." />
+                  <select id="manualTransferDocsDirectionFilter">
+                    <option value="">Všechny směry</option>
+                    <option value="warehouse_to_vehicle">Sklad → vozidlo</option>
+                    <option value="vehicle_to_warehouse">Vozidlo → sklad</option>
+                    <option value="vehicle_sale">Prodej z vozidla</option>
+                  </select>
+                  <select id="manualTransferDocsLimitFilter">
+                    <option value="8">Posledních 8</option>
+                    <option value="20">Posledních 20</option>
+                    <option value="all">Všechny doklady</option>
+                  </select>
+                </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -997,6 +1012,12 @@
     const stockV13Head = document.getElementById('stockV13Head')
     const stockV13Body = document.getElementById('stockV13Body')
     const stockV13Empty = document.getElementById('stockV13Empty')
+    const manualTransferDocsContent = document.getElementById('manualTransferDocsContent')
+    const manualTransferDocsSummary = document.getElementById('manualTransferDocsSummary')
+    const toggleManualTransferDocsBtn = document.getElementById('toggleManualTransferDocsBtn')
+    const manualTransferDocsSearch = document.getElementById('manualTransferDocsSearch')
+    const manualTransferDocsDirectionFilter = document.getElementById('manualTransferDocsDirectionFilter')
+    const manualTransferDocsLimitFilter = document.getElementById('manualTransferDocsLimitFilter')
     const manualTransferDocsBody = document.getElementById('manualTransferDocsBody')
     const manualTransferDocsEmpty = document.getElementById('manualTransferDocsEmpty')
     const productCatalogStatus = document.getElementById('productCatalogStatus')
@@ -1099,6 +1120,7 @@
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
     let editingTransferDoc = null
+    let manualTransferDocsCollapsed = true
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v1'
     const STOCK_V13_COLUMNS = [
       { key: 'product', label: 'Produkt' },
@@ -2421,9 +2443,45 @@
     }
     function renderManualTransferDocs() {
       if (!manualTransferDocsBody) return
-      const docs = getManualTransferDocs().slice(0, 20)
+      const allDocs = getManualTransferDocs()
+      const search = normalizeText(manualTransferDocsSearch?.value || '')
+      const directionFilter = manualTransferDocsDirectionFilter?.value || ''
+      const limitFilter = manualTransferDocsLimitFilter?.value || '8'
+      let docs = allDocs.map((doc) => ({ ...doc, direction: getTransferDocDirection(doc) }))
+      if (directionFilter) docs = docs.filter((doc) => doc.direction === directionFilter)
+      if (search) {
+        docs = docs.filter((doc) => {
+          const searchable = [
+            doc.referenceId,
+            doc.referenceType,
+            getTransferDocDirectionLabel(doc.direction),
+            ...doc.movements.flatMap((movement) => [
+              movement.product?.name,
+              movement.product?.sku,
+              movement.fromLocation?.name,
+              movement.toLocation?.name,
+              movement.note
+            ])
+          ].filter(Boolean).join(' ')
+          return normalizeText(searchable).includes(search)
+        })
+      }
+      const filteredCount = docs.length
+      if (limitFilter !== 'all') docs = docs.slice(0, Number(limitFilter || 8))
+      manualTransferDocsContent?.classList.toggle('hidden', manualTransferDocsCollapsed)
+      if (toggleManualTransferDocsBtn) toggleManualTransferDocsBtn.textContent = manualTransferDocsCollapsed ? `Zobrazit doklady (${allDocs.length})` : 'Sbalit doklady'
+      if (manualTransferDocsSummary) {
+        manualTransferDocsSummary.textContent = manualTransferDocsCollapsed
+          ? `Evidujeme ${allDocs.length} ručních dokladů. Rozbal jen při kontrole nebo opravě.`
+          : `Zobrazeno ${docs.length} z ${filteredCount} vyfiltrovaných dokladů.`
+      }
+      if (manualTransferDocsCollapsed) {
+        manualTransferDocsBody.innerHTML = ''
+        manualTransferDocsEmpty.style.display = 'none'
+        return
+      }
       manualTransferDocsBody.innerHTML = docs.map((doc) => {
-        const direction = getTransferDocDirection(doc)
+        const direction = doc.direction
         const first = doc.movements[0] || {}
         const source = first.fromLocation?.name || 'Bez zdroje'
         const target = first.toLocation?.name || (direction === 'vehicle_sale' ? 'Prodej' : 'Bez cíle')
@@ -2440,6 +2498,7 @@
           </tr>
         `
       }).join('')
+      manualTransferDocsEmpty.textContent = allDocs.length ? 'Žádný ruční doklad neodpovídá filtrům.' : 'Zatím tu nejsou žádné ruční převodky ani prodeje.'
       manualTransferDocsEmpty.style.display = docs.length ? 'none' : 'block'
     }
     async function loadInventoryV13Overview() {
@@ -3833,6 +3892,13 @@
     stockV13LocationTypeFilter.addEventListener('change', renderStockV13Rows)
     stockV13LocationFilter.addEventListener('change', renderStockV13Rows)
     stockV13StateFilter.addEventListener('change', renderStockV13Rows)
+    toggleManualTransferDocsBtn.addEventListener('click', () => {
+      manualTransferDocsCollapsed = !manualTransferDocsCollapsed
+      renderManualTransferDocs()
+    })
+    manualTransferDocsSearch.addEventListener('input', renderManualTransferDocs)
+    manualTransferDocsDirectionFilter.addEventListener('change', renderManualTransferDocs)
+    manualTransferDocsLimitFilter.addEventListener('change', renderManualTransferDocs)
     stockV13Head.addEventListener('dragstart', (event) => {
       const header = event.target.closest('[data-stock-column]')
       if (!header) return
