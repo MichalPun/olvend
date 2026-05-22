@@ -431,6 +431,55 @@
           </div>
           <div class="panel-body">
             <div class="status-line" id="stockV13Status">Načítám stavy zásob...</div>
+            <div class="panel" style="margin-bottom:16px; background:rgba(255,255,255,0.02);">
+              <div class="panel-header">
+                <div>
+                  <h2 style="font-size:18px;">Vychystání pro mobil</h2>
+                  <p id="mobilePickRequestsSummary">Objednávky operátorů z mobilní verze čekající na skladníka.</p>
+                </div>
+                <button class="btn secondary" type="button" id="toggleMobilePickRequestsBtn">Zobrazit požadavky</button>
+              </div>
+              <div class="panel-body hidden" id="mobilePickRequestsContent">
+                <div class="toolbar">
+                  <input id="mobilePickRequestsSearch" type="text" placeholder="Hledat operátora, auto, položku nebo poznámku..." />
+                  <select id="mobilePickRequestsStatusFilter">
+                    <option value="">Všechny stavy</option>
+                    <option value="requested">Čeká na vychystání</option>
+                    <option value="picking">Vychystává se</option>
+                    <option value="ready">Připraveno k převzetí</option>
+                    <option value="confirmed">Potvrzeno</option>
+                  </select>
+                  <select id="mobilePickRequestsTypeFilter">
+                    <option value="">Všechny typy</option>
+                    <option value="vehicle_order">Objednávka</option>
+                    <option value="vehicle_load">Nakládka</option>
+                    <option value="vehicle_unload">Vykládka</option>
+                    <option value="vehicle_writeoff">Vratky / odpis</option>
+                  </select>
+                  <select id="mobilePickRequestsLimitFilter">
+                    <option value="10">Posledních 10</option>
+                    <option value="25">Posledních 25</option>
+                    <option value="all">Všechny</option>
+                  </select>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Doklad</th>
+                        <th>Operátor / vozidlo</th>
+                        <th>Položky</th>
+                        <th>Stav</th>
+                        <th>Datum</th>
+                        <th>Akce</th>
+                      </tr>
+                    </thead>
+                    <tbody id="mobilePickRequestsBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty-state" id="mobilePickRequestsEmpty" style="display:none;">Zatím tu nejsou žádné mobilní požadavky na skladníka.</div>
+              </div>
+            </div>
             <div class="summary-grid" id="stockV13Summary"></div>
             <div class="toolbar">
               <input id="stockV13Search" type="text" placeholder="Hledat podle produktu, SKU, EAN nebo umístění..." />
@@ -1020,6 +1069,15 @@
     const manualTransferDocsLimitFilter = document.getElementById('manualTransferDocsLimitFilter')
     const manualTransferDocsBody = document.getElementById('manualTransferDocsBody')
     const manualTransferDocsEmpty = document.getElementById('manualTransferDocsEmpty')
+    const mobilePickRequestsContent = document.getElementById('mobilePickRequestsContent')
+    const mobilePickRequestsSummary = document.getElementById('mobilePickRequestsSummary')
+    const toggleMobilePickRequestsBtn = document.getElementById('toggleMobilePickRequestsBtn')
+    const mobilePickRequestsSearch = document.getElementById('mobilePickRequestsSearch')
+    const mobilePickRequestsStatusFilter = document.getElementById('mobilePickRequestsStatusFilter')
+    const mobilePickRequestsTypeFilter = document.getElementById('mobilePickRequestsTypeFilter')
+    const mobilePickRequestsLimitFilter = document.getElementById('mobilePickRequestsLimitFilter')
+    const mobilePickRequestsBody = document.getElementById('mobilePickRequestsBody')
+    const mobilePickRequestsEmpty = document.getElementById('mobilePickRequestsEmpty')
     const productCatalogStatus = document.getElementById('productCatalogStatus')
     const productCatalogSummary = document.getElementById('productCatalogSummary')
     const productCatalogSearch = document.getElementById('productCatalogSearch')
@@ -1121,6 +1179,10 @@
     let currentDetailContext = null
     let editingTransferDoc = null
     let manualTransferDocsCollapsed = true
+    let mobilePickRequestsCollapsed = false
+    let mobileStockRequests = []
+    let mobileStockRequestItems = []
+    let mobileStockRequestEmployees = []
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v1'
     const STOCK_V13_COLUMNS = [
       { key: 'product', label: 'Produkt' },
@@ -2501,6 +2563,224 @@
       manualTransferDocsEmpty.textContent = allDocs.length ? 'Žádný ruční doklad neodpovídá filtrům.' : 'Zatím tu nejsou žádné ruční převodky ani prodeje.'
       manualTransferDocsEmpty.style.display = docs.length ? 'none' : 'block'
     }
+    function getMobileStockTypeLabel(type) {
+      return {
+        vehicle_order: 'Objednávka',
+        vehicle_load: 'Nakládka',
+        vehicle_unload: 'Vykládka',
+        vehicle_sale: 'Prodej z vozidla',
+        vehicle_return: 'Vratka',
+        vehicle_writeoff: 'Vratky / odpis'
+      }[type] || 'Doklad'
+    }
+    function getMobileStockStatusLabel(status) {
+      return {
+        draft: 'Rozpracováno',
+        requested: 'Čeká na vychystání',
+        picking: 'Vychystává se',
+        ready: 'Připraveno',
+        confirmed: 'Potvrzeno',
+        cancelled: 'Zrušeno'
+      }[status] || status || 'Bez stavu'
+    }
+    function getMobileStockStatusBadge(status) {
+      if (status === 'ready' || status === 'confirmed') return 'good'
+      if (status === 'cancelled') return 'bad'
+      return 'warn'
+    }
+    function getEmployeeLabel(id) {
+      const item = mobileStockRequestEmployees.find((employee) => String(employee.id) === String(id))
+      return item ? [item.name, item.surname].filter(Boolean).join(' ') || item.email || 'Zaměstnanec' : 'Bez operátora'
+    }
+    function getVehicleLabel(id) {
+      const item = vehicles.find((vehicle) => String(vehicle.id) === String(id))
+      return item ? [item.name, item.plate].filter(Boolean).join(' · ') : 'Bez vozidla'
+    }
+    function getMobileRequestItems(requestId) {
+      return mobileStockRequestItems.filter((item) => String(item.request_id) === String(requestId))
+    }
+    function getMobilePickRequestRows() {
+      const employeeIds = new Set()
+      mobileStockRequests.forEach((request) => {
+        if (request.employee_id) employeeIds.add(String(request.employee_id))
+        if (request.prepared_by) employeeIds.add(String(request.prepared_by))
+        if (request.confirmed_by) employeeIds.add(String(request.confirmed_by))
+      })
+      return mobileStockRequests
+        .map((request) => ({
+          ...request,
+          items: getMobileRequestItems(request.id),
+          employeeLabel: getEmployeeLabel(request.employee_id),
+          vehicleLabel: getVehicleLabel(request.vehicle_id)
+        }))
+        .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    }
+    function renderMobilePickRequests() {
+      if (!mobilePickRequestsBody) return
+      const allRows = getMobilePickRequestRows()
+      const openRows = allRows.filter((row) => ['requested', 'picking', 'ready'].includes(row.status))
+      const search = normalizeText(mobilePickRequestsSearch?.value || '')
+      const statusFilter = mobilePickRequestsStatusFilter?.value || ''
+      const typeFilter = mobilePickRequestsTypeFilter?.value || ''
+      const limitFilter = mobilePickRequestsLimitFilter?.value || '10'
+
+      let rows = [...allRows]
+      if (statusFilter) rows = rows.filter((row) => row.status === statusFilter)
+      if (typeFilter) rows = rows.filter((row) => row.request_type === typeFilter)
+      if (search) {
+        rows = rows.filter((row) => {
+          const searchable = [
+            row.id,
+            getMobileStockTypeLabel(row.request_type),
+            getMobileStockStatusLabel(row.status),
+            row.employeeLabel,
+            row.vehicleLabel,
+            row.note,
+            ...row.items.flatMap((item) => [item.product_name, item.sku, item.note])
+          ].filter(Boolean).join(' ')
+          return normalizeText(searchable).includes(search)
+        })
+      }
+      const filteredCount = rows.length
+      if (limitFilter !== 'all') rows = rows.slice(0, Number(limitFilter || 10))
+
+      mobilePickRequestsContent?.classList.toggle('hidden', mobilePickRequestsCollapsed)
+      if (toggleMobilePickRequestsBtn) {
+        toggleMobilePickRequestsBtn.textContent = mobilePickRequestsCollapsed ? `Zobrazit požadavky (${openRows.length})` : 'Sbalit požadavky'
+      }
+      if (mobilePickRequestsSummary) {
+        mobilePickRequestsSummary.textContent = mobilePickRequestsCollapsed
+          ? `${openRows.length} požadavků čeká na skladníka.`
+          : `Zobrazeno ${rows.length} z ${filteredCount} požadavků. Otevřené: ${openRows.length}.`
+      }
+      if (mobilePickRequestsCollapsed) {
+        mobilePickRequestsBody.innerHTML = ''
+        mobilePickRequestsEmpty.style.display = 'none'
+        return
+      }
+
+      mobilePickRequestsBody.innerHTML = rows.map((row) => {
+        const itemsLabel = row.items.slice(0, 3).map((item) => `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)} ${item.unit || 'ks'}`).join(' / ')
+        const detailRows = row.items.map((item) => {
+          const prepared = item.prepared_quantity ?? item.requested_quantity ?? 0
+          return `
+            <div class="config-table-row" style="grid-template-columns:minmax(220px,1.4fr) minmax(100px,0.45fr) minmax(120px,0.45fr) minmax(180px,0.8fr); margin-top:8px;">
+              <div><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml([item.sku, item.unit].filter(Boolean).join(' · ') || 'Bez kódu')}</span></div>
+              <div><strong>${escapeHtml(Number(item.requested_quantity || 0).toFixed(2))}</strong><span class="subtext">Požadováno</span></div>
+              <input data-mobile-pick-qty data-item-id="${escapeHtml(String(item.id))}" type="number" step="0.001" min="0" value="${escapeHtml(prepared)}" />
+              <input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" />
+            </div>
+          `
+        }).join('')
+
+        return `
+          <tr>
+            <td data-label="Doklad"><strong>#${escapeHtml(row.id)}</strong><span class="subtext">${escapeHtml(getMobileStockTypeLabel(row.request_type))}</span></td>
+            <td data-label="Operátor / vozidlo"><strong>${escapeHtml(row.employeeLabel)}</strong><span class="subtext">${escapeHtml(row.vehicleLabel)}</span></td>
+            <td data-label="Položky"><strong>${escapeHtml(itemsLabel || 'Bez položek')}</strong><span class="subtext">${escapeHtml(row.items.length)} řádků</span></td>
+            <td data-label="Stav"><span class="badge ${getMobileStockStatusBadge(row.status)}">${escapeHtml(getMobileStockStatusLabel(row.status))}</span><span class="subtext">${escapeHtml(row.note || 'Bez poznámky')}</span></td>
+            <td data-label="Datum"><strong>${row.created_at ? escapeHtml(new Date(row.created_at).toLocaleString('cs-CZ')) : 'Bez data'}</strong><span class="subtext">${escapeHtml(row.requested_for_date || '')}</span></td>
+            <td data-label="Akce">
+              <div class="action-row">
+                ${row.status === 'requested' ? `<button class="btn secondary" type="button" data-mobile-pick-action="start" data-request-id="${escapeHtml(String(row.id))}">Převzít</button>` : ''}
+                ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `<button class="btn" type="button" data-mobile-pick-action="ready" data-request-id="${escapeHtml(String(row.id))}">Označit vychystané</button>` : ''}
+                ${row.status !== 'cancelled' && row.status !== 'confirmed' ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="6" data-label="Vychystání">
+              <details class="detail-section" style="box-shadow:none; margin-top:0;" ${row.status === 'picking' ? 'open' : ''}>
+                <summary style="padding:0; margin-bottom:12px;">Řádky k vychystání <span class="badge">${escapeHtml(row.items.length)} položek</span></summary>
+                ${detailRows || '<div class="empty-state">Doklad nemá položky.</div>'}
+              </details>
+            </td>
+          </tr>
+        `
+      }).join('')
+      mobilePickRequestsEmpty.textContent = allRows.length ? 'Žádný mobilní požadavek neodpovídá filtrům.' : 'Zatím tu nejsou žádné mobilní požadavky na skladníka.'
+      mobilePickRequestsEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    async function loadMobilePickRequests() {
+      try {
+        const { data: requests, error: requestsError } = await supabase
+          .from('mobile_stock_requests')
+          .select('*')
+          .in('request_type', ['vehicle_order', 'vehicle_load', 'vehicle_unload', 'vehicle_return', 'vehicle_writeoff'])
+          .order('created_at', { ascending: false })
+          .limit(100)
+        if (requestsError) throw requestsError
+
+        const requestIds = (requests || []).map((request) => request.id)
+        const employeeIds = [...new Set((requests || []).flatMap((request) => [request.employee_id, request.prepared_by, request.confirmed_by]).filter(Boolean))]
+        const [itemsResult, employeesResult] = await Promise.all([
+          requestIds.length
+            ? supabase.from('mobile_stock_request_items').select('*').in('request_id', requestIds).order('id', { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
+          employeeIds.length
+            ? supabase.from('employees').select('id, name, surname, email').in('id', employeeIds)
+            : Promise.resolve({ data: [], error: null })
+        ])
+        if (itemsResult.error || employeesResult.error) throw itemsResult.error || employeesResult.error
+
+        mobileStockRequests = requests || []
+        mobileStockRequestItems = itemsResult.data || []
+        mobileStockRequestEmployees = employeesResult.data || []
+        renderMobilePickRequests()
+      } catch (error) {
+        console.error(error)
+        mobileStockRequests = []
+        mobileStockRequestItems = []
+        mobileStockRequestEmployees = []
+        if (mobilePickRequestsSummary) {
+          mobilePickRequestsSummary.textContent = `Mobilní požadavky zatím nejdou načíst: ${error.message}`
+        }
+        renderMobilePickRequests()
+      }
+    }
+    async function updateMobilePickRequestStatus(requestId, status) {
+      const payload = { status }
+      if (status === 'picking') payload.prepared_at = null
+      if (status === 'ready') payload.prepared_at = new Date().toISOString()
+      if (status === 'cancelled') payload.note = 'Zrušeno skladníkem.'
+      const { error } = await supabase.from('mobile_stock_requests').update(payload).eq('id', requestId)
+      if (error) throw error
+    }
+    async function saveMobilePickPreparedItems(requestId) {
+      const rows = [...mobilePickRequestsBody.querySelectorAll(`[data-mobile-pick-qty]`)]
+        .filter((input) => {
+          const item = mobileStockRequestItems.find((candidate) => String(candidate.id) === String(input.dataset.itemId))
+          return item && String(item.request_id) === String(requestId)
+        })
+      for (const input of rows) {
+        const itemId = input.dataset.itemId
+        const noteInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-note][data-item-id="${CSS.escape(itemId)}"]`)
+        const { error } = await supabase
+          .from('mobile_stock_request_items')
+          .update({
+            prepared_quantity: Number(input.value || 0),
+            note: noteInput?.value.trim() || null
+          })
+          .eq('id', itemId)
+        if (error) throw error
+      }
+    }
+    async function handleMobilePickAction(action, requestId) {
+      if (action === 'start') {
+        await updateMobilePickRequestStatus(requestId, 'picking')
+        setStockV13Status('Požadavek je označený jako převzatý k vychystání.', 'success')
+      }
+      if (action === 'ready') {
+        await saveMobilePickPreparedItems(requestId)
+        await updateMobilePickRequestStatus(requestId, 'ready')
+        setStockV13Status('Požadavek je připravený k převzetí operátorem.', 'success')
+      }
+      if (action === 'cancel') {
+        await updateMobilePickRequestStatus(requestId, 'cancelled')
+        setStockV13Status('Mobilní požadavek byl zrušený.', 'success')
+      }
+      await loadMobilePickRequests()
+    }
     async function loadInventoryV13Overview() {
       try {
         setStockV13Status('Načítám stavy zásob...')
@@ -2543,6 +2823,7 @@
         renderStockV13Summary(rows)
         renderStockV13Rows()
         renderProductCatalogRows()
+        await loadMobilePickRequests()
         setStockV13Status(`Načteno položek ve stavech zásob: ${rows.length}`, 'success')
         setProductCatalogStatus(recipesAvailable ? `Načteno produktových karet: ${productsV13.length}` : `Načteno produktových karet: ${productsV13.length}. Receptury čekají na DB tabulky recipes / recipe_items.`, recipesAvailable ? 'success' : 'error')
       } catch (error) {
@@ -3899,6 +4180,14 @@
     manualTransferDocsSearch.addEventListener('input', renderManualTransferDocs)
     manualTransferDocsDirectionFilter.addEventListener('change', renderManualTransferDocs)
     manualTransferDocsLimitFilter.addEventListener('change', renderManualTransferDocs)
+    toggleMobilePickRequestsBtn.addEventListener('click', () => {
+      mobilePickRequestsCollapsed = !mobilePickRequestsCollapsed
+      renderMobilePickRequests()
+    })
+    mobilePickRequestsSearch.addEventListener('input', renderMobilePickRequests)
+    mobilePickRequestsStatusFilter.addEventListener('change', renderMobilePickRequests)
+    mobilePickRequestsTypeFilter.addEventListener('change', renderMobilePickRequests)
+    mobilePickRequestsLimitFilter.addEventListener('change', renderMobilePickRequests)
     stockV13Head.addEventListener('dragstart', (event) => {
       const header = event.target.closest('[data-stock-column]')
       if (!header) return
@@ -4127,6 +4416,19 @@
       const button = event.target.closest('[data-transfer-doc-action]')
       if (!button) return
       if (button.dataset.transferDocAction === 'edit') openManualTransferDocCorrection(button.dataset.transferDocId || '')
+    })
+    mobilePickRequestsBody.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-mobile-pick-action]')
+      if (!button) return
+      try {
+        button.disabled = true
+        await handleMobilePickAction(button.dataset.mobilePickAction || '', button.dataset.requestId || '')
+      } catch (error) {
+        console.error(error)
+        setStockV13Status(`Mobilní požadavek se nepodařilo upravit: ${error.message}`, 'error')
+      } finally {
+        button.disabled = false
+      }
     })
     detailModalContent.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-detail-action]')
