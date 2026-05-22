@@ -94,6 +94,7 @@
     .field.full { grid-column:1 / -1; }
     .field label { font-size:13px; color:var(--muted); font-weight:700; }
     .helper-line { margin-top:14px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); color:var(--muted); font-size:13px; line-height:1.55; }
+    .helper-line.error { color:#ffc2c8; border-color:rgba(239,68,68,0.42); background:rgba(239,68,68,0.08); }
     .detail-shell { display:grid; gap:16px; }
     .detail-hero { display:grid; grid-template-columns:minmax(0,1.3fr) auto; gap:14px; padding:16px; border-radius:18px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
     .detail-hero h4 { margin:0 0 8px; font-size:28px; }
@@ -820,6 +821,11 @@
               <label for="simpleTransferNote">Poznámka</label>
               <textarea id="simpleTransferNote" placeholder="Např. ranní naložení / vratka po trase"></textarea>
             </div>
+            <div class="field full" id="simpleTransferImportField">
+              <label for="simpleTransferImportFile">Načíst soubor ze současného systému</label>
+              <input id="simpleTransferImportFile" type="file" accept=".xlsx,.xls,.xml,.csv,.txt" />
+              <div class="helper-line" id="simpleTransferImportStatus">Nahraj CheckOut XLSX pro naložení auta, nebo XML/CSV pro prodej z vozidla.</div>
+            </div>
           </div>
           <div class="transfer-lines">
             <div class="transfer-line-head initial-stock-head">
@@ -958,6 +964,7 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="./sidebar.js?v=20260518v15issued"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -1028,6 +1035,8 @@
     const movementForm = document.getElementById('movementForm')
     const simpleTransferForm = document.getElementById('simpleTransferForm')
     const simpleTransferLines = document.getElementById('simpleTransferLines')
+    const simpleTransferImportFile = document.getElementById('simpleTransferImportFile')
+    const simpleTransferImportStatus = document.getElementById('simpleTransferImportStatus')
     const initialStockForm = document.getElementById('initialStockForm')
     const initialStockLines = document.getElementById('initialStockLines')
     const bagettePilotForm = document.getElementById('bagettePilotForm')
@@ -2853,10 +2862,120 @@
         }))
         .filter((row) => row.productId || row.quantity > 0 || row.note)
     }
+    function normalizeLookupValue(value) {
+      return normalizeText(value).replace(/[^a-z0-9]+/g, '')
+    }
+    function findProductForImportName(name) {
+      const normalized = normalizeText(name)
+      const compact = normalizeLookupValue(name)
+      if (!normalized) return null
+      return productsV13.find((product) => {
+        const candidates = [product.name, product.sku, product.ean].map((value) => normalizeText(value))
+        const compactCandidates = [product.name, product.sku, product.ean].map((value) => normalizeLookupValue(value))
+        return candidates.includes(normalized) || compactCandidates.includes(compact)
+      }) || productsV13.find((product) => {
+        const productName = normalizeText(product.name)
+        return productName && (productName.includes(normalized) || normalized.includes(productName))
+      }) || null
+    }
+    function findVehicleForImportName(fileName) {
+      const normalizedFile = normalizeLookupValue(fileName)
+      return vehicles.find((vehicle) => {
+        const values = [vehicle.name, vehicle.license_plate, vehicle.plate, vehicle.registration_number, vehicle.code]
+        return values.some((value) => {
+          const normalized = normalizeLookupValue(value)
+          return normalized && normalizedFile.includes(normalized)
+        })
+      }) || null
+    }
+    function parseDateFromImportFileName(fileName) {
+      const match = String(fileName || '').match(/(20\d{2})[-_. ]?(\d{2})[-_. ]?(\d{2})/)
+      return match ? `${match[1]}-${match[2]}-${match[3]}` : ''
+    }
+    function normalizeImportRow(rawRow) {
+      const entries = Object.entries(rawRow || {})
+      const getByKey = (...keys) => {
+        const normalizedKeys = keys.map((key) => normalizeLookupValue(key))
+        const entry = entries.find(([key]) => normalizedKeys.includes(normalizeLookupValue(key)))
+        return entry ? entry[1] : ''
+      }
+      const productName = getByKey('Produkt', 'Položka', 'Název', 'Nazev', 'Product', 'Item', 'Name')
+      const quantityRaw = getByKey('Množství', 'Mnozstvi', 'Ks', 'Quantity', 'Qty', 'Count', 'Pocet')
+      const quantity = Number(String(quantityRaw ?? '').replace(',', '.').replace(/\s/g, ''))
+      return {
+        type: getByKey('Typ', 'Type', 'Kategorie') || '',
+        productName: String(productName ?? '').trim(),
+        quantity: Number.isFinite(quantity) ? quantity : 0
+      }
+    }
+    function parseTableRowsFromMatrix(matrix) {
+      const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
+      if (!rows.length) return []
+      const headerIndex = rows.findIndex((row) => row.some((cell) => normalizeLookupValue(cell) === 'produkt') && row.some((cell) => ['mnozstvi', 'quantity', 'qty', 'ks'].includes(normalizeLookupValue(cell))))
+      const headers = (headerIndex >= 0 ? rows[headerIndex] : ['Typ', 'Produkt', 'Množství']).map((cell) => String(cell ?? '').trim())
+      return rows.slice(headerIndex >= 0 ? headerIndex + 1 : 0)
+        .map((row) => Object.fromEntries(headers.map((header, index) => [header || `col_${index}`, row[index]])))
+        .map(normalizeImportRow)
+        .filter((row) => row.productName && row.quantity > 0)
+    }
+    async function parseTransferImportFile(file) {
+      const extension = String(file.name || '').split('.').pop().toLowerCase()
+      if (['xlsx', 'xls'].includes(extension)) {
+        if (!window.XLSX) throw new Error('Nepodařilo se načíst knihovnu pro Excel. Zkus stránku obnovit a soubor nahrát znovu.')
+        const buffer = await file.arrayBuffer()
+        const workbook = window.XLSX.read(buffer, { type: 'array' })
+        const sheet = workbook.Sheets[workbook.SheetNames[0]]
+        const matrix = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+        return parseTableRowsFromMatrix(matrix)
+      }
+      const text = await file.text()
+      if (extension === 'xml' || text.trim().startsWith('<')) return parseTransferImportXml(text)
+      const delimiter = text.includes(';') ? ';' : ','
+      const matrix = text.split(/\r?\n/).map((line) => line.split(delimiter).map((cell) => cell.trim().replace(/^"|"$/g, '')))
+      return parseTableRowsFromMatrix(matrix)
+    }
+    function parseTransferImportXml(text) {
+      const xml = new DOMParser().parseFromString(text, 'application/xml')
+      if (xml.querySelector('parsererror')) throw new Error('XML soubor se nepodařilo přečíst.')
+      const nodes = [...xml.querySelectorAll('row,item,polozka,product,produkt,record,line')]
+      const rows = nodes.map((node) => {
+        const object = {}
+        for (const attribute of node.attributes || []) object[attribute.name] = attribute.value
+        for (const child of node.children || []) object[child.tagName] = child.textContent
+        if (!Object.keys(object).length && node.textContent) object.Product = node.textContent
+        return normalizeImportRow(object)
+      }).filter((row) => row.productName && row.quantity > 0)
+      if (rows.length) return rows
+      const flatText = xml.documentElement?.textContent || ''
+      return parseTableRowsFromMatrix(flatText.split(/\r?\n/).map((line) => line.split(/[;\t,]/).map((cell) => cell.trim())))
+    }
+    function fillSimpleTransferFromImport(file, rows) {
+      const importedRows = rows.map((row) => {
+        const product = findProductForImportName(row.productName)
+        return {
+          productId: product?.id || '',
+          quantity: row.quantity,
+          note: product ? row.type : `Nepárováno: ${row.productName}`
+        }
+      })
+      simpleTransferLines.innerHTML = ''
+      importedRows.forEach((row) => addSimpleTransferLine(row))
+      const vehicle = findVehicleForImportName(file.name)
+      if (vehicle?.id) document.getElementById('simpleTransferVehicleId').value = String(vehicle.id)
+      const fileDate = parseDateFromImportFileName(file.name)
+      if (fileDate) document.getElementById('simpleTransferDate').value = fileDate
+      const unmatched = importedRows.filter((row) => !row.productId).length
+      const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.` : ' Všechny položky jsou spárované.'
+      simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
+      simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
+      simpleTransferLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
+    }
     function openSimpleTransferModal(direction = 'warehouse_to_vehicle', productId = '', correctionDoc = null) {
       editingTransferDoc = correctionDoc
       simpleTransferForm.reset()
       simpleTransferLines.innerHTML = ''
+      simpleTransferImportStatus.textContent = 'Nahraj CheckOut XLSX pro naložení auta, nebo XML/CSV pro prodej z vozidla.'
+      simpleTransferImportStatus.className = 'helper-line'
       document.getElementById('simpleTransferDirection').value = direction
       document.getElementById('simpleTransferDate').value = new Date().toISOString().slice(0, 10)
       const isReturn = direction === 'vehicle_to_warehouse'
@@ -2896,6 +3015,8 @@
       document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = ''
       document.getElementById('simpleTransferWarehouseId').required = true
       simpleTransferLines.innerHTML = ''
+      simpleTransferImportStatus.textContent = 'Nahraj CheckOut XLSX pro naložení auta, nebo XML/CSV pro prodej z vozidla.'
+      simpleTransferImportStatus.className = 'helper-line'
       editingTransferDoc = null
     }
     function addInitialStockLine(row = {}) {
@@ -3009,12 +3130,12 @@
       const records = await getBalanceRecords(stockLocationId, productId)
       return records.reduce((sum, record) => sum + Number(record.quantity_on_hand || 0), 0)
     }
-    async function applyBalanceDelta(stockLocationId, productId, delta) {
+    async function applyBalanceDelta(stockLocationId, productId, delta, options = {}) {
       if (delta < 0) {
         const records = await getBalanceRecords(stockLocationId, productId)
         const available = records.reduce((sum, item) => sum + Number(item.quantity_on_hand || 0), 0)
         const required = Math.abs(delta)
-        if (available + 0.0001 < required) throw new Error('Na zdrojovém místě není dost kusů pro zadaný pohyb.')
+        if (available + 0.0001 < required && !options.allowNegative) throw new Error('Na zdrojovém místě není dost kusů pro zadaný pohyb.')
         let remaining = required
         for (const record of records) {
           if (remaining <= 0) break
@@ -3028,6 +3149,28 @@
             .eq('id', record.id)
           if (error) throw error
           remaining = Number((remaining - used).toFixed(3))
+        }
+        if (remaining > 0.0001 && options.allowNegative) {
+          const record = await getBalanceRecord(stockLocationId, productId)
+          const currentQty = Number(record?.quantity_on_hand || 0)
+          const nextQty = Number((currentQty - remaining).toFixed(3))
+          if (record?.id) {
+            const { error } = await supabase
+              .from('stock_location_balances')
+              .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+              .eq('id', record.id)
+            if (error) throw error
+          } else {
+            const { error } = await supabase
+              .from('stock_location_balances')
+              .insert([{
+                stock_location_id: stockLocationId,
+                product_id: productId,
+                quantity_on_hand: nextQty,
+                reserved_quantity: 0
+              }])
+            if (error) throw error
+          }
         }
         return
       }
@@ -3143,21 +3286,23 @@
       }
       return deltaMap
     }
-    async function applyBalanceDeltaMap(deltaMap) {
+    async function applyBalanceDeltaMap(deltaMap, options = {}) {
       const deltas = Array.from(deltaMap.values()).filter((item) => Math.abs(Number(item.delta || 0)) > 0.0001)
-      for (const item of deltas.filter((delta) => delta.delta < 0)) {
-        const available = await getAvailableQuantity(item.stockLocationId, item.productId)
-        const required = Math.abs(item.delta)
-        if (available + 0.0001 < required) {
-          const product = productsV13.find((row) => String(row.id) === String(item.productId))
-          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${required.toFixed(3)}).`)
+      if (!options.allowNegative) {
+        for (const item of deltas.filter((delta) => delta.delta < 0)) {
+          const available = await getAvailableQuantity(item.stockLocationId, item.productId)
+          const required = Math.abs(item.delta)
+          if (available + 0.0001 < required) {
+            const product = productsV13.find((row) => String(row.id) === String(item.productId))
+            throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${required.toFixed(3)}).`)
+          }
         }
       }
       for (const item of deltas.filter((delta) => delta.delta < 0)) {
-        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta, options)
       }
       for (const item of deltas.filter((delta) => delta.delta > 0)) {
-        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta)
+        await applyBalanceDelta(item.stockLocationId, item.productId, item.delta, options)
       }
     }
     async function logManualTransferCorrectionDoc(doc) {
@@ -3646,7 +3791,7 @@
         addBalanceDelta(balanceDeltas, fromStockLocationId, line.productId, -line.quantity)
         addBalanceDelta(balanceDeltas, toStockLocationId, line.productId, line.quantity)
       }
-      await applyBalanceDeltaMap(balanceDeltas)
+      await applyBalanceDeltaMap(balanceDeltas, { allowNegative: true })
       if (correctionDoc) await logManualTransferCorrectionDoc(correctionDoc)
       const { error: movementError } = await supabase
         .from('stock_movements_v13')
@@ -3825,6 +3970,21 @@
       if (!button) return
       button.closest('.transfer-line-row')?.remove()
       if (!simpleTransferLines.querySelector('.transfer-line-row')) addSimpleTransferLine()
+    })
+    simpleTransferImportFile.addEventListener('change', async () => {
+      const file = simpleTransferImportFile.files?.[0]
+      if (!file) return
+      try {
+        simpleTransferImportStatus.textContent = `Načítám soubor ${file.name}...`
+        simpleTransferImportStatus.className = 'helper-line'
+        const rows = await parseTransferImportFile(file)
+        if (!rows.length) throw new Error('V souboru jsem nenašel řádky s produktem a množstvím.')
+        fillSimpleTransferFromImport(file, rows)
+      } catch (error) {
+        console.error(error)
+        simpleTransferImportStatus.textContent = `Soubor se nepodařilo načíst: ${error.message}`
+        simpleTransferImportStatus.className = 'helper-line error'
+      }
     })
     initialStockLines.addEventListener('click', (event) => {
       const button = event.target.closest('[data-initial-line-action="remove"]')
