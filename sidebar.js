@@ -1,22 +1,22 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
-  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV15";
+  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV16";
   const APP_THEME_KEY = "olvendThemePreference";
   const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
-  const APP_VERSION = "OLVEND 1.5";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.5";
+  const APP_VERSION = "OLVEND 1.6";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.6";
   const RELEASE_NOTES = {
-    "1.5": {
-      title: "Nová verze 1.5",
-      subtitle: "Nasadili jsme větší provozní aktualizaci. Nejvíc se mění sklad, příjem dokladů, zásoby a pohyby zboží mezi skladem a vozidly.",
+    "1.6": {
+      title: "Nová verze 1.6",
+      subtitle: "Pouštíme první pořádnou mobilní verzi pro směny, servis a jednoduché skladové pohyby v terénu.",
       items: [
-        "Příjem dodacích listů umí evidovat expirace a šarže u položek, kde to potřebujeme hlídat.",
-        "Stránka Zásoby je přehlednější: ukazuje sklad, vozidla, automaty, celkový stav a detail podle expirací.",
-        "Přibyly vícepoložkové převodky Sklad → Vozidlo a Vozidlo → Sklad včetně přehledu ručních dokladů.",
-        "Ruční Prodej z vozidla dočasně nahrazuje telemetrii / DEX data, než bude automatické napojení hotové.",
-        "Opravy převodek fungují rozdílově, takže lze narovnat i doklad, který byl zapsaný špatně nebo jen částečně.",
-        "Prosíme, hlaste cokoliv divného. Verze 1.5 je ostrý krok do provozu a chceme rychle vychytat neduhy."
+        "Operátor a technik po přihlášení přejdou rovnou do mobilního prostředí místo staré docházky.",
+        "Směna má potvrzení pokynů dne, výběr vozidla, kontrolu kilometrů, pauzu, tankování s účtenkou a ukončení směny.",
+        "Servisní část umí zapisovat výsledek zásahu, rozpracované stavy, čekání na díl a požadavek na manažerské rozhodnutí.",
+        "Sklad v mobilu připravuje objednávku, nakládku, vykládku, prodej z vozidla a vratky do doby, než poběží telemetrie.",
+        "Na PC je připravené vychystání mobilních objednávek pro skladníka.",
+        "Starou docházku zatím necháváme jako zálohu pro rychlý návrat, kdyby se v ostrém provozu ukázal problém."
       ]
     }
   };
@@ -242,7 +242,7 @@
       title: "Dnes",
       items: [
         { key: "home", href: "dashboard.html", label: "Nástěnka" },
-        { key: "shift", href: "attendance.html", label: "Moje směna" }
+        { key: "shift", href: "mobile.html", label: "Moje směna" }
       ]
     },
     {
