@@ -41,6 +41,7 @@ Zatim ji nikde nelinkujeme z menu a nemenime prihlasovaci logiku v `index.html`.
 ## Nasazeni
 
 1. Spustit `database/mobile_workflows_v15.sql` v Supabase SQL editoru.
-2. Otestovat `mobile-pilot.html` s jednim realnym zamestnancem.
-3. Pripravit PC pohled pro skladnika na `mobile_stock_requests`.
-4. Teprve potom zapnout presmerovani vybranym rolim nebo vybranym zamestnancum.
+2. Spustit `database/mobile_runtime_v15.sql`, pokud jeste nejsou pripravene uctenky, stav km pri tankovani a servisni vysledky.
+3. Otestovat `mobile-pilot.html` s jednim realnym zamestnancem.
+4. Pripravit PC pohled pro skladnika na `mobile_stock_requests`.
+5. Teprve potom zapnout presmerovani vybranym rolim nebo vybranym zamestnancum.

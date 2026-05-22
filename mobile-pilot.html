@@ -433,6 +433,29 @@
       line-height: 1.4;
     }
 
+    .compact-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .compact-actions .secondary-btn,
+    .compact-actions .danger-btn {
+      min-height: 54px;
+      font-size: 15px;
+    }
+
+    .file-input {
+      padding: 12px;
+      font-size: 14px;
+    }
+
+    .service-form {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
     @media (min-width: 700px) {
       body {
         padding: 24px 0;
@@ -465,6 +488,10 @@
           <h2 id="heroTitle">Připravuji směnu</h2>
           <p id="heroText">Načítám pokyny dne, vozidla a tvůj stav směny.</p>
           <button class="primary-btn" id="shiftMainButton" type="button">Načítám</button>
+          <div class="compact-actions" id="runningShiftActions" hidden>
+            <button class="secondary-btn" id="breakButton" type="button">Pauza</button>
+            <button class="danger-btn" id="openEndShiftButton" type="button">Ukončit</button>
+          </div>
         </div>
 
         <div class="section" id="instructionSection">
@@ -544,6 +571,22 @@
         </div>
       </section>
 
+      <section class="screen" data-screen="end">
+        <div class="card">
+          <div class="form">
+            <label id="endKmLabel">
+              Konečný stav km
+              <input id="endOdometerInput" inputmode="numeric" autocomplete="off" />
+            </label>
+            <label>
+              Poznámka ke směně
+              <textarea id="endShiftNoteInput" placeholder="Volitelné shrnutí směny"></textarea>
+            </label>
+            <button class="danger-btn" id="endShiftButton" type="button">Ukončit směnu</button>
+          </div>
+        </div>
+      </section>
+
       <section class="screen" data-screen="service">
         <div class="section-head">
           <h2>Servisy</h2>
@@ -614,6 +657,10 @@
         <div class="card">
           <div class="form">
             <label>
+              Stav km při tankování
+              <input id="fuelOdometerInput" inputmode="numeric" placeholder="Např. 184240" />
+            </label>
+            <label>
               Tankování litry
               <input id="fuelLitersInput" inputmode="decimal" placeholder="Např. 42,5" />
             </label>
@@ -622,8 +669,17 @@
               <input id="fuelCostInput" inputmode="decimal" placeholder="Např. 1850" />
             </label>
             <label>
+              Foto účtenky
+              <input class="file-input" id="fuelReceiptFileInput" type="file" accept="image/*" capture="environment" />
+            </label>
+            <label>
+              Odkaz na účtenku
+              <input id="fuelReceiptUrlInput" type="url" placeholder="Vyplní se po nahrání, případně ruční URL" />
+            </label>
+            <div class="empty" id="fuelReceiptStatus">Účtenku můžeš vyfotit nebo vybrat z galerie.</div>
+            <label>
               Poznámka k vozidlu
-              <textarea id="vehicleNoteInput" placeholder="Závada, servis vozidla, účtenka zatím mimo pilot"></textarea>
+              <textarea id="vehicleNoteInput" placeholder="Závada, servis vozidla nebo poznámka k tankování"></textarea>
             </label>
             <button class="primary-btn" id="saveVehicleLogButton" type="button">Uložit k vozidlu</button>
           </div>
@@ -659,15 +715,19 @@
       employee: null,
       attendanceDay: null,
       vehicleLog: null,
+      events: [],
       vehicles: [],
       products: [],
       services: [],
       instructions: [],
+      acknowledgements: [],
       stockRequests: [],
-      selectedStockType: 'vehicle_order'
+      selectedStockType: 'vehicle_order',
+      fuelReceiptUploading: false
     }
 
     const todayIso = new Date().toISOString().slice(0, 10)
+    const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -677,6 +737,9 @@
       heroTitle: document.getElementById('heroTitle'),
       heroText: document.getElementById('heroText'),
       shiftMainButton: document.getElementById('shiftMainButton'),
+      runningShiftActions: document.getElementById('runningShiftActions'),
+      breakButton: document.getElementById('breakButton'),
+      openEndShiftButton: document.getElementById('openEndShiftButton'),
       instructionCount: document.getElementById('instructionCount'),
       instructionList: document.getElementById('instructionList'),
       importantCount: document.getElementById('importantCount'),
@@ -685,6 +748,10 @@
       startKmLabel: document.getElementById('startKmLabel'),
       startOdometerInput: document.getElementById('startOdometerInput'),
       startShiftButton: document.getElementById('startShiftButton'),
+      endKmLabel: document.getElementById('endKmLabel'),
+      endOdometerInput: document.getElementById('endOdometerInput'),
+      endShiftNoteInput: document.getElementById('endShiftNoteInput'),
+      endShiftButton: document.getElementById('endShiftButton'),
       serviceCount: document.getElementById('serviceCount'),
       serviceList: document.getElementById('serviceList'),
       stockRequestCount: document.getElementById('stockRequestCount'),
@@ -695,8 +762,12 @@
       stockNoteInput: document.getElementById('stockNoteInput'),
       createStockRequestButton: document.getElementById('createStockRequestButton'),
       stockRequestList: document.getElementById('stockRequestList'),
+      fuelOdometerInput: document.getElementById('fuelOdometerInput'),
       fuelLitersInput: document.getElementById('fuelLitersInput'),
       fuelCostInput: document.getElementById('fuelCostInput'),
+      fuelReceiptFileInput: document.getElementById('fuelReceiptFileInput'),
+      fuelReceiptUrlInput: document.getElementById('fuelReceiptUrlInput'),
+      fuelReceiptStatus: document.getElementById('fuelReceiptStatus'),
       vehicleNoteInput: document.getElementById('vehicleNoteInput'),
       saveVehicleLogButton: document.getElementById('saveVehicleLogButton'),
       employeeSummary: document.getElementById('employeeSummary')
@@ -705,6 +776,7 @@
     const screenNames = {
       today: 'Dnes',
       shift: 'Zahájení',
+      end: 'Ukončení',
       service: 'Servis',
       stock: 'Sklad',
       vehicle: 'Auto',
@@ -750,6 +822,47 @@
       }).format(new Date(value))
     }
 
+    function getCurrentBreakState() {
+      let openBreak = null
+      const sorted = [...state.events].sort((a, b) => String(a.event_time || '').localeCompare(String(b.event_time || '')))
+      sorted.forEach((event) => {
+        if (event.event_type === 'break_start') openBreak = event
+        if (event.event_type === 'break_end') openBreak = null
+      })
+      return {
+        isOnBreak: Boolean(openBreak),
+        lastBreakStart: openBreak
+      }
+    }
+
+    function getComputedBreakMinutes(untilIso = new Date().toISOString()) {
+      let total = 0
+      let start = null
+      const sorted = [...state.events].sort((a, b) => String(a.event_time || '').localeCompare(String(b.event_time || '')))
+      sorted.forEach((event) => {
+        if (event.event_type === 'break_start') start = event.event_time
+        if (event.event_type === 'break_end' && start) {
+          total += Math.max(0, Math.round((new Date(event.event_time).getTime() - new Date(start).getTime()) / 60000))
+          start = null
+        }
+      })
+      if (start) total += Math.max(0, Math.round((new Date(untilIso).getTime() - new Date(start).getTime()) / 60000))
+      return total
+    }
+
+    function buildStoragePath(prefix, file) {
+      const safeName = String(file?.name || 'uctenka.jpg')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'uctenka.jpg'
+      const employeeId = state.employee?.id || 'unknown'
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      return `${prefix}/${todayIso}/${employeeId}/${timestamp}-${safeName}`
+    }
+
     function getEmployeeName(employee = state.employee) {
       return [employee?.name, employee?.surname].filter(Boolean).join(' ') || employee?.email || 'Zaměstnanec'
     }
@@ -769,11 +882,15 @@
       els.shiftStatus.textContent = isRunning ? 'Směna běží' : isClosed ? 'Směna ukončena' : 'Směna nezahájena'
       els.shiftStatus.classList.toggle('running', isRunning)
       els.shiftHero.classList.toggle('ready', isRunning || isClosed)
+      els.runningShiftActions.hidden = !isRunning
 
       if (isRunning) {
+        const breakMinutes = getComputedBreakMinutes()
+        const breakState = getCurrentBreakState()
         els.heroTitle.textContent = 'Směna běží'
-        els.heroText.textContent = `Začátek ${formatDateTime(day.actual_start)}. Pauzy a konec směny se ukládají do docházky.`
-        els.shiftMainButton.textContent = 'Ukončit směnu'
+        els.heroText.textContent = `Začátek ${formatDateTime(day.actual_start)}. Pauza celkem ${breakMinutes} min.`
+        els.shiftMainButton.textContent = 'Zobrazit dnešek'
+        els.breakButton.textContent = breakState.isOnBreak ? 'Ukončit pauzu' : 'Pauza'
       } else if (isClosed) {
         els.heroTitle.textContent = 'Dnes hotovo'
         els.heroText.textContent = `Směna byla ukončena ${formatDateTime(day.actual_end)}.`
@@ -783,6 +900,10 @@
         els.heroText.textContent = 'Nejdřív potvrď pokyny dne, vyber auto a odsouhlas km.'
         els.shiftMainButton.textContent = 'Zahájit směnu'
       }
+
+      if (state.vehicleLog?.end_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.end_odometer_km
+      else if (state.vehicleLog?.start_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.start_odometer_km
+      els.endKmLabel.style.display = state.attendanceDay?.vehicle_id ? 'grid' : 'none'
     }
 
     function renderInstructions() {
@@ -799,7 +920,7 @@
             <span>${escapeHtml(instruction.message)}</span>
           </div>
           <span class="badge ${instruction.priority === 'critical' ? 'red' : instruction.priority === 'important' ? 'yellow' : ''}">
-            ${instruction.requires_acknowledgement ? 'Potvrdit' : 'Info'}
+            ${state.acknowledgements.some((ack) => String(ack.instruction_id) === String(instruction.id)) ? 'Potvrzeno' : instruction.requires_acknowledgement ? 'Potvrdit' : 'Info'}
           </span>
         </div>
       `).join('')
@@ -841,8 +962,28 @@
                 </div>
               </div>
               <button class="primary-btn" data-service-action="start" data-id="${item.id}" type="button">Zahájit zásah</button>
-              <button class="secondary-btn" data-service-action="followup" data-id="${item.id}" type="button">Uložit jako otevřené</button>
-              <button class="danger-btn" data-service-action="replace" data-id="${item.id}" type="button">Nelze vyřešit na místě</button>
+              <div class="service-form">
+                <label>
+                  Výsledek zásahu
+                  <select data-service-result data-id="${item.id}">
+                    <option value="fixed">Vyřešeno</option>
+                    <option value="temporary_fixed">Dočasně opraveno</option>
+                    <option value="need_spare_part">Čeká na díl</option>
+                    <option value="return_later">Návrat / domluva</option>
+                    <option value="need_machine_replacement">Nelze vyřešit na místě</option>
+                    <option value="not_found">Závada nenalezena</option>
+                  </select>
+                </label>
+                <label>
+                  Co se udělalo
+                  <textarea data-service-work data-id="${item.id}" placeholder="Popiš zásah stručně a konkrétně">${escapeHtml(item.work_performed || '')}</textarea>
+                </label>
+                <label>
+                  Díly / co chybí / další domluva
+                  <textarea data-service-next data-id="${item.id}" placeholder="Díl, návrat, domluva, požadavek na manažera">${escapeHtml(item.next_recommendation || '')}</textarea>
+                </label>
+                <button class="primary-btn" data-service-action="save-result" data-id="${item.id}" type="button">Uložit výsledek</button>
+              </div>
             </div>
           </details>
         `
@@ -911,6 +1052,18 @@
       els.employeeSummary.textContent = `${getEmployeeName()} · ${state.employee?.role || 'bez role'}`
     }
 
+    function renderVehicleForm() {
+      if (!state.vehicleLog) return
+      els.fuelOdometerInput.value = state.vehicleLog.fuel_odometer_km ?? ''
+      els.fuelLitersInput.value = state.vehicleLog.fuel_liters ?? ''
+      els.fuelCostInput.value = state.vehicleLog.fuel_cost ?? ''
+      els.fuelReceiptUrlInput.value = state.vehicleLog.fuel_receipt_url || ''
+      els.vehicleNoteInput.value = state.vehicleLog.fuel_note || ''
+      els.fuelReceiptStatus.textContent = state.vehicleLog.fuel_receipt_url
+        ? 'Účtenka je uložená u dnešní jízdy.'
+        : 'Účtenku můžeš vyfotit nebo vybrat z galerie.'
+    }
+
     function renderAll() {
       renderShiftState()
       renderInstructions()
@@ -920,6 +1073,7 @@
       renderProducts()
       renderStockRequests()
       renderEmployee()
+      renderVehicleForm()
     }
 
     async function hydrateCurrentUser() {
@@ -967,9 +1121,25 @@
         .from('vehicle_operation_logs')
         .select('*')
         .eq('attendance_day_id', state.attendanceDay.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle()
       if (error && error.code !== 'PGRST116') throw error
       state.vehicleLog = data || null
+    }
+
+    async function loadAttendanceEvents() {
+      if (!state.attendanceDay?.id) {
+        state.events = []
+        return
+      }
+      const { data, error } = await supabase
+        .from('attendance_events')
+        .select('*')
+        .eq('attendance_day_id', state.attendanceDay.id)
+        .order('event_time', { ascending: true })
+      if (error) throw error
+      state.events = data || []
     }
 
     async function loadReferenceData() {
@@ -1000,12 +1170,29 @@
         if (item.target_type === 'role') return String(item.target_role || '').toLowerCase() === String(state.employee.role || '').toLowerCase()
         return String(item.target_employee_id || '') === String(state.employee.id || '')
       })
+
+      if (!state.instructions.length) {
+        state.acknowledgements = []
+        return
+      }
+
+      const requiredIds = state.instructions.map((item) => item.id)
+      const { data: acknowledgements, error: ackError } = await supabase
+        .from('instruction_acknowledgements')
+        .select('id, instruction_id, employee_id, acknowledged_at')
+        .eq('employee_id', state.employee.id)
+        .in('instruction_id', requiredIds)
+      if (ackError) {
+        state.acknowledgements = []
+        return
+      }
+      state.acknowledgements = acknowledgements || []
     }
 
     async function loadServices() {
       const { data, error } = await supabase
         .from('service_requests')
-        .select('id, title, description, priority, status, due_date, created_at, location_id, assigned_employee_id')
+        .select('id, title, description, priority, status, due_date, created_at, location_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note')
         .eq('assigned_employee_id', state.employee.id)
         .neq('status', 'cancelled')
         .order('created_at', { ascending: false })
@@ -1036,12 +1223,29 @@
       await loadAttendanceDay()
       await Promise.all([
         loadVehicleLog(),
+        loadAttendanceEvents(),
         loadReferenceData(),
         loadInstructions(),
         loadServices(),
         loadStockRequests()
       ])
       renderAll()
+    }
+
+    async function acknowledgeRequiredInstructions() {
+      const required = state.instructions.filter((instruction) => instruction.requires_acknowledgement)
+      const missing = required.filter((instruction) => !state.acknowledgements.some((ack) => String(ack.instruction_id) === String(instruction.id)))
+      if (!missing.length) return
+
+      const rows = missing.map((instruction) => ({
+        instruction_id: instruction.id,
+        employee_id: state.employee.id,
+        acknowledged_at: new Date().toISOString()
+      }))
+      const { error } = await supabase
+        .from('instruction_acknowledgements')
+        .upsert(rows, { onConflict: 'instruction_id,employee_id' })
+      if (error) throw error
     }
 
     async function startShift() {
@@ -1053,6 +1257,8 @@
         showMessage('Doplň počáteční stav km.', 'error')
         return
       }
+
+      await acknowledgeRequiredInstructions()
 
       const payload = {
         employee_id: state.employee.id,
@@ -1096,6 +1302,60 @@
       await reloadData()
     }
 
+    async function toggleBreak() {
+      if (!state.attendanceDay?.id || state.attendanceDay.actual_end) throw new Error('Pauzu lze měnit jen během aktivní směny.')
+
+      const nowIso = new Date().toISOString()
+      const breakState = getCurrentBreakState()
+      if (!breakState.isOnBreak) {
+        const { error } = await supabase.from('attendance_events').insert({
+          attendance_day_id: state.attendanceDay.id,
+          employee_id: state.employee.id,
+          event_type: 'break_start',
+          event_time: nowIso,
+          note: 'Pauza zahájena v mobilní verzi.',
+          created_by: state.employee.id
+        })
+        if (error) throw error
+        showMessage('Pauza byla zahájena.')
+      } else {
+        const diffMinutes = Math.max(0, Math.round((new Date(nowIso).getTime() - new Date(breakState.lastBreakStart.event_time).getTime()) / 60000))
+        const nextBreakMinutes = Number(state.attendanceDay.break_minutes || 0) + diffMinutes
+        const { error: updateError } = await supabase.from('attendance_days').update({ break_minutes: nextBreakMinutes }).eq('id', state.attendanceDay.id)
+        if (updateError) throw updateError
+        const { error } = await supabase.from('attendance_events').insert({
+          attendance_day_id: state.attendanceDay.id,
+          employee_id: state.employee.id,
+          event_type: 'break_end',
+          event_time: nowIso,
+          note: `Pauza ukončena · ${diffMinutes} min.`,
+          created_by: state.employee.id
+        })
+        if (error) throw error
+        showMessage('Pauza byla ukončena.')
+      }
+      await reloadData()
+    }
+
+    async function closeOpenBreakIfNeeded(endAt) {
+      const breakState = getCurrentBreakState()
+      if (!breakState.isOnBreak || !breakState.lastBreakStart) return 0
+      const diffMinutes = Math.max(0, Math.round((new Date(endAt).getTime() - new Date(breakState.lastBreakStart.event_time).getTime()) / 60000))
+      const nextBreakMinutes = Number(state.attendanceDay.break_minutes || 0) + diffMinutes
+      const { error: updateError } = await supabase.from('attendance_days').update({ break_minutes: nextBreakMinutes }).eq('id', state.attendanceDay.id)
+      if (updateError) throw updateError
+      const { error } = await supabase.from('attendance_events').insert({
+        attendance_day_id: state.attendanceDay.id,
+        employee_id: state.employee.id,
+        event_type: 'break_end',
+        event_time: endAt,
+        note: `Pauza automaticky ukončena při konci směny · ${diffMinutes} min.`,
+        created_by: state.employee.id
+      })
+      if (error) throw error
+      return diffMinutes
+    }
+
     async function endShift() {
       if (!state.attendanceDay?.id) {
         openScreen('shift')
@@ -1103,7 +1363,24 @@
       }
 
       const endAt = new Date().toISOString()
-      const update = { status: 'closed', actual_end: endAt }
+      const endKm = state.attendanceDay.vehicle_id ? parseNumber(els.endOdometerInput.value) : null
+      const startKm = state.vehicleLog?.start_odometer_km != null ? Number(state.vehicleLog.start_odometer_km) : null
+      if (state.attendanceDay.vehicle_id && endKm === null) throw new Error('Doplň konečný stav km.')
+      if (startKm !== null && endKm !== null && endKm < startKm) throw new Error('Konečný stav km nesmí být menší než počáteční.')
+
+      await closeOpenBreakIfNeeded(endAt)
+      const breakMinutes = getComputedBreakMinutes(endAt)
+      const payableMinutes = state.attendanceDay.actual_start
+        ? Math.max(0, Math.round((new Date(endAt).getTime() - new Date(state.attendanceDay.actual_start).getTime()) / 60000) - breakMinutes)
+        : 0
+
+      const update = {
+        status: 'closed',
+        actual_end: endAt,
+        break_minutes: breakMinutes,
+        payable_minutes: payableMinutes,
+        note: els.endShiftNoteInput.value.trim() || state.attendanceDay.note || null
+      }
       const { error } = await supabase.from('attendance_days').update(update).eq('id', state.attendanceDay.id)
       if (error) throw error
 
@@ -1117,11 +1394,16 @@
       if (state.vehicleLog?.id) {
         await supabase.from('vehicle_operation_logs').update({
           ended_at: endAt,
+          end_odometer_km: endKm,
           status: 'closed'
         }).eq('id', state.vehicleLog.id)
       }
+      if (state.attendanceDay.vehicle_id && endKm !== null) {
+        await supabase.from('vehicles').update({ current_odometer_km: endKm }).eq('id', state.attendanceDay.vehicle_id)
+      }
 
       showMessage('Děkujeme za směnu. Dnešní práce je uložená.')
+      openScreen('today')
       await reloadData()
     }
 
@@ -1190,15 +1472,48 @@
 
       const fuelLiters = parseNumber(els.fuelLitersInput.value)
       const fuelCost = parseNumber(els.fuelCostInput.value)
+      const fuelOdometer = parseNumber(els.fuelOdometerInput.value)
+      const fuelReceiptUrl = els.fuelReceiptUrlInput.value.trim()
+      if ((fuelLiters || fuelCost) && !fuelReceiptUrl) throw new Error('K tankování nahraj nebo doplň účtenku.')
       const { error } = await supabase.from('vehicle_operation_logs').update({
+        fuel_odometer_km: fuelOdometer,
         fuel_liters: fuelLiters,
         fuel_cost: fuelCost,
+        fuel_receipt_url: fuelReceiptUrl || null,
         fuel_note: els.vehicleNoteInput.value.trim() || null
       }).eq('id', state.vehicleLog.id)
       if (error) throw error
 
       showMessage('Údaje k vozidlu jsou uložené.')
       await loadVehicleLog()
+    }
+
+    async function uploadFuelReceipt(file) {
+      if (!file) return
+      if (!String(file.type || '').toLowerCase().startsWith('image/')) throw new Error('Nahrát jde jen obrázek účtenky.')
+      state.fuelReceiptUploading = true
+      els.fuelReceiptStatus.textContent = `Nahrávám ${file.name}...`
+      try {
+        const path = buildStoragePath('fuel-receipts', file)
+        const { error } = await supabase.storage.from(SHIFT_DOCUMENTS_BUCKET).upload(path, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type || 'image/jpeg'
+        })
+        if (error) {
+          const message = String(error.message || '')
+          if (/bucket|not found|row-level security/i.test(message)) {
+            throw new Error('Úložiště účtenek ještě není připravené. Spusť database/shift_documents_storage_v141.sql.')
+          }
+          throw error
+        }
+        const { data } = supabase.storage.from(SHIFT_DOCUMENTS_BUCKET).getPublicUrl(path)
+        if (!data?.publicUrl) throw new Error('Nepodařilo se získat odkaz na účtenku.')
+        els.fuelReceiptUrlInput.value = data.publicUrl
+        els.fuelReceiptStatus.textContent = 'Účtenka je nahraná a připravená k uložení.'
+      } finally {
+        state.fuelReceiptUploading = false
+      }
     }
 
     async function handleServiceAction(action, id) {
@@ -1234,6 +1549,42 @@
         showMessage('Požadavek je připravený pro manažerské rozhodnutí.')
       }
 
+      if (action === 'save-result') {
+        const result = els.serviceList.querySelector(`[data-service-result][data-id="${CSS.escape(String(id))}"]`)?.value || 'fixed'
+        const work = els.serviceList.querySelector(`[data-service-work][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        const next = els.serviceList.querySelector(`[data-service-next][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        if (!work) throw new Error('Doplň, co se na zásahu udělalo.')
+
+        const isDone = ['fixed', 'temporary_fixed', 'not_found'].includes(result)
+        const payload = {
+          service_result: result,
+          work_performed: work,
+          next_recommendation: next || null,
+          internal_service_note: result === 'need_machine_replacement'
+            ? 'Technik žádá manažerské rozhodnutí o výměně nebo deinstalaci automatu.'
+            : next || null,
+          status: isDone ? 'done' : 'in_progress',
+          service_finished_at: isDone ? new Date().toISOString() : null,
+          resolution_note: isDone ? work : null
+        }
+        const { error } = await supabase.from('service_requests').update(payload).eq('id', id)
+        if (error) throw error
+
+        if (!isDone) {
+          const delayDays = result === 'need_spare_part' ? 3 : 2
+          await supabase.from('mobile_service_followups').insert({
+            service_request_id: id,
+            employee_id: state.employee.id,
+            attendance_day_id: state.attendanceDay?.id || null,
+            followup_reason: next || work,
+            next_required_at: new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000).toISOString(),
+            escalation_level: 1
+          })
+        }
+
+        showMessage(isDone ? 'Servis byl uzavřený.' : 'Servis zůstává otevřený a bude se připomínat.')
+      }
+
       await loadServices()
       renderServices()
       renderImportant()
@@ -1248,11 +1599,13 @@
         const day = state.attendanceDay
         const isRunning = day?.status === 'open' && day?.actual_start && !day?.actual_end
         if (isRunning) {
-          endShift().catch(handleError)
+          openScreen('today')
         } else {
           openScreen(day?.actual_end ? 'today' : 'shift')
         }
       })
+      els.breakButton.addEventListener('click', () => toggleBreak().catch(handleError))
+      els.openEndShiftButton.addEventListener('click', () => openScreen('end'))
 
       els.vehicleSelect.addEventListener('change', () => {
         const selected = els.vehicleSelect.selectedOptions[0]
@@ -1262,8 +1615,10 @@
       })
 
       els.startShiftButton.addEventListener('click', () => startShift().catch(handleError))
+      els.endShiftButton.addEventListener('click', () => endShift().catch(handleError))
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
       els.saveVehicleLogButton.addEventListener('click', () => saveVehicleLog().catch(handleError))
+      els.fuelReceiptFileInput.addEventListener('change', () => uploadFuelReceipt(els.fuelReceiptFileInput.files?.[0]).catch(handleError))
 
       document.querySelectorAll('[data-stock-type]').forEach((button) => {
         button.addEventListener('click', () => {
