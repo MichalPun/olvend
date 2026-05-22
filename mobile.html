@@ -784,6 +784,7 @@
       runningShiftActions: document.getElementById('runningShiftActions'),
       breakButton: document.getElementById('breakButton'),
       openEndShiftButton: document.getElementById('openEndShiftButton'),
+      instructionSection: document.getElementById('instructionSection'),
       instructionCount: document.getElementById('instructionCount'),
       instructionList: document.getElementById('instructionList'),
       importantCount: document.getElementById('importantCount'),
@@ -964,6 +965,7 @@
     }
 
     function renderInstructions() {
+      els.instructionSection.hidden = !state.instructions.length
       els.instructionCount.textContent = `${state.instructions.length}`
       if (!state.instructions.length) {
         els.instructionList.innerHTML = '<div class="empty">Na dnešek nejsou žádné pokyny k potvrzení.</div>'
@@ -990,6 +992,26 @@
           `<option value="${vehicle.id}" data-km="${vehicle.current_odometer_km || ''}">${escapeHtml(vehicle.name || vehicle.plate)} · ${escapeHtml(vehicle.plate || '')}</option>`
         ))
       ].join('')
+    }
+
+    function isInstructionActiveToday(instruction) {
+      if (!instruction?.is_active) return false
+      if (instruction.is_persistent) return true
+      const from = instruction.valid_from || todayIso
+      const to = instruction.valid_to || from
+      return todayIso >= from && todayIso <= to
+    }
+
+    function instructionTargetsEmployee(instruction) {
+      if (!state.employee) return false
+      if (instruction.target_type === 'company') return true
+      if (instruction.target_type === 'role') {
+        return String(instruction.target_role || '').trim().toLowerCase() === String(state.employee.role || '').trim().toLowerCase()
+      }
+      if (instruction.target_type === 'employee') {
+        return String(instruction.target_employee_id || '') === String(state.employee.id || '')
+      }
+      return false
     }
 
     function renderServices() {
@@ -1230,17 +1252,16 @@
         .from('daily_instructions')
         .select('*')
         .eq('is_active', true)
-        .lte('valid_from', todayIso)
-        .or(`valid_to.is.null,valid_to.gte.${todayIso}`)
-        .order('priority', { ascending: true })
+        .order('created_at', { ascending: false })
       if (error) {
         state.instructions = []
         return
       }
       state.instructions = (data || []).filter((item) => {
-        if (item.target_type === 'company') return true
-        if (item.target_type === 'role') return String(item.target_role || '').toLowerCase() === String(state.employee.role || '').toLowerCase()
-        return String(item.target_employee_id || '') === String(state.employee.id || '')
+        return isInstructionActiveToday(item) && instructionTargetsEmployee(item)
+      }).sort((a, b) => {
+        const priorityOrder = { critical: 0, important: 1, info: 2 }
+        return (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3)
       })
 
       if (!state.instructions.length) {
