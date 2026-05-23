@@ -1688,60 +1688,76 @@
       const note = els.stockNoteInput.value.trim() || null
       const draftItems = state.stockDraftItems.map((item) => ({ ...item }))
       const vehicleId = state.attendanceDay?.vehicle_id || state.vehicleLog?.vehicle_id || null
-      const { data: request, error } = await supabase
-        .from('mobile_stock_requests')
-        .insert({
-          request_type: state.selectedStockType,
-          status: isOrder ? 'requested' : 'confirmed',
-          employee_id: state.employee.id,
-          vehicle_id: vehicleId,
-          attendance_day_id: state.attendanceDay?.id || null,
-          requested_for_date: todayIso,
-          confirmed_by: isOrder ? null : state.employee.id,
-          confirmed_at: isOrder ? null : new Date().toISOString(),
-          note
-        })
-        .select('*')
-        .single()
-      if (error) throw error
-
-      const itemRows = draftItems.map((item) => ({
-        request_id: request.id,
-        product_id: item.product_id,
-        product_name: item.product_name,
-        sku: item.sku,
-        unit: item.unit,
-        requested_quantity: item.quantity,
-        confirmed_quantity: isOrder ? null : item.quantity,
-        note: item.note
-      }))
-
-      const { error: itemError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
-      if (itemError) throw itemError
-
-      if (request.status === 'confirmed') {
-        await applyStockRequestToInventory(request, itemRows)
-      }
-
-      state.stockDraftItems = []
-      renderStockDraft()
-      showMessage(isOrder ? 'Objednávka byla odeslána skladníkovi.' : 'Skladový doklad byl uložený a promítnutý do zásob.')
-      state.stockRequests = [request, ...state.stockRequests.filter((item) => String(item.id) !== String(request.id))]
-      state.stockRequestItems = [
-        ...itemRows.map((item) => ({ ...item })),
-        ...state.stockRequestItems.filter((item) => String(item.request_id) !== String(request.id))
-      ]
-      renderStockRequests()
-      renderImportant()
+      els.createStockRequestButton.disabled = true
       try {
-        await loadStockRequests()
+        const { data: request, error } = await supabase
+          .from('mobile_stock_requests')
+          .insert({
+            request_type: state.selectedStockType,
+            status: isOrder ? 'requested' : 'confirmed',
+            employee_id: state.employee?.id || null,
+            vehicle_id: vehicleId,
+            attendance_day_id: state.attendanceDay?.id || null,
+            requested_for_date: todayIso,
+            confirmed_by: isOrder ? null : state.employee?.id || null,
+            confirmed_at: isOrder ? null : new Date().toISOString(),
+            note
+          })
+          .select('*')
+          .single()
+        if (error) throw new Error(`Nepodařilo se uložit hlavičku dokladu: ${error.message}`)
+        if (!request?.id) throw new Error('Doklad se uložil bez čísla požadavku.')
+
+        const itemRows = draftItems.map((item) => ({
+          request_id: request.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          sku: item.sku,
+          unit: item.unit,
+          requested_quantity: item.quantity,
+          confirmed_quantity: isOrder ? null : item.quantity,
+          note: item.note
+        }))
+
+        const { data: savedItems, error: itemError } = await supabase
+          .from('mobile_stock_request_items')
+          .insert(itemRows)
+          .select('*')
+        if (itemError) {
+          await supabase.from('mobile_stock_requests').delete().eq('id', request.id)
+          throw new Error(`Nepodařilo se uložit položky dokladu: ${itemError.message}`)
+        }
+
+        const storedItems = savedItems?.length ? savedItems : itemRows
+        if (request.status === 'confirmed') {
+          await applyStockRequestToInventory(request, storedItems)
+        }
+
+        state.stockDraftItems = []
+        showMessage(isOrder ? 'Objednávka byla odeslána skladníkovi.' : 'Skladový doklad byl uložený a promítnutý do zásob.')
+        state.stockRequests = [request, ...state.stockRequests.filter((item) => String(item.id) !== String(request.id))]
+        state.stockRequestItems = [
+          ...storedItems.map((item) => ({ ...item })),
+          ...state.stockRequestItems.filter((item) => String(item.request_id) !== String(request.id))
+        ]
         renderStockRequests()
         renderImportant()
-      } catch (reloadError) {
-        console.warn('Stock request was saved, but refresh failed.', reloadError)
-        showMessage(isOrder
-          ? 'Objednávka byla odeslána skladníkovi. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.'
-          : 'Skladový doklad byl uložený. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.')
+        try {
+          await loadStockRequests()
+          renderStockRequests()
+          renderImportant()
+        } catch (reloadError) {
+          console.warn('Stock request was saved, but refresh failed.', reloadError)
+          showMessage(isOrder
+            ? 'Objednávka byla odeslána skladníkovi. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.'
+            : 'Skladový doklad byl uložený. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.')
+        }
+      } catch (error) {
+        showMessage(error?.message === 'Load failed'
+          ? 'Objednávku se nepodařilo odeslat kvůli spojení se Supabase. Zkus prosím znovu na produkční adrese olvend.onrender.com/mobile.html.'
+          : error.message, 'error')
+      } finally {
+        renderStockDraft()
       }
     }
 
