@@ -704,13 +704,19 @@
           </div>
         </details>
 
-        <div class="section">
-          <div class="section-head">
-            <h2>Moje doklady</h2>
-            <span>Dnes</span>
+        <details class="section" id="stockRequestDetails">
+          <summary>
+            <span id="stockRequestSectionTitle">Moje doklady</span>
+            <span class="badge" id="stockRequestSectionBadge">Kontrola</span>
+          </summary>
+          <div class="details-body">
+            <div class="section-head">
+              <h2 id="stockRequestListTitle">Moje doklady</h2>
+              <span>Dnes</span>
+            </div>
+            <div class="stack" id="stockRequestList"></div>
           </div>
-          <div class="stack" id="stockRequestList"></div>
-        </div>
+        </details>
       </section>
 
       <section class="screen" data-screen="vehicle">
@@ -844,7 +850,11 @@
       serviceList: document.getElementById('serviceList'),
       stockRequestCount: document.getElementById('stockRequestCount'),
       stockFormDetails: document.getElementById('stockFormDetails'),
+      stockRequestDetails: document.getElementById('stockRequestDetails'),
       stockTypeBadge: document.getElementById('stockTypeBadge'),
+      stockRequestSectionTitle: document.getElementById('stockRequestSectionTitle'),
+      stockRequestSectionBadge: document.getElementById('stockRequestSectionBadge'),
+      stockRequestListTitle: document.getElementById('stockRequestListTitle'),
       stockVehicleSelect: document.getElementById('stockVehicleSelect'),
       stockProductInput: document.getElementById('stockProductInput'),
       productOptions: document.getElementById('productOptions'),
@@ -1189,6 +1199,7 @@
 
     function renderStockRequests() {
       els.stockRequestCount.textContent = `${state.stockRequests.length}`
+      const isLoadMode = state.selectedStockType === 'vehicle_load'
       els.stockTypeBadge.textContent = stockTypeLabels[state.selectedStockType] || 'Doklad'
       els.createStockRequestButton.textContent = state.selectedStockType === 'vehicle_order'
         ? 'Odeslat objednávku'
@@ -1198,23 +1209,36 @@
       if (els.loadWholeVehicleButton) {
         els.loadWholeVehicleButton.style.display = state.selectedStockType === 'vehicle_unload' ? '' : 'none'
       }
+      els.stockFormDetails.style.display = isLoadMode ? 'none' : ''
+      els.stockRequestSectionTitle.textContent = isLoadMode ? 'Připravené nakládky' : 'Moje doklady'
+      els.stockRequestSectionBadge.textContent = isLoadMode ? 'Převzít' : 'Kontrola'
+      els.stockRequestListTitle.textContent = isLoadMode ? 'Připravené nakládky' : 'Moje doklady'
+      if (isLoadMode) els.stockRequestDetails.open = true
       renderStockVehicleSelect()
       renderStockDraft()
 
-      if (!state.stockRequests.length) {
-        els.stockRequestList.innerHTML = '<div class="empty">Zatím tu nejsou žádné mobilní skladové doklady.</div>'
+      const visibleRequests = isLoadMode
+        ? state.stockRequests.filter((request) => request.status === 'ready' && ['vehicle_order', 'vehicle_load'].includes(request.request_type))
+        : state.stockRequests
+
+      if (!visibleRequests.length) {
+        els.stockRequestList.innerHTML = `<div class="empty">${isLoadMode ? 'Skladník zatím nepřipravil žádnou nakládku k převzetí.' : 'Zatím tu nejsou žádné mobilní skladové doklady.'}</div>`
         return
       }
 
-      els.stockRequestList.innerHTML = state.stockRequests.map((request) => `
-        <div class="row">
-          <div>
-            <strong>${escapeHtml(stockTypeLabels[request.request_type] || request.request_type)} #${request.id}</strong>
-            <span>${escapeHtml(getStockRequestItemSummary(request.id) || request.note || 'Bez položek')} · ${escapeHtml(request.status)} · ${escapeHtml(request.requested_for_date || '')}</span>
+      els.stockRequestList.innerHTML = visibleRequests.map((request) => {
+        const adjustment = getStockRequestAdjustmentSummary(request.id)
+        return `
+          <div class="row">
+            <div>
+              <strong>${escapeHtml(stockTypeLabels[request.request_type] || request.request_type)} #${request.id}</strong>
+              <span>${escapeHtml(getStockRequestItemSummary(request.id) || request.note || 'Bez položek')} · ${escapeHtml(request.status)} · ${escapeHtml(request.requested_for_date || '')}</span>
+              ${adjustment ? `<span style="color:#ffe1aa;">Skladník upravil množství: ${escapeHtml(adjustment)}</span>` : ''}
+            </div>
+            ${request.status === 'ready' ? `<button class="secondary-btn" style="width:auto; min-height:48px;" data-stock-request-action="confirm-ready" data-request-id="${request.id}" type="button">Převzít</button>` : `<span class="badge ${request.status === 'confirmed' ? '' : request.status === 'cancelled' ? 'red' : 'yellow'}">${escapeHtml(request.status)}</span>`}
           </div>
-          ${request.status === 'ready' ? `<button class="secondary-btn" style="width:auto; min-height:48px;" data-stock-request-action="confirm-ready" data-request-id="${request.id}" type="button">Převzít</button>` : `<span class="badge ${request.status === 'confirmed' ? '' : request.status === 'cancelled' ? 'red' : 'yellow'}">${escapeHtml(request.status)}</span>`}
-        </div>
-      `).join('')
+        `
+      }).join('')
     }
 
     function getStockRequestItems(requestId) {
@@ -1225,6 +1249,14 @@
       return getStockRequestItems(requestId)
         .slice(0, 3)
         .map((item) => `${item.product_name || 'Produkt'} ${Number(item.prepared_quantity ?? item.confirmed_quantity ?? item.requested_quantity ?? 0).toFixed(0)} ${item.unit || 'ks'}`)
+        .join(' / ')
+    }
+
+    function getStockRequestAdjustmentSummary(requestId) {
+      return getStockRequestItems(requestId)
+        .filter((item) => item.prepared_quantity !== null && item.prepared_quantity !== undefined && Number(item.prepared_quantity) !== Number(item.requested_quantity || 0))
+        .slice(0, 3)
+        .map((item) => `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)}→${Number(item.prepared_quantity || 0).toFixed(0)} ${item.unit || 'ks'}`)
         .join(' / ')
     }
 
@@ -1451,6 +1483,15 @@
     function activateStockType(type) {
       state.selectedStockType = type
       renderStockRequests()
+      if (type === 'vehicle_load') {
+        els.stockRequestDetails.open = true
+        showMessage('Tady jen potvrzuješ nakládku, kterou už připravil skladník.')
+        window.setTimeout(() => {
+          els.stockRequestDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 60)
+        return
+      }
+      els.stockRequestDetails.open = false
       els.stockFormDetails.open = true
       showMessage(stockTypeHelp[type] || 'Vyber položku a zadej množství.')
       window.setTimeout(() => {
