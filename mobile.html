@@ -666,13 +666,9 @@
             <span class="icon blue"><svg viewBox="0 0 24 24"><path d="M19 7H5"/><path d="M17 7v8H7V7"/><path d="M9 18h6"/><path d="M12 15v6"/></svg></span>
             <span><h3>Vykládka</h3><small>Vrácení použitelného zboží na sklad.</small></span>
           </button>
-          <button class="tile" data-stock-type="vehicle_sale" type="button">
-            <span class="icon green"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 5l7 7-7 7"/></svg></span>
-            <span><h3>Prodej</h3><small>Dočasný odpis prodaných kusů z vozidla.</small></span>
-          </button>
           <button class="tile" data-stock-type="vehicle_writeoff" type="button">
             <span class="icon amber"><svg viewBox="0 0 24 24"><path d="M9 14l-4-4 4-4"/><path d="M5 10h9a5 5 0 0 1 0 10h-1"/></svg></span>
-            <span><h3>Vratky</h3><small>Prošlé, poškozené nebo odpis.</small></span>
+            <span><h3>Vratky</h3><small>Prošlé nebo poškozené ke schválení.</small></span>
           </button>
         </div>
 
@@ -701,6 +697,7 @@
                 <textarea id="stockNoteInput" placeholder="Volitelné"></textarea>
               </label>
               <button class="secondary-btn" id="addStockDraftItemButton" type="button">+ Přidat položku</button>
+              <button class="secondary-btn" id="loadWholeVehicleButton" type="button" style="display:none;">Načíst celé vozidlo</button>
               <div class="stock-draft" id="stockDraftList"></div>
               <button class="primary-btn" id="createStockRequestButton" type="button">Uložit požadavek</button>
             </div>
@@ -854,6 +851,7 @@
       stockQuantityInput: document.getElementById('stockQuantityInput'),
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
+      loadWholeVehicleButton: document.getElementById('loadWholeVehicleButton'),
       stockDraftList: document.getElementById('stockDraftList'),
       createStockRequestButton: document.getElementById('createStockRequestButton'),
       stockRequestList: document.getElementById('stockRequestList'),
@@ -882,17 +880,15 @@
       vehicle_order: 'Objednat',
       vehicle_load: 'Nakládka',
       vehicle_unload: 'Vykládka',
-      vehicle_sale: 'Prodej z vozidla',
       vehicle_return: 'Vratka',
-      vehicle_writeoff: 'Odpis'
+      vehicle_writeoff: 'Vratky'
     }
 
     const stockTypeHelp = {
       vehicle_order: 'Vyber položku a množství. Požadavek uvidí skladník na PC jako vychystání.',
       vehicle_load: 'Potvrď položky, které fyzicky nakládáš do vozidla.',
-      vehicle_unload: 'Zapiš použitelné kusy, které vracíš z vozidla zpět na sklad.',
-      vehicle_sale: 'Dočasný prodej z vozidla. Použijeme do doby, než poběží telemetrie.',
-      vehicle_writeoff: 'Zapiš prošlé, poškozené nebo jinak neprodejné kusy.'
+      vehicle_unload: 'Zapiš použitelné kusy, které vracíš z vozidla zpět na sklad. Můžeš přidávat položky ručně nebo načíst celé auto.',
+      vehicle_writeoff: 'Zapiš prošlé nebo poškozené kusy. Vratku pak schválí skladník nebo manager.'
     }
 
     function showMessage(text, type = 'info') {
@@ -1194,7 +1190,14 @@
     function renderStockRequests() {
       els.stockRequestCount.textContent = `${state.stockRequests.length}`
       els.stockTypeBadge.textContent = stockTypeLabels[state.selectedStockType] || 'Doklad'
-      els.createStockRequestButton.textContent = state.selectedStockType === 'vehicle_order' ? 'Odeslat objednávku' : 'Uložit doklad'
+      els.createStockRequestButton.textContent = state.selectedStockType === 'vehicle_order'
+        ? 'Odeslat objednávku'
+        : state.selectedStockType === 'vehicle_writeoff'
+          ? 'Odeslat vratku ke schválení'
+          : 'Uložit doklad'
+      if (els.loadWholeVehicleButton) {
+        els.loadWholeVehicleButton.style.display = state.selectedStockType === 'vehicle_unload' ? '' : 'none'
+      }
       renderStockVehicleSelect()
       renderStockDraft()
 
@@ -1710,10 +1713,10 @@
         return
       }
 
-      const isOrder = state.selectedStockType === 'vehicle_order'
+      const needsApproval = state.selectedStockType === 'vehicle_order' || state.selectedStockType === 'vehicle_writeoff'
       const note = els.stockNoteInput.value.trim() || null
       const draftItems = state.stockDraftItems.map((item) => ({ ...item }))
-      const vehicleId = getCurrentVehicleId() || els.stockVehicleSelect?.value || null
+      const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId() || null
       if (!vehicleId) {
         showMessage('Vyber vozidlo, pro které se doklad připravuje.', 'error')
         return
@@ -1724,13 +1727,13 @@
           .from('mobile_stock_requests')
           .insert({
             request_type: state.selectedStockType,
-            status: isOrder ? 'requested' : 'confirmed',
+            status: needsApproval ? 'requested' : 'confirmed',
             employee_id: state.employee?.id || null,
             vehicle_id: vehicleId,
             attendance_day_id: state.attendanceDay?.id || null,
             requested_for_date: todayIso,
-            confirmed_by: isOrder ? null : state.employee?.id || null,
-            confirmed_at: isOrder ? null : new Date().toISOString(),
+            confirmed_by: needsApproval ? null : state.employee?.id || null,
+            confirmed_at: needsApproval ? null : new Date().toISOString(),
             note
           })
           .select('*')
@@ -1745,7 +1748,7 @@
           sku: item.sku,
           unit: item.unit,
           requested_quantity: item.quantity,
-          confirmed_quantity: isOrder ? null : item.quantity,
+          confirmed_quantity: needsApproval ? null : item.quantity,
           note: item.note
         }))
 
@@ -1764,7 +1767,7 @@
         }
 
         state.stockDraftItems = []
-        showMessage(isOrder ? 'Objednávka byla odeslána skladníkovi.' : 'Skladový doklad byl uložený a promítnutý do zásob.')
+        showMessage(needsApproval ? 'Požadavek byl odeslán skladníkovi ke zpracování.' : 'Skladový doklad byl uložený a promítnutý do zásob.')
         state.stockRequests = [request, ...state.stockRequests.filter((item) => String(item.id) !== String(request.id))]
         state.stockRequestItems = [
           ...storedItems.map((item) => ({ ...item })),
@@ -1778,8 +1781,8 @@
           renderImportant()
         } catch (reloadError) {
           console.warn('Stock request was saved, but refresh failed.', reloadError)
-          showMessage(isOrder
-            ? 'Objednávka byla odeslána skladníkovi. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.'
+          showMessage(needsApproval
+            ? 'Požadavek byl odeslán skladníkovi. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.'
             : 'Skladový doklad byl uložený. Jen se nepodařilo obnovit seznam, zkus stránku později obnovit.')
         }
       } catch (error) {
@@ -1800,6 +1803,72 @@
       await loadStockRequests()
       renderStockRequests()
       renderImportant()
+    }
+
+    async function loadWholeVehicleForUnload() {
+      const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
+      if (!vehicleId) {
+        showMessage('Nejdřív vyber vozidlo pro vykládku.', 'error')
+        return
+      }
+      const { data: location, error: locationError } = await supabase
+        .from('stock_locations')
+        .select('id')
+        .eq('location_type', 'vehicle')
+        .eq('vehicle_id', vehicleId)
+        .eq('active', true)
+        .limit(1)
+        .maybeSingle()
+      if (locationError) throw locationError
+      if (!location?.id) {
+        showMessage('Pro vybrané vozidlo zatím není evidovaná žádná zásoba.', 'error')
+        return
+      }
+      const { data: balances, error: balancesError } = await supabase
+        .from('stock_location_balances')
+        .select('product_id, quantity_on_hand')
+        .eq('stock_location_id', location.id)
+        .gt('quantity_on_hand', 0)
+      if (balancesError) throw balancesError
+      const rows = balances || []
+      if (!rows.length) {
+        showMessage('Ve vybraném vozidle není žádná kladná zásoba k vykládce.', 'error')
+        return
+      }
+      const productIds = rows.map((row) => String(row.product_id))
+      const knownProducts = new Map(state.products.map((product) => [String(product.id), product]))
+      const missingIds = productIds.filter((id) => !knownProducts.has(id))
+      if (missingIds.length) {
+        const { data: products, error: productError } = await supabase
+          .from('products')
+          .select('id, name, sku, ean, base_unit')
+          .in('id', missingIds)
+        if (productError) throw productError
+        ;(products || []).forEach((product) => {
+          knownProducts.set(String(product.id), product)
+          state.products.push(product)
+        })
+        renderProducts()
+      }
+      rows.forEach((row) => {
+        const product = knownProducts.get(String(row.product_id))
+        if (!product) return
+        const existing = state.stockDraftItems.find((item) => String(item.product_id) === String(product.id))
+        if (existing) {
+          existing.quantity = Number(row.quantity_on_hand || 0)
+          return
+        }
+        state.stockDraftItems.push({
+          product_id: product.id,
+          product_name: product.name || 'Produkt',
+          sku: product.sku || '',
+          unit: product.base_unit || 'ks',
+          quantity: Number(row.quantity_on_hand || 0),
+          note: 'Kompletní vykládka vozidla'
+        })
+      })
+      renderStockDraft()
+      showMessage('Načetl jsem kladné zásoby z vozidla do vykládky.')
     }
 
     async function saveVehicleLog() {
@@ -2128,6 +2197,7 @@
       els.startShiftButton.addEventListener('click', () => startShift().catch(handleError))
       els.endShiftButton.addEventListener('click', () => endShift().catch(handleError))
       els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
+      els.loadWholeVehicleButton?.addEventListener('click', () => loadWholeVehicleForUnload().catch(handleError))
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
       els.stockProductInput.addEventListener('input', () => renderStockDraft())
       els.stockQuantityInput.addEventListener('keydown', (event) => {
