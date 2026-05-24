@@ -997,8 +997,11 @@
             <datalist id="initialStockProductOptions"></datalist>
             <div class="action-row">
               <button class="btn secondary" id="addInitialStockLineBtn" type="button">+ Přidat řádek</button>
+              <button class="btn secondary" id="saveInitialStockDraftBtn" type="button">Uložit rozpracované</button>
+              <button class="btn secondary" id="clearInitialStockDraftBtn" type="button">Zahodit rozpracované</button>
             </div>
           </div>
+          <div class="helper-line" id="initialStockDraftStatus">Rozpracovaná inventura se průběžně ukládá v tomhle prohlížeči. Po finálním načtení se draft smaže.</div>
           <div class="helper-line">Použij pro počáteční nahrání skladu nebo vozidla. Řádky se zapíšou jako auditní pohyb `initial_stock`; pokud je vyplněná expirace, vznikne samostatná šarže.</div>
         </div>
         <div class="modal-footer">
@@ -1170,6 +1173,9 @@
     const initialStockLines = document.getElementById('initialStockLines')
     const initialStockImportFile = document.getElementById('initialStockImportFile')
     const initialStockImportStatus = document.getElementById('initialStockImportStatus')
+    const initialStockDraftStatus = document.getElementById('initialStockDraftStatus')
+    const saveInitialStockDraftBtn = document.getElementById('saveInitialStockDraftBtn')
+    const clearInitialStockDraftBtn = document.getElementById('clearInitialStockDraftBtn')
     const bagettePilotForm = document.getElementById('bagettePilotForm')
     const itemModalTitle = document.getElementById('itemModalTitle')
     const itemIdInput = document.getElementById('itemId')
@@ -1237,6 +1243,7 @@
     let mobileStockRequestItems = []
     let mobileStockRequestEmployees = []
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v1'
+    const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
     const STOCK_V13_COLUMNS = [
       { key: 'product', label: 'Produkt' },
       { key: 'type', label: 'Typ / kód' },
@@ -3591,6 +3598,73 @@
         })
         .filter((row) => row.productId || row.quantity > 0 || row.purchasePrice != null || row.expiryDate || row.lotCode)
     }
+    function setInitialStockDraftStatus(message, type = '') {
+      if (!initialStockDraftStatus) return
+      initialStockDraftStatus.textContent = message
+      initialStockDraftStatus.className = 'helper-line'
+      if (type) initialStockDraftStatus.classList.add(type)
+    }
+    function getInitialStockDraftSnapshot() {
+      return {
+        savedAt: new Date().toISOString(),
+        locationType: document.getElementById('initialStockLocationType').value || 'warehouse',
+        locationId: document.getElementById('initialStockLocationId').value || '',
+        stockDate: document.getElementById('initialStockDate').value || '',
+        note: document.getElementById('initialStockNote').value || '',
+        lines: collectInitialStockLines()
+      }
+    }
+    function hasInitialStockDraftContent(draft) {
+      return Boolean(draft?.locationId || draft?.stockDate || draft?.note || draft?.lines?.length)
+    }
+    function saveInitialStockDraft({ silent = false } = {}) {
+      const draft = getInitialStockDraftSnapshot()
+      if (!hasInitialStockDraftContent(draft)) {
+        localStorage.removeItem(INITIAL_STOCK_DRAFT_STORAGE_KEY)
+        if (!silent) setInitialStockDraftStatus('Rozpracovaná inventura je prázdná.', 'error')
+        return
+      }
+      localStorage.setItem(INITIAL_STOCK_DRAFT_STORAGE_KEY, JSON.stringify(draft))
+      const time = new Date(draft.savedAt).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+      setInitialStockDraftStatus(`Rozpracovaná inventura je uložená v tomto prohlížeči. Poslední uložení ${time}.`, silent ? '' : 'success')
+    }
+    let initialStockDraftTimer = null
+    function scheduleInitialStockDraftSave() {
+      window.clearTimeout(initialStockDraftTimer)
+      initialStockDraftTimer = window.setTimeout(() => saveInitialStockDraft({ silent: true }), 500)
+    }
+    function clearInitialStockDraft({ resetForm = false } = {}) {
+      localStorage.removeItem(INITIAL_STOCK_DRAFT_STORAGE_KEY)
+      setInitialStockDraftStatus('Rozpracovaná inventura byla zahozena.')
+      if (resetForm) {
+        initialStockForm.reset()
+        initialStockLines.innerHTML = ''
+        document.getElementById('initialStockDate').value = new Date().toISOString().slice(0, 10)
+        document.getElementById('initialStockLocationType').value = 'warehouse'
+        populateInitialStockLocationOptions()
+        addInitialStockLine()
+      }
+    }
+    function restoreInitialStockDraftIfAvailable() {
+      let draft = null
+      try {
+        draft = JSON.parse(localStorage.getItem(INITIAL_STOCK_DRAFT_STORAGE_KEY) || 'null')
+      } catch (error) {
+        localStorage.removeItem(INITIAL_STOCK_DRAFT_STORAGE_KEY)
+      }
+      if (!hasInitialStockDraftContent(draft)) return false
+      document.getElementById('initialStockLocationType').value = ['warehouse', 'vehicle'].includes(draft.locationType) ? draft.locationType : 'warehouse'
+      populateInitialStockLocationOptions()
+      if (draft.locationId) document.getElementById('initialStockLocationId').value = String(draft.locationId)
+      document.getElementById('initialStockDate').value = draft.stockDate || new Date().toISOString().slice(0, 10)
+      document.getElementById('initialStockNote').value = draft.note || ''
+      initialStockLines.innerHTML = ''
+      ;(draft.lines || []).forEach((line) => addInitialStockLine(line))
+      if (!initialStockLines.querySelector('.transfer-line-row')) addInitialStockLine()
+      const savedAt = draft.savedAt ? new Date(draft.savedAt).toLocaleString('cs-CZ') : 'dříve'
+      setInitialStockDraftStatus(`Obnovil jsem rozpracovanou inventuru z tohoto prohlížeče. Uloženo ${savedAt}.`, 'success')
+      return true
+    }
     function populateInitialStockLocationOptions() {
       const type = document.getElementById('initialStockLocationType').value || 'warehouse'
       const select = document.getElementById('initialStockLocationId')
@@ -3608,7 +3682,11 @@
       initialStockImportFile.value = ''
       initialStockImportStatus.textContent = 'Nahraj export produktů. Řádky se před uložením načtou do tabulky a půjdou upravit.'
       initialStockImportStatus.className = 'helper-line'
-      addInitialStockLine({ productId })
+      const restored = productId ? false : restoreInitialStockDraftIfAvailable()
+      if (!restored) {
+        setInitialStockDraftStatus('Rozpracovaná inventura se průběžně ukládá v tomhle prohlížeči. Po finálním načtení se draft smaže.')
+        addInitialStockLine({ productId })
+      }
       initialStockModalBackdrop.classList.add('show')
     }
     function closeInitialStockModal() {
@@ -4501,12 +4579,23 @@
     openProductFromPanelBtn.addEventListener('click', () => { resetProductForm(); openProductModal() })
     openMovementBtn.addEventListener('click', () => openMovementModal())
     openInitialStockBtn.addEventListener('click', () => openInitialStockModal())
-    document.getElementById('initialStockLocationType').addEventListener('change', populateInitialStockLocationOptions)
+    document.getElementById('initialStockLocationType').addEventListener('change', () => {
+      populateInitialStockLocationOptions()
+      scheduleInitialStockDraftSave()
+    })
+    document.getElementById('initialStockLocationId').addEventListener('change', scheduleInitialStockDraftSave)
+    document.getElementById('initialStockDate').addEventListener('change', scheduleInitialStockDraftSave)
+    document.getElementById('initialStockNote').addEventListener('input', scheduleInitialStockDraftSave)
+    saveInitialStockDraftBtn.addEventListener('click', () => saveInitialStockDraft())
+    clearInitialStockDraftBtn.addEventListener('click', () => clearInitialStockDraft({ resetForm: true }))
     openWarehouseToVehicleBtn.addEventListener('click', () => openSimpleTransferModal('warehouse_to_vehicle'))
     openVehicleToWarehouseBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_to_warehouse'))
     openVehicleSaleBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_sale'))
     addSimpleTransferLineBtn.addEventListener('click', () => addSimpleTransferLine())
-    addInitialStockLineBtn.addEventListener('click', () => addInitialStockLine())
+    addInitialStockLineBtn.addEventListener('click', () => {
+      addInitialStockLine()
+      scheduleInitialStockDraftSave()
+    })
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'catalog'))
     })
@@ -4601,6 +4690,7 @@
         const rows = await parseTransferImportFile(file)
         if (!rows.length) throw new Error('V souboru jsem nenašel řádky s produktem a množstvím.')
         fillInitialStockFromImport(file, rows)
+        scheduleInitialStockDraftSave()
       } catch (error) {
         console.error(error)
         initialStockImportStatus.textContent = `Soubor se nepodařilo načíst: ${error.message}`
@@ -4617,14 +4707,21 @@
       if (!button) return
       button.closest('.transfer-line-row')?.remove()
       if (!initialStockLines.querySelector('.transfer-line-row')) addInitialStockLine()
+      scheduleInitialStockDraftSave()
     })
     initialStockLines.addEventListener('input', (event) => {
       const input = event.target.closest('[data-initial-product-search]')
       if (input) syncInitialStockProductSearchInput(input)
+      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
+        scheduleInitialStockDraftSave()
+      }
     })
     initialStockLines.addEventListener('change', (event) => {
       const input = event.target.closest('[data-initial-product-search]')
       if (input) syncInitialStockProductSearchInput(input)
+      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
+        scheduleInitialStockDraftSave()
+      }
     })
     detailModalBackdrop.addEventListener('click', (event) => { if (event.target === detailModalBackdrop) closeDetailModal() })
     bagettePilotModalBackdrop.addEventListener('click', (event) => { if (event.target === bagettePilotModalBackdrop) closeBagettePilotModal() })
@@ -4785,6 +4882,7 @@
           const searchInput = pendingRow.querySelector('[data-initial-product-search]')
           if (hiddenInput) hiddenInput.value = String(savedProductId)
           if (searchInput && product) searchInput.value = productSearchLabel(product)
+          scheduleInitialStockDraftSave()
         }
         populateReferenceOptions()
         setProductCatalogStatus(wasEdit ? 'Karta zásoby byla upravena.' : 'Karta zásoby byla založena.', 'success')
@@ -4845,6 +4943,7 @@
         saveInitialStockBtn.disabled = true
         saveInitialStockBtn.textContent = 'Načítám...'
         await saveInitialStock()
+        clearInitialStockDraft()
         closeInitialStockModal()
         await Promise.all([loadInventoryV13Overview(), loadVehicleInventoryOverview()])
         populateReferenceOptions()
