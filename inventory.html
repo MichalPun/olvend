@@ -153,6 +153,7 @@
     .transfer-line-head { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; }
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .transfer-line-row input, .transfer-line-row select { padding:10px; border-radius:10px; }
+    .initial-stock-line-head, .initial-stock-line-row { grid-template-columns:minmax(260px,1.5fr) minmax(110px,0.45fr) minmax(120px,0.5fr) minmax(120px,0.5fr) minmax(160px,0.7fr) 44px; }
     .transfer-line-source { grid-column:1 / -2; padding:9px 11px; border-radius:10px; border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.08); color:#fed7aa; font-size:12px; line-height:1.4; }
     .transfer-line-source strong { color:#fff7ed; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
@@ -982,9 +983,10 @@
             </div>
           </div>
           <div class="transfer-lines">
-            <div class="transfer-line-head">
+            <div class="transfer-line-head initial-stock-line-head">
               <span>Produkt</span>
               <span>Množství</span>
+              <span>Nákupka</span>
               <span>Expirace</span>
               <span>Šarže</span>
               <span></span>
@@ -3343,12 +3345,16 @@
       const productName = getByKey('Produkt', 'Položka', 'Název', 'Nazev', 'Product', 'Item', 'Name')
       const codeRaw = getByKey('Kód', 'Kod', 'Code', 'SKU', 'EAN')
       const quantityRaw = getByKey('Množství', 'Mnozstvi', 'Ve skladu', 'Skladem', 'Stav', 'Ks', 'Quantity', 'Qty', 'Count', 'Pocet')
+      const purchasePriceRaw = getByKey('Poslední náklad', 'Posledni naklad', 'Nákupní cena', 'Nakupni cena', 'Nákupka', 'Nakupka', 'Purchase price', 'Purchase cost', 'Last cost', 'Cost')
       const quantity = Number(String(quantityRaw ?? '').replace(',', '.').replace(/\s/g, ''))
+      const purchasePriceText = String(purchasePriceRaw ?? '').replace(',', '.').replace(/\s/g, '')
+      const purchasePrice = purchasePriceText ? Number(purchasePriceText) : null
       return {
         type: getByKey('Typ', 'Type', 'Kategorie') || '',
         code: String(codeRaw ?? '').trim(),
         productName: String(productName ?? '').trim(),
-        quantity: Number.isFinite(quantity) ? quantity : 0
+        quantity: Number.isFinite(quantity) ? quantity : 0,
+        purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null
       }
     }
     function parseTableRowsFromMatrix(matrix) {
@@ -3424,6 +3430,7 @@
         return {
           productId: product?.id || '',
           quantity: row.quantity,
+          purchasePrice: row.purchasePrice,
           lotCode: product ? '' : '',
           importSource: product ? '' : source
         }
@@ -3489,11 +3496,12 @@
     }
     function addInitialStockLine(row = {}) {
       const wrapper = document.createElement('div')
-      wrapper.className = 'transfer-line-row'
+      wrapper.className = 'transfer-line-row initial-stock-line-row'
       const importSource = row.importSource ? `<div class="transfer-line-source"><strong>Nespárováno ze souboru:</strong> ${escapeHtml(row.importSource)}</div>` : ''
       wrapper.innerHTML = `
         <select data-initial-product required>${simpleTransferProductOptionsHtml(row.productId || '')}</select>
         <input data-initial-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
+        <input data-initial-purchase-price type="number" min="0" step="0.0001" placeholder="Kč / jednotka" value="${escapeHtml(row.purchasePrice ?? '')}" />
         <input data-initial-expiry type="date" value="${escapeHtml(row.expiryDate || '')}" />
         <input data-initial-lot placeholder="Šarže / poznámka" value="${escapeHtml(row.lotCode || '')}" />
         <button class="icon-btn" type="button" data-initial-line-action="remove" title="Odebrat řádek">×</button>
@@ -3507,10 +3515,11 @@
           index,
           productId: Number(row.querySelector('[data-initial-product]')?.value || 0),
           quantity: Number(row.querySelector('[data-initial-quantity]')?.value || 0),
+          purchasePrice: row.querySelector('[data-initial-purchase-price]')?.value ? Number(row.querySelector('[data-initial-purchase-price]')?.value || 0) : null,
           expiryDate: row.querySelector('[data-initial-expiry]')?.value || '',
           lotCode: row.querySelector('[data-initial-lot]')?.value.trim() || ''
         }))
-        .filter((row) => row.productId || row.quantity > 0 || row.expiryDate || row.lotCode)
+        .filter((row) => row.productId || row.quantity > 0 || row.purchasePrice != null || row.expiryDate || row.lotCode)
     }
     function populateInitialStockLocationOptions() {
       const type = document.getElementById('initialStockLocationType').value || 'warehouse'
@@ -4308,8 +4317,21 @@
       for (const line of lines) {
         movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
       }
+      const purchasePriceUpdates = lines
+        .filter((line) => line.productId && line.purchasePrice != null && Number.isFinite(line.purchasePrice) && line.purchasePrice > 0)
+        .map((line) => ({ productId: line.productId, purchasePrice: Number(line.purchasePrice.toFixed(4)) }))
+      const uniquePurchasePriceUpdates = [...new Map(purchasePriceUpdates.map((line) => [String(line.productId), line])).values()]
       const { error } = await supabase.from('stock_movements_v13').insert(movementsToInsert)
       if (error) throw error
+      for (const line of uniquePurchasePriceUpdates) {
+        const { error: priceError } = await supabase
+          .from('products')
+          .update({ purchase_price: line.purchasePrice })
+          .eq('id', line.productId)
+        if (priceError) throw priceError
+        const product = productsV13.find((item) => String(item.id) === String(line.productId))
+        if (product) product.purchase_price = line.purchasePrice
+      }
     }
 
     searchInput.addEventListener('input', applyFilters)
