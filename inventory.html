@@ -973,6 +973,11 @@
               <label for="initialStockNote">Poznámka</label>
               <textarea id="initialStockNote" placeholder="Např. start OLVEND, fyzická inventura skladu nebo vozidla"></textarea>
             </div>
+            <div class="field full">
+              <label for="initialStockImportFile">Načíst XLSX/XML/CSV</label>
+              <input id="initialStockImportFile" type="file" accept=".xlsx,.xls,.xml,.csv,.txt" />
+              <div class="helper-line" id="initialStockImportStatus">Nahraj export produktů. Řádky se před uložením načtou do tabulky a půjdou upravit.</div>
+            </div>
           </div>
           <div class="transfer-lines">
             <div class="transfer-line-head">
@@ -1156,6 +1161,8 @@
     const simpleTransferImportStatus = document.getElementById('simpleTransferImportStatus')
     const initialStockForm = document.getElementById('initialStockForm')
     const initialStockLines = document.getElementById('initialStockLines')
+    const initialStockImportFile = document.getElementById('initialStockImportFile')
+    const initialStockImportStatus = document.getElementById('initialStockImportStatus')
     const bagettePilotForm = document.getElementById('bagettePilotForm')
     const itemModalTitle = document.getElementById('itemModalTitle')
     const itemIdInput = document.getElementById('itemId')
@@ -3293,6 +3300,14 @@
         return productName && (productName.includes(normalized) || normalized.includes(productName))
       }) || null
     }
+    function findProductForImportRow(row) {
+      const code = normalizeLookupValue(row?.code || row?.productCode || '')
+      if (code) {
+        const byCode = productsV13.find((product) => [product.sku, product.ean, product.code, product.id].some((value) => normalizeLookupValue(value) === code))
+        if (byCode) return byCode
+      }
+      return findProductForImportName(row?.productName || row?.name || '')
+    }
     function findVehicleForImportName(fileName) {
       const normalizedFile = normalizeLookupValue(fileName)
       return vehicles.find((vehicle) => {
@@ -3315,10 +3330,12 @@
         return entry ? entry[1] : ''
       }
       const productName = getByKey('Produkt', 'Položka', 'Název', 'Nazev', 'Product', 'Item', 'Name')
-      const quantityRaw = getByKey('Množství', 'Mnozstvi', 'Ks', 'Quantity', 'Qty', 'Count', 'Pocet')
+      const codeRaw = getByKey('Kód', 'Kod', 'Code', 'SKU', 'EAN')
+      const quantityRaw = getByKey('Množství', 'Mnozstvi', 'Ve skladu', 'Skladem', 'Stav', 'Ks', 'Quantity', 'Qty', 'Count', 'Pocet')
       const quantity = Number(String(quantityRaw ?? '').replace(',', '.').replace(/\s/g, ''))
       return {
         type: getByKey('Typ', 'Type', 'Kategorie') || '',
+        code: String(codeRaw ?? '').trim(),
         productName: String(productName ?? '').trim(),
         quantity: Number.isFinite(quantity) ? quantity : 0
       }
@@ -3326,7 +3343,9 @@
     function parseTableRowsFromMatrix(matrix) {
       const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
       if (!rows.length) return []
-      const headerIndex = rows.findIndex((row) => row.some((cell) => normalizeLookupValue(cell) === 'produkt') && row.some((cell) => ['mnozstvi', 'quantity', 'qty', 'ks'].includes(normalizeLookupValue(cell))))
+      const productKeys = ['produkt', 'polozka', 'nazev', 'name', 'item']
+      const quantityKeys = ['mnozstvi', 'veskladu', 'skladem', 'stav', 'quantity', 'qty', 'ks', 'pocet']
+      const headerIndex = rows.findIndex((row) => row.some((cell) => productKeys.includes(normalizeLookupValue(cell))) && row.some((cell) => quantityKeys.includes(normalizeLookupValue(cell))))
       const headers = (headerIndex >= 0 ? rows[headerIndex] : ['Typ', 'Produkt', 'Množství']).map((cell) => String(cell ?? '').trim())
       return rows.slice(headerIndex >= 0 ? headerIndex + 1 : 0)
         .map((row) => Object.fromEntries(headers.map((header, index) => [header || `col_${index}`, row[index]])))
@@ -3366,11 +3385,11 @@
     }
     function fillSimpleTransferFromImport(file, rows) {
       const importedRows = rows.map((row) => {
-        const product = findProductForImportName(row.productName)
+        const product = findProductForImportRow(row)
         return {
           productId: product?.id || '',
           quantity: row.quantity,
-          note: product ? row.type : `Nepárováno: ${row.productName}`
+          note: product ? row.type : `Nepárováno: ${row.productName || row.code}`
         }
       })
       simpleTransferLines.innerHTML = ''
@@ -3384,6 +3403,25 @@
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
       simpleTransferLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
+    }
+    function fillInitialStockFromImport(file, rows) {
+      const importedRows = rows.map((row) => {
+        const product = findProductForImportRow(row)
+        return {
+          productId: product?.id || '',
+          quantity: row.quantity,
+          lotCode: product ? '' : `Nepárováno: ${row.productName || row.code}`
+        }
+      })
+      initialStockLines.innerHTML = ''
+      importedRows.forEach((row) => addInitialStockLine(row))
+      const fileDate = parseDateFromImportFileName(file.name)
+      if (fileDate) document.getElementById('initialStockDate').value = fileDate
+      const unmatched = importedRows.filter((row) => !row.productId).length
+      const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.` : ' Všechny položky jsou spárované.'
+      initialStockImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
+      initialStockImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
+      initialStockLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
     }
     function openSimpleTransferModal(direction = 'warehouse_to_vehicle', productId = '', correctionDoc = null) {
       editingTransferDoc = correctionDoc
@@ -3470,6 +3508,9 @@
       document.getElementById('initialStockDate').value = new Date().toISOString().slice(0, 10)
       document.getElementById('initialStockLocationType').value = 'warehouse'
       populateInitialStockLocationOptions()
+      initialStockImportFile.value = ''
+      initialStockImportStatus.textContent = 'Nahraj export produktů. Řádky se před uložením načtou do tabulky a půjdou upravit.'
+      initialStockImportStatus.className = 'helper-line'
       addInitialStockLine({ productId })
       initialStockModalBackdrop.classList.add('show')
     }
@@ -3477,6 +3518,7 @@
       initialStockModalBackdrop.classList.remove('show')
       initialStockForm.reset()
       initialStockLines.innerHTML = ''
+      initialStockImportFile.value = ''
     }
     function syncSimpleTransferSubmitLabel() {
       if (editingTransferDoc) {
@@ -4426,6 +4468,21 @@
         console.error(error)
         simpleTransferImportStatus.textContent = `Soubor se nepodařilo načíst: ${error.message}`
         simpleTransferImportStatus.className = 'helper-line error'
+      }
+    })
+    initialStockImportFile.addEventListener('change', async () => {
+      const file = initialStockImportFile.files?.[0]
+      if (!file) return
+      try {
+        initialStockImportStatus.textContent = `Načítám soubor ${file.name}...`
+        initialStockImportStatus.className = 'helper-line'
+        const rows = await parseTransferImportFile(file)
+        if (!rows.length) throw new Error('V souboru jsem nenašel řádky s produktem a množstvím.')
+        fillInitialStockFromImport(file, rows)
+      } catch (error) {
+        console.error(error)
+        initialStockImportStatus.textContent = `Soubor se nepodařilo načíst: ${error.message}`
+        initialStockImportStatus.className = 'helper-line error'
       }
     })
     initialStockLines.addEventListener('click', (event) => {
