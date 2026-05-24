@@ -948,15 +948,22 @@
   <div class="modal-backdrop" id="initialStockModalBackdrop">
     <div class="modal wide-modal">
       <div class="modal-header">
-        <h3>Prvotní inventura skladu</h3>
+        <h3>Prvotní inventura</h3>
         <button class="close-btn" id="closeInitialStockModalBtn" type="button">&times;</button>
       </div>
       <form id="initialStockForm">
         <div class="modal-body">
           <div class="form-grid">
             <div class="field">
-              <label for="initialStockWarehouseId">Sklad</label>
-              <select id="initialStockWarehouseId" required><option value="">Vyber sklad</option></select>
+              <label for="initialStockLocationType">Místo</label>
+              <select id="initialStockLocationType">
+                <option value="warehouse">Sklad</option>
+                <option value="vehicle">Vozidlo</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="initialStockLocationId">Konkrétní místo</label>
+              <select id="initialStockLocationId" required><option value="">Vyber místo</option></select>
             </div>
             <div class="field">
               <label for="initialStockDate">Datum inventury</label>
@@ -964,7 +971,7 @@
             </div>
             <div class="field full">
               <label for="initialStockNote">Poznámka</label>
-              <textarea id="initialStockNote" placeholder="Např. start OLVEND, fyzická inventura skladu"></textarea>
+              <textarea id="initialStockNote" placeholder="Např. start OLVEND, fyzická inventura skladu nebo vozidla"></textarea>
             </div>
           </div>
           <div class="transfer-lines">
@@ -980,11 +987,11 @@
               <button class="btn secondary" id="addInitialStockLineBtn" type="button">+ Přidat řádek</button>
             </div>
           </div>
-          <div class="helper-line">Použij pro počáteční nahrání skladu. Řádky se zapíšou jako auditní pohyb `initial_stock`; pokud je vyplněná expirace, vznikne samostatná šarže.</div>
+          <div class="helper-line">Použij pro počáteční nahrání skladu nebo vozidla. Řádky se zapíšou jako auditní pohyb `initial_stock`; pokud je vyplněná expirace, vznikne samostatná šarže.</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn secondary" id="cancelInitialStockBtn">Zrušit</button>
-          <button type="submit" class="btn" id="saveInitialStockBtn">Načíst sklad</button>
+          <button type="submit" class="btn" id="saveInitialStockBtn">Načíst stav</button>
         </div>
       </form>
     </div>
@@ -3450,12 +3457,19 @@
         }))
         .filter((row) => row.productId || row.quantity > 0 || row.expiryDate || row.lotCode)
     }
+    function populateInitialStockLocationOptions() {
+      const type = document.getElementById('initialStockLocationType').value || 'warehouse'
+      const select = document.getElementById('initialStockLocationId')
+      const rows = type === 'vehicle' ? vehicles : warehouses
+      select.innerHTML = `<option value="">${type === 'vehicle' ? 'Vyber vozidlo' : 'Vyber sklad'}</option>` + rows.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name || item.plate || 'Bez názvu')}</option>`).join('')
+      if (rows[0]?.id) select.value = String(rows[0].id)
+    }
     function openInitialStockModal(productId = '') {
       initialStockForm.reset()
       initialStockLines.innerHTML = ''
       document.getElementById('initialStockDate').value = new Date().toISOString().slice(0, 10)
-      document.getElementById('initialStockWarehouseId').innerHTML = '<option value="">Vyber sklad</option>' + warehouses.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('')
-      if (warehouses[0]?.id) document.getElementById('initialStockWarehouseId').value = String(warehouses[0].id)
+      document.getElementById('initialStockLocationType').value = 'warehouse'
+      populateInitialStockLocationOptions()
       addInitialStockLine({ productId })
       initialStockModalBackdrop.classList.add('show')
     }
@@ -4216,17 +4230,21 @@
       if (movementError) throw movementError
     }
     async function saveInitialStock() {
-      const warehouseId = Number(document.getElementById('initialStockWarehouseId').value || 0)
+      const locationType = document.getElementById('initialStockLocationType').value || 'warehouse'
+      const locationEntityId = Number(document.getElementById('initialStockLocationId').value || 0)
       const stockDate = document.getElementById('initialStockDate').value || new Date().toISOString().slice(0, 10)
       const note = document.getElementById('initialStockNote').value.trim() || 'Prvotní inventura OLVEND'
       const lines = collectInitialStockLines()
-      if (!warehouseId) throw new Error('Vyber sklad.')
+      if (!['warehouse', 'vehicle'].includes(locationType)) throw new Error('Vyber typ místa.')
+      if (!locationEntityId) throw new Error(locationType === 'vehicle' ? 'Vyber vozidlo.' : 'Vyber sklad.')
       if (!lines.length) throw new Error('Přidej aspoň jeden řádek inventury.')
       const invalidLine = lines.find((line) => !line.productId || line.quantity <= 0)
       if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku a kladné množství.`)
-      const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
-      const stockLocationId = await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
-      const referenceId = `initial-stock:${Date.now()}`
+      const source = locationType === 'vehicle'
+        ? vehicles.find((item) => String(item.id) === String(locationEntityId))
+        : warehouses.find((item) => String(item.id) === String(locationEntityId))
+      const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : 'Sklad'} ${locationEntityId}`)
+      const referenceId = `initial-stock:${locationType}:${Date.now()}`
       const movementsToInsert = []
       for (const line of lines) {
         movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
@@ -4319,6 +4337,7 @@
     openProductFromPanelBtn.addEventListener('click', () => { resetProductForm(); openProductModal() })
     openMovementBtn.addEventListener('click', () => openMovementModal())
     openInitialStockBtn.addEventListener('click', () => openInitialStockModal())
+    document.getElementById('initialStockLocationType').addEventListener('change', populateInitialStockLocationOptions)
     openWarehouseToVehicleBtn.addEventListener('click', () => openSimpleTransferModal('warehouse_to_vehicle'))
     openVehicleToWarehouseBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_to_warehouse'))
     openVehicleSaleBtn.addEventListener('click', () => openSimpleTransferModal('vehicle_sale'))
@@ -4627,13 +4646,13 @@
         closeInitialStockModal()
         await Promise.all([loadInventoryV13Overview(), loadVehicleInventoryOverview()])
         populateReferenceOptions()
-        setStockV13Status('Prvotní inventura byla zapsaná a stavy skladu jsou přepočítané.', 'success')
+        setStockV13Status('Prvotní inventura byla zapsaná a stavy jsou přepočítané.', 'success')
       } catch (error) {
         console.error(error)
         setStockV13Status(`Prvotní inventuru se nepodařilo uložit: ${error.message}`, 'error')
       } finally {
         saveInitialStockBtn.disabled = false
-        saveInitialStockBtn.textContent = 'Načíst sklad'
+        saveInitialStockBtn.textContent = 'Načíst stav'
       }
     })
     bagettePilotForm.addEventListener('submit', async (event) => {
