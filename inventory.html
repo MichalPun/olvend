@@ -154,6 +154,8 @@
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .transfer-line-row input, .transfer-line-row select { padding:10px; border-radius:10px; }
     .initial-stock-line-head, .initial-stock-line-row { grid-template-columns:minmax(260px,1.5fr) minmax(110px,0.45fr) minmax(120px,0.5fr) minmax(120px,0.5fr) minmax(160px,0.7fr) 44px; }
+    .initial-stock-product-cell { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
+    .initial-stock-product-cell input { min-width:0; }
     .transfer-line-source { grid-column:1 / -2; padding:9px 11px; border-radius:10px; border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.08); color:#fed7aa; font-size:12px; line-height:1.4; }
     .transfer-line-source strong { color:#fff7ed; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
@@ -992,6 +994,7 @@
               <span></span>
             </div>
             <div id="initialStockLines" class="transfer-lines"></div>
+            <datalist id="initialStockProductOptions"></datalist>
             <div class="action-row">
               <button class="btn secondary" id="addInitialStockLineBtn" type="button">+ Přidat řádek</button>
             </div>
@@ -1227,6 +1230,7 @@
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
     let editingTransferDoc = null
+    let pendingInitialStockProductRow = null
     let manualTransferDocsCollapsed = true
     let mobilePickRequestsCollapsed = true
     let mobileStockRequests = []
@@ -3024,11 +3028,30 @@
       saveProductBtn.textContent = 'Uložit kartu zásoby'
       isProductEditMode = false
     }
+    function openProductModalFromInitialStockRow(row) {
+      pendingInitialStockProductRow = row
+      const name = row.querySelector('[data-initial-product-search]')?.value.trim() || ''
+      const purchasePrice = row.querySelector('[data-initial-purchase-price]')?.value || ''
+      resetProductForm()
+      document.getElementById('productName').value = name
+      document.getElementById('productSku').value = ''
+      document.getElementById('productBaseUnit').value = 'ks'
+      document.getElementById('productPurchasePrice').value = purchasePrice
+      document.getElementById('productCategory').value = 'snack_ready'
+      document.getElementById('productUsageType').value = 'direct_sale'
+      document.getElementById('productActive').checked = true
+      updateProductTypeHelper()
+      productModalTitle.textContent = 'Nová karta z inventury'
+      productModalBackdrop.style.zIndex = '1300'
+      openProductModal()
+    }
     function openProductModal() {
       productModalBackdrop.classList.add('show')
     }
     function closeProductModal() {
       productModalBackdrop.classList.remove('show')
+      productModalBackdrop.style.zIndex = ''
+      pendingInitialStockProductRow = null
       resetProductForm()
     }
     function fillProductForm(product) {
@@ -3154,6 +3177,7 @@
       } else if (productId) {
         await deactivateProductRecipe(Number(productId))
       }
+      return Number(productId)
     }
     async function saveProductRecipe(productId, productPayload) {
       if (!recipesAvailable) throw new Error('Receptury ještě nejsou připravené v databázi. Spusť database/inventory_replenishment_v13.sql.')
@@ -3264,6 +3288,37 @@
           return `<option value="${escapeHtml(String(item.id))}" ${String(item.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(label)}</option>`
         })
         .join('')
+    }
+    function productSearchLabel(product) {
+      return [product.sku, product.name, product.ean, product.active === false ? 'neaktivní karta' : '']
+        .filter(Boolean)
+        .join(' · ')
+    }
+    function renderInitialStockProductDatalist() {
+      const datalist = document.getElementById('initialStockProductOptions')
+      if (!datalist) return
+      datalist.innerHTML = productsV13
+        .map((product) => `<option value="${escapeHtml(productSearchLabel(product))}"></option>`)
+        .join('')
+    }
+    function findProductBySearchValue(value) {
+      const normalized = normalizeLookupValue(value)
+      if (!normalized) return null
+      const exact = productsV13.find((product) => normalizeLookupValue(productSearchLabel(product)) === normalized)
+      if (exact) return exact
+      const compactMatches = productsV13.filter((product) => {
+        const candidates = [product.name, product.sku, product.ean, productSearchLabel(product)].map((item) => normalizeLookupValue(item))
+        return candidates.some((candidate) => candidate && (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)))
+      })
+      return compactMatches.length === 1 ? compactMatches[0] : null
+    }
+    function syncInitialStockProductSearchInput(input) {
+      const row = input.closest('.transfer-line-row')
+      const hidden = row?.querySelector('[data-initial-product]')
+      if (!hidden) return null
+      const product = findProductBySearchValue(input.value)
+      hidden.value = product?.id ? String(product.id) : ''
+      return product
     }
     function addSimpleTransferLine(row = {}) {
       const wrapper = document.createElement('div')
@@ -3432,6 +3487,7 @@
         const source = formatImportSource(row)
         return {
           productId: product?.id || '',
+          productName: row.productName || '',
           quantity: row.quantity,
           purchasePrice: row.purchasePrice,
           lotCode: product ? '' : '',
@@ -3501,8 +3557,14 @@
       const wrapper = document.createElement('div')
       wrapper.className = 'transfer-line-row initial-stock-line-row'
       const importSource = row.importSource ? `<div class="transfer-line-source"><strong>Nespárováno ze souboru:</strong> ${escapeHtml(row.importSource)}</div>` : ''
+      const selectedProduct = row.productId ? productsV13.find((product) => String(product.id) === String(row.productId)) : null
+      const searchValue = selectedProduct ? productSearchLabel(selectedProduct) : (row.productName || '')
       wrapper.innerHTML = `
-        <select data-initial-product required>${simpleTransferProductOptionsHtml(row.productId || '')}</select>
+        <div class="initial-stock-product-cell">
+          <input data-initial-product-search list="initialStockProductOptions" placeholder="Piš název, SKU nebo EAN..." value="${escapeHtml(searchValue)}" />
+          <input data-initial-product type="hidden" value="${escapeHtml(row.productId || '')}" />
+          <button class="btn secondary" type="button" data-initial-line-action="create-product">+ Karta</button>
+        </div>
         <input data-initial-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
         <input data-initial-purchase-price type="number" min="0" step="0.0001" placeholder="Kč / jednotka" value="${escapeHtml(row.purchasePrice ?? '')}" />
         <input data-initial-expiry type="date" value="${escapeHtml(row.expiryDate || '')}" />
@@ -3514,14 +3576,19 @@
     }
     function collectInitialStockLines() {
       return [...initialStockLines.querySelectorAll('.transfer-line-row')]
-        .map((row, index) => ({
-          index,
-          productId: Number(row.querySelector('[data-initial-product]')?.value || 0),
-          quantity: Number(row.querySelector('[data-initial-quantity]')?.value || 0),
-          purchasePrice: row.querySelector('[data-initial-purchase-price]')?.value ? Number(row.querySelector('[data-initial-purchase-price]')?.value || 0) : null,
-          expiryDate: row.querySelector('[data-initial-expiry]')?.value || '',
-          lotCode: row.querySelector('[data-initial-lot]')?.value.trim() || ''
-        }))
+        .map((row, index) => {
+          const searchInput = row.querySelector('[data-initial-product-search]')
+          if (searchInput) syncInitialStockProductSearchInput(searchInput)
+          return {
+            index,
+            productId: Number(row.querySelector('[data-initial-product]')?.value || 0),
+            productSearch: searchInput?.value.trim() || '',
+            quantity: Number(row.querySelector('[data-initial-quantity]')?.value || 0),
+            purchasePrice: row.querySelector('[data-initial-purchase-price]')?.value ? Number(row.querySelector('[data-initial-purchase-price]')?.value || 0) : null,
+            expiryDate: row.querySelector('[data-initial-expiry]')?.value || '',
+            lotCode: row.querySelector('[data-initial-lot]')?.value.trim() || ''
+          }
+        })
         .filter((row) => row.productId || row.quantity > 0 || row.purchasePrice != null || row.expiryDate || row.lotCode)
     }
     function populateInitialStockLocationOptions() {
@@ -3534,6 +3601,7 @@
     function openInitialStockModal(productId = '') {
       initialStockForm.reset()
       initialStockLines.innerHTML = ''
+      renderInitialStockProductDatalist()
       document.getElementById('initialStockDate').value = new Date().toISOString().slice(0, 10)
       document.getElementById('initialStockLocationType').value = 'warehouse'
       populateInitialStockLocationOptions()
@@ -4310,7 +4378,7 @@
       if (!locationEntityId) throw new Error(locationType === 'vehicle' ? 'Vyber vozidlo.' : 'Vyber sklad.')
       if (!lines.length) throw new Error('Přidej aspoň jeden řádek inventury.')
       const invalidLine = lines.find((line) => !line.productId || line.quantity <= 0)
-      if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku a kladné množství.`)
+      if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku z našeptávače nebo založ novou kartu a zadej kladné množství.`)
       const source = locationType === 'vehicle'
         ? vehicles.find((item) => String(item.id) === String(locationEntityId))
         : warehouses.find((item) => String(item.id) === String(locationEntityId))
@@ -4540,10 +4608,23 @@
       }
     })
     initialStockLines.addEventListener('click', (event) => {
+      const createButton = event.target.closest('[data-initial-line-action="create-product"]')
+      if (createButton) {
+        openProductModalFromInitialStockRow(createButton.closest('.transfer-line-row'))
+        return
+      }
       const button = event.target.closest('[data-initial-line-action="remove"]')
       if (!button) return
       button.closest('.transfer-line-row')?.remove()
       if (!initialStockLines.querySelector('.transfer-line-row')) addInitialStockLine()
+    })
+    initialStockLines.addEventListener('input', (event) => {
+      const input = event.target.closest('[data-initial-product-search]')
+      if (input) syncInitialStockProductSearchInput(input)
+    })
+    initialStockLines.addEventListener('change', (event) => {
+      const input = event.target.closest('[data-initial-product-search]')
+      if (input) syncInitialStockProductSearchInput(input)
     })
     detailModalBackdrop.addEventListener('click', (event) => { if (event.target === detailModalBackdrop) closeDetailModal() })
     bagettePilotModalBackdrop.addEventListener('click', (event) => { if (event.target === bagettePilotModalBackdrop) closeBagettePilotModal() })
@@ -4692,9 +4773,19 @@
         const wasEdit = isProductEditMode
         saveProductBtn.disabled = true
         saveProductBtn.textContent = wasEdit ? 'Ukládám změny...' : 'Ukládám kartu...'
-        await saveProductCard()
+        const savedProductId = await saveProductCard()
+        const pendingRow = pendingInitialStockProductRow
+        pendingInitialStockProductRow = null
         closeProductModal()
         await loadInventoryV13Overview()
+        renderInitialStockProductDatalist()
+        if (pendingRow && savedProductId) {
+          const product = productsV13.find((item) => String(item.id) === String(savedProductId))
+          const hiddenInput = pendingRow.querySelector('[data-initial-product]')
+          const searchInput = pendingRow.querySelector('[data-initial-product-search]')
+          if (hiddenInput) hiddenInput.value = String(savedProductId)
+          if (searchInput && product) searchInput.value = productSearchLabel(product)
+        }
         populateReferenceOptions()
         setProductCatalogStatus(wasEdit ? 'Karta zásoby byla upravena.' : 'Karta zásoby byla založena.', 'success')
       } catch (error) {
