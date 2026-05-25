@@ -1000,7 +1000,6 @@
               <select id="initialStockLocationType">
                 <option value="warehouse">Sklad</option>
                 <option value="vehicle">Vozidlo</option>
-                <option value="machine">Automat</option>
               </select>
             </div>
             <div class="field">
@@ -1300,6 +1299,7 @@
     let stockV13ColumnOrder = loadStockV13ColumnOrder()
     let isProductEditMode = false
     let productCatalogSort = { key: 'name', direction: 'asc' }
+    const aggregateMachinesWarehouseCode = 'AUTOMATY'
     const productKindMarker = 'olvend_product_kind'
     const storagePositionMarker = 'olvend_storage_position'
     const recipeProductMarker = 'olvend_recipe_product_id'
@@ -3732,7 +3732,7 @@
         localStorage.removeItem(INITIAL_STOCK_DRAFT_STORAGE_KEY)
       }
       if (!hasInitialStockDraftContent(draft)) return false
-      document.getElementById('initialStockLocationType').value = ['warehouse', 'vehicle', 'machine'].includes(draft.locationType) ? draft.locationType : 'warehouse'
+      document.getElementById('initialStockLocationType').value = ['warehouse', 'vehicle'].includes(draft.locationType) ? draft.locationType : 'warehouse'
       populateInitialStockLocationOptions()
       if (draft.locationId) document.getElementById('initialStockLocationId').value = String(draft.locationId)
       document.getElementById('initialStockDate').value = draft.stockDate || new Date().toISOString().slice(0, 10)
@@ -3747,8 +3747,8 @@
     function populateInitialStockLocationOptions() {
       const type = document.getElementById('initialStockLocationType').value || 'warehouse'
       const select = document.getElementById('initialStockLocationId')
-      const rows = type === 'vehicle' ? vehicles : type === 'machine' ? machines : warehouses
-      const placeholder = type === 'vehicle' ? 'Vyber vozidlo' : type === 'machine' ? 'Vyber automat' : 'Vyber sklad'
+      const rows = type === 'vehicle' ? vehicles : warehouses
+      const placeholder = type === 'vehicle' ? 'Vyber vozidlo' : 'Vyber sklad'
       select.innerHTML = `<option value="">${placeholder}</option>` + rows.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name || item.plate || 'Bez názvu')}</option>`).join('')
       if (rows[0]?.id) select.value = String(rows[0].id)
     }
@@ -3798,7 +3798,7 @@
       openSimpleTransferModal(getTransferDocDirection(doc), '', doc)
     }
     async function ensureStockLocation(locationType, entityId, fallbackName) {
-      const columnMap = { warehouse: 'warehouse_id', vehicle: 'vehicle_id', machine: 'machine_id' }
+      const columnMap = { warehouse: 'warehouse_id', vehicle: 'vehicle_id' }
       const idColumn = columnMap[locationType]
       if (!idColumn) throw new Error('Nepodporovaný typ skladového místa.')
       const { data: existing, error: existingError } = await supabase
@@ -4406,7 +4406,7 @@
     }
     async function loadReferences() {
       const [{ data: warehousesData }, { data: machinesData }, { data: vehiclesData }, { data: suppliersData }, { data: purchaseProfilesData }, planogramResult] = await Promise.all([
-        supabase.from('warehouses').select('id, name, active').order('name', { ascending: true }),
+        supabase.from('warehouses').select('id, name, code, type, note, active').order('name', { ascending: true }),
         supabase.from('machines').select('id, name, active').order('name', { ascending: true }),
         supabase.from('vehicles').select('id, name, plate, active').order('name', { ascending: true }),
         supabase.from('purchase_suppliers').select('id, name, active').eq('active', true).order('name', { ascending: true }),
@@ -4414,6 +4414,7 @@
         supabase.from('machine_planogram_slots').select('id, machine_id, slot_code, product_name, sort_order, active').order('sort_order', { ascending: true })
       ])
       warehouses = (warehousesData ?? []).filter((item) => item.active !== false)
+      await ensureAggregateMachinesWarehouse(warehousesData ?? [])
       machines = (machinesData ?? []).filter((item) => item.active !== false)
       vehicles = (vehiclesData ?? []).filter((item) => item.active !== false).map((item) => ({ ...item, name: [item.name, item.plate].filter(Boolean).join(' · ') }))
       purchaseSuppliers = (suppliersData ?? []).filter((item) => item.active !== false)
@@ -4430,6 +4431,50 @@
         planogramAvailable = true
         planogramSlots = (planogramResult.data ?? []).filter((item) => item.active !== false)
       }
+    }
+    function isAggregateMachinesWarehouse(warehouse) {
+      return normalizeText(warehouse?.code) === normalizeText(aggregateMachinesWarehouseCode)
+        || normalizeText(warehouse?.name) === 'automaty'
+    }
+    async function ensureAggregateMachinesWarehouse(allWarehouses = []) {
+      const existing = allWarehouses.find(isAggregateMachinesWarehouse)
+      if (existing) {
+        if (existing.active === false) {
+          const { data, error } = await supabase
+            .from('warehouses')
+            .update({ active: true })
+            .eq('id', existing.id)
+            .select('id, name, code, type, note, active')
+            .single()
+          if (error) {
+            console.warn('Souhrnný sklad Automaty se nepodařilo aktivovat.', error)
+            return existing
+          }
+          warehouses = [...warehouses, data].sort((a, b) => normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
+          return data
+        }
+        if (existing.active !== false && !warehouses.some((item) => String(item.id) === String(existing.id))) {
+          warehouses = [...warehouses, existing].sort((a, b) => normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
+        }
+        return existing
+      }
+      const { data, error } = await supabase
+        .from('warehouses')
+        .insert({
+          name: 'Automaty',
+          code: aggregateMachinesWarehouseCode,
+          type: 'warehouse',
+          note: 'Souhrnný fiktivní sklad pro stavy automatů bez telemetrie.',
+          active: true
+        })
+        .select('id, name, code, type, note, active')
+        .single()
+      if (error) {
+        console.warn('Souhrnný sklad Automaty se nepodařilo založit.', error)
+        return null
+      }
+      warehouses = [...warehouses, data].sort((a, b) => normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
+      return data
     }
     async function loadInventory() {
       setStatus('Načítám inventář...')
@@ -4532,17 +4577,15 @@
       const stockDate = document.getElementById('initialStockDate').value || new Date().toISOString().slice(0, 10)
       const note = document.getElementById('initialStockNote').value.trim() || 'Prvotní inventura OLVEND'
       const lines = collectInitialStockLines()
-      if (!['warehouse', 'vehicle', 'machine'].includes(locationType)) throw new Error('Vyber typ místa.')
-      if (!locationEntityId) throw new Error(locationType === 'vehicle' ? 'Vyber vozidlo.' : locationType === 'machine' ? 'Vyber automat.' : 'Vyber sklad.')
+      if (!['warehouse', 'vehicle'].includes(locationType)) throw new Error('Vyber typ místa.')
+      if (!locationEntityId) throw new Error(locationType === 'vehicle' ? 'Vyber vozidlo.' : 'Vyber sklad.')
       if (!lines.length) throw new Error('Přidej aspoň jeden řádek inventury.')
       const invalidLine = lines.find((line) => !line.productId || line.quantity <= 0)
       if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku z našeptávače nebo založ novou kartu a zadej kladné množství.`)
       const source = locationType === 'vehicle'
         ? vehicles.find((item) => String(item.id) === String(locationEntityId))
-        : locationType === 'machine'
-          ? machines.find((item) => String(item.id) === String(locationEntityId))
-          : warehouses.find((item) => String(item.id) === String(locationEntityId))
-      const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : locationType === 'machine' ? 'Automat' : 'Sklad'} ${locationEntityId}`)
+        : warehouses.find((item) => String(item.id) === String(locationEntityId))
+      const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : 'Sklad'} ${locationEntityId}`)
       const referenceId = `initial-stock:${locationType}:${Date.now()}`
       const movementsToInsert = []
       for (const line of lines) {
