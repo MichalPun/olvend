@@ -108,11 +108,12 @@ with profile_base as (
 stock_totals as (
   select
     slb.product_id,
-    sum(case when sl.location_type = 'warehouse' then slb.quantity_on_hand else 0 end) as warehouse_qty,
+    sum(case when sl.location_type = 'warehouse' and not coalesce(w.code, '') = 'AUTOMATY' and lower(coalesce(sl.name, '')) <> 'automaty' then slb.quantity_on_hand else 0 end) as warehouse_qty,
     sum(case when sl.location_type = 'vehicle' then slb.quantity_on_hand else 0 end) as vehicle_qty,
-    sum(case when sl.location_type in ('warehouse', 'vehicle') then slb.quantity_on_hand else 0 end) as available_qty
+    sum(case when (sl.location_type = 'warehouse' and not coalesce(w.code, '') = 'AUTOMATY' and lower(coalesce(sl.name, '')) <> 'automaty') or sl.location_type = 'vehicle' then slb.quantity_on_hand else 0 end) as available_qty
   from public.stock_location_balances slb
   join public.stock_locations sl on sl.id = slb.stock_location_id
+  left join public.warehouses w on w.id = sl.warehouse_id
   where sl.active = true
   group by slb.product_id
 ),
