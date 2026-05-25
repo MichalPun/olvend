@@ -4107,6 +4107,72 @@
         await applyBalanceDelta(item.stockLocationId, item.productId, item.delta, options)
       }
     }
+    async function addBalanceToBatch(stockLocationId, productId, batchId, quantity) {
+      if (!stockLocationId || !productId || !quantity) return
+      const record = await getBalanceRecordForBatch(stockLocationId, productId, batchId)
+      const nextQty = Number((Number(record?.quantity_on_hand || 0) + quantity).toFixed(3))
+      if (record?.id) {
+        const { error } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
+          .eq('id', record.id)
+        if (error) throw error
+        return
+      }
+      const { error } = await supabase.from('stock_location_balances').insert([{
+        stock_location_id: stockLocationId,
+        product_id: productId,
+        batch_id: batchId || null,
+        quantity_on_hand: quantity,
+        reserved_quantity: 0
+      }])
+      if (error) throw error
+    }
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative }) {
+      const movements = []
+      const sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      let remaining = Number(quantity || 0)
+      for (const record of sourceRecords) {
+        if (remaining <= 0.0001) break
+        const currentQty = Number(record.quantity_on_hand || 0)
+        if (currentQty <= 0) continue
+        const movedQty = Math.min(currentQty, remaining)
+        const batchId = record.batch_id || null
+        await addBalanceToBatch(fromStockLocationId, productId, batchId, -movedQty)
+        if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, batchId, movedQty)
+        movements.push({
+          product_id: productId,
+          batch_id: batchId,
+          from_stock_location_id: fromStockLocationId,
+          to_stock_location_id: toStockLocationId,
+          movement_type: movementType,
+          quantity_base_units: movedQty,
+          unit_price: unitPrice,
+          reference_type: referenceType,
+          reference_id: referenceId,
+          note
+        })
+        remaining = Number((remaining - movedQty).toFixed(3))
+      }
+      if (remaining > 0.0001) {
+        if (!allowNegative) throw new Error('Na zdrojovém místě není dost kusů pro zadaný pohyb.')
+        await addBalanceToBatch(fromStockLocationId, productId, null, -remaining)
+        if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, null, remaining)
+        movements.push({
+          product_id: productId,
+          batch_id: null,
+          from_stock_location_id: fromStockLocationId,
+          to_stock_location_id: toStockLocationId,
+          movement_type: movementType,
+          quantity_base_units: remaining,
+          unit_price: unitPrice,
+          reference_type: referenceType,
+          reference_id: referenceId,
+          note: [note, 'část bez dohledané šarže'].filter(Boolean).join(' · ') || null
+        })
+      }
+      return movements
+    }
     async function logManualTransferCorrectionDoc(doc) {
       const correctionReference = `manual-correction:${Date.now()}`
       const { error } = await supabase
@@ -4649,28 +4715,34 @@
         : (direction === 'vehicle_to_warehouse' ? warehouseLocationId : (isVehicleToMachines ? machinesLocationId : null))
       const movementType = isSale ? 'sale' : (isVehicleToMachines ? 'fill_machine' : (direction === 'vehicle_to_warehouse' ? 'return' : 'load_vehicle'))
       const correctionDoc = editingTransferDoc
-      const balanceDeltas = correctionDoc ? await buildCorrectionReverseDeltas(correctionDoc) : new Map()
       const transferReference = `${isSale ? 'manual-sale' : 'manual-transfer'}:${Date.now()}`
       const transferDate = document.getElementById('simpleTransferDate').value || new Date().toISOString().slice(0, 10)
-      for (const line of lines) {
-        addBalanceDelta(balanceDeltas, fromStockLocationId, line.productId, -line.quantity)
-        addBalanceDelta(balanceDeltas, toStockLocationId, line.productId, line.quantity)
+      if (correctionDoc) {
+        const balanceDeltas = await buildCorrectionReverseDeltas(correctionDoc)
+        await applyBalanceDeltaMap(balanceDeltas, { allowNegative: true })
+        await logManualTransferCorrectionDoc(correctionDoc)
       }
-      await applyBalanceDeltaMap(balanceDeltas, { allowNegative: true })
-      if (correctionDoc) await logManualTransferCorrectionDoc(correctionDoc)
+      const movementsToInsert = []
+      for (const line of lines) {
+        const unitPrice = isSale ? Number(productsV13.find((product) => String(product.id) === String(line.productId))?.sale_price || 0) || null : null
+        const lineNote = [transferDate, isMachineSale ? 'PRODEJKA z automatů' : null, isVehicleToMachines ? 'převod do automatů' : null, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
+        const lineMovements = await moveStockPreservingBatches({
+          productId: line.productId,
+          quantity: line.quantity,
+          fromStockLocationId,
+          toStockLocationId,
+          movementType,
+          unitPrice,
+          referenceType: isSale ? 'manual_sale' : 'manual_transfer',
+          referenceId: transferReference,
+          note: lineNote,
+          allowNegative: true
+        })
+        movementsToInsert.push(...lineMovements)
+      }
       const { error: movementError } = await supabase
         .from('stock_movements_v13')
-        .insert(lines.map((line) => ({
-          product_id: line.productId,
-          from_stock_location_id: fromStockLocationId,
-          to_stock_location_id: toStockLocationId,
-          movement_type: movementType,
-          quantity_base_units: line.quantity,
-          unit_price: isSale ? Number(productsV13.find((product) => String(product.id) === String(line.productId))?.sale_price || 0) || null : null,
-          reference_type: isSale ? 'manual_sale' : 'manual_transfer',
-          reference_id: transferReference,
-          note: [transferDate, isMachineSale ? 'PRODEJKA z automatů' : null, isVehicleToMachines ? 'převod do automatů' : null, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
-        })))
+        .insert(movementsToInsert)
       if (movementError) throw movementError
     }
     async function saveInitialStock() {
