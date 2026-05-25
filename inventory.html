@@ -3892,6 +3892,13 @@
       const match = String(fileName || '').match(/(20\d{2})[-_. ]?(\d{2})[-_. ]?(\d{2})/)
       return match ? `${match[1]}-${match[2]}-${match[3]}` : ''
     }
+    function parseDateFromImportText(text) {
+      const value = String(text || '')
+      const iso = value.match(/(20\d{2})[-_. /](\d{1,2})[-_. /](\d{1,2})/)
+      if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`
+      const czech = value.match(/(\d{1,2})[./-](\d{1,2})[./-](20\d{2})/)
+      return czech ? `${czech[3]}-${String(czech[2]).padStart(2, '0')}-${String(czech[1]).padStart(2, '0')}` : ''
+    }
     function inferTransferDirectionFromFileName(fileName) {
       const normalized = normalizeLookupValue(fileName)
       if (normalized.includes('checkin')) return 'vehicle_to_warehouse'
@@ -3920,6 +3927,58 @@
         purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null
       }
     }
+    function parseFilledProductsRowsFromMatrix(matrix) {
+      const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
+      if (!rows.length) return []
+      const headerIndex = rows.findIndex((row) => {
+        const values = row.map((cell) => normalizeLookupValue(cell))
+        return values.includes('code') && values.includes('name') && values.includes('quantity')
+      })
+      if (headerIndex < 0) return []
+
+      const headers = rows[headerIndex].map((cell) => normalizeLookupValue(cell))
+      const codeIndex = headers.indexOf('code')
+      const nameIndex = headers.indexOf('name')
+      const quantityIndex = headers.indexOf('quantity')
+      const costIndex = headers.indexOf('cost')
+      if (codeIndex < 0 || nameIndex < 0 || quantityIndex < 0) return []
+
+      const parseNumberValue = (value) => {
+        const normalized = String(value ?? '').replace(',', '.').replace(/\s/g, '')
+        const number = Number(normalized)
+        return Number.isFinite(number) ? number : null
+      }
+      let currentType = ''
+      const parsedRows = []
+      rows.slice(headerIndex + 1).forEach((row) => {
+        if (normalizeLookupValue(row[0]) === 'producttype') {
+          currentType = String(row[nameIndex] ?? '').trim()
+          return
+        }
+        const code = String(row[codeIndex] ?? '').trim()
+        const productName = String(row[nameIndex] ?? '').trim()
+        const quantity = parseNumberValue(row[quantityIndex])
+        if (!/^\d+$/.test(code) || !productName || !quantity || quantity <= 0) return
+        const totalCost = costIndex >= 0 ? parseNumberValue(row[costIndex]) : null
+        parsedRows.push({
+          type: currentType,
+          code,
+          productName,
+          quantity,
+          purchasePrice: totalCost !== null ? Number((totalCost / quantity).toFixed(6)) : null,
+          totalCost
+        })
+      })
+
+      const metaText = rows.slice(0, headerIndex).flat().map((cell) => String(cell ?? '').trim()).filter(Boolean).join(' ')
+      const driverCell = rows.flat().map((cell) => String(cell ?? '').trim()).find((cell) => normalizeLookupValue(cell).startsWith('drivers'))
+      parsedRows.importMeta = {
+        sourceFormat: 'filled_products',
+        date: parseDateFromImportText(metaText),
+        driver: driverCell ? driverCell.replace(/^\s*drivers\s*:\s*/i, '').trim() : ''
+      }
+      return parsedRows
+    }
     function parseTableRowsFromMatrix(matrix) {
       const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
       if (!rows.length) return []
@@ -3940,6 +3999,8 @@
         const workbook = window.XLSX.read(buffer, { type: 'array' })
         const sheet = workbook.Sheets[workbook.SheetNames[0]]
         const matrix = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+        const filledProductsRows = parseFilledProductsRowsFromMatrix(matrix)
+        if (filledProductsRows.length) return filledProductsRows
         return parseTableRowsFromMatrix(matrix)
       }
       const text = await file.text()
@@ -3978,10 +4039,16 @@
       importedRows.forEach((row) => addSimpleTransferLine(row))
       const vehicle = findVehicleForImportName(file.name)
       if (vehicle?.id) document.getElementById('simpleTransferVehicleId').value = String(vehicle.id)
-      const fileDate = parseDateFromImportFileName(file.name)
+      const fileDate = rows.importMeta?.date || parseDateFromImportFileName(file.name)
       if (fileDate) document.getElementById('simpleTransferDate').value = fileDate
+      if (rows.importMeta?.sourceFormat === 'filled_products') {
+        const noteParts = ['Filled Products']
+        if (rows.importMeta.driver) noteParts.push(rows.importMeta.driver)
+        document.getElementById('simpleTransferNote').value = noteParts.join(' · ')
+      }
       const unmatched = importedRows.filter((row) => !row.productId).length
-      const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.` : ' Všechny položky jsou spárované.'
+      const sourceSuffix = rows.importMeta?.sourceFormat === 'filled_products' ? ' Mezisoučty jsou přeskočené.' : ''
+      const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.${sourceSuffix}` : ` Všechny položky jsou spárované.${sourceSuffix}`
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
       simpleTransferLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
