@@ -817,6 +817,16 @@
                 <option value="service_use">Servis</option>
               </select>
             </div>
+            <div class="field full">
+              <label>Možnosti použití</label>
+              <div class="summary-grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
+                <label class="switch-row"><input id="productCanBeSoldDirectly" type="checkbox" /><span>Přímý prodej</span></label>
+                <label class="switch-row"><input id="productCanBeUsedInRecipe" type="checkbox" /><span>Vstup do receptur</span></label>
+                <label class="switch-row"><input id="productCanBeConsumedInternally" type="checkbox" /><span>Interní spotřeba</span></label>
+                <label class="switch-row"><input id="productCanBeUsedInService" type="checkbox" /><span>Servisní položka</span></label>
+              </div>
+              <div class="helper-line">Jedna karta může být současně surovina do receptury i přímo prodejná položka, například smetana.</div>
+            </div>
             <div class="field">
               <label for="productBaseUnit">Skladová jednotka</label>
               <select id="productBaseUnit">
@@ -1297,6 +1307,10 @@
     const productPurchasePriceInput = document.getElementById('productPurchasePrice')
     const productSalePriceInput = document.getElementById('productSalePrice')
     const productVatRateInput = document.getElementById('productVatRate')
+    const productCanBeSoldDirectly = document.getElementById('productCanBeSoldDirectly')
+    const productCanBeUsedInRecipe = document.getElementById('productCanBeUsedInRecipe')
+    const productCanBeConsumedInternally = document.getElementById('productCanBeConsumedInternally')
+    const productCanBeUsedInService = document.getElementById('productCanBeUsedInService')
     const productTargetMarginInput = document.getElementById('productTargetMargin')
     const productMarginFormulaMode = document.getElementById('productMarginFormulaMode')
     const productMarginPriceMode = document.getElementById('productMarginPriceMode')
@@ -1565,6 +1579,31 @@
         service_use: 'Servis'
       }[value] || 'Použití'
     }
+    function canProductBeSoldDirectly(product) {
+      if (!product) return false
+      if ('can_be_sold_directly' in product) return product.can_be_sold_directly === true
+      return product.usage_type === 'direct_sale' || ['beverage_ready', 'snack_ready', 'food_ready'].includes(product.product_category)
+    }
+    function canProductBeUsedInRecipe(product) {
+      if (!product) return false
+      if ('can_be_used_in_recipe' in product) return product.can_be_used_in_recipe === true
+      return product.usage_type === 'recipe_consumption' || product.product_category === 'ingredient'
+    }
+    function syncUsageFlagsFromCategory() {
+      const type = document.getElementById('productCategory').value
+      if (type === 'hot_drink') {
+        productCanBeSoldDirectly.checked = true
+        productCanBeUsedInRecipe.checked = false
+      }
+      if (type === 'ingredient') {
+        productCanBeUsedInRecipe.checked = true
+      }
+      if (['water_product', 'snack_ready', 'food_ready'].includes(type)) {
+        productCanBeSoldDirectly.checked = true
+      }
+      if (type === 'spare_part') productCanBeUsedInService.checked = true
+      if (type === 'consumable') productCanBeConsumedInternally.checked = true
+    }
     function parseProductNumber(value) {
       if (value == null || value === '') return null
       const normalized = String(value).replace(',', '.').trim()
@@ -1636,7 +1675,7 @@
         helper.textContent = 'Karta zásoby určuje kmenová data. Skladová mapa potom řeší fyzické umístění a množství.'
       }
       if (productRecipeSection) productRecipeSection.hidden = type !== 'hot_drink'
-      if (productPackageSection) productPackageSection.hidden = type !== 'ingredient'
+      if (productPackageSection) productPackageSection.hidden = !['ingredient', 'consumable', 'water_product', 'snack_ready', 'food_ready'].includes(type)
       if (productStoragePositionField) productStoragePositionField.hidden = !productTypeUsesStoragePosition(type)
       if (productUsageField) productUsageField.hidden = ['ingredient', 'hot_drink', 'water_product'].includes(type)
     }
@@ -1654,7 +1693,7 @@
     }
     function getRecipeIngredients() {
       return productsV13
-        .filter((product) => product.active !== false && (product.product_category === 'ingredient' || product.usage_type === 'recipe_consumption'))
+        .filter((product) => product.active !== false && canProductBeUsedInRecipe(product))
         .sort((a, b) => normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs'))
     }
     function getDefaultPackage(productId) {
@@ -3319,7 +3358,7 @@
           profilesResult,
           movementsResult
         ] = await Promise.all([
-          supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, vat_rate, purchase_price, sale_price, shelf_life_days, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, active, note').order('name', { ascending: true }),
+          supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, vat_rate, purchase_price, sale_price, shelf_life_days, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, can_be_sold_directly, can_be_used_in_recipe, can_be_consumed_internally, can_be_used_in_service, active, note').order('name', { ascending: true }),
           supabase.from('product_packages').select('id, product_id, package_name, units_per_package, package_barcode, is_default, active').order('is_default', { ascending: false }),
           supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending: true }),
           supabase.from('recipe_items').select('id, recipe_id, product_id, quantity, unit').order('id', { ascending: true }),
@@ -3451,6 +3490,10 @@
       document.getElementById('productExpiryWarningDays').value = '0'
       document.getElementById('productActive').checked = true
       document.getElementById('productBatchTracking').checked = false
+      productCanBeSoldDirectly.checked = false
+      productCanBeUsedInRecipe.checked = true
+      productCanBeConsumedInternally.checked = false
+      productCanBeUsedInService.checked = false
       if (productTargetMarginInput) productTargetMarginInput.value = ''
       if (productMarginFormulaMode) productMarginFormulaMode.value = 'markup'
       if (productMarginPriceMode) productMarginPriceMode.value = 'gross'
@@ -3475,6 +3518,8 @@
       document.getElementById('productPurchasePrice').value = purchasePrice
       document.getElementById('productCategory').value = 'snack_ready'
       document.getElementById('productUsageType').value = 'direct_sale'
+      productCanBeSoldDirectly.checked = true
+      productCanBeUsedInRecipe.checked = false
       document.getElementById('productActive').checked = true
       updateProductTypeHelper()
       productModalTitle.textContent = 'Nová karta z inventury'
@@ -3509,6 +3554,10 @@
       document.getElementById('productExpiryMode').value = product.expiry_tracking_mode || 'none'
       document.getElementById('productExpiryWarningDays').value = product.expiry_warning_days ?? 0
       document.getElementById('productBatchTracking').checked = product.requires_batch_tracking === true
+      productCanBeSoldDirectly.checked = canProductBeSoldDirectly(product)
+      productCanBeUsedInRecipe.checked = canProductBeUsedInRecipe(product)
+      productCanBeConsumedInternally.checked = product.can_be_consumed_internally === true || product.usage_type === 'internal_consumption'
+      productCanBeUsedInService.checked = product.can_be_used_in_service === true || product.usage_type === 'service_use'
       document.getElementById('productActive').checked = product.active !== false
       document.getElementById('productNote').value = stripProductSystemMarkers(product.note || '')
       productPackageRows.innerHTML = ''
@@ -3541,7 +3590,7 @@
     }
     async function saveProductCard() {
       const selectedType = document.getElementById('productCategory').value
-      const usesPackageConversions = selectedType === 'ingredient'
+      const usesPackageConversions = ['ingredient', 'consumable', 'water_product', 'snack_ready', 'food_ready'].includes(selectedType)
       const packageRows = usesPackageConversions ? getProductPackageFormRows() : []
       const recipeCost = selectedType === 'hot_drink' ? updateProductRecipeCostSummary() : null
       const storagePosition = productTypeUsesStoragePosition(selectedType) ? document.getElementById('productStoragePosition').value : ''
@@ -3566,6 +3615,10 @@
         expiry_tracking_mode: document.getElementById('productExpiryMode').value,
         expiry_warning_days: Number(document.getElementById('productExpiryWarningDays').value || 0),
         requires_batch_tracking: document.getElementById('productBatchTracking').checked,
+        can_be_sold_directly: productCanBeSoldDirectly.checked,
+        can_be_used_in_recipe: productCanBeUsedInRecipe.checked,
+        can_be_consumed_internally: productCanBeConsumedInternally.checked,
+        can_be_used_in_service: productCanBeUsedInService.checked,
         active: document.getElementById('productActive').checked,
         note: composeProductNote(document.getElementById('productNote').value.trim(), productKind, storagePosition)
       }
@@ -3720,7 +3773,10 @@
       return '<option value="">Vyber položku</option>' + productsV13
         .filter((product) => product.active !== false || String(product.id) === String(selectedId))
         .map((item) => {
-          const label = [item.sku, item.name, item.active === false ? 'neaktivní karta' : ''].filter(Boolean).join(' · ')
+          const markers = []
+          if (getRecipeForProduct(item.id)) markers.push('receptura')
+          if (canProductBeSoldDirectly(item)) markers.push('přímý prodej')
+          const label = [item.sku, item.name, markers.join(' / '), item.active === false ? 'neaktivní karta' : ''].filter(Boolean).join(' · ')
           return `<option value="${escapeHtml(String(item.id))}" ${String(item.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(label)}</option>`
         })
         .join('')
@@ -3779,13 +3835,16 @@
     }
     function collectSimpleTransferLines() {
       return [...simpleTransferLines.querySelectorAll('.transfer-line-row')]
-        .map((row, index) => ({
-          index,
-          kind: row.querySelector('[data-transfer-kind]')?.value || 'product',
-          productId: Number(row.querySelector('[data-transfer-product]')?.value || 0),
-          quantity: Number(row.querySelector('[data-transfer-quantity]')?.value || 0),
-          note: row.querySelector('[data-transfer-note]')?.value.trim() || ''
-        }))
+        .map((row, index) => {
+          const kind = row.querySelector('[data-transfer-kind]')?.value || 'product'
+          const productId = Number(row.querySelector('[data-transfer-product]')?.value || 0)
+          const enteredQuantity = Number(row.querySelector('[data-transfer-quantity]')?.value || 0)
+          const pack = kind === 'package' ? getDefaultPackage(productId) : null
+          const quantity = pack ? Number((enteredQuantity * Number(pack.units_per_package || 1)).toFixed(3)) : enteredQuantity
+          const packageNote = pack ? `${enteredQuantity} × ${pack.package_name}` : ''
+          const note = [row.querySelector('[data-transfer-note]')?.value.trim() || '', packageNote].filter(Boolean).join(' · ')
+          return { index, kind, productId, quantity, enteredQuantity, note }
+        })
         .filter((row) => row.productId || row.quantity > 0 || row.note)
     }
     function normalizeLookupValue(value) {
@@ -4504,6 +4563,45 @@
       }
       return movements
     }
+    function buildSaleMovement({ productId, quantity, unitPrice, referenceId, note }) {
+      return {
+        product_id: productId,
+        batch_id: null,
+        from_stock_location_id: null,
+        to_stock_location_id: null,
+        movement_type: 'sale',
+        quantity_base_units: quantity,
+        unit_price: unitPrice || null,
+        reference_type: 'manual_sale',
+        reference_id: referenceId,
+        note
+      }
+    }
+    async function buildRecipeSaleMovements({ soldProduct, quantity, fromStockLocationId, unitPrice, referenceId, note, allowNegative }) {
+      const movements = [buildSaleMovement({ productId: soldProduct.id, quantity, unitPrice, referenceId, note: [note, 'tržba za složenou kartu'].filter(Boolean).join(' · ') || null })]
+      const recipeItems = getRecipeItemsForProduct(soldProduct.id)
+      if (!recipeItems.length) throw new Error(`Produkt ${soldProduct.name} nemá vyplněnou recepturu.`)
+      for (const item of recipeItems) {
+        const ingredient = productsV13.find((product) => String(product.id) === String(item.product_id))
+        if (!ingredient) continue
+        const consumedQuantity = Number((quantity * convertRecipeQuantityToBase(item.quantity, item.unit, ingredient.base_unit)).toFixed(3))
+        if (consumedQuantity <= 0) continue
+        const ingredientMovements = await moveStockPreservingBatches({
+          productId: Number(ingredient.id),
+          quantity: consumedQuantity,
+          fromStockLocationId,
+          toStockLocationId: null,
+          movementType: 'consumption',
+          unitPrice: getRecipeBaseUnitCost(ingredient.id) || Number(ingredient.purchase_price || 0) || null,
+          referenceType: 'manual_sale',
+          referenceId,
+          note: [note, `spotřeba receptury ${soldProduct.name}`].filter(Boolean).join(' · ') || null,
+          allowNegative
+        })
+        movements.push(...ingredientMovements)
+      }
+      return movements
+    }
     async function logManualTransferCorrectionDoc(doc) {
       const correctionReference = `manual-correction:${Date.now()}`
       const { error } = await supabase
@@ -5055,20 +5153,31 @@
       }
       const movementsToInsert = []
       for (const line of lines) {
-        const unitPrice = isSale ? Number(productsV13.find((product) => String(product.id) === String(line.productId))?.sale_price || 0) || null : null
+        const product = productsV13.find((item) => String(item.id) === String(line.productId))
+        const unitPrice = isSale ? Number(product?.sale_price || 0) || null : null
         const lineNote = [transferDate, isMachineSale ? 'PRODEJKA z automatů' : null, isVehicleToMachines ? 'převod do automatů' : null, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
-        const lineMovements = await moveStockPreservingBatches({
-          productId: line.productId,
-          quantity: line.quantity,
-          fromStockLocationId,
-          toStockLocationId,
-          movementType,
-          unitPrice,
-          referenceType: isSale ? 'manual_sale' : 'manual_transfer',
-          referenceId: transferReference,
-          note: lineNote,
-          allowNegative: true
-        })
+        const lineMovements = isMachineSale && getRecipeForProduct(line.productId)
+          ? await buildRecipeSaleMovements({
+            soldProduct: product,
+            quantity: line.quantity,
+            fromStockLocationId,
+            unitPrice,
+            referenceId: transferReference,
+            note: lineNote,
+            allowNegative: true
+          })
+          : await moveStockPreservingBatches({
+            productId: line.productId,
+            quantity: line.quantity,
+            fromStockLocationId,
+            toStockLocationId,
+            movementType,
+            unitPrice,
+            referenceType: isSale ? 'manual_sale' : 'manual_transfer',
+            referenceId: transferReference,
+            note: lineNote,
+            allowNegative: true
+          })
         movementsToInsert.push(...lineMovements)
       }
       const { error: movementError } = await supabase
@@ -5302,6 +5411,7 @@
     })
     document.getElementById('productCategory').addEventListener('change', () => {
       const category = document.getElementById('productCategory').value
+      syncUsageFlagsFromCategory()
       if (category === 'ingredient') {
         document.getElementById('productUsageType').value = 'recipe_consumption'
         document.getElementById('productBaseUnit').value = 'g'
