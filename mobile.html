@@ -326,6 +326,48 @@
       gap: 10px;
     }
 
+    .product-search-panel {
+      max-height: 270px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel-soft);
+      display: grid;
+      gap: 4px;
+      padding: 6px;
+    }
+
+    .product-search-panel[hidden] {
+      display: none;
+    }
+
+    .product-search-option {
+      min-height: 52px;
+      padding: 10px 11px;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+    }
+
+    .product-search-option:active,
+    .product-search-option:hover {
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .product-search-option strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 14px;
+    }
+
+    .product-search-option span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
     .draft-line {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -363,6 +405,31 @@
     .form {
       display: grid;
       gap: 12px;
+    }
+
+    .shift-instruction-notice {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid rgba(255, 191, 87, 0.35);
+      border-radius: 18px;
+      background: rgba(255, 191, 87, 0.09);
+    }
+
+    .shift-instruction-notice[hidden] {
+      display: none;
+    }
+
+    .shift-instruction-notice strong {
+      color: #ffe2ad;
+      font-size: 15px;
+    }
+
+    .shift-instruction-notice span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.4;
     }
 
     label {
@@ -841,6 +908,7 @@
       <section class="screen" data-screen="shift">
         <div class="card">
           <div class="form">
+            <div class="shift-instruction-notice" id="shiftInstructionNotice" hidden></div>
             <label>
               Vozidlo
               <select id="vehicleSelect"></select>
@@ -948,9 +1016,10 @@
               </label>
               <label>
                 Produkt
-                <input id="stockProductInput" list="productOptions" placeholder="Začni psát název, SKU nebo EAN" />
+                <input id="stockProductInput" autocomplete="off" placeholder="Začni psát název, SKU nebo EAN" />
                 <datalist id="productOptions"></datalist>
               </label>
+              <div class="product-search-panel" id="stockProductSearchPanel" hidden></div>
               <label>
                 Množství
                 <input id="stockQuantityInput" inputmode="decimal" value="1" />
@@ -1218,6 +1287,7 @@
       startKmLabel: document.getElementById('startKmLabel'),
       startOdometerInput: document.getElementById('startOdometerInput'),
       startShiftButton: document.getElementById('startShiftButton'),
+      shiftInstructionNotice: document.getElementById('shiftInstructionNotice'),
       endKmLabel: document.getElementById('endKmLabel'),
       endOdometerInput: document.getElementById('endOdometerInput'),
       endShiftNoteInput: document.getElementById('endShiftNoteInput'),
@@ -1236,6 +1306,7 @@
       stockVehicleSelect: document.getElementById('stockVehicleSelect'),
       stockProductInput: document.getElementById('stockProductInput'),
       productOptions: document.getElementById('productOptions'),
+      stockProductSearchPanel: document.getElementById('stockProductSearchPanel'),
       stockQuantityInput: document.getElementById('stockQuantityInput'),
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
@@ -1300,9 +1371,9 @@
       vehicle_writeoff: 'Zapiš prošlé nebo poškozené kusy. Vratku pak schválí skladník nebo manager.'
     }
 
-    function showMessage(text, type = 'info') {
+    function showMessage(text, type = 'info', options = {}) {
       els.messageArea.innerHTML = text ? `<div class="message ${type === 'error' ? 'error' : ''}">${escapeHtml(text)}</div>` : ''
-      if (text) els.messageArea.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      if (text && options.scroll !== false) els.messageArea.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
 
     function showStartupMessage() {
@@ -1495,6 +1566,14 @@
         els.shiftMainButton.textContent = 'Otevřít servis'
       }
 
+      const requiredInstructions = getMissingRequiredInstructions()
+      if (els.shiftInstructionNotice) {
+        els.shiftInstructionNotice.hidden = !requiredInstructions.length
+        els.shiftInstructionNotice.innerHTML = requiredInstructions.length
+          ? `<strong>Nejdřív potvrď pokyny dne</strong><span>${escapeHtml(requiredInstructions.map((instruction) => instruction.title || 'Pokyn dne').join(' / '))}</span>`
+          : ''
+      }
+
       if (state.vehicleLog?.end_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.end_odometer_km
       else if (state.vehicleLog?.start_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.start_odometer_km
       els.endKmLabel.style.display = state.attendanceDay?.vehicle_id && state.vehicleLog?.end_odometer_km == null ? 'grid' : 'none'
@@ -1650,6 +1729,12 @@
 
     function renderImportant() {
       const items = []
+      getMissingRequiredInstructions().slice(0, 2).forEach((instruction) => items.push({
+        title: instruction.title || 'Pokyn dne',
+        text: instruction.message || 'Před začátkem směny je potřeba potvrdit pokyn.',
+        badge: 'Pokyn',
+        type: instruction.priority === 'critical' ? 'red' : 'yellow'
+      }))
       const oldServices = state.services.filter((item) => item.created_at && (Date.now() - new Date(item.created_at).getTime()) > 3 * 24 * 60 * 60 * 1000 && item.status !== 'done')
       oldServices.slice(0, 2).forEach((item) => items.push({
         title: item.title,
@@ -1685,6 +1770,39 @@
         const label = [product.name, product.sku, product.ean].filter(Boolean).join(' · ')
         return `<option value="${escapeHtml(label)}"></option>`
       }).join('')
+      renderProductSearchPanel()
+    }
+
+    function getProductSearchResults(query) {
+      const normalized = query.trim().toLowerCase()
+      const rows = normalized
+        ? state.products.filter((product) => [product.name, product.sku, product.ean].filter(Boolean).join(' · ').toLowerCase().includes(normalized))
+        : state.products
+      return rows.slice(0, 30)
+    }
+
+    function renderProductSearchPanel() {
+      if (!els.stockProductSearchPanel) return
+      const query = els.stockProductInput.value || ''
+      const results = getProductSearchResults(query)
+      els.stockProductSearchPanel.hidden = document.activeElement !== els.stockProductInput || !results.length
+      els.stockProductSearchPanel.innerHTML = results.map((product) => {
+        const meta = [product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : '', product.base_unit || 'ks'].filter(Boolean).join(' · ')
+        return `
+          <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}">
+            <strong>${escapeHtml(product.name || 'Produkt')}</strong>
+            <span>${escapeHtml(meta || 'Bez kódu')}</span>
+          </button>
+        `
+      }).join('')
+    }
+
+    function selectStockProduct(productId) {
+      const product = state.products.find((item) => String(item.id) === String(productId))
+      if (!product) return
+      els.stockProductInput.value = [product.name, product.sku, product.ean].filter(Boolean).join(' · ')
+      els.stockProductSearchPanel.hidden = true
+      els.stockQuantityInput.focus({ preventScroll: true })
     }
 
     function renderStockRequests() {
@@ -1965,7 +2083,7 @@
     async function loadReferenceData() {
       const [vehicles, products] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, ean, base_unit').order('name', { ascending: true }).limit(120)
+        supabase.from('products').select('id, name, sku, ean, base_unit, active').eq('active', true).order('name', { ascending: true }).limit(1000)
       ])
       if (vehicles.error) throw vehicles.error
       if (products.error) throw products.error
@@ -2321,7 +2439,7 @@
       els.stockQuantityInput.value = '1'
       els.stockNoteInput.value = ''
       renderStockDraft()
-      if (!options.silent) showMessage('Položka je přidaná do rozpracovaného dokladu.')
+      if (!options.silent) showMessage('Položka je přidaná do rozpracovaného dokladu.', 'info', { scroll: false })
       window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 20)
       return true
     }
@@ -2402,6 +2520,8 @@
         ]
         renderStockRequests()
         renderImportant()
+        els.stockRequestDetails.open = true
+        els.stockRequestDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
         try {
           await loadStockRequests()
           renderStockRequests()
@@ -2912,7 +3032,16 @@
       els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
       els.loadWholeVehicleButton?.addEventListener('click', () => loadWholeVehicleForUnload().catch(handleError))
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
-      els.stockProductInput.addEventListener('input', () => renderStockDraft())
+      els.stockProductInput.addEventListener('input', () => {
+        renderProductSearchPanel()
+        renderStockDraft()
+      })
+      els.stockProductInput.addEventListener('focus', renderProductSearchPanel)
+      els.stockProductSearchPanel.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-product-id]')
+        if (!button) return
+        selectStockProduct(button.dataset.productId)
+      })
       els.stockQuantityInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault()
