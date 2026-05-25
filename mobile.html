@@ -1261,6 +1261,7 @@
       selectedStockType: 'vehicle_load',
       stockDraftItems: [],
       fuelReceiptUploading: false,
+      endingShift: false,
       setupWarnings: []
     }
 
@@ -1512,6 +1513,10 @@
         screen = 'shift'
         showMessage('Nejdřív zahaj směnu: potvrď pokyny dne, vyber auto a odsouhlas kilometry.', 'error')
       }
+      if (screen === 'end' && isShiftClosed()) {
+        screen = 'today'
+        showMessage('Směna už je ukončená. Další ukončení není potřeba.', 'error')
+      }
       if (screen !== 'shift' && screen !== 'today' && getMissingRequiredInstructions().length) {
         screen = 'shift'
         showMessage('Nejdřív potvrď povinné pokyny dne.', 'error')
@@ -1540,6 +1545,9 @@
       els.shiftHero.classList.toggle('ready', isRunning || isClosed)
       els.shiftHero.classList.toggle('thanks', isClosed)
       els.runningShiftActions.hidden = !isRunning
+      els.openEndShiftButton.disabled = !isRunning || state.endingShift
+      els.endShiftButton.disabled = !isRunning || state.endingShift
+      els.endShiftButton.textContent = state.endingShift ? 'Ukončuji...' : 'Ukončit směnu'
 
       if (isRunning) {
         const breakMinutes = getComputedBreakMinutes()
@@ -2372,52 +2380,77 @@
         openScreen('shift')
         return
       }
-
-      const endAt = new Date().toISOString()
-      const savedEndKm = state.vehicleLog?.end_odometer_km != null ? Number(state.vehicleLog.end_odometer_km) : null
-      const enteredEndKm = parseNumber(els.endOdometerInput.value)
-      const endKm = state.attendanceDay.vehicle_id ? (savedEndKm ?? enteredEndKm) : null
-      const startKm = state.vehicleLog?.start_odometer_km != null ? Number(state.vehicleLog.start_odometer_km) : null
-      if (state.attendanceDay.vehicle_id && endKm === null) throw new Error('Doplň konečný stav km.')
-      if (startKm !== null && endKm !== null && endKm < startKm) throw new Error('Konečný stav km nesmí být menší než počáteční.')
-
-      await closeOpenBreakIfNeeded(endAt)
-      const breakMinutes = getComputedBreakMinutes(endAt)
-      const payableMinutes = state.attendanceDay.actual_start
-        ? Math.max(0, Math.round((new Date(endAt).getTime() - new Date(state.attendanceDay.actual_start).getTime()) / 60000) - breakMinutes)
-        : 0
-
-      const update = {
-        status: 'closed',
-        actual_end: endAt,
-        break_minutes: breakMinutes,
-        payable_minutes: payableMinutes,
-        note: els.endShiftNoteInput.value.trim() || state.attendanceDay.note || null
-      }
-      const { error } = await supabase.from('attendance_days').update(update).eq('id', state.attendanceDay.id)
-      if (error) throw error
-
-      await supabase.from('attendance_events').insert({
-        attendance_day_id: state.attendanceDay.id,
-        employee_id: state.employee.id,
-        event_type: 'shift_end',
-        created_by: state.employee.id
-      })
-
-      if (state.vehicleLog?.id) {
-        await supabase.from('vehicle_operation_logs').update({
-          ended_at: endAt,
-          end_odometer_km: endKm,
-          status: 'closed'
-        }).eq('id', state.vehicleLog.id)
-      }
-      if (state.attendanceDay.vehicle_id && endKm !== null) {
-        await supabase.from('vehicles').update({ current_odometer_km: endKm }).eq('id', state.attendanceDay.vehicle_id)
+      if (state.endingShift) return
+      if (!isShiftRunning()) {
+        showMessage(isShiftClosed() ? 'Směna už je ukončená. Další ukončení není potřeba.' : 'Nejdřív zahaj směnu.', 'error')
+        openScreen(isShiftClosed() ? 'today' : 'shift')
+        return
       }
 
-      showMessage('Děkujeme za směnu. Dnešní práce je uložená.')
-      openScreen('today')
-      await reloadData()
+      state.endingShift = true
+      renderShiftState()
+      try {
+        const endAt = new Date().toISOString()
+        const savedEndKm = state.vehicleLog?.end_odometer_km != null ? Number(state.vehicleLog.end_odometer_km) : null
+        const enteredEndKm = parseNumber(els.endOdometerInput.value)
+        const endKm = state.attendanceDay.vehicle_id ? (savedEndKm ?? enteredEndKm) : null
+        const startKm = state.vehicleLog?.start_odometer_km != null ? Number(state.vehicleLog.start_odometer_km) : null
+        if (state.attendanceDay.vehicle_id && endKm === null) throw new Error('Doplň konečný stav km.')
+        if (startKm !== null && endKm !== null && endKm < startKm) throw new Error('Konečný stav km nesmí být menší než počáteční.')
+
+        await closeOpenBreakIfNeeded(endAt)
+        const breakMinutes = getComputedBreakMinutes(endAt)
+        const payableMinutes = state.attendanceDay.actual_start
+          ? Math.max(0, Math.round((new Date(endAt).getTime() - new Date(state.attendanceDay.actual_start).getTime()) / 60000) - breakMinutes)
+          : 0
+
+        const update = {
+          status: 'closed',
+          actual_end: endAt,
+          break_minutes: breakMinutes,
+          payable_minutes: payableMinutes,
+          note: els.endShiftNoteInput.value.trim() || state.attendanceDay.note || null
+        }
+        const { data: updatedDay, error } = await supabase
+          .from('attendance_days')
+          .update(update)
+          .eq('id', state.attendanceDay.id)
+          .is('actual_end', null)
+          .select('id')
+          .maybeSingle()
+        if (error) throw error
+        if (!updatedDay) {
+          showMessage('Směna už byla ukončená. Znovu ji neukončujeme.', 'error')
+          await reloadData()
+          openScreen('today')
+          return
+        }
+
+        await supabase.from('attendance_events').insert({
+          attendance_day_id: state.attendanceDay.id,
+          employee_id: state.employee.id,
+          event_type: 'shift_end',
+          created_by: state.employee.id
+        })
+
+        if (state.vehicleLog?.id) {
+          await supabase.from('vehicle_operation_logs').update({
+            ended_at: endAt,
+            end_odometer_km: endKm,
+            status: 'closed'
+          }).eq('id', state.vehicleLog.id)
+        }
+        if (state.attendanceDay.vehicle_id && endKm !== null) {
+          await supabase.from('vehicles').update({ current_odometer_km: endKm }).eq('id', state.attendanceDay.vehicle_id)
+        }
+
+        showMessage('Děkujeme za směnu. Dnešní práce je uložená.')
+        openScreen('today')
+        await reloadData()
+      } finally {
+        state.endingShift = false
+        renderShiftState()
+      }
     }
 
     function resolveProductFromInput(productText) {
