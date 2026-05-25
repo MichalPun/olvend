@@ -189,6 +189,7 @@
           <div class="actions">
             <button class="btn secondary" id="refreshBtn" type="button">Obnovit</button>
             <button class="btn" id="importInvoiceBtn" type="button">Přijmout doklad</button>
+            <button class="btn secondary" id="quickJipOrderBtn" type="button">Rychlá objednávka JIP</button>
             <button class="btn secondary" id="generateBtn" type="button">Připravit návrhy</button>
             <a class="btn secondary" href="suppliers.html">Dodavatelé</a>
             <input class="file-input-hidden" id="invoiceXmlInput" type="file" accept=".xml,application/xml,text/xml" />
@@ -752,6 +753,10 @@
               <input id="profileMultipleQty" type="number" min="1" step="1" value="1" />
             </div>
             <div class="field">
+              <label for="profileSupplierItemCode">Kód dodavatele / JIP</label>
+              <input id="profileSupplierItemCode" placeholder="Kód pro rychlou objednávku" />
+            </div>
+            <div class="field">
               <label><input id="profileReorderEnabled" type="checkbox" checked style="width:auto;margin-right:8px;" /> Vytvářet doporučení</label>
             </div>
             <div class="field full">
@@ -780,6 +785,43 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="quickJipOrderModalBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Rychlá objednávka JIP</h3>
+        <button class="close-btn" id="closeQuickJipOrderModalBtn" type="button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="field">
+            <label for="quickJipSupplierId">Dodavatel</label>
+            <select id="quickJipSupplierId"></select>
+          </div>
+          <div class="field">
+            <label for="quickJipMode">Množství</label>
+            <select id="quickJipMode">
+              <option value="recommended">Doporučení, jinak běžné množství</option>
+              <option value="recommended_only">Jen doporučené položky</option>
+              <option value="base">Běžné množství podle dne</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="quickJipOutput">Text pro rychlou objednávku</label>
+            <textarea id="quickJipOutput" rows="12" spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="status-line" id="quickJipStatus" style="margin-top:16px;">Vyber dodavatele a zkontroluj řádky před vložením do JIP.</div>
+      </div>
+      <div class="modal-footer split">
+        <button class="btn secondary" id="copyQuickJipOrderBtn" type="button">Kopírovat</button>
+        <div class="footer-actions">
+          <button class="btn secondary" id="downloadQuickJipOrderBtn" type="button">Stáhnout CSV</button>
+          <button class="btn" id="closeQuickJipOrderBtn" type="button">Hotovo</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="./sidebar.js?v=20260518v15issued"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -804,6 +846,7 @@
     const refreshBtn = document.getElementById('refreshBtn')
     const importInvoiceBtn = document.getElementById('importInvoiceBtn')
     const invoiceXmlInput = document.getElementById('invoiceXmlInput')
+    const quickJipOrderBtn = document.getElementById('quickJipOrderBtn')
     const generateBtn = document.getElementById('generateBtn')
     const openProfileBtn = document.getElementById('openProfileBtn')
 
@@ -911,9 +954,18 @@
     const profileBaseQty = document.getElementById('profileBaseQty')
     const profileMinQty = document.getElementById('profileMinQty')
     const profileMultipleQty = document.getElementById('profileMultipleQty')
+    const profileSupplierItemCode = document.getElementById('profileSupplierItemCode')
     const profileReorderEnabled = document.getElementById('profileReorderEnabled')
     const profileItemNote = document.getElementById('profileItemNote')
     const saveProfileItemBtn = document.getElementById('saveProfileItemBtn')
+
+    const quickJipOrderModalBackdrop = document.getElementById('quickJipOrderModalBackdrop')
+    const quickJipSupplierId = document.getElementById('quickJipSupplierId')
+    const quickJipMode = document.getElementById('quickJipMode')
+    const quickJipOutput = document.getElementById('quickJipOutput')
+    const quickJipStatus = document.getElementById('quickJipStatus')
+    const copyQuickJipOrderBtn = document.getElementById('copyQuickJipOrderBtn')
+    const downloadQuickJipOrderBtn = document.getElementById('downloadQuickJipOrderBtn')
 
     const mobileNavShell = document.getElementById('mobileNavShell')
 
@@ -1224,6 +1276,30 @@
       return '<option value="">Vyber dodavatele</option>' + suppliers
         .map((item) => `<option value="${item.id}" ${String(item.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(item.name)}</option>`)
         .join('')
+    }
+    function supplierMappingForProduct(supplierId, productId) {
+      return supplierProductMappings.find((mapping) => (
+        String(mapping.supplier_id) === String(supplierId)
+        && String(mapping.product_id) === String(productId)
+        && mapping.active !== false
+      )) || null
+    }
+    async function saveSupplierProductCode({ supplierId, productId, code, product = null }) {
+      const normalizedCode = String(code || '').trim()
+      if (!supplierId || !productId || !normalizedCode) return
+      const payload = {
+        supplier_id: supplierId,
+        product_id: productId,
+        supplier_item_code: normalizedCode,
+        ean: product?.ean || null,
+        supplier_item_name: product?.name || null,
+        active: true,
+        last_seen_at: new Date().toISOString()
+      }
+      const { error } = await supabase
+        .from('supplier_product_mappings')
+        .upsert(payload, { onConflict: 'supplier_id,supplier_item_code' })
+      if (error) throw error
     }
     function warehouseOptionsHtml(selectedId = '') {
       if (!warehouses.length) return '<option value="">Nejdřív založ sklad</option>'
@@ -2054,6 +2130,9 @@
     function getRecurringItemsForOrder(recurringOrderId) {
       return recurringItems.filter((item) => String(item.recurring_order_id) === String(recurringOrderId))
     }
+    function getRecurringOrdersForSupplier(supplierId) {
+      return recurringOrders.filter((order) => String(order.supplier_id) === String(supplierId) && order.active !== false)
+    }
     function getRecommendationForItem(item) {
       return productRecommendationMap.get(`${item.product_id}:${item.pilot_scope || 'general'}`) || {}
     }
@@ -2074,6 +2153,115 @@
         ? `[dph:${vatRate}][celkem-bez-dph:${totalNet.toFixed(2)}][celkem-s-dph:${totalGross.toFixed(2)}]`
         : `[dph:${vatRate}]`
       return `${priceMeta} ${label}`
+    }
+    function decimalForQuickOrder(value) {
+      const number = Number(value || 0)
+      if (!Number.isFinite(number)) return '0'
+      return String(Number(number.toFixed(3))).replace('.', ',')
+    }
+    function quickOrderSupplierDefault() {
+      return suppliers.find((supplier) => normalizeText(supplier.name).includes('jip')) || suppliers[0] || null
+    }
+    function quickOrderCodeForProduct(supplierId, product) {
+      const mapping = supplierMappingForProduct(supplierId, product?.id)
+      const mappedCode = String(mapping?.supplier_item_code || '').trim()
+      if (mappedCode && mappedCode.toUpperCase().startsWith('EAN:')) {
+        return { code: mappedCode.replace(/^EAN:/i, '').trim(), source: 'ean' }
+      }
+      if (mappedCode) return { code: mappedCode, source: 'supplier_code' }
+      if (product?.ean) return { code: String(product.ean).trim(), source: 'ean' }
+      if (product?.sku) return { code: String(product.sku).trim(), source: 'sku' }
+      return { code: '', source: '' }
+    }
+    function buildQuickJipRows() {
+      const supplierId = quickJipSupplierId.value
+      const mode = quickJipMode.value || 'recommended'
+      const day = todayIsoDay()
+      const sourceOrders = getRecurringOrdersForSupplier(supplierId)
+      const rows = []
+      const missing = []
+      sourceOrders.forEach((order) => {
+        getRecurringItemsForOrder(order.id).filter((item) => item.active !== false).forEach((item) => {
+          const recommendation = getRecommendationForItem(item)
+          const recommended = Number(recommendation.recommended_order_qty || 0)
+          const base = getBaseOrderQuantityForDay(item, day)
+          const quantity = mode === 'recommended_only'
+            ? recommended
+            : mode === 'base'
+              ? base
+              : (recommended > 0 ? recommended : base)
+          if (!quantity || quantity <= 0) return
+          const product = getProductById(item.product_id)
+          const { code, source } = quickOrderCodeForProduct(supplierId, product)
+          const row = {
+            product,
+            code,
+            quantity,
+            variant: '',
+            article: product?.name || item.product_name || 'Produkt',
+            source
+          }
+          if (!code || source !== 'supplier_code') missing.push(row)
+          rows.push(row)
+        })
+      })
+      return { rows, missing }
+    }
+    function renderQuickJipOrder() {
+      const { rows, missing } = buildQuickJipRows()
+      const header = 'KOD JIP;MNOZSTVI;VARIANTA;ARTIKL'
+      quickJipOutput.value = [header, ...rows.map((row) => [
+        row.code,
+        decimalForQuickOrder(row.quantity),
+        row.variant,
+        row.article
+      ].map((value) => String(value || '').replace(/[;\r\n]+/g, ' ').trim()).join(';'))].join('\n')
+      const supplier = suppliers.find((item) => String(item.id) === String(quickJipSupplierId.value))
+      if (!rows.length) {
+        quickJipStatus.textContent = 'Pro vybraného dodavatele zatím nevychází žádné řádky. Zkontroluj stálou dodávku a množství položek.'
+        quickJipStatus.className = 'status-line error'
+        return
+      }
+      if (missing.length) {
+        quickJipStatus.textContent = `Připraveno ${rows.length} řádků pro ${supplier?.name || 'dodavatele'}. ${missing.length} řádků nemá uložený kód dodavatele, používá se EAN/SKU nebo je potřeba kód doplnit.`
+        quickJipStatus.className = 'status-line error'
+        return
+      }
+      quickJipStatus.textContent = `Připraveno ${rows.length} řádků pro ${supplier?.name || 'dodavatele'}. Všechny řádky mají kód dodavatele.`
+      quickJipStatus.className = 'status-line success'
+    }
+    function openQuickJipOrderModal() {
+      quickJipSupplierId.innerHTML = supplierOptionsHtml()
+      const fallbackSupplier = quickOrderSupplierDefault()
+      quickJipSupplierId.value = fallbackSupplier?.id ? String(fallbackSupplier.id) : ''
+      quickJipMode.value = 'recommended'
+      renderQuickJipOrder()
+      quickJipOrderModalBackdrop.classList.add('show')
+    }
+    function closeQuickJipOrderModal() {
+      quickJipOrderModalBackdrop.classList.remove('show')
+      quickJipOutput.value = ''
+    }
+    async function copyQuickJipOrder() {
+      if (!quickJipOutput.value.trim()) return
+      await navigator.clipboard.writeText(quickJipOutput.value)
+      quickJipStatus.textContent = 'Rychlá objednávka je zkopírovaná do schránky.'
+      quickJipStatus.className = 'status-line success'
+    }
+    function downloadQuickJipOrder() {
+      const text = quickJipOutput.value.trim()
+      if (!text) return
+      const supplier = suppliers.find((item) => String(item.id) === String(quickJipSupplierId.value))
+      const safeSupplier = normalizeText(supplier?.name || 'jip').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'jip'
+      const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `rychla-objednavka-${safeSupplier}-${toLocalIsoDate(new Date())}.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
     }
     async function loadReceiptBatchFields(order) {
       currentReceiptMovementMap = new Map()
@@ -2298,6 +2486,7 @@
       profileBaseQty.value = '0'
       profileMinQty.value = '0'
       profileMultipleQty.value = '1'
+      profileSupplierItemCode.value = ''
       profileReorderEnabled.checked = true
       profileItemNote.value = ''
       setDayQuantityInputs({})
@@ -2308,6 +2497,7 @@
         profileItemModalTitle.textContent = 'Upravit položku dodávky'
         profileProductId.value = String(item.product_id || '')
         profileBaseQty.value = String(Number(item.base_order_quantity || 0))
+        profileSupplierItemCode.value = supplierMappingForProduct(currentRecurringOrder.supplier_id, item.product_id)?.supplier_item_code || ''
         profileReorderEnabled.checked = item.active !== false
         profileItemNote.value = item.note || ''
         setDayQuantityInputs(parseWeekdayQuantityMap(item.order_quantity_by_weekday))
@@ -2320,6 +2510,7 @@
       profileItemModalBackdrop.classList.remove('show')
       profileItemForm.reset()
       profileItemId.value = ''
+      profileSupplierItemCode.value = ''
       profileItemNote.value = ''
       setDayQuantityInputs({})
     }
@@ -2343,6 +2534,13 @@
           const { error } = await supabase.from('purchase_recurring_order_items').insert([payload])
           if (error) throw error
         }
+      })
+      const product = getProductById(payload.product_id)
+      await saveSupplierProductCode({
+        supplierId: currentRecurringOrder.supplier_id,
+        productId: payload.product_id,
+        code: profileSupplierItemCode.value,
+        product
       })
     }
     async function ensureWarehouseLocation(warehouseId) {
@@ -3323,6 +3521,7 @@
     })
     addProfileGroupItemBtn.addEventListener('click', () => openProfileItemModal())
     openProfileBtn.addEventListener('click', () => openProfileModal())
+    quickJipOrderBtn.addEventListener('click', openQuickJipOrderModal)
 
     document.getElementById('closeReceiptModalBtn').addEventListener('click', closeReceiptModal)
     document.getElementById('cancelReceiptBtn').addEventListener('click', closeReceiptModal)
@@ -3338,6 +3537,8 @@
     document.getElementById('cancelProfileGroupBtn').addEventListener('click', closeProfileGroupModal)
     document.getElementById('closeProfileItemModalBtn').addEventListener('click', closeProfileItemModal)
     document.getElementById('cancelProfileItemBtn').addEventListener('click', closeProfileItemModal)
+    document.getElementById('closeQuickJipOrderModalBtn').addEventListener('click', closeQuickJipOrderModal)
+    document.getElementById('closeQuickJipOrderBtn').addEventListener('click', closeQuickJipOrderModal)
 
     receiptModalBackdrop.addEventListener('click', (event) => { if (event.target === receiptModalBackdrop) closeReceiptModal() })
     invoiceImportModalBackdrop.addEventListener('click', (event) => { if (event.target === invoiceImportModalBackdrop) closeInvoiceImportModal() })
@@ -3346,6 +3547,15 @@
     profileModalBackdrop.addEventListener('click', (event) => { if (event.target === profileModalBackdrop) closeProfileModal() })
     profileGroupModalBackdrop.addEventListener('click', (event) => { if (event.target === profileGroupModalBackdrop) closeProfileGroupModal() })
     profileItemModalBackdrop.addEventListener('click', (event) => { if (event.target === profileItemModalBackdrop) closeProfileItemModal() })
+    quickJipOrderModalBackdrop.addEventListener('click', (event) => { if (event.target === quickJipOrderModalBackdrop) closeQuickJipOrderModal() })
+    quickJipSupplierId.addEventListener('change', renderQuickJipOrder)
+    quickJipMode.addEventListener('change', renderQuickJipOrder)
+    copyQuickJipOrderBtn.addEventListener('click', () => copyQuickJipOrder().catch((error) => {
+      console.error(error)
+      quickJipStatus.textContent = `Nepodařilo se kopírovat: ${error.message}`
+      quickJipStatus.className = 'status-line error'
+    }))
+    downloadQuickJipOrderBtn.addEventListener('click', downloadQuickJipOrder)
 
     receiptForm.addEventListener('submit', async (event) => {
       event.preventDefault()
