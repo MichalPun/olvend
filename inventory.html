@@ -4025,6 +4025,34 @@
         note: [stockDate, note, line.lotCode ? `šarže ${line.lotCode}` : null, line.expiryDate ? `expirace ${line.expiryDate}` : null].filter(Boolean).join(' · ') || null
       }
     }
+    async function resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, product_id, batch_id, quantity_on_hand')
+        .eq('stock_location_id', stockLocationId)
+      if (error) throw error
+      const existingBalances = (data || []).filter((item) => Math.abs(Number(item.quantity_on_hand || 0)) > 0.0001)
+      if (!existingBalances.length) return []
+      const now = new Date().toISOString()
+      for (const balance of existingBalances) {
+        const { error: updateError } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: 0, updated_at: now })
+          .eq('id', balance.id)
+        if (updateError) throw updateError
+      }
+      return existingBalances.map((balance) => ({
+        product_id: balance.product_id,
+        batch_id: balance.batch_id || null,
+        from_stock_location_id: stockLocationId,
+        to_stock_location_id: null,
+        movement_type: 'adjustment',
+        quantity_base_units: Math.abs(Number(balance.quantity_on_hand || 0)),
+        reference_type: 'initial_stock',
+        reference_id: referenceId,
+        note: [stockDate, note, 'vynulování před načtením počátečních stavů'].filter(Boolean).join(' · ') || null
+      }))
+    }
     function addBalanceDelta(deltaMap, stockLocationId, productId, delta) {
       if (!stockLocationId || !productId || !delta) return
       const key = `${stockLocationId}:${productId}`
@@ -4656,7 +4684,7 @@
         : warehouses.find((item) => String(item.id) === String(locationEntityId))
       const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : 'Sklad'} ${locationEntityId}`)
       const referenceId = `initial-stock:${locationType}:${Date.now()}`
-      const movementsToInsert = []
+      const movementsToInsert = await resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId)
       for (const line of lines) {
         movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
       }
