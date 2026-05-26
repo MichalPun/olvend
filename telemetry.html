@@ -459,6 +459,8 @@
       machines: [],
       links: [],
       slots: [],
+      coffeeButtons: [],
+      coffeeContainers: [],
       states: [],
       counters: [],
       ingests: [],
@@ -549,9 +551,30 @@
     }
 
     function getSlots(machineId) {
-      return state.slots
+      const foodSlots = state.slots
         .filter((item) => String(item.machine_id) === String(machineId) && item.active !== false)
         .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.slot_code || '').localeCompare(String(b.slot_code || ''), 'cs', { numeric: true }))
+      if (foodSlots.length) return foodSlots.map((slot) => ({ ...slot, row_kind: 'food_slot' }))
+      return state.coffeeButtons
+        .filter((item) => String(item.machine_id) === String(machineId) && item.active !== false)
+        .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.selection_code || '').localeCompare(String(b.selection_code || ''), 'cs', { numeric: true }))
+        .map((button) => ({
+          ...button,
+          row_kind: 'coffee_button',
+          slot_code: button.selection_code,
+          price_czk: button.sale_price_czk,
+          dex_price_czk: button.sale_price_czk,
+          capacity_units: null,
+          current_units: null,
+          last_units: button.last_counter,
+          desired_units: null,
+          expiry_date: null,
+          telemetry_key: button.selection_code
+        }))
+    }
+
+    function getCoffeeContainers(machineId) {
+      return state.coffeeContainers.filter((item) => String(item.machine_id) === String(machineId) && item.active !== false)
     }
 
     function getCounter(machineId, slot) {
@@ -580,7 +603,10 @@
 
     function renderStats() {
       const linked = state.machines.filter((machine) => getLink(machine.id)).length
-      const withSlots = new Set(state.slots.filter((slot) => slot.active !== false).map((slot) => String(slot.machine_id))).size
+      const withSlots = new Set([
+        ...state.slots.filter((slot) => slot.active !== false).map((slot) => String(slot.machine_id)),
+        ...state.coffeeButtons.filter((button) => button.active !== false).map((button) => String(button.machine_id))
+      ]).size
       els.listStats.innerHTML = [
         ['Automaty', state.machines.length],
         ['Linky', linked],
@@ -662,6 +688,7 @@
       const link = getLink(machine.id)
       const telemetry = getTelemetryState(machine.id)
       const slots = getSlots(machine.id)
+      const containers = getCoffeeContainers(machine.id)
       const low = slots.filter((slot) => Number(slot.current_units ?? slot.capacity_units ?? 0) <= Math.max(1, Number(slot.desired_units || 0))).length
       els.title.textContent = `[${getEvidence(machine) || machine.id}] ${machine.name || 'Automat'}`
       els.typePill.textContent = isCoffee(machine) ? 'Káva' : 'Potraviny'
@@ -670,8 +697,8 @@
       els.telemetryId.value = link?.external_machine_id || ''
       els.lastDex.value = telemetry?.last_seen_at ? formatDateTime(telemetry.last_seen_at) : ''
       els.machineStats.innerHTML = [
-        ['Sloty', slots.length],
-        ['Doplnit', low],
+        [isCoffee(machine) ? 'Volby' : 'Sloty', slots.length],
+        [isCoffee(machine) ? 'Zásobníky' : 'Doplnit', isCoffee(machine) ? containers.length : low],
         ['Countery', telemetry?.counters_payload?.product_counter_count ?? '-'],
         ['Terminál', telemetry?.counters_payload?.terminal_id ?? '-'],
         ['Stav', telemetry?.connectivity_status || '-']
@@ -692,7 +719,7 @@
       const pct = capacity ? Math.max(0, Math.min(100, Math.round((Number(current || 0) / Number(capacity)) * 100))) : 0
       const counter = state.activeMachineId ? getCounter(state.activeMachineId, slot) : null
       return `
-        <tr data-slot-id="${escapeHtml(slot.id || '')}">
+        <tr data-slot-id="${escapeHtml(slot.id || '')}" data-row-kind="${escapeHtml(slot.row_kind || 'food_slot')}">
           <td><input class="sheet-input" data-field="slot_code" value="${escapeHtml(slot.slot_code || '')}" /></td>
           <td><input class="sheet-input num" data-field="price_czk" inputmode="decimal" value="${escapeHtml(slot.price_czk ?? '')}" /></td>
           <td>
@@ -771,6 +798,7 @@
         const current = intOrNull(get('current_units'))
         return {
           id: tr.dataset.slotId || null,
+          rowKind: tr.dataset.rowKind || 'food_slot',
           payload: {
             machine_id: Number(state.activeMachineId),
             slot_code: slotCode,
@@ -809,6 +837,27 @@
     async function saveRows() {
       const rows = readRows()
       for (const row of rows) {
+        if (row.rowKind === 'coffee_button') {
+          const payload = {
+            machine_id: row.payload.machine_id,
+            selection_code: row.payload.slot_code,
+            product_name: row.payload.product_name,
+            product_sku: row.payload.product_sku,
+            sale_price_czk: row.payload.price_czk,
+            customer_price_czk: row.payload.price_czk,
+            last_counter: row.payload.last_units,
+            sort_order: row.payload.sort_order,
+            active: row.payload.active
+          }
+          if (row.id) {
+            const { error } = await supabase.from('machine_coffee_buttons').update(payload).eq('id', row.id)
+            if (error) throw error
+          } else {
+            const { error } = await supabase.from('machine_coffee_buttons').insert([payload])
+            if (error) throw error
+          }
+          continue
+        }
         if (row.id) {
           const { error } = await supabase.from('machine_planogram_slots').update(row.payload).eq('id', row.id)
           if (error) throw error
@@ -824,11 +873,13 @@
 
     async function loadData() {
       setStatus('Načítám...')
-      const [machinesRes, linksRes, statesRes, slotsRes, countersRes, ingestsRes] = await Promise.all([
+      const [machinesRes, linksRes, statesRes, slotsRes, coffeeButtonsRes, coffeeContainersRes, countersRes, ingestsRes] = await Promise.all([
         supabase.from('machines').select('id, name, machine_type, brand, model, serial_number, evidence_number, qr_token, active, status').eq('active', true).order('evidence_number', { ascending: true, nullsFirst: false }),
         supabase.from('machine_external_links').select('machine_id, provider, external_machine_id, telemetry_enabled'),
         supabase.from('machine_telemetry_state').select('machine_id, provider, last_seen_at, connectivity_status, counters_payload'),
         supabase.from('machine_planogram_slots').select('id, machine_id, slot_code, product_name, product_sku, price_czk, dex_price_czk, capacity_units, current_units, fill_percent, last_units, desired_units, expiry_date, telemetry_key, active, sort_order'),
+        supabase.from('machine_coffee_buttons').select('id, machine_id, selection_code, product_id, product_name, product_sku, sale_price_czk, customer_price_czk, last_counter, active, sort_order'),
+        supabase.from('machine_coffee_containers').select('id, machine_id, container_code, product_name, product_sku, capacity_quantity, current_quantity, unit, active, sort_order'),
         supabase.from('telemetry_planogram_counters').select('provider, machine_id, planogram_slot_id, selection_code, last_total_count, last_event_at'),
         supabase.from('telemetry_dex_ingests').select('id, provider, device_id, customer_id, transaction_id, transaction_time, transmit_time, dex_read_datetime, status, parse_error, created_at').order('created_at', { ascending: false }).limit(50)
       ])
@@ -836,11 +887,15 @@
       if (linksRes.error) throw linksRes.error
       if (statesRes.error) throw statesRes.error
       if (slotsRes.error) throw slotsRes.error
+      if (coffeeButtonsRes.error) throw coffeeButtonsRes.error
+      if (coffeeContainersRes.error) throw coffeeContainersRes.error
       if (ingestsRes.error) throw ingestsRes.error
       state.machines = machinesRes.data || []
       state.links = linksRes.data || []
       state.states = statesRes.data || []
       state.slots = slotsRes.data || []
+      state.coffeeButtons = coffeeButtonsRes.data || []
+      state.coffeeContainers = coffeeContainersRes.data || []
       state.counters = countersRes.error ? [] : countersRes.data || []
       state.ingests = ingestsRes.data || []
       if (!state.activeMachineId && state.machines.length) {
