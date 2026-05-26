@@ -165,6 +165,15 @@
     .detail-list-row:last-child { border-bottom:none; }
     .detail-list-label { color:var(--muted); font-size:13px; }
     .detail-list-value { color:#fff; font-size:14px; font-weight:700; text-align:right; }
+    .movement-list { display:grid; gap:10px; }
+    .movement-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; padding:12px 0; border-bottom:1px solid rgba(255,255,255,0.06); }
+    .movement-row:last-child { border-bottom:none; }
+    .movement-main { min-width:0; display:grid; gap:6px; }
+    .movement-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:#fff; font-size:15px; font-weight:850; }
+    .movement-chip { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.06); color:var(--soft); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.04em; }
+    .movement-direction { color:#fff; font-size:14px; font-weight:750; }
+    .movement-note { color:var(--muted); font-size:12px; line-height:1.45; }
+    .movement-quantity { color:#fff; font-size:18px; font-weight:850; white-space:nowrap; text-align:right; }
     .detail-actions { display:flex; flex-wrap:wrap; gap:10px; }
     .detail-chart-frame { min-height:220px; border-radius:14px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:10px; }
     .detail-chart-frame svg { width:100%; height:100%; display:block; }
@@ -204,7 +213,10 @@
     :root[data-olvend-theme="light"] .detail-metric-value,
     :root[data-olvend-theme="light"] th,
     :root[data-olvend-theme="light"] td,
-    :root[data-olvend-theme="light"] .detail-list-value { color:#17212b; }
+    :root[data-olvend-theme="light"] .detail-list-value,
+    :root[data-olvend-theme="light"] .movement-title,
+    :root[data-olvend-theme="light"] .movement-direction,
+    :root[data-olvend-theme="light"] .movement-quantity { color:#17212b; }
     :root[data-olvend-theme="light"] .title p,
     :root[data-olvend-theme="light"] .panel-header p,
     :root[data-olvend-theme="light"] .status-line,
@@ -216,6 +228,7 @@
     :root[data-olvend-theme="light"] .detail-hero p,
     :root[data-olvend-theme="light"] .detail-metric-note,
     :root[data-olvend-theme="light"] .detail-list-label,
+    :root[data-olvend-theme="light"] .movement-note,
     :root[data-olvend-theme="light"] .field label,
     :root[data-olvend-theme="light"] .detail-chart-empty { color:#5f6b7c; }
     :root[data-olvend-theme="light"] .panel,
@@ -5202,6 +5215,77 @@
         </div>
       `).join('')}</div>`
     }
+    function getStockMovementTypeLabel(type) {
+      return {
+        receipt: 'Příjem na sklad',
+        load_vehicle: 'Naložení vozidla',
+        fill_machine: 'Doplnění automatu',
+        return: 'Vratka na sklad',
+        sale: 'Prodej',
+        waste: 'Odpis / expirace',
+        adjustment: 'Oprava stavu'
+      }[type] || (type || 'Pohyb')
+    }
+    function getStockMovementReferenceLabel(movement) {
+      const referenceId = String(movement?.reference_id || '').trim()
+      if (!referenceId) return ''
+      if (referenceId.startsWith('filled-products-')) return 'Filled Products'
+      if (referenceId.startsWith('checkout-')) return 'CheckOut'
+      if (referenceId.startsWith('manual-transfer:')) return `Převodka ${referenceId.replace('manual-transfer:', '#')}`
+      if (referenceId.startsWith('manual-sale:')) return `Prodejka ${referenceId.replace('manual-sale:', '#')}`
+      if (referenceId.startsWith('initial-stock:')) return 'Počáteční stav'
+      return referenceId
+    }
+    function getStockLocationDisplayName(locationId) {
+      if (!locationId) return ''
+      const location = stockLocationsV13.find((item) => String(item.id) === String(locationId))
+      if (!location) return `Místo ${locationId}`
+      return [getLocationTypeLabel(location.location_type), location.name || `Místo ${locationId}`].filter(Boolean).join(' · ')
+    }
+    function getStockMovementDirectionLabel(movement) {
+      const from = getStockLocationDisplayName(movement?.from_stock_location_id)
+      const to = getStockLocationDisplayName(movement?.to_stock_location_id)
+      if (from && to) return `${from} → ${to}`
+      if (to) return `Příjem na ${to}`
+      if (from) return `Odchod z ${from}`
+      return 'Bez určeného směru'
+    }
+    function formatStockMovementQuantity(movement, unit) {
+      const quantity = Number(movement?.quantity_base_units || 0)
+      const decimals = Math.abs(quantity % 1) > 0.001 ? 2 : 0
+      return `${quantity.toLocaleString('cs-CZ', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${unit || 'ks'}`
+    }
+    function cleanStockMovementNote(note) {
+      return String(note || '')
+        .replace(/\[trzba-s-dph:[^\]]+\]/g, '')
+        .replace(/\[zaklad-dph:[^\]]+\]/g, '')
+        .replace(/\[dph-sazba:[^\]]+\]/g, '')
+        .replace(/\[dph:[^\]]+\]/g, '')
+        .replace(/\[naklad:[^\]]+\]/g, '')
+        .replace(/\[zisk:[^\]]+\]/g, '')
+        .replace(/\s*·\s*·\s*/g, ' · ')
+        .trim()
+    }
+    function renderStockMovementList(movements, unit) {
+      if (!movements.length) return '<div class="helper-line">Tady zatím nic nemáme.</div>'
+      return `<div class="movement-list">${movements.map((movement) => {
+        const reference = getStockMovementReferenceLabel(movement)
+        const note = cleanStockMovementNote(movement.note)
+        return `
+          <article class="movement-row">
+            <div class="movement-main">
+              <div class="movement-title">
+                <span>${escapeHtml(getStockMovementTypeLabel(movement.movement_type))}</span>
+                ${reference ? `<span class="movement-chip">${escapeHtml(reference)}</span>` : ''}
+              </div>
+              <div class="movement-direction">${escapeHtml(getStockMovementDirectionLabel(movement))}</div>
+              <div class="movement-note">${escapeHtml(new Date(movement.created_at).toLocaleString('cs-CZ'))}${note ? ` · ${escapeHtml(note)}` : ''}</div>
+            </div>
+            <div class="movement-quantity">${escapeHtml(formatStockMovementQuantity(movement, unit))}</div>
+          </article>
+        `
+      }).join('')}</div>`
+    }
     function renderSalesTrendChart(movements, unit) {
       if (!movements.length) {
         return `<div class="detail-chart-empty">Zatím tu nemáme žádné prodejní pohyby. Jakmile začne proudit telemetrie nebo DEX, graf se objeví tady.</div>`
@@ -5370,8 +5454,8 @@
             </article>
             <article class="detail-metric-card">
               <div class="detail-metric-label">Poslední pohyb</div>
-              <div class="detail-metric-value">${escapeHtml(recentMovements[0]?.movement_type || 'Bez pohybu')}</div>
-              <div class="detail-metric-note">${recentMovements[0] ? new Date(recentMovements[0].created_at).toLocaleString('cs-CZ') : 'Zatím nic'}</div>
+              <div class="detail-metric-value">${escapeHtml(recentMovements[0] ? getStockMovementTypeLabel(recentMovements[0].movement_type) : 'Bez pohybu')}</div>
+              <div class="detail-metric-note">${recentMovements[0] ? escapeHtml(getStockMovementDirectionLabel(recentMovements[0])) : 'Zatím nic'}</div>
             </article>
           </section>
           <section class="detail-section">
@@ -5396,10 +5480,7 @@
           </section>
           <section class="detail-section">
             <h5>Poslední pohyby</h5>
-            ${renderDetailSectionRows(recentMovements.map((movement) => ({
-              label: `${movement.movement_type} · ${new Date(movement.created_at).toLocaleString('cs-CZ')}`,
-              value: `${Number(movement.quantity_base_units || 0).toFixed(2)} ${product.base_unit || 'ks'}`
-            })))}
+            ${renderStockMovementList(recentMovements, product.base_unit || 'ks')}
           </section>
           <section class="detail-section">
             <h5>Rychlé akce</h5>
