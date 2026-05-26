@@ -982,6 +982,30 @@
       text-transform: uppercase;
     }
 
+    .finance-sort-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+      cursor: pointer;
+    }
+
+    .finance-sort-btn span {
+      min-width: 12px;
+      color: var(--accent);
+      font-size: 10px;
+    }
+
+    .finance-sort-btn:hover {
+      color: var(--text);
+    }
+
     .table-scroll {
       overflow-x: auto;
     }
@@ -1959,15 +1983,6 @@
                   <option value="">Všechna místa</option>
                 </select>
               </div>
-              <div class="finance-control">
-                <label for="financeSortFilter">Řazení produktů</label>
-                <select id="financeSortFilter">
-                  <option value="revenue">Tržba</option>
-                  <option value="profit">Zisk</option>
-                  <option value="quantity">Prodáno</option>
-                  <option value="margin">Marže</option>
-                </select>
-              </div>
             </div>
             <div id="financeKpiGrid" class="finance-grid"></div>
             <div class="finance-panels">
@@ -1999,12 +2014,12 @@
               <table class="finance-table">
                 <thead>
                   <tr>
-                    <th>Produkt</th>
-                    <th>Prodáno</th>
-                    <th>Tržba</th>
-                    <th>Náklad</th>
-                    <th>Zisk</th>
-                    <th>Marže</th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="name">Produkt <span></span></button></th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="quantity">Prodáno <span></span></button></th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="revenue">Tržba <span></span></button></th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="cost">Náklad <span></span></button></th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="profit">Zisk <span></span></button></th>
+                    <th><button type="button" class="finance-sort-btn" data-finance-sort="margin">Marže <span></span></button></th>
                   </tr>
                 </thead>
                 <tbody id="financeProductBody"></tbody>
@@ -2240,7 +2255,6 @@
     const financeDateFromWrap = document.getElementById("financeDateFromWrap");
     const financeDateToWrap = document.getElementById("financeDateToWrap");
     const financeLocationFilter = document.getElementById("financeLocationFilter");
-    const financeSortFilter = document.getElementById("financeSortFilter");
     const financeProductSearch = document.getElementById("financeProductSearch");
     const financeProductTypeFilter = document.getElementById("financeProductTypeFilter");
     const financeMinRevenueFilter = document.getElementById("financeMinRevenueFilter");
@@ -2250,6 +2264,7 @@
     let currentMode = "service";
     let currentUser = null;
     let managerDashboardCache = null;
+    let financeSortState = { key: "revenue", direction: "desc" };
     let serviceDashboardCache = null;
     let serviceDashboardCacheAt = 0;
     const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
@@ -2823,7 +2838,8 @@
         startDate: range.start,
         endDate: range.end,
         locationId: financeLocationFilter?.value || "",
-        sort: financeSortFilter?.value || "revenue",
+        sort: financeSortState.key || "revenue",
+        sortDirection: financeSortState.direction || "desc",
         productSearch: normalizeText(financeProductSearch?.value || ""),
         productType: financeProductTypeFilter?.value || "",
         minRevenue: Number(financeMinRevenueFilter?.value || 0)
@@ -2968,6 +2984,14 @@
         : `<tr><td colspan="6">Zatím tu nejsou žádné prodejky pro období ${escapeHtml(finance.periodLabel || "")}.</td></tr>`;
 
       note.textContent = finance.warning || "Hodnota zásob používá jednotkovou nákupní cenu po přepočtu balení. Prodejky počítáme z pohybů typu sale.";
+      document.querySelectorAll("[data-finance-sort]").forEach((button) => {
+        const key = button.getAttribute("data-finance-sort");
+        const indicator = button.querySelector("span");
+        const active = key === finance.sortKey;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-sort", active ? (finance.sortDirection === "asc" ? "ascending" : "descending") : "none");
+        if (indicator) indicator.textContent = active ? (finance.sortDirection === "asc" ? "↑" : "↓") : "↕";
+      });
     }
 
     async function loadFinanceDashboardData() {
@@ -3066,11 +3090,21 @@
       const profit = revenue - cost;
       const sortKey = filters.sort || "revenue";
       const sortAccessor = {
+        name: (row) => row.name || "",
         revenue: (row) => row.revenue,
+        cost: (row) => row.cost,
         profit: (row) => row.revenue - row.cost,
         quantity: (row) => row.quantity,
         margin: (row) => row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0
       }[sortKey] || ((row) => row.revenue);
+      const compareFinanceProducts = (a, b) => {
+        const aValue = sortAccessor(a);
+        const bValue = sortAccessor(b);
+        const comparison = sortKey === "name"
+          ? String(aValue).localeCompare(String(bValue), "cs", { sensitivity: "base" })
+          : Number(aValue || 0) - Number(bValue || 0);
+        return filters.sortDirection === "asc" ? comparison : -comparison;
+      };
       return {
         revenue,
         cost,
@@ -3085,12 +3119,14 @@
           .filter((row) => row.value > 0)
           .sort((a, b) => b.value - a.value),
         daily: Array.from(dailyRows.values()).sort((a, b) => a.date.localeCompare(b.date)).slice(-14),
+        sortKey,
+        sortDirection: filters.sortDirection,
         products: Array.from(productRows.values())
           .map((row) => ({ ...row, profit: row.revenue - row.cost, margin: row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0 }))
           .filter((row) => !filters.productSearch || normalizeText([row.name, row.sku, row.typeLabel].join(" ")).includes(filters.productSearch))
           .filter((row) => !filters.productType || row.typeKey === filters.productType)
           .filter((row) => Number(row.revenue || 0) >= filters.minRevenue)
-          .sort((a, b) => sortAccessor(b) - sortAccessor(a))
+          .sort(compareFinanceProducts)
           .slice(0, 25),
         warning: movementCount ? "" : `Zatím nejsou zapsané prodejky pro období ${filters.periodLabel}.`
       };
@@ -3110,6 +3146,8 @@
         movementCount: 0,
         stockSplit: [],
         daily: [],
+        sortKey: financeSortState.key,
+        sortDirection: financeSortState.direction,
         products: [],
         warning: `Finanční přehled se nepodařilo načíst: ${error.message}`
       }));
@@ -4279,8 +4317,18 @@
       updateHiddenList();
     });
 
-    [financePeriodFilter, financeDateFrom, financeDateTo, financeLocationFilter, financeSortFilter, financeProductTypeFilter, financeMinRevenueFilter].forEach((filter) => {
+    [financePeriodFilter, financeDateFrom, financeDateTo, financeLocationFilter, financeProductTypeFilter, financeMinRevenueFilter].forEach((filter) => {
       filter?.addEventListener("change", refreshFinanceDashboard);
+    });
+    document.querySelectorAll("[data-finance-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.getAttribute("data-finance-sort") || "revenue";
+        financeSortState = {
+          key,
+          direction: financeSortState.key === key && financeSortState.direction === "desc" ? "asc" : "desc"
+        };
+        refreshFinanceDashboard();
+      });
     });
     financeProductSearch?.addEventListener("input", () => {
       window.clearTimeout(financeProductSearch._refreshTimer);
