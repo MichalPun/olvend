@@ -1749,6 +1749,11 @@
       const product = productsV13.find((item) => String(item.id) === String(productId))
       return inferPackageFromProductName(product) || pack
     }
+    function shouldUsePackageByDefault(product) {
+      if (!product) return false
+      const pack = getEffectiveDefaultPackage(product.id)
+      return getProductKind(product) === 'ingredient' && Number(pack?.units_per_package || 0) > 1
+    }
     function getPackageQuantityUnit(baseUnit) {
       const unit = normalizeText(baseUnit || '')
       if (unit === 'kg') return 'g'
@@ -3951,12 +3956,14 @@
       const importSource = row.importSource ? `<div class="transfer-line-source"><strong>Nespárováno ze souboru:</strong> ${escapeHtml(row.importSource)}</div>` : ''
       const isSaleLine = ['machines_sale', 'vehicle_sale'].includes(document.getElementById('simpleTransferDirection')?.value || '')
       const totalIncome = row.totalIncome != null ? Number(row.totalIncome || 0).toFixed(2) : ''
+      const selectedProduct = row.productId ? productsV13.find((product) => String(product.id) === String(row.productId)) : null
+      const defaultKind = row.kind || (shouldUsePackageByDefault(selectedProduct) ? 'package' : 'product')
       wrapper.innerHTML = `
         <select data-transfer-product required>${simpleTransferProductOptionsHtml(row.productId || '')}</select>
         <input data-transfer-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
         <select data-transfer-kind>
-          <option value="product" ${row.kind !== 'package' ? 'selected' : ''}>ks / základ</option>
-          <option value="package" ${row.kind === 'package' ? 'selected' : ''}>balení</option>
+          <option value="product" ${defaultKind !== 'package' ? 'selected' : ''}>ks / základ</option>
+          <option value="package" ${defaultKind === 'package' ? 'selected' : ''}>balení</option>
         </select>
         <input data-transfer-income type="number" min="0" step="0.01" placeholder="Kč s DPH" value="${escapeHtml(totalIncome)}" ${isSaleLine ? '' : 'disabled'} />
         <input data-transfer-note placeholder="Poznámka" value="${escapeHtml(row.note || '')}" />
@@ -4408,6 +4415,7 @@
       const selectedProduct = row.productId ? productsV13.find((product) => String(product.id) === String(row.productId)) : null
       const purchasePrice = row.purchasePrice ?? (selectedProduct?.purchase_price != null ? Number(selectedProduct.purchase_price) : '')
       const searchValue = selectedProduct ? productSearchLabel(selectedProduct) : (row.productName || '')
+      const defaultKind = row.kind || (shouldUsePackageByDefault(selectedProduct) ? 'package' : 'product')
       wrapper.innerHTML = `
         <div class="initial-stock-product-cell">
           <input data-initial-product-search list="initialStockProductOptions" placeholder="Piš název, SKU nebo EAN..." value="${escapeHtml(searchValue)}" />
@@ -4416,8 +4424,8 @@
         </div>
         <input data-initial-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
         <select data-initial-kind>
-          <option value="product" ${row.kind !== 'package' ? 'selected' : ''}>ks / základ</option>
-          <option value="package" ${row.kind === 'package' ? 'selected' : ''}>balení</option>
+          <option value="product" ${defaultKind !== 'package' ? 'selected' : ''}>ks / základ</option>
+          <option value="package" ${defaultKind === 'package' ? 'selected' : ''}>balení</option>
         </select>
         <input data-initial-purchase-price type="number" min="0" step="0.0001" placeholder="Kč / jednotka" value="${escapeHtml(purchasePrice)}" />
         <input data-initial-expiry type="date" value="${escapeHtml(row.expiryDate || '')}" />
@@ -5834,7 +5842,16 @@
       updateSimpleTransferSalesSummary()
     })
     simpleTransferLines.addEventListener('input', updateSimpleTransferSalesSummary)
-    simpleTransferLines.addEventListener('change', updateSimpleTransferSalesSummary)
+    simpleTransferLines.addEventListener('change', (event) => {
+      const productSelect = event.target.closest('[data-transfer-product]')
+      if (productSelect) {
+        const row = productSelect.closest('.transfer-line-row')
+        const product = productsV13.find((item) => String(item.id) === String(productSelect.value || ''))
+        const kindSelect = row?.querySelector('[data-transfer-kind]')
+        if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      }
+      updateSimpleTransferSalesSummary()
+    })
     simpleTransferImportFile.addEventListener('change', async () => {
       const file = simpleTransferImportFile.files?.[0]
       if (!file) return
@@ -5885,15 +5902,27 @@
     })
     initialStockLines.addEventListener('input', (event) => {
       const input = event.target.closest('[data-initial-product-search]')
-      if (input) syncInitialStockProductSearchInput(input)
-      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
+      if (input) {
+        syncInitialStockProductSearchInput(input)
+        const row = input.closest('.transfer-line-row')
+        const product = productsV13.find((item) => String(item.id) === String(row?.querySelector('[data-initial-product]')?.value || ''))
+        const kindSelect = row?.querySelector('[data-initial-kind]')
+        if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      }
+      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-kind], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
         scheduleInitialStockDraftSave()
       }
     })
     initialStockLines.addEventListener('change', (event) => {
       const input = event.target.closest('[data-initial-product-search]')
-      if (input) syncInitialStockProductSearchInput(input)
-      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
+      if (input) {
+        syncInitialStockProductSearchInput(input)
+        const row = input.closest('.transfer-line-row')
+        const product = productsV13.find((item) => String(item.id) === String(row?.querySelector('[data-initial-product]')?.value || ''))
+        const kindSelect = row?.querySelector('[data-initial-kind]')
+        if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      }
+      if (event.target.closest('[data-initial-product-search], [data-initial-quantity], [data-initial-kind], [data-initial-purchase-price], [data-initial-expiry], [data-initial-lot]')) {
         scheduleInitialStockDraftSave()
       }
     })
