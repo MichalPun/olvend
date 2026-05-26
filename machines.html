@@ -270,6 +270,7 @@
     .cabinet-bar span { display:block; height:100%; width:0; background:#22c55e; }
     .cabinet-slot.warn .cabinet-bar span { background:#f59e0b; }
     .cabinet-slot.bad .cabinet-bar span { background:#ef4444; }
+    .cabinet-money-note { color:#047857; font-size:10px; font-weight:950; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .cabinet-footer-note { display:none; }
     .detail-history-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
     .modal-backdrop {
@@ -610,6 +611,21 @@
               <input id="slotPrice" type="number" min="0" step="0.01" placeholder="Např. 45" />
             </div>
             <div class="field">
+              <label for="slotCustomerPrice">Cena prodej zákazníkovi</label>
+              <input id="slotCustomerPrice" type="number" min="0" step="0.01" placeholder="Např. 0" />
+            </div>
+            <div class="field">
+              <label for="slotSubsidyAmount">Dotace / ks</label>
+              <input id="slotSubsidyAmount" type="number" min="0" step="0.01" placeholder="Např. 7" />
+            </div>
+            <div class="field">
+              <label for="slotSubsidyPayer">Plátce dotace</label>
+              <input id="slotSubsidyPayer" type="text" placeholder="Např. zákazník lokality" />
+            </div>
+            <div class="field full">
+              <label><input id="slotSubsidyBillingEnabled" type="checkbox" style="width:auto; margin-right:10px;" /> Fakturovat dotaci</label>
+            </div>
+            <div class="field">
               <label for="slotCapacity">Kapacita</label>
               <input id="slotCapacity" type="number" min="0" step="1" placeholder="Např. 6" />
             </div>
@@ -624,6 +640,10 @@
             <div class="field full">
               <label for="slotNote">Poznámka</label>
               <textarea id="slotNote" placeholder="Např. jen PET, bez energetických nápojů nebo problematický výdej."></textarea>
+            </div>
+            <div class="field full">
+              <label for="slotSubsidyNote">Poznámka k dotaci</label>
+              <textarea id="slotSubsidyNote" placeholder="Např. zaměstnanec platí 0 Kč, klientovi fakturovat 7 Kč za vydaný kus."></textarea>
             </div>
             <div class="field">
               <label for="slotPlannedProductName">Po doprodání</label>
@@ -890,6 +910,9 @@
         document.getElementById('slotProductName').value = product.name || ''
         document.getElementById('slotProductSku').value = product.sku || ''
         document.getElementById('slotPrice').value = product.sale_price ?? document.getElementById('slotPrice').value
+        if (!document.getElementById('slotCustomerPrice').value.trim()) {
+          document.getElementById('slotCustomerPrice').value = product.sale_price ?? ''
+        }
         if (!document.getElementById('slotProductFamily').value.trim()) {
           document.getElementById('slotProductFamily').value = inferProductFamily(product.name)
         }
@@ -1049,11 +1072,13 @@
                   const capacity = slot.capacity_units != null ? Number(slot.capacity_units) : null
                   const percent = capacity && current != null ? Math.max(0, Math.min(100, Math.round((current / capacity) * 100))) : 0
                   const plannedProduct = String(slot.planned_product_name || '').trim()
+                  const customerPrice = slot.customer_price_czk ?? slot.price_czk
+                  const subsidy = Number(slot.subsidy_amount_czk || 0)
                   return `
                     <button class="cabinet-slot ${escapeHtml(status.cls)}" type="button" data-planogram-action="edit" data-slot-id="${slot.id}" data-machine-id="${machine.id}">
                       <span class="cabinet-slot-head">
                         <span class="cabinet-slot-code">Pozice ${escapeHtml(code)}</span>
-                        <span class="cabinet-slot-price">${slot.price_czk != null ? `${Number(slot.price_czk).toFixed(0)} Kč` : '-'}</span>
+                        <span class="cabinet-slot-price">${customerPrice != null ? `${Number(customerPrice).toFixed(0)} Kč` : '-'}</span>
                       </span>
                       <span class="cabinet-product">
                         ${escapeHtml(slot.product_name || 'Bez produktu')}
@@ -1064,6 +1089,7 @@
                           <span>${current != null || capacity != null ? `${current ?? '?'} / ${capacity ?? '?'} ks` : 'Bez kapacity'}</span>
                           <span>${escapeHtml(status.label)}</span>
                         </span>
+                        ${subsidy > 0 ? `<span class="cabinet-money-note">Dotace ${subsidy.toFixed(0)} Kč/ks</span>` : ''}
                         <span class="cabinet-bar"><span style="width:${percent}%"></span></span>
                       </span>
                     </button>
@@ -1272,10 +1298,15 @@
       document.getElementById('slotProductFamily').value = slot.product_family || ''
       document.getElementById('slotProductVariant').value = slot.product_variant || ''
       document.getElementById('slotPrice').value = slot.price_czk ?? ''
+      document.getElementById('slotCustomerPrice').value = slot.customer_price_czk ?? slot.price_czk ?? ''
+      document.getElementById('slotSubsidyAmount').value = slot.subsidy_amount_czk ?? ''
+      document.getElementById('slotSubsidyPayer').value = slot.subsidy_payer || ''
+      document.getElementById('slotSubsidyBillingEnabled').checked = slot.subsidy_billing_enabled === true
       document.getElementById('slotCapacity').value = slot.capacity_units ?? ''
       document.getElementById('slotCurrentUnits').value = slot.current_units ?? ''
       document.getElementById('slotFillPercent').value = slot.fill_percent ?? ''
       document.getElementById('slotNote').value = slot.note || ''
+      document.getElementById('slotSubsidyNote').value = slot.subsidy_note || ''
       document.getElementById('slotPlannedProductName').value = slot.planned_product_name || ''
       document.getElementById('slotPlannedProductSku').value = slot.planned_product_sku || ''
       document.getElementById('slotPlannedPrice').value = slot.planned_price_czk ?? ''
@@ -1653,6 +1684,11 @@
         product_family: document.getElementById('slotProductFamily').value.trim() || null,
         product_variant: document.getElementById('slotProductVariant').value.trim() || null,
         price_czk: document.getElementById('slotPrice').value ? Number(document.getElementById('slotPrice').value) : null,
+        customer_price_czk: document.getElementById('slotCustomerPrice').value ? Number(document.getElementById('slotCustomerPrice').value) : null,
+        subsidy_amount_czk: document.getElementById('slotSubsidyAmount').value ? Number(document.getElementById('slotSubsidyAmount').value) : 0,
+        subsidy_payer: document.getElementById('slotSubsidyPayer').value.trim() || null,
+        subsidy_billing_enabled: document.getElementById('slotSubsidyBillingEnabled').checked,
+        subsidy_note: document.getElementById('slotSubsidyNote').value.trim() || null,
         capacity_units: document.getElementById('slotCapacity').value ? Number(document.getElementById('slotCapacity').value) : null,
         current_units: document.getElementById('slotCurrentUnits').value ? Number(document.getElementById('slotCurrentUnits').value) : null,
         fill_percent: document.getElementById('slotFillPercent').value ? Number(document.getElementById('slotFillPercent').value) : null,
@@ -1706,6 +1742,11 @@
         product_family: slot.product_family,
         product_variant: slot.product_variant,
         price_czk: slot.price_czk,
+        customer_price_czk: slot.customer_price_czk,
+        subsidy_amount_czk: slot.subsidy_amount_czk || 0,
+        subsidy_payer: slot.subsidy_payer,
+        subsidy_billing_enabled: slot.subsidy_billing_enabled === true,
+        subsidy_note: slot.subsidy_note,
         capacity_units: slot.capacity_units,
         current_units: slot.current_units,
         fill_percent: slot.fill_percent,
