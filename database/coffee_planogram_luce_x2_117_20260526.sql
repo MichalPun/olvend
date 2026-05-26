@@ -1,0 +1,40 @@
+insert into public.machine_coffee_containers (machine_id, container_code, product_sku, product_name, capacity_quantity, current_quantity, unit, refill_package_quantity, refill_package_unit, min_refill_quantity, sort_order, active) values
+  (95, 'Z1', '51', 'oVe DRINK WITH CHOC WHITE FLAVOUR 1000g', 3000, 1835, 'g', 1000, 'g', 1000, 0, true),
+  (95, 'Z10', '53', 'Kelímek 300 ml (50 ks)', 300, 239, 'ks', 50, 'ks', 50, 1, true),
+  (95, 'Z11', '88', 'VÍČKO HUHTAMAKI PLAST ČERNÉ 300ml', 100, 100, 'ks', 100, 'ks', 100, 2, true),
+  (95, 'Z2', '48', 'oVe COFFEE CREAMER WHITE 1 kg', 3000, 2354, 'g', 1000, 'g', 1000, 3, true),
+  (95, 'Z3', '43', 'Cukr Vending 1,5 kg', 3000, 2729, 'g', 1500, 'g', 1500, 4, true),
+  (95, 'Z4', '47', 'oVe DRINK WITH COCOA ZETA 1 kg', 3000, 2800, 'g', 1000, 'g', 1000, 5, true),
+  (95, 'Z5', '44', 'oVe FD COFFEE SOPHIA 500g', 1500, 1334, 'g', 500, 'g', 500, 6, true),
+  (95, 'Z6', '270', 'AG PRO Matcha Latte pistácie 1kg', 3000, 2703, 'g', 1000, 'g', 1000, 7, true),
+  (95, 'Z7', '262', 'AG PRO Matcha Latte malina 1kg', 3000, 2584, 'g', 1000, 'g', 1000, 8, true),
+  (95, 'Z8', '46', 'oVe SMART CAPPUCCINO IRISH CREAM FLAVOUR 1000g', 3000, 2548, 'g', 1000, 'g', 1000, 9, true),
+  (95, 'Z9', '45', 'Kelímek 180 ml (100 ks)', 400, 335, 'ks', 100, 'ks', 100, 10, true)
+on conflict (machine_id, container_code) do update set product_sku=excluded.product_sku, product_name=excluded.product_name, capacity_quantity=excluded.capacity_quantity, current_quantity=excluded.current_quantity, unit=excluded.unit, refill_package_quantity=excluded.refill_package_quantity, refill_package_unit=excluded.refill_package_unit, min_refill_quantity=excluded.min_refill_quantity, sort_order=excluded.sort_order, active=excluded.active;
+
+insert into public.machine_coffee_buttons (machine_id, selection_code, product_sku, product_name, sale_price_czk, last_counter, grid_column, grid_row_from_bottom, sort_order, active) values
+  (95, '1', '239', 'Černá káva 180 ml NEW', 17, 2, 1, 1, 1, true),
+  (95, '2', '215', 'Bílá káva 180 ml NEW', 17, 4, 1, 2, 2, true),
+  (95, '3', '263', 'Matcha Latte Malina 180 ml', 17, 3, 1, 3, 3, true),
+  (95, '4', '272', 'Matcha Latte Pistácie 180 ml', 17, 1, 1, 4, 4, true),
+  (95, '5', '242', 'LATTE MACCHIATO 180 ml NEW', 17, 5, 2, 1, 5, true),
+  (95, '6', '222', 'Cappuccino 180 ml I NEW', 17, 3, 2, 2, 6, true),
+  (95, '7', '267', 'Matcha Latte Malina DeLuxe 180 ml', 20, 5, 2, 3, 7, true),
+  (95, '8', '273', 'Matcha Latte Pistácie DeLuxe 180 ml', 20, 4, 2, 4, 8, true),
+  (95, '9', '230', 'Irish Cream 180 ml NEW', 17, 2, 3, 1, 9, true),
+  (95, '10', '219', 'Cafe+Co 180 ml NEW', 17, 5, 3, 2, 10, true),
+  (95, '11', '233', 'Kakaový nápoj 180 ml NEW', 17, 5, 3, 3, 11, true),
+  (95, '12', '217', 'Bílá krémová 180 ml NEW', 17, 26, 3, 4, 12, true),
+  (95, '13', '240', 'Černá káva 300 ml NEW', 25, 5, 4, 1, 13, true),
+  (95, '14', '216', 'Bílá káva 300 ml NEW', 25, 5, 4, 2, 14, true),
+  (95, '15', '269', 'Matcha Latte Malina 300 ml', 25, 1, 4, 3, 15, true),
+  (95, '16', '274', 'Matcha Latte Pistácie 350 ml', 25, 1, 4, 4, 16, true),
+  (95, '17', '243', 'LATTE MACCHIATO 300 ml NEW', 25, 5, 5, 1, 17, true),
+  (95, '18', '223', 'Cappuccino 300 ml NEW', 25, 12, 5, 2, 18, true),
+  (95, '19', '271', 'Matcha Latte Malina DeLuxe 300 ml', 30, 4, 5, 3, 19, true),
+  (95, '20', '275', 'Matcha Latte Pistácie DeLuxe 350 ml', 30, 3, 5, 4, 20, true),
+  (95, '21', '229', 'Irish Cappuccino 300 ml NEW', 25, 12, 6, 1, 21, true),
+  (95, '22', '220', 'Cafe+Co 300 ml NEW', 25, 3, 6, 2, 22, true),
+  (95, '23', '235', 'Kakaový nápoj Cream 300 ml NEW', 25, null, 6, 3, 23, true),
+  (95, '24', '218', 'Bílá krémová 300 ml NEW', 25, 10, 6, 4, 24, true)
+on conflict (machine_id, selection_code) do update set product_sku=excluded.product_sku, product_name=excluded.product_name, sale_price_czk=excluded.sale_price_czk, last_counter=excluded.last_counter, grid_column=excluded.grid_column, grid_row_from_bottom=excluded.grid_row_from_bottom, sort_order=excluded.sort_order, active=excluded.active;
