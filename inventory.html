@@ -1714,6 +1714,31 @@
     function getDefaultPackage(productId) {
       return getProductPackages(productId)[0] || null
     }
+    function inferPackageFromProductName(product) {
+      const name = normalizeText(product?.name || '')
+      const baseUnit = normalizeText(product?.base_unit || '')
+      if (!name) return null
+      const parseAmount = (value) => Number(String(value || '').replace(',', '.'))
+      const kgMatch = name.match(/(\d+(?:[,.]\d+)?)\s*kg\b/)
+      if (kgMatch && ['g', 'kg', 'ks'].includes(baseUnit)) {
+        return { package_name: `${kgMatch[1]} kg`, units_per_package: Number((parseAmount(kgMatch[1]) * 1000).toFixed(3)), is_default: true, inferred: true }
+      }
+      const gramMatch = name.match(/(\d+(?:[,.]\d+)?)\s*g\b/)
+      if (gramMatch && ['g', 'kg', 'ks'].includes(baseUnit)) {
+        return { package_name: `${gramMatch[1]} g`, units_per_package: Number(parseAmount(gramMatch[1]).toFixed(3)), is_default: true, inferred: true }
+      }
+      const ksMatch = name.match(/\((\d+(?:[,.]\d+)?)\s*ks\)/)
+      if (ksMatch && baseUnit === 'ks') {
+        return { package_name: `${ksMatch[1]} ks`, units_per_package: Number(parseAmount(ksMatch[1]).toFixed(3)), is_default: true, inferred: true }
+      }
+      return null
+    }
+    function getEffectiveDefaultPackage(productId) {
+      const pack = getDefaultPackage(productId)
+      if (Number(pack?.units_per_package || 0) > 1) return pack
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      return inferPackageFromProductName(product) || pack
+    }
     function getPackageQuantityUnit(baseUnit) {
       const unit = normalizeText(baseUnit || '')
       if (unit === 'kg') return 'g'
@@ -1725,7 +1750,7 @@
       const purchasePrice = Number(product?.purchase_price || 0)
       if (!purchasePrice) return 0
       const baseUnit = normalizeText(product?.base_unit || '')
-      const pack = getDefaultPackage(productId)
+      const pack = getEffectiveDefaultPackage(productId)
       const unitsPerPackage = Number(pack?.units_per_package || 0)
       if (unitsPerPackage > 1) return purchasePrice / unitsPerPackage
       if (baseUnit === 'kg' || baseUnit === 'l') return purchasePrice / 1000
@@ -1736,6 +1761,11 @@
       if (baseUnit === 'kg') return 'g'
       if (baseUnit === 'l') return 'ml'
       return product?.base_unit || 'ks'
+    }
+    function getRecipeStockUnit(product) {
+      const pack = getEffectiveDefaultPackage(product?.id)
+      if (Number(pack?.units_per_package || 0) > 1) return getPackageQuantityUnit(product?.base_unit)
+      return getRecipeCostUnit(product)
     }
     function convertRecipeQuantityToBase(quantity, fromUnit, baseUnit) {
       const amount = Number(quantity || 0)
@@ -3867,7 +3897,7 @@
           const kind = row.querySelector('[data-transfer-kind]')?.value || 'product'
           const productId = Number(row.querySelector('[data-transfer-product]')?.value || 0)
           const enteredQuantity = Number(row.querySelector('[data-transfer-quantity]')?.value || 0)
-          const pack = kind === 'package' ? getDefaultPackage(productId) : null
+          const pack = kind === 'package' ? getEffectiveDefaultPackage(productId) : null
           const quantity = pack ? Number((enteredQuantity * Number(pack.units_per_package || 1)).toFixed(3)) : enteredQuantity
           const totalIncome = Number(String(row.querySelector('[data-transfer-income]')?.value || '').replace(',', '.'))
           const packageNote = pack ? `${enteredQuantity} × ${pack.package_name}` : ''
@@ -4159,9 +4189,11 @@
       const importedRows = rows.map((row) => {
         const product = findProductForImportRow(row)
         const source = formatImportSource(row)
+        const isFilledIngredient = rows.importMeta?.sourceFormat === 'filled_products' && normalizeText(row.type) === 'ingredient'
         return {
           productId: product?.id || '',
           quantity: row.quantity,
+          kind: isFilledIngredient ? 'package' : 'product',
           totalIncome: row.totalIncome ?? null,
           note: product ? [row.type, row.totalIncome != null ? `tržba ${Number(row.totalIncome || 0).toFixed(2)} Kč` : ''].filter(Boolean).join(' · ') : '',
           importSource: product ? '' : source
@@ -4759,7 +4791,11 @@
         remaining = Number((remaining - movedQty).toFixed(3))
       }
       if (remaining > 0.0001) {
-        if (!allowNegative) throw new Error('Na zdrojovém místě není dost kusů pro zadaný pohyb.')
+        if (!allowNegative) {
+          const product = productsV13.find((item) => String(item.id) === String(productId))
+          const available = Number((Number(quantity || 0) - remaining).toFixed(3))
+          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
+        }
         await addBalanceToBatch(fromStockLocationId, productId, null, -remaining)
         if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, null, remaining)
         movements.push({
@@ -4798,7 +4834,7 @@
       for (const item of recipeItems) {
         const ingredient = productsV13.find((product) => String(product.id) === String(item.product_id))
         if (!ingredient) continue
-        const consumedQuantity = Number((quantity * convertRecipeQuantityToBase(item.quantity, item.unit, ingredient.base_unit)).toFixed(3))
+        const consumedQuantity = Number((quantity * convertRecipeQuantityToBase(item.quantity, item.unit, getRecipeStockUnit(ingredient))).toFixed(3))
         if (consumedQuantity <= 0) continue
         const ingredientMovements = await moveStockPreservingBatches({
           productId: Number(ingredient.id),
