@@ -184,6 +184,13 @@
     .initial-stock-product-cell input { min-width:0; }
     .transfer-line-source { grid-column:1 / -2; padding:9px 11px; border-radius:10px; border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.08); color:#fed7aa; font-size:12px; line-height:1.4; }
     .transfer-line-source strong { color:#fff7ed; }
+    .sales-summary-card { display:none; margin-top:14px; padding:14px; border:1px solid rgba(255,255,255,0.08); border-radius:16px; background:rgba(255,255,255,0.035); }
+    .sales-summary-card.show { display:block; }
+    .sales-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+    .sales-summary-item { padding:10px 12px; border-radius:12px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); }
+    .sales-summary-label { color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0.08em; }
+    .sales-summary-value { margin-top:6px; font-size:18px; font-weight:900; }
+    .sales-summary-note { margin-top:10px; color:var(--muted); font-size:12px; line-height:1.4; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
     .switch-row { display:flex; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .switch-row input { width:auto; }
@@ -202,6 +209,7 @@
     :root[data-olvend-theme="light"] .subtext,
     :root[data-olvend-theme="light"] .empty-state,
     :root[data-olvend-theme="light"] .helper-line,
+    :root[data-olvend-theme="light"] .sales-summary-note,
     :root[data-olvend-theme="light"] .detail-hero p,
     :root[data-olvend-theme="light"] .detail-metric-note,
     :root[data-olvend-theme="light"] .detail-list-label,
@@ -222,6 +230,8 @@
     :root[data-olvend-theme="light"] .module-tabs,
     :root[data-olvend-theme="light"] .module-tab,
     :root[data-olvend-theme="light"] .margin-calculator,
+    :root[data-olvend-theme="light"] .sales-summary-card,
+    :root[data-olvend-theme="light"] .sales-summary-item,
     :root[data-olvend-theme="light"] .config-table-row,
     :root[data-olvend-theme="light"] .switch-row { background:rgba(15,23,42,0.04); border-color:rgba(15,23,42,0.08); color:#344054; }
     :root[data-olvend-theme="light"] .module-tab.active { color:#17212b; background:rgba(15,23,42,0.07); border-color:rgba(15,23,42,0.12); }
@@ -1034,6 +1044,7 @@
               <div class="helper-line" id="simpleTransferImportStatus">CheckOut načítá naložení auta. CheckIn vrací nepoužité zboží z vozidla na sklad. XML/CSV slouží pro prodejku.</div>
             </div>
           </div>
+          <div class="sales-summary-card" id="simpleTransferSalesSummary"></div>
           <div class="transfer-lines">
             <div class="transfer-line-head simple-transfer-head">
               <span>Produkt</span>
@@ -1295,6 +1306,7 @@
     const simpleTransferLines = document.getElementById('simpleTransferLines')
     const simpleTransferImportFile = document.getElementById('simpleTransferImportFile')
     const simpleTransferImportStatus = document.getElementById('simpleTransferImportStatus')
+    const simpleTransferSalesSummary = document.getElementById('simpleTransferSalesSummary')
     const initialStockForm = document.getElementById('initialStockForm')
     const initialStockLines = document.getElementById('initialStockLines')
     const initialStockImportFile = document.getElementById('initialStockImportFile')
@@ -3847,6 +3859,7 @@
         ${importSource}
       `
       simpleTransferLines.appendChild(wrapper)
+      updateSimpleTransferSalesSummary()
     }
     function collectSimpleTransferLines() {
       return [...simpleTransferLines.querySelectorAll('.transfer-line-row')]
@@ -3862,6 +3875,60 @@
           return { index, kind, productId, quantity, enteredQuantity, totalIncome: Number.isFinite(totalIncome) ? totalIncome : null, note }
         })
         .filter((row) => row.productId || row.quantity > 0 || row.note)
+    }
+    function getSimpleTransferSalesSummary() {
+      const lines = collectSimpleTransferLines().filter((line) => line.productId && line.quantity > 0)
+      const vatBuckets = new Map()
+      const totals = lines.reduce((acc, line) => {
+        const product = productsV13.find((item) => String(item.id) === String(line.productId))
+        const gross = Number(line.totalIncome || 0)
+        const vatRate = Number(product?.vat_rate || 0)
+        const net = Number((gross / (1 + (vatRate / 100))).toFixed(2))
+        const vat = Number((gross - net).toFixed(2))
+        const cost = Number((getProductUnitCost(product) * Number(line.quantity || 0)).toFixed(2))
+        const bucket = vatBuckets.get(String(vatRate)) || { vatRate, gross: 0, net: 0, vat: 0 }
+        bucket.gross = Number((bucket.gross + gross).toFixed(2))
+        bucket.net = Number((bucket.net + net).toFixed(2))
+        bucket.vat = Number((bucket.vat + vat).toFixed(2))
+        vatBuckets.set(String(vatRate), bucket)
+        acc.rows += 1
+        acc.quantity = Number((acc.quantity + Number(line.quantity || 0)).toFixed(3))
+        acc.gross = Number((acc.gross + gross).toFixed(2))
+        acc.net = Number((acc.net + net).toFixed(2))
+        acc.vat = Number((acc.vat + vat).toFixed(2))
+        acc.cost = Number((acc.cost + cost).toFixed(2))
+        return acc
+      }, { rows: 0, quantity: 0, gross: 0, net: 0, vat: 0, cost: 0 })
+      totals.profit = Number((totals.net - totals.cost).toFixed(2))
+      totals.margin = totals.net > 0 ? Number(((totals.profit / totals.net) * 100).toFixed(1)) : 0
+      return { ...totals, vatBuckets: [...vatBuckets.values()].sort((a, b) => a.vatRate - b.vatRate) }
+    }
+    function updateSimpleTransferSalesSummary() {
+      if (!simpleTransferSalesSummary) return
+      const direction = document.getElementById('simpleTransferDirection')?.value || ''
+      if (!['machines_sale', 'vehicle_sale'].includes(direction)) {
+        simpleTransferSalesSummary.classList.remove('show')
+        simpleTransferSalesSummary.innerHTML = ''
+        return
+      }
+      const summary = getSimpleTransferSalesSummary()
+      const vatBreakdown = summary.vatBuckets.length
+        ? summary.vatBuckets.map((bucket) => `${bucket.vatRate}%: základ ${formatStockMoney(bucket.net)}, DPH ${formatStockMoney(bucket.vat)}, celkem ${formatStockMoney(bucket.gross)}`).join(' · ')
+        : 'Zatím bez řádků s tržbou.'
+      simpleTransferSalesSummary.innerHTML = `
+        <div class="sales-summary-grid">
+          <div class="sales-summary-item"><div class="sales-summary-label">Řádky</div><div class="sales-summary-value">${escapeHtml(String(summary.rows))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Kusy</div><div class="sales-summary-value">${escapeHtml(summary.quantity.toLocaleString('cs-CZ'))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Tržba s DPH</div><div class="sales-summary-value">${escapeHtml(formatStockMoney(summary.gross))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Základ DPH</div><div class="sales-summary-value">${escapeHtml(formatStockMoney(summary.net))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">DPH</div><div class="sales-summary-value">${escapeHtml(formatStockMoney(summary.vat))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Náklad</div><div class="sales-summary-value">${escapeHtml(formatStockMoney(summary.cost))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Zisk</div><div class="sales-summary-value">${escapeHtml(formatStockMoney(summary.profit))}</div></div>
+          <div class="sales-summary-item"><div class="sales-summary-label">Marže</div><div class="sales-summary-value">${escapeHtml(summary.margin.toLocaleString('cs-CZ'))} %</div></div>
+        </div>
+        <div class="sales-summary-note">Rozpis DPH: ${escapeHtml(vatBreakdown)}</div>
+      `
+      simpleTransferSalesSummary.classList.add('show')
     }
     function normalizeLookupValue(value) {
       return normalizeText(value).replace(/[^a-z0-9]+/g, '')
@@ -4129,6 +4196,7 @@
       const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.${sourceSuffix}` : ` Všechny položky jsou spárované.${sourceSuffix}`
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
+      updateSimpleTransferSalesSummary()
       simpleTransferLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
     }
     function fillInitialStockFromImport(file, rows) {
@@ -4158,6 +4226,7 @@
       editingTransferDoc = correctionDoc
       simpleTransferForm.reset()
       simpleTransferLines.innerHTML = ''
+      updateSimpleTransferSalesSummary()
       simpleTransferImportStatus.textContent = 'CheckOut načítá naložení auta. CheckIn vrací nepoužité zboží z vozidla na sklad. XML/CSV slouží pro prodejku.'
       simpleTransferImportStatus.className = 'helper-line'
       document.getElementById('simpleTransferDirection').value = direction
@@ -5608,7 +5677,10 @@
       if (!button) return
       button.closest('.transfer-line-row')?.remove()
       if (!simpleTransferLines.querySelector('.transfer-line-row')) addSimpleTransferLine()
+      updateSimpleTransferSalesSummary()
     })
+    simpleTransferLines.addEventListener('input', updateSimpleTransferSalesSummary)
+    simpleTransferLines.addEventListener('change', updateSimpleTransferSalesSummary)
     simpleTransferImportFile.addEventListener('change', async () => {
       const file = simpleTransferImportFile.files?.[0]
       if (!file) return
