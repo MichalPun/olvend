@@ -281,7 +281,7 @@ async function applyPlanogramDepletion(
 
   const { data: slots, error: slotsError } = await adminClient
     .from("machine_planogram_slots")
-    .select("id, slot_code, current_units, capacity_units")
+    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
     .eq("machine_id", params.machineId)
     .eq("active", true);
 
@@ -344,6 +344,38 @@ async function applyPlanogramDepletion(
       if (updateError) throw updateError;
     }
 
+    const settlementType = String(
+      slot.settlement_type || (Number(slot.subsidy_amount_czk || 0) > 0 ? "subsidy_receivable" : "none"),
+    );
+    const settlementAmount = Number(slot.settlement_amount_czk ?? slot.subsidy_amount_czk ?? 0);
+
+    if (settlementType !== "none" && settlementAmount > 0) {
+      const direction = settlementType === "partner_fee_payable" ? "payable" : "receivable";
+      const { error: settlementError } = await adminClient
+        .from("telemetry_financial_settlements")
+        .upsert({
+          provider: params.provider,
+          ingest_id: params.ingestId,
+          machine_id: params.machineId,
+          planogram_slot_id: slot.id,
+          selection_code: selection,
+          product_name: slot.product_name ?? null,
+          product_sku: slot.product_sku ?? null,
+          settlement_type: settlementType,
+          direction,
+          quantity: delta,
+          amount_per_unit_czk: settlementAmount,
+          total_amount_czk: Math.round(delta * settlementAmount * 100) / 100,
+          customer_price_czk: slot.customer_price_czk ?? null,
+          partner: slot.settlement_partner || slot.subsidy_payer || null,
+          billing_enabled: slot.settlement_billing_enabled === true || slot.subsidy_billing_enabled === true,
+          source_event_at: counter.eventAt,
+          note: slot.settlement_note || slot.subsidy_note || null,
+        }, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code,settlement_type" });
+
+      if (settlementError) throw settlementError;
+    }
+
     applied.push({
       slot_id: slot.id,
       selection_code: selection,
@@ -352,6 +384,8 @@ async function applyPlanogramDepletion(
       vend_delta: delta,
       next_units: nextUnits,
       next_fill_percent: nextFillPercent,
+      settlement_type: settlementType,
+      settlement_amount_czk: settlementAmount,
     });
   }
 
