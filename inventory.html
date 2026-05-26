@@ -117,6 +117,9 @@
     .mobile-pick-detail-row td { padding:0 10px 10px; background:rgba(255,255,255,0.015); }
     .mobile-pick-detail { margin:0; padding:10px 0 0; border:0; box-shadow:none; background:transparent; }
     .mobile-pick-detail summary { padding:0 0 8px; margin:0; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; }
+    .mobile-pick-add-line { display:grid; grid-template-columns:minmax(260px,1fr) 120px minmax(180px,0.8fr) auto; gap:8px; align-items:center; margin-top:10px; padding:10px; border:1px solid rgba(255,255,255,0.07); border-radius:12px; background:rgba(255,255,255,0.025); }
+    .mobile-pick-add-line select,
+    .mobile-pick-add-line input { min-height:34px; padding:7px 9px; border-radius:9px; font-size:12px; }
     .mini-excel-table { width:100%; min-width:760px; border-collapse:collapse; border:1px solid rgba(255,255,255,0.07); border-radius:12px; overflow:hidden; }
     .mini-excel-table th,
     .mini-excel-table td { padding:7px 8px; border-bottom:1px solid rgba(255,255,255,0.06); font-size:12px; }
@@ -1098,6 +1101,13 @@
               <textarea id="initialStockNote" placeholder="Např. start OLVEND, fyzický stav skladu, vozidla nebo souhrnného skladu Automaty"></textarea>
             </div>
             <div class="field full">
+              <label class="switch-row" style="justify-content:flex-start;">
+                <input id="initialStockResetLocation" type="checkbox" />
+                <span>Vynulovat celé vybrané místo před uložením</span>
+              </label>
+              <div class="helper-line">Nech vypnuté při opravě jedné položky. Zapni jen při kompletním novém načtení celého skladu nebo vozidla.</div>
+            </div>
+            <div class="field full">
               <label for="initialStockImportFile">Načíst XLSX/XML/CSV</label>
               <input id="initialStockImportFile" type="file" accept=".xlsx,.xls,.xml,.csv,.txt" />
               <div class="helper-line" id="initialStockImportStatus">Nahraj export produktů. Řádky se před uložením načtou do tabulky a půjdou upravit.</div>
@@ -1121,7 +1131,7 @@
             </div>
           </div>
           <div class="helper-line" id="initialStockDraftStatus">Rozpracované počáteční stavy se průběžně ukládají v tomhle prohlížeči. Po finálním načtení se draft smaže.</div>
-          <div class="helper-line">Použij pro počáteční nahrání skladu nebo vozidla. Řádky se zapíšou jako auditní pohyb `initial_stock`; pokud je vyplněná expirace, vznikne samostatná šarže.</div>
+          <div class="helper-line">Použij pro počáteční nahrání nebo ruční opravu stavu. Bez zaškrtnutí se přepíšou jen položky v řádcích; celé místo se nemaže.</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn secondary" id="cancelInitialStockBtn">Zrušit</button>
@@ -3197,6 +3207,14 @@
         ))
       ].join('')
     }
+    function getMobilePickProductOptions() {
+      return [
+        '<option value="">Vyber položku</option>',
+        ...productsV13
+          .filter((product) => product.active !== false)
+          .map((product) => `<option value="${escapeHtml(String(product.id))}">${escapeHtml([product.sku, product.name].filter(Boolean).join(' · '))}</option>`)
+      ].join('')
+    }
     function getMobileRequestItems(requestId) {
       return mobileStockRequestItems.filter((item) => String(item.request_id) === String(requestId))
     }
@@ -3315,6 +3333,14 @@
                     <tbody>${detailRows}</tbody>
                   </table>
                 ` : '<div class="empty-state">Doklad nemá položky.</div>'}
+                ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `
+                  <div class="mobile-pick-add-line">
+                    <select data-mobile-pick-add-product data-request-id="${escapeHtml(String(row.id))}">${getMobilePickProductOptions()}</select>
+                    <input data-mobile-pick-add-qty data-request-id="${escapeHtml(String(row.id))}" type="number" step="0.001" min="0" value="1" />
+                    <input data-mobile-pick-add-note data-request-id="${escapeHtml(String(row.id))}" type="text" placeholder="Poznámka k řádku" />
+                    <button class="btn secondary" type="button" data-mobile-pick-action="add-item" data-request-id="${escapeHtml(String(row.id))}">Přidat řádek</button>
+                  </div>
+                ` : ''}
               </details>
             </td>
           </tr>
@@ -3387,6 +3413,28 @@
         if (error) throw error
       }
     }
+    async function addMobilePickRequestItem(requestId) {
+      const productSelect = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const qtyInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-qty][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const noteInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-note][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const productId = productSelect?.value || ''
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      const quantity = Number(qtyInput?.value || 0)
+      if (!product) throw new Error('Vyber položku, kterou chceš do objednávky přidat.')
+      if (!quantity || quantity <= 0) throw new Error('Zadej množství větší než nula.')
+      const { error } = await supabase.from('mobile_stock_request_items').insert({
+        request_id: requestId,
+        product_id: product.id,
+        product_name: product.name,
+        sku: product.sku || null,
+        unit: product.base_unit || 'ks',
+        requested_quantity: quantity,
+        prepared_quantity: quantity,
+        note: noteInput?.value.trim() || null
+      })
+      if (error) throw error
+      setStockV13Status('Řádek byl přidaný do mobilního požadavku.', 'success')
+    }
     async function handleMobilePickAction(action, requestId) {
       if (action === 'save-vehicle') {
         const select = mobilePickRequestsBody.querySelector(`[data-mobile-pick-vehicle][data-request-id="${CSS.escape(String(requestId))}"]`)
@@ -3399,6 +3447,10 @@
       if (action === 'start') {
         await updateMobilePickRequestStatus(requestId, 'picking')
         setStockV13Status('Požadavek je označený jako převzatý k vychystání.', 'success')
+      }
+      if (action === 'add-item') {
+        await saveMobilePickPreparedItems(requestId)
+        await addMobilePickRequestItem(requestId)
       }
       if (action === 'ready') {
         await saveMobilePickPreparedItems(requestId)
@@ -5465,6 +5517,7 @@
       const locationEntityId = Number(document.getElementById('initialStockLocationId').value || 0)
       const stockDate = document.getElementById('initialStockDate').value || new Date().toISOString().slice(0, 10)
       const note = document.getElementById('initialStockNote').value.trim() || 'Počáteční stavy OLVEND'
+      const shouldResetLocation = document.getElementById('initialStockResetLocation')?.checked === true
       const lines = collectInitialStockLines()
       if (!['warehouse', 'vehicle'].includes(locationType)) throw new Error('Vyber typ místa.')
       if (!locationEntityId) throw new Error(locationType === 'vehicle' ? 'Vyber vozidlo.' : 'Vyber sklad.')
@@ -5476,7 +5529,33 @@
         : warehouses.find((item) => String(item.id) === String(locationEntityId))
       const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : 'Sklad'} ${locationEntityId}`)
       const referenceId = `initial-stock:${locationType}:${Date.now()}`
-      const movementsToInsert = await resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId)
+      const movementsToInsert = shouldResetLocation ? await resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId) : []
+      if (!shouldResetLocation) {
+        const productIds = [...new Set(lines.map((line) => line.productId).filter(Boolean))]
+        for (const productId of productIds) {
+          const existingBalances = await getBalanceRecords(stockLocationId, productId)
+          for (const balance of existingBalances) {
+            const currentQty = Number(balance.quantity_on_hand || 0)
+            if (Math.abs(currentQty) <= 0.0001) continue
+            const { error: updateError } = await supabase
+              .from('stock_location_balances')
+              .update({ quantity_on_hand: 0, updated_at: new Date().toISOString() })
+              .eq('id', balance.id)
+            if (updateError) throw updateError
+            movementsToInsert.push({
+              product_id: productId,
+              batch_id: balance.batch_id || null,
+              from_stock_location_id: stockLocationId,
+              to_stock_location_id: null,
+              movement_type: 'adjustment',
+              quantity_base_units: Math.abs(currentQty),
+              reference_type: 'initial_stock',
+              reference_id: referenceId,
+              note: [stockDate, note, 'vynulování položky před opravou počátečního stavu'].filter(Boolean).join(' · ') || null
+            })
+          }
+        }
+      }
       for (const line of lines) {
         movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
       }

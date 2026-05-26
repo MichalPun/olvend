@@ -2161,20 +2161,37 @@
 
     async function loadStockRequests() {
       state.setupWarnings = state.setupWarnings.filter((message) => !message.includes('Mobilní'))
-      const { data, error } = await supabase
+      const currentVehicleId = getCurrentVehicleId()
+      const employeeRequest = supabase
         .from('mobile_stock_requests')
         .select('*')
         .eq('employee_id', state.employee.id)
-        .gte('requested_for_date', todayIso)
+        .or(`requested_for_date.gte.${todayIso},status.in.(requested,picking,ready)`)
         .order('created_at', { ascending: false })
-        .limit(20)
+        .limit(30)
+      const vehicleRequest = currentVehicleId
+        ? supabase
+          .from('mobile_stock_requests')
+          .select('*')
+          .eq('vehicle_id', currentVehicleId)
+          .in('request_type', ['vehicle_order', 'vehicle_load'])
+          .in('status', ['requested', 'picking', 'ready'])
+          .order('created_at', { ascending: false })
+          .limit(30)
+        : Promise.resolve({ data: [], error: null })
+      const [employeeResult, vehicleResult] = await Promise.all([employeeRequest, vehicleRequest])
+      const error = employeeResult.error || vehicleResult.error
       if (error) {
         state.stockRequests = []
         state.stockRequestItems = []
         state.setupWarnings.push('Mobilní sklad ještě není připravený v databázi. Je potřeba spustit SQL přípravu pro verzi 1.6.')
         return
       }
-      state.stockRequests = data || []
+      const merged = new Map()
+      ;[...(employeeResult.data || []), ...(vehicleResult.data || [])].forEach((request) => {
+        merged.set(String(request.id), request)
+      })
+      state.stockRequests = [...merged.values()].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
       const requestIds = state.stockRequests.map((request) => request.id)
       if (!requestIds.length) {
         state.stockRequestItems = []
@@ -2233,8 +2250,8 @@
 
     async function reloadData() {
       await loadAttendanceDay()
+      await loadVehicleLog()
       await Promise.all([
-        loadVehicleLog(),
         loadAttendanceEvents(),
         loadReferenceData(),
         loadInstructions(),
