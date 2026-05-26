@@ -591,7 +591,7 @@
             </div>
             <div class="field">
               <label for="slotProductName">Produkt</label>
-              <input id="slotProductName" type="text" placeholder="Např. Coca-Cola 0,5l" required />
+              <input id="slotProductName" type="text" list="productCatalogList" placeholder="Vyber ze zásob" required />
             </div>
             <div class="field">
               <label for="slotProductSku">SKU produktu</label>
@@ -627,7 +627,7 @@
             </div>
             <div class="field">
               <label for="slotPlannedProductName">Po doprodání</label>
-              <input id="slotPlannedProductName" type="text" placeholder="Např. Nestea Lemon 0,5l" />
+              <input id="slotPlannedProductName" type="text" list="productCatalogList" placeholder="Vyber ze zásob" />
             </div>
             <div class="field">
               <label for="slotPlannedProductSku">SKU po doprodání</label>
@@ -648,7 +648,7 @@
             </div>
             <div class="field full">
               <label for="slotAllowedSubstitutes">Povolené náhrady</label>
-              <input id="slotAllowedSubstitutes" type="text" placeholder="Např. Nestea Lemon, Nestea Peach" />
+              <input id="slotAllowedSubstitutes" type="text" list="productCatalogList" placeholder="Např. Nestea Lemon, Nestea Peach" />
             </div>
             <div class="field full">
               <label for="slotOperatorInstruction">Instrukce pro operátorku</label>
@@ -660,6 +660,7 @@
           </div>
           <div class="helper-line">Tady spojuješ stroj, slot a produkt. Je to základ pro planogram, doplnění i telemetrii.</div>
         </div>
+        <datalist id="productCatalogList"></datalist>
         <div class="modal-footer">
           <button type="button" class="btn secondary" id="cancelPlanogramBtn">Zrušit</button>
           <button type="submit" class="btn" id="savePlanogramBtn">Uložit slot</button>
@@ -790,6 +791,7 @@
     const planogramForm = document.getElementById('planogramForm')
     const planogramSlotIdInput = document.getElementById('planogramSlotId')
     const planogramMachineIdInput = document.getElementById('planogramMachineId')
+    const productCatalogList = document.getElementById('productCatalogList')
     const closePlanogramModalBtn = document.getElementById('closePlanogramModalBtn')
     const cancelPlanogramBtn = document.getElementById('cancelPlanogramBtn')
     const savePlanogramBtn = document.getElementById('savePlanogramBtn')
@@ -823,6 +825,7 @@
     let serviceRules = []
     let serviceHistory = []
     let planogramSlots = []
+    let products = []
     let planogramAvailable = true
     let transferHistoryAvailable = true
     let isEditMode = false
@@ -845,6 +848,56 @@
 
     function normalizeText(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+    }
+
+    function productOptionLabel(product) {
+      return [product.name, product.sku ? `SKU ${product.sku}` : '', product.sale_price != null ? `${Number(product.sale_price || 0).toFixed(0)} Kč` : ''].filter(Boolean).join(' · ')
+    }
+
+    function normalizeProductLookup(value) {
+      return normalizeText(value).replace(/\s+/g, ' ')
+    }
+
+    function findCatalogProduct(value) {
+      const lookup = normalizeProductLookup(value)
+      if (!lookup) return null
+      return products.find((product) => {
+        const candidates = [
+          product.name,
+          product.sku,
+          product.ean,
+          productOptionLabel(product)
+        ].map(normalizeProductLookup)
+        return candidates.includes(lookup)
+      }) || products.find((product) => normalizeProductLookup(productOptionLabel(product)).startsWith(lookup)) || null
+    }
+
+    function inferProductFamily(name) {
+      const words = String(name || '').trim().split(/\s+/).filter(Boolean)
+      return words.slice(0, Math.min(2, words.length)).join(' ')
+    }
+
+    function renderProductCatalogOptions() {
+      productCatalogList.innerHTML = products
+        .filter((product) => product.active !== false && product.can_be_sold_directly !== false)
+        .map((product) => `<option value="${escapeHtml(productOptionLabel(product))}"></option>`)
+        .join('')
+    }
+
+    function applyProductToSlot(prefix, product) {
+      if (!product) return
+      if (prefix === 'current') {
+        document.getElementById('slotProductName').value = product.name || ''
+        document.getElementById('slotProductSku').value = product.sku || ''
+        document.getElementById('slotPrice').value = product.sale_price ?? document.getElementById('slotPrice').value
+        if (!document.getElementById('slotProductFamily').value.trim()) {
+          document.getElementById('slotProductFamily').value = inferProductFamily(product.name)
+        }
+        return
+      }
+      document.getElementById('slotPlannedProductName').value = product.name || ''
+      document.getElementById('slotPlannedProductSku').value = product.sku || ''
+      document.getElementById('slotPlannedPrice').value = product.sale_price ?? document.getElementById('slotPlannedPrice').value
     }
 
     function generateQrToken() {
@@ -1556,11 +1609,18 @@
       const rulesQuery = supabase
         .from('machine_service_rules')
         .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at')
+      const productsQuery = supabase
+        .from('products')
+        .select('id, name, sku, ean, sale_price, product_category, can_be_sold_directly, active')
+        .eq('active', true)
+        .eq('can_be_sold_directly', true)
+        .order('name', { ascending: true })
 
       const [
         { data: machinesData, error: machinesError },
-        { data: rulesData, error: rulesError }
-      ] = await Promise.all([machinesQuery, rulesQuery])
+        { data: rulesData, error: rulesError },
+        { data: productsData, error: productsError }
+      ] = await Promise.all([machinesQuery, rulesQuery, productsQuery])
       if (machinesError) {
         machines = []
         renderSummary()
@@ -1569,10 +1629,13 @@
         return
       }
       if (rulesError) throw rulesError
+      if (productsError) throw productsError
       serviceHistory = []
       planogramSlots = []
       machines = machinesData ?? []
       serviceRules = rulesData ?? []
+      products = productsData ?? []
+      renderProductCatalogOptions()
       machineDetailCache.clear()
       applyListFiltersFromUrl()
       renderSummary()
@@ -1856,6 +1919,12 @@
     closeTransferModalBtn.addEventListener('click', closeTransferModal)
     cancelTransferBtn.addEventListener('click', closeTransferModal)
     transferDestinationTypeInput.addEventListener('change', syncTransferDestinationUI)
+    document.getElementById('slotProductName').addEventListener('change', (event) => {
+      applyProductToSlot('current', findCatalogProduct(event.target.value))
+    })
+    document.getElementById('slotPlannedProductName').addEventListener('change', (event) => {
+      applyProductToSlot('planned', findCatalogProduct(event.target.value))
+    })
     modalBackdrop.addEventListener('click', (event) => { if (event.target === modalBackdrop) closeModal() })
     detailModalBackdrop.addEventListener('click', (event) => { if (event.target === detailModalBackdrop) closeDetailModal() })
     planogramModalBackdrop.addEventListener('click', (event) => { if (event.target === planogramModalBackdrop) closePlanogramModal() })
