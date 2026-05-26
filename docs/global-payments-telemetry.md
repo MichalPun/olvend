@@ -18,6 +18,8 @@
 - prvni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
 - endpoint pro dodavatele bude po nasazeni ve tvaru `https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=...`
 - pokud prijde XML obalka, `DeviceID` bereme jako hlavni identifikator pro mapovani automatu; idealne tam GP nastavi nase stavajici `ID telemetrie` typu `604315`
+- pro aktualni VendSoft kompatibilni wrapper z Android/Kotlin klienta bude `ProviderID="IMA"` a `DeviceID` musi byt nase `Telemetry ID`; napriklad automat 100 `ARIA L EVO` ma `DeviceID="582176"`
+- `RawDEX` doporucujeme posilat v `<![CDATA[...]]>`, aby XML nerozbilo pripadne `&`, `<` nebo jine znaky v DEX radcich
 - technicke cislo terminalu z raw DEX (`CA1` / `ID7`, napr. `ICT230800022143`) ukladame do payloadu, ale bez mapovaci tabulky ho nelze automaticky spojit s nasim `ID telemetrie`
 - endpoint umi prijmout i cisty raw DEX bez XML obalky, pokud soubor zacina zaznamem `DXS*`
 
@@ -155,6 +157,30 @@ Dodavatel muze pouzit stejny model jako pro VendSoft:
 ```
 
 Endpoint vraci HTTP 200, aby odesilaci aplikace povazovala davku za prijatou. Pokud bude v Supabase nastaveny `TELEMETRY_INGEST_TOKEN`, token se posila bud v query parametru `?token=...`, nebo v hlavicce `x-olvend-telemetry-token`.
+
+Minimalni Kotlin nastaveni na strane odesilatele:
+
+```kotlin
+MachineParam.Telemetry.server =
+    "https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=..."
+
+// deviceId nastavovat na ID telemetrie z OLVEND/VendSoft evidence, ne na seriove cislo automatu.
+val telemetry = VendSoft(dex = rawDex, deviceId = "582176", customerId = "OLVEND")
+```
+
+V XML wrapperu je idealni zapis:
+
+```xml
+<RawDEX><![CDATA[
+DXS*...
+]]></RawDEX>
+```
+
+Po prijmu endpoint ulozi puvodni XML a raw DEX do `telemetry_dex_ingests`, vytvori raw udalosti v `telemetry_raw_events` a pokud najde mapovani `provider + DeviceID`, aktualizuje `machine_telemetry_state.last_seen_at` a `counters_payload`.
+
+Pro odepisovani planogramu se DEX `PA1` selection mapuje na `machine_planogram_slots.slot_code` konkretniho automatu. DEX countery jsou kumulativni, proto se v `telemetry_planogram_counters` drzi posledni zpracovany counter a ze slotu se odepise jen rozdil proti minulemu DEXu.
+
+Prvni DEX pro dany slot pouze zalozi baseline counter. Odecitat se zacne az od dalsiho DEXu, aby se omylem neodecetla cela historicka prodejnost automatu.
 
 ### Faze 2 - normalizace
 - preklad eventu od Global Payments do interniho modelu

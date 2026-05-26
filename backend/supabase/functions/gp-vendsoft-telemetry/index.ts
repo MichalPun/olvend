@@ -57,6 +57,15 @@ function parseTimestamp(value: string, offset = "") {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+function parseWrapperTimestamp(value: string, offset = "", fallbackOffset = "") {
+  const normalizedOffset = normalizeOffset(offset);
+  const normalizedFallbackOffset = normalizeOffset(fallbackOffset);
+  const effectiveOffset = normalizedOffset === "+00:00" && normalizedFallbackOffset
+    ? normalizedFallbackOffset
+    : normalizedOffset || normalizedFallbackOffset;
+  return parseTimestamp(value, effectiveOffset);
+}
+
 function pragueOffsetForDexDate(dateValue = "") {
   const match = String(dateValue).match(/^(\d{2})(\d{2})(\d{2})$/);
   if (!match) return "+01:00";
@@ -212,6 +221,143 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
   };
 }
 
+function uniq(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+async function resolveMachineId(adminClient: ReturnType<typeof createClient>, provider: string, identifiers: string[]) {
+  const lookupKeys = uniq(identifiers);
+  if (!lookupKeys.length) return null;
+
+  const { data, error } = await adminClient
+    .from("machine_external_links")
+    .select("machine_id, external_machine_id")
+    .eq("provider", provider)
+    .eq("telemetry_enabled", true)
+    .in("external_machine_id", lookupKeys)
+    .limit(1);
+
+  if (error) throw error;
+  return data?.[0]?.machine_id ?? null;
+}
+
+function normalizeSelectionCode(value: unknown) {
+  return String(value || "").trim().replace(/^0+(\d)/, "$1");
+}
+
+function numericCounter(value: unknown) {
+  const numberValue = Number(value || 0);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+async function applyPlanogramDepletion(
+  adminClient: ReturnType<typeof createClient>,
+  params: {
+    provider: string;
+    machineId: number;
+    ingestId: number | null;
+    counters: Record<string, unknown>[];
+    eventAt: string;
+  },
+) {
+  const selectionTotals = new Map<string, { selection: string; totalCount: number; eventAt: string }>();
+
+  params.counters.forEach((counter) => {
+    const selection = normalizeSelectionCode(counter.selection);
+    if (!selection) return;
+    const totalCount = numericCounter(counter.count_cash) + numericCounter(counter.count_cashless);
+    if (totalCount <= 0) return;
+    const current = selectionTotals.get(selection);
+    if (!current || totalCount > current.totalCount) {
+      selectionTotals.set(selection, {
+        selection,
+        totalCount,
+        eventAt: String(counter.last_vend_at || params.eventAt),
+      });
+    }
+  });
+
+  if (!selectionTotals.size) return [];
+
+  const { data: slots, error: slotsError } = await adminClient
+    .from("machine_planogram_slots")
+    .select("id, slot_code, current_units, capacity_units")
+    .eq("machine_id", params.machineId)
+    .eq("active", true);
+
+  if (slotsError) throw slotsError;
+  if (!slots?.length) return [];
+
+  const applied: Record<string, unknown>[] = [];
+
+  for (const slot of slots) {
+    const selection = normalizeSelectionCode(slot.slot_code);
+    const counter = selectionTotals.get(selection);
+    if (!counter) continue;
+
+    const { data: previous, error: previousError } = await adminClient
+      .from("telemetry_planogram_counters")
+      .select("last_total_count")
+      .eq("provider", params.provider)
+      .eq("machine_id", params.machineId)
+      .eq("planogram_slot_id", slot.id)
+      .eq("selection_code", selection)
+      .maybeSingle();
+
+    if (previousError) throw previousError;
+
+    const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
+    const delta = Math.max(0, counter.totalCount - previousTotal);
+
+    const { error: counterError } = await adminClient
+      .from("telemetry_planogram_counters")
+      .upsert({
+        provider: params.provider,
+        machine_id: params.machineId,
+        planogram_slot_id: slot.id,
+        selection_code: selection,
+        last_total_count: counter.totalCount,
+        last_event_at: counter.eventAt,
+        last_ingest_id: params.ingestId,
+      }, { onConflict: "provider,machine_id,planogram_slot_id,selection_code" });
+
+    if (counterError) throw counterError;
+    if (delta <= 0) continue;
+
+    const currentUnits = slot.current_units == null ? null : Number(slot.current_units);
+    const capacityUnits = slot.capacity_units == null ? null : Number(slot.capacity_units);
+    const nextUnits = currentUnits == null ? null : Math.max(0, currentUnits - delta);
+    const nextFillPercent = nextUnits != null && capacityUnits && capacityUnits > 0
+      ? Math.round((nextUnits / capacityUnits) * 10000) / 100
+      : null;
+
+    const slotPatch: Record<string, unknown> = {};
+    if (nextUnits != null) slotPatch.current_units = nextUnits;
+    if (nextFillPercent != null) slotPatch.fill_percent = nextFillPercent;
+
+    if (Object.keys(slotPatch).length) {
+      const { error: updateError } = await adminClient
+        .from("machine_planogram_slots")
+        .update(slotPatch)
+        .eq("id", slot.id);
+
+      if (updateError) throw updateError;
+    }
+
+    applied.push({
+      slot_id: slot.id,
+      selection_code: selection,
+      previous_total: previousTotal,
+      current_total: counter.totalCount,
+      vend_delta: delta,
+      next_units: nextUnits,
+      next_fill_percent: nextFillPercent,
+    });
+  }
+
+  return applied;
+}
+
 function assertIngestToken(req: Request) {
   const expectedToken = Deno.env.get("TELEMETRY_INGEST_TOKEN")?.trim();
   if (!expectedToken) return true;
@@ -256,12 +402,12 @@ Deno.serve(async (req) => {
     const provider = readAttribute(transactionTag, "ProviderID") || "GP";
     const customerId = readAttribute(transactionTag, "CustomerID") || null;
     const transactionId = readAttribute(transactionTag, "TransactionID") || null;
-    const transmissionOffset = normalizeOffset(readAttribute(transmissionTag, "GMTOffSet"));
-    const dexOffset = normalizeOffset(readAttribute(dexTag, "GMTOffSet")) || transmissionOffset;
-    const transactionTime = parseTimestamp(readAttribute(transactionTag, "TransactionTime"), transmissionOffset);
+    const rawTransmissionOffset = readAttribute(transmissionTag, "GMTOffSet");
+    const rawDexOffset = readAttribute(dexTag, "GMTOffSet");
+    const transactionTime = parseWrapperTimestamp(readAttribute(transactionTag, "TransactionTime"), rawTransmissionOffset);
     const wrapperDeviceId = readAttribute(transmissionTag, "DeviceID") || "";
-    const transmitTime = parseTimestamp(readAttribute(transmissionTag, "TransmitTime"), transmissionOffset);
-    const wrapperDexReadDateTime = parseTimestamp(readAttribute(dexTag, "ReadDateTime"), dexOffset);
+    const transmitTime = parseWrapperTimestamp(readAttribute(transmissionTag, "TransmitTime"), rawTransmissionOffset);
+    const wrapperDexReadDateTime = parseWrapperTimestamp(readAttribute(dexTag, "ReadDateTime"), rawDexOffset, rawTransmissionOffset);
     const dexReason = readAttribute(dexTag, "DexReason") || null;
     const parsedDex = parseDexSummary(rawDex, wrapperDeviceId, wrapperDexReadDateTime || transmitTime || transactionTime);
     const deviceId = wrapperDeviceId || parsedDex.terminal_id || parsedDex.external_machine_id;
@@ -345,14 +491,58 @@ Deno.serve(async (req) => {
 
     await adminClient.from("telemetry_raw_events").insert(rawEvents);
 
+    const machineId = await resolveMachineId(adminClient, provider, [
+      deviceId,
+      parsedDex.external_machine_id,
+      parsedDex.terminal_id,
+      parsedDex.machine_number,
+      parsedDex.dex_serial,
+    ]);
+
+    let planogramDepletion: Record<string, unknown>[] = [];
+
+    if (machineId) {
+      const { error: stateError } = await adminClient
+        .from("machine_telemetry_state")
+        .upsert({
+          machine_id: machineId,
+          provider,
+          last_seen_at: eventAt,
+          connectivity_status: "online",
+          counters_payload: {
+            ingest_id: ingest?.id ?? null,
+            device_id: deviceId,
+            terminal_id: parsedDex.terminal_id,
+            machine_number: parsedDex.machine_number,
+            dex_read_at: parsedDex.dex_read_at,
+            record_counts: parsedDex.record_counts,
+            product_counter_count: parsedDex.product_counters.length,
+            raw_product_counter_count: parsedDex.raw_product_counter_count,
+          },
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "machine_id,provider" });
+
+      if (stateError) throw stateError;
+
+      planogramDepletion = await applyPlanogramDepletion(adminClient, {
+        provider,
+        machineId: Number(machineId),
+        ingestId: ingest?.id ?? null,
+        counters: parsedDex.product_counters as Record<string, unknown>[],
+        eventAt,
+      });
+    }
+
     return json({
       ok: true,
       ingest_id: ingest?.id ?? null,
       provider,
       device_id: deviceId,
+      machine_id: machineId,
       machine_number: parsedDex.machine_number,
       terminal_id: parsedDex.terminal_id,
       product_counter_count: parsedDex.product_counters.length,
+      planogram_depletion_count: planogramDepletion.length,
       message: "DEX payload received and parsed.",
     });
   } catch (error) {
