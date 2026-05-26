@@ -278,8 +278,7 @@
           children: [
             { key: "machines", href: "machines.html", label: "Všechny stroje" },
             { key: "machines-placed", href: "machines.html?placement=placed", label: "Umístěné automaty" },
-            { key: "machines-storage", href: "machines.html?placement=storage", label: "Automaty ve skladu" },
-            { key: "telemetry", href: "telemetry.html", label: "Telemetrie" }
+            { key: "machines-storage", href: "machines.html?placement=storage", label: "Automaty ve skladu" }
           ]
         },
         {

@@ -180,6 +180,45 @@
     .machine-overview-title h4 { margin:0; font-size:24px; color:#111827; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .machine-overview-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; color:#4b5563; font-size:12px; font-weight:800; }
     .machine-overview-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+    .machine-telemetry {
+      display:grid;
+      grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1fr) auto auto;
+      gap:8px;
+      align-items:end;
+      padding: 12px 14px;
+      border: 1px solid #d9dee7;
+      border-top: 0;
+      background:#fff;
+    }
+    .machine-telemetry-field { display:grid; gap:5px; min-width:0; }
+    .machine-telemetry-field label {
+      color:#64748b;
+      font-size:10px;
+      font-weight:900;
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+    }
+    .machine-telemetry input,
+    .machine-telemetry select {
+      height: 40px;
+      border-radius: 7px;
+      border-color:#d1d7e0;
+      background:#f8fafc;
+      color:#111827;
+      padding:8px 10px;
+      font-size:13px;
+    }
+    .machine-telemetry-status {
+      align-self:stretch;
+      display:grid;
+      align-content:center;
+      gap:3px;
+      min-width:170px;
+      color:#111827;
+      font-size:12px;
+      font-weight:800;
+    }
+    .machine-telemetry-status small { color:#64748b; font-size:11px; font-weight:750; }
     .detail-metrics {
       display:grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -480,6 +519,7 @@
       .focus-strip-meta { justify-items: start; }
       .machine-overview { grid-template-columns: 1fr; align-items:start; }
       .machine-overview-actions { justify-content:flex-start; }
+      .machine-telemetry { grid-template-columns: repeat(2, minmax(0, 1fr)); border-top:1px solid #d9dee7; }
       .detail-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); border-top:1px solid #d9dee7; }
       .detail-metric { border-bottom:1px solid #d9dee7; }
       .detail-history-grid { grid-template-columns:1fr; }
@@ -492,6 +532,7 @@
       .main { padding: 16px; }
       .topbar { flex-direction: column; }
       .toolbar, .detail-grid, .form-grid { grid-template-columns: 1fr; }
+      .machine-telemetry { grid-template-columns: 1fr; }
     }
     @media (max-width: 760px) {
       .summary-grid { grid-template-columns: 1fr; }
@@ -1125,6 +1166,34 @@
       return new Date(value).toLocaleString('cs-CZ')
     }
 
+    function getPrimaryTelemetryLink(links = []) {
+      return links.find((item) => normalizeText(item.provider) === 'ima' && item.telemetry_enabled !== false)
+        || links.find((item) => item.telemetry_enabled !== false)
+        || links[0]
+        || null
+    }
+
+    function getTelemetryStateForLink(states = [], link = null) {
+      if (!states.length) return null
+      if (!link?.provider) return states[0]
+      return states.find((item) => normalizeText(item.provider) === normalizeText(link.provider)) || states[0]
+    }
+
+    function renderTelemetryProviderOptions(selectedProvider = 'IMA') {
+      const providers = ['IMA', 'GP', 'VendSoft']
+      return providers.map((provider) => `
+        <option value="${escapeHtml(provider)}"${normalizeText(provider) === normalizeText(selectedProvider) ? ' selected' : ''}>${escapeHtml(provider)}</option>
+      `).join('')
+    }
+
+    function getTelemetryStatusLabel(state) {
+      if (!state?.last_seen_at) return 'Bez příjmu'
+      const status = normalizeText(state.connectivity_status || 'unknown')
+      if (status === 'online') return 'Online'
+      if (status === 'offline') return 'Offline'
+      return 'Přijato'
+    }
+
     function getPlanogramStatus(slot) {
       const fillPercent = slot.fill_percent != null ? Number(slot.fill_percent) : null
       const currentUnits = slot.current_units != null ? Number(slot.current_units) : null
@@ -1701,10 +1770,23 @@
         .eq('machine_id', machineId)
         .order('sort_order', { ascending: true })
 
+      const telemetryLinksQuery = supabase
+        .from('machine_external_links')
+        .select('id, machine_id, provider, external_machine_id, telemetry_enabled, note, updated_at')
+        .eq('machine_id', machineId)
+        .order('provider', { ascending: true })
+
+      const telemetryStateQuery = supabase
+        .from('machine_telemetry_state')
+        .select('machine_id, provider, last_seen_at, connectivity_status, counters_payload, updated_at')
+        .eq('machine_id', machineId)
+
       const [
         { data: historyData, error: historyError },
-        { data: planogramData, error: planogramError }
-      ] = await Promise.all([historyQuery, planogramQuery])
+        { data: planogramData, error: planogramError },
+        { data: telemetryLinksData, error: telemetryLinksError },
+        { data: telemetryStateData, error: telemetryStateError }
+      ] = await Promise.all([historyQuery, planogramQuery, telemetryLinksQuery, telemetryStateQuery])
 
       if (historyError) throw historyError
 
@@ -1715,6 +1797,9 @@
         coffeeContainers: [],
         coffeeButtons: [],
         coffeeAvailable: true,
+        telemetryLinks: [],
+        telemetryStates: [],
+        telemetryAvailable: true,
         transfers: [],
         transferHistoryAvailable: true
       }
@@ -1728,6 +1813,19 @@
         }
       } else {
         detail.planogram = planogramData ?? []
+      }
+
+      const telemetryError = telemetryLinksError || telemetryStateError
+      if (telemetryError) {
+        const message = String(telemetryError.message || '').toLowerCase()
+        if (message.includes('machine_external_links') || message.includes('machine_telemetry_state')) {
+          detail.telemetryAvailable = false
+        } else {
+          throw telemetryError
+        }
+      } else {
+        detail.telemetryLinks = telemetryLinksData ?? []
+        detail.telemetryStates = telemetryStateData ?? []
       }
 
       try {
@@ -1805,6 +1903,12 @@
       const coffeeContainers = detailData.coffeeContainers || []
       const coffeeButtons = detailData.coffeeButtons || []
       const isCoffeeMachine = normalizeText(machine.machine_type).includes('coffee') || coffeeContainers.length || coffeeButtons.length
+      const telemetryLink = getPrimaryTelemetryLink(detailData.telemetryLinks || [])
+      const telemetryState = getTelemetryStateForLink(detailData.telemetryStates || [], telemetryLink)
+      const telemetryProvider = telemetryLink?.provider || telemetryState?.provider || 'IMA'
+      const telemetryId = telemetryLink?.external_machine_id || ''
+      const telemetryStatus = detailData.telemetryAvailable ? getTelemetryStatusLabel(telemetryState) : 'Čeká na DB'
+      const telemetryLastSeen = telemetryState?.last_seen_at ? formatDateTime(telemetryState.last_seen_at) : 'Zatím nic'
       planogramSlots = [
         ...planogramSlots.filter((slot) => String(slot.machine_id) !== String(machine.id)),
         ...planogram
@@ -1846,6 +1950,23 @@
                 <button class="btn secondary" type="button" data-planogram-action="add" data-machine-id="${machine.id}">Přidat slot</button>
                 <button class="btn secondary" type="button" data-planogram-action="copy" data-machine-id="${machine.id}">Kopírovat</button>
                 <button class="btn secondary" type="button" data-machine-action="transfer" data-machine-id="${machine.id}">Přesunout</button>
+              </div>
+            </div>
+            <div class="machine-telemetry">
+              <div class="machine-telemetry-field">
+                <label for="detailTelemetryProvider">Telemetrie</label>
+                <select id="detailTelemetryProvider" data-telemetry-provider>
+                  ${renderTelemetryProviderOptions(telemetryProvider)}
+                </select>
+              </div>
+              <div class="machine-telemetry-field">
+                <label for="detailTelemetryId">TID / DeviceID</label>
+                <input id="detailTelemetryId" data-telemetry-id type="text" value="${escapeHtml(telemetryId)}" placeholder="Např. 592144" />
+              </div>
+              <button class="btn secondary" type="button" data-telemetry-action="save" data-machine-id="${machine.id}">Uložit TID</button>
+              <div class="machine-telemetry-status">
+                <span>${escapeHtml(telemetryStatus)}</span>
+                <small>Poslední DEX: ${escapeHtml(telemetryLastSeen)}</small>
               </div>
             </div>
             <div class="detail-metrics">
@@ -2212,6 +2333,22 @@
       }
     }
 
+    async function saveMachineTelemetryLink(machineId, provider, externalMachineId) {
+      const normalizedProvider = String(provider || '').trim() || 'IMA'
+      const normalizedId = String(externalMachineId || '').trim()
+      if (!machineId) throw new Error('Chybí stroj pro uložení telemetrie.')
+      if (!normalizedId) throw new Error('Doplň TID / DeviceID.')
+
+      const { error } = await supabase.from('machine_external_links').upsert({
+        machine_id: Number(machineId),
+        provider: normalizedProvider,
+        external_machine_id: normalizedId,
+        telemetry_enabled: true,
+        note: 'Nastaveno ve Stroje.'
+      }, { onConflict: 'provider,external_machine_id' })
+      if (error) throw error
+    }
+
     async function saveMachineTransfer() {
       const machineId = Number(transferMachineIdInput.value || 0)
       const machine = machines.find((item) => String(item.id) === String(machineId))
@@ -2402,11 +2539,33 @@
       closeRowMenus()
     })
 
-    detailModalBody.addEventListener('click', (event) => {
+    detailModalBody.addEventListener('click', async (event) => {
       const machineActionButton = event.target.closest('[data-machine-action]')
       if (machineActionButton?.dataset.machineAction === 'transfer') {
         const machine = machines.find((item) => String(item.id) === String(machineActionButton.dataset.machineId))
         if (machine) openMachineTransfer(machine)
+        return
+      }
+      const telemetryButton = event.target.closest('[data-telemetry-action]')
+      if (telemetryButton?.dataset.telemetryAction === 'save') {
+        const machineId = telemetryButton.dataset.machineId
+        const provider = detailModalBody.querySelector('[data-telemetry-provider]')?.value || 'IMA'
+        const externalMachineId = detailModalBody.querySelector('[data-telemetry-id]')?.value || ''
+        try {
+          telemetryButton.disabled = true
+          telemetryButton.textContent = 'Ukládám...'
+          await saveMachineTelemetryLink(machineId, provider, externalMachineId)
+          machineDetailCache.delete(String(machineId))
+          const machine = machines.find((item) => String(item.id) === String(machineId))
+          if (machine) await openDetailModal(machine, { forceReload: true })
+          setStatus('Telemetry ID je uložené u stroje.', 'success')
+        } catch (error) {
+          console.error(error)
+          setStatus(`Nepodařilo se uložit telemetrii: ${error.message}`, 'error')
+        } finally {
+          telemetryButton.disabled = false
+          telemetryButton.textContent = 'Uložit TID'
+        }
         return
       }
       const button = event.target.closest('[data-planogram-action]')
