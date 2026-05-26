@@ -173,9 +173,9 @@
     .config-table-row input { padding:10px; border-radius:10px; }
     .modal.transfer-modal { max-width:1120px; }
     .transfer-lines { display:grid; gap:10px; margin-top:16px; }
-    .transfer-line-head, .transfer-line-row { display:grid; grid-template-columns:minmax(360px,1.8fr) minmax(96px,0.35fr) minmax(118px,0.35fr) minmax(200px,0.8fr) 44px; gap:8px; align-items:center; }
+    .transfer-line-head, .transfer-line-row { display:grid; grid-template-columns:minmax(320px,1.7fr) minmax(88px,0.32fr) minmax(108px,0.34fr) minmax(128px,0.45fr) minmax(190px,0.8fr) 44px; gap:8px; align-items:center; }
     .initial-stock-head, .initial-stock-row { grid-template-columns:minmax(280px,1.5fr) minmax(120px,0.45fr) minmax(160px,0.55fr) minmax(180px,0.8fr) 44px; }
-    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(360px,1.8fr) minmax(96px,0.35fr) minmax(118px,0.35fr) minmax(200px,0.8fr) 44px; }
+    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(320px,1.7fr) minmax(88px,0.32fr) minmax(108px,0.34fr) minmax(128px,0.45fr) minmax(190px,0.8fr) 44px; }
     .transfer-line-head { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; }
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .transfer-line-row input, .transfer-line-row select { padding:10px; border-radius:10px; }
@@ -1039,6 +1039,7 @@
               <span>Produkt</span>
               <span>Množství</span>
               <span>Jednotka</span>
+              <span>Tržba s DPH</span>
               <span>Poznámka řádku</span>
               <span></span>
             </div>
@@ -3831,6 +3832,8 @@
       const wrapper = document.createElement('div')
       wrapper.className = 'transfer-line-row simple-transfer-row'
       const importSource = row.importSource ? `<div class="transfer-line-source"><strong>Nespárováno ze souboru:</strong> ${escapeHtml(row.importSource)}</div>` : ''
+      const isSaleLine = ['machines_sale', 'vehicle_sale'].includes(document.getElementById('simpleTransferDirection')?.value || '')
+      const totalIncome = row.totalIncome != null ? Number(row.totalIncome || 0).toFixed(2) : ''
       wrapper.innerHTML = `
         <select data-transfer-product required>${simpleTransferProductOptionsHtml(row.productId || '')}</select>
         <input data-transfer-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
@@ -3838,6 +3841,7 @@
           <option value="product" ${row.kind !== 'package' ? 'selected' : ''}>ks / základ</option>
           <option value="package" ${row.kind === 'package' ? 'selected' : ''}>balení</option>
         </select>
+        <input data-transfer-income type="number" min="0" step="0.01" placeholder="Kč s DPH" value="${escapeHtml(totalIncome)}" ${isSaleLine ? '' : 'disabled'} />
         <input data-transfer-note placeholder="Poznámka" value="${escapeHtml(row.note || '')}" />
         <button class="icon-btn" type="button" data-transfer-line-action="remove" title="Odebrat řádek">×</button>
         ${importSource}
@@ -3852,9 +3856,10 @@
           const enteredQuantity = Number(row.querySelector('[data-transfer-quantity]')?.value || 0)
           const pack = kind === 'package' ? getDefaultPackage(productId) : null
           const quantity = pack ? Number((enteredQuantity * Number(pack.units_per_package || 1)).toFixed(3)) : enteredQuantity
+          const totalIncome = Number(String(row.querySelector('[data-transfer-income]')?.value || '').replace(',', '.'))
           const packageNote = pack ? `${enteredQuantity} × ${pack.package_name}` : ''
           const note = [row.querySelector('[data-transfer-note]')?.value.trim() || '', packageNote].filter(Boolean).join(' · ')
-          return { index, kind, productId, quantity, enteredQuantity, note }
+          return { index, kind, productId, quantity, enteredQuantity, totalIncome: Number.isFinite(totalIncome) ? totalIncome : null, note }
         })
         .filter((row) => row.productId || row.quantity > 0 || row.note)
     }
@@ -3938,6 +3943,48 @@
         purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null
       }
     }
+    function parseTelemetrySalesRowsFromMatrix(matrix) {
+      const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
+      if (!rows.length) return []
+      const headerIndex = rows.findIndex((row) => {
+        const values = row.map((cell) => normalizeLookupValue(cell))
+        return values.includes('producttype') && values.includes('code') && values.includes('name') && values.includes('quantity') && values.includes('income')
+      })
+      if (headerIndex < 0) return []
+      const headers = rows[headerIndex].map((cell) => normalizeLookupValue(cell))
+      const typeIndex = headers.indexOf('producttype')
+      const codeIndex = headers.indexOf('code')
+      const nameIndex = headers.indexOf('name')
+      const quantityIndex = headers.indexOf('quantity')
+      const incomeIndex = headers.indexOf('income')
+      const avgIndex = headers.findIndex((header) => ['prumcena', 'avgprice', 'averageprice'].includes(header))
+      const parseNumberValue = (value) => {
+        const number = Number(String(value ?? '').replace(',', '.').replace(/\s/g, ''))
+        return Number.isFinite(number) ? number : null
+      }
+      const parsedRows = []
+      rows.slice(headerIndex + 1).forEach((row) => {
+        const code = String(row[codeIndex] ?? '').trim()
+        const productName = String(row[nameIndex] ?? '').trim()
+        const quantity = parseNumberValue(row[quantityIndex])
+        const totalIncome = parseNumberValue(row[incomeIndex])
+        if (!/^\d+$/.test(code) || !productName || !quantity || quantity <= 0) return
+        parsedRows.push({
+          type: String(row[typeIndex] ?? '').trim(),
+          code,
+          productName,
+          quantity,
+          totalIncome: totalIncome ?? 0,
+          saleUnitPrice: avgIndex >= 0 ? parseNumberValue(row[avgIndex]) : (totalIncome && quantity ? Number((totalIncome / quantity).toFixed(6)) : null)
+        })
+      })
+      const metaText = rows.slice(0, headerIndex).flat().map((cell) => String(cell ?? '').trim()).filter(Boolean).join(' ')
+      parsedRows.importMeta = {
+        sourceFormat: 'telemetry_sales_by_product',
+        date: parseDateFromImportText(metaText)
+      }
+      return parsedRows
+    }
     function parseFilledProductsRowsFromMatrix(matrix) {
       const rows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim()))
       if (!rows.length) return []
@@ -4014,6 +4061,8 @@
         const workbook = window.XLSX.read(buffer, { type: 'array' })
         const sheet = workbook.Sheets[workbook.SheetNames[0]]
         const matrix = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+        const telemetryRows = parseTelemetrySalesRowsFromMatrix(matrix)
+        if (telemetryRows.length) return telemetryRows
         const filledProductsRows = parseFilledProductsRowsFromMatrix(matrix)
         if (filledProductsRows.length) return filledProductsRows
         return parseTableRowsFromMatrix(matrix)
@@ -4046,12 +4095,11 @@
         return {
           productId: product?.id || '',
           quantity: row.quantity,
-          note: product ? row.type : '',
+          totalIncome: row.totalIncome ?? null,
+          note: product ? [row.type, row.totalIncome != null ? `tržba ${Number(row.totalIncome || 0).toFixed(2)} Kč` : ''].filter(Boolean).join(' · ') : '',
           importSource: product ? '' : source
         }
       })
-      simpleTransferLines.innerHTML = ''
-      importedRows.forEach((row) => addSimpleTransferLine(row))
       const vehicle = findVehicleForImportName(file.name)
       if (vehicle?.id) document.getElementById('simpleTransferVehicleId').value = String(vehicle.id)
       const fileDate = rows.importMeta?.date || parseDateFromImportFileName(file.name)
@@ -4061,8 +4109,23 @@
         if (rows.importMeta.driver) noteParts.push(rows.importMeta.driver)
         document.getElementById('simpleTransferNote').value = noteParts.join(' · ')
       }
+      if (rows.importMeta?.sourceFormat === 'telemetry_sales_by_product') {
+        document.getElementById('simpleTransferDirection').value = 'machines_sale'
+        document.getElementById('simpleTransferNote').value = 'Telemetry Sales By Product'
+        document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = 'none'
+        document.getElementById('simpleTransferWarehouseId').required = false
+        document.getElementById('simpleTransferVehicleId').closest('.field').style.display = 'none'
+        document.getElementById('simpleTransferVehicleId').required = false
+        document.getElementById('simpleTransferModalTitle').textContent = 'PRODEJKA z automatů'
+        document.getElementById('simpleTransferHelper').textContent = 'Odečte prodané zboží ze souhrnného skladu Automaty a do pohybů uloží tržbu, DPH, náklad a marži.'
+        saveSimpleTransferBtn.textContent = 'Uložit prodejku'
+      }
+      simpleTransferLines.innerHTML = ''
+      importedRows.forEach((row) => addSimpleTransferLine(row))
       const unmatched = importedRows.filter((row) => !row.productId).length
-      const sourceSuffix = rows.importMeta?.sourceFormat === 'filled_products' ? ' Mezisoučty jsou přeskočené.' : ''
+      const sourceSuffix = rows.importMeta?.sourceFormat === 'filled_products'
+        ? ' Mezisoučty jsou přeskočené.'
+        : (rows.importMeta?.sourceFormat === 'telemetry_sales_by_product' ? ' Tržby s DPH jsou načtené ze sloupce Income.' : '')
       const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.${sourceSuffix}` : ` Všechny položky jsou spárované.${sourceSuffix}`
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
@@ -5236,8 +5299,20 @@
       const movementsToInsert = []
       for (const line of lines) {
         const product = productsV13.find((item) => String(item.id) === String(line.productId))
-        const unitPrice = isSale ? Number(product?.sale_price || 0) || null : null
-        const lineNote = [transferDate, isMachineSale ? 'PRODEJKA z automatů' : null, isVehicleToMachines ? 'převod do automatů' : null, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
+        const grossTotal = isSale
+          ? Number(line.totalIncome || 0) || Number((Number(product?.sale_price || 0) * Number(line.quantity || 0)).toFixed(2))
+          : 0
+        const unitPrice = isSale && line.quantity > 0 ? Number((grossTotal / line.quantity).toFixed(6)) : null
+        const vatRate = isSale ? Number(product?.vat_rate || 0) : 0
+        const netTotal = isSale ? Number((grossTotal / (1 + (vatRate / 100))).toFixed(2)) : 0
+        const vatTotal = isSale ? Number((grossTotal - netTotal).toFixed(2)) : 0
+        const unitCost = isSale ? Number(getProductUnitCost(product) || 0) : 0
+        const costTotal = isSale ? Number((unitCost * Number(line.quantity || 0)).toFixed(2)) : 0
+        const profitTotal = isSale ? Number((netTotal - costTotal).toFixed(2)) : 0
+        const accountingNote = isSale
+          ? `[trzba-s-dph:${grossTotal.toFixed(2)}][zaklad-dph:${netTotal.toFixed(2)}][dph-sazba:${vatRate}][dph:${vatTotal.toFixed(2)}][naklad:${costTotal.toFixed(2)}][zisk:${profitTotal.toFixed(2)}]`
+          : null
+        const lineNote = [transferDate, isMachineSale ? 'PRODEJKA z automatů' : null, accountingNote, isVehicleToMachines ? 'převod do automatů' : null, correctionDoc ? `oprava ${correctionDoc.referenceId}` : null, note, line.note].filter(Boolean).join(' · ') || null
         const lineMovements = isMachineSale && getRecipeForProduct(line.productId)
           ? await buildRecipeSaleMovements({
             soldProduct: product,
@@ -5246,7 +5321,7 @@
             unitPrice,
             referenceId: transferReference,
             note: lineNote,
-            allowNegative: true
+            allowNegative: false
           })
           : await moveStockPreservingBatches({
             productId: line.productId,
@@ -5258,7 +5333,7 @@
             referenceType: isSale ? 'manual_sale' : 'manual_transfer',
             referenceId: transferReference,
             note: lineNote,
-            allowNegative: true
+            allowNegative: false
           })
         movementsToInsert.push(...lineMovements)
       }
