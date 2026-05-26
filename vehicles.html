@@ -1690,6 +1690,11 @@
             <div class="secondary-toggle-body">
               <div class="summary-grid">
                 <article class="summary-box">
+                  <div class="summary-box-label">Ke kontrole</div>
+                  <div class="summary-box-value warn" id="reviewVehiclesValue">0</div>
+                  <div class="summary-box-note">Účtenky, km, STK, pojištění a servisní termíny.</div>
+                </article>
+                <article class="summary-box">
                   <div class="summary-box-label">Tankování celkem</div>
                   <div class="summary-box-value" id="fuelCostsValue">0 Kč</div>
                   <div class="summary-box-note">Součet zapsaných tankování.</div>
@@ -1700,6 +1705,8 @@
                   <div class="summary-box-note">Servis, pojištění, STK a další.</div>
                 </article>
               </div>
+
+              <div class="review-panel" id="reviewPanel"></div>
 
               <section class="panel expenses-panel">
                 <div class="panel-header">
@@ -1770,6 +1777,7 @@
                   <th>Poslední tankování</th>
                   <th>Účtenka</th>
                   <th>Náklady</th>
+                  <th>Kontrola</th>
                   <th>Stav</th>
                   <th style="width:58px;">Akce</th>
                 </tr>
@@ -2802,6 +2810,26 @@
         </section>
 
         <section class="detail-section">
+          <h4>Kontrola dat a termínů</h4>
+          <div class="detail-list">
+            ${reviewItems.length ? reviewItems.map((item) => `
+              <article class="detail-item">
+                <div class="detail-item-title">${escapeHtml(item.short)}</div>
+                <div class="detail-item-note">${escapeHtml(item.full)}</div>
+                ${item.actionHref
+                  ? `<div class="action-row" style="margin-top:12px;"><a class="btn secondary small" href="${escapeHtml(item.actionHref)}">Otevřít záznam v HR</a></div>`
+                  : ''}
+              </article>
+            `).join('') : `
+              <article class="detail-item">
+                <div class="detail-item-title">Bez tvrdé kontroly</div>
+                <div class="detail-item-note">Nevidíme chybějící účtenku, problematický km záznam ani blížící se termín STK, pojištění nebo servisního limitu.</div>
+              </article>
+            `}
+          </div>
+        </section>
+
+        <section class="detail-section">
           <h4>Naložené zboží</h4>
           ${inventorySummary.rows.length ? `
             <div class="vehicle-stock-table">
@@ -3023,6 +3051,9 @@
         const expenseInsight = vehicleExpenseMap.get(String(vehicle.id)) || { totalAmount: 0, fuelAmount: 0, operatingAmount: 0 }
         const inventorySummary = getVehicleInventorySummary(vehicle.id)
         const reviewItems = vehicleReviewMap.get(String(vehicle.id)) || []
+        const reviewBadge = reviewItems.length
+          ? { className: 'attention', label: `${reviewItems.length}x zkontrolovat`, note: reviewItems.slice(0, 2).map((item) => item.short).join(' · ') }
+          : { className: 'success', label: 'OK', note: 'Bez tvrdé kontroly' }
         const operationalState = getVehicleOperationalState(vehicle.id)
         const operationalBadge = getOperationalBadge(operationalState)
         const assignedLabel = operationalState?.employeeLabel || 'Nikdo'
@@ -3095,6 +3126,10 @@
                 <span class="vehicle-metric-value">${escapeHtml(formatMoney(expenseInsight.totalAmount || 0))}</span>
               </div>
             </div>
+          </td>
+          <td data-label="Kontrola">
+            <span class="usage-badge ${escapeHtml(reviewBadge.className)}">${escapeHtml(reviewBadge.label)}</span>
+            <span class="subtext">${escapeHtml(reviewBadge.note)}</span>
           </td>
           <td data-label="Stav">
             <span class="badge ${isActive ? 'active' : 'inactive'}">
@@ -3414,30 +3449,31 @@
           }
         }
 
-        if (overLimitLogs.length >= 2) {
-          const employee = employeesData.find((item) => String(item.id) === String(overLimitLogs[0]?.toLog?.employee_id))
-          const employeeLabel = employee
-            ? [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Zaměstnanec'
-            : 'řidič'
-
+        const fuelLogsForControl = vehicleLogs.filter((log) => Number(log.fuel_liters || 0) > 0 || Number(log.fuel_cost || 0) > 0 || log.fuel_receipt_url)
+        const missingReceiptCount = fuelLogsForControl.filter((log) => !log.fuel_receipt_url).length
+        if (missingReceiptCount) {
           reviewItems.push({
-            short: `${overLimitLogs.length}x nad limitem`,
-            full: `V posledních záznamech je auto ${overLimitLogs.length}x nad tolerovanou spotřebou. Mrkni hlavně na ${employeeLabel}.`
-          })
-
-          vehicleReviewCards.push({
-            tone: 'danger',
-            label: 'Spotřeba nad limitem',
-            title: vehicle.name || vehicle.plate || 'Vozidlo',
-            note: `Průměr ${formatConsumption(avgConsumption)} / 100 km, limit ${formatConsumption(toleratedLimit)}. V posledních záznamech je auto ${overLimitLogs.length}x nad normou.`,
-            vehicleId: vehicle.id
+            short: `${missingReceiptCount}x bez účtenky`,
+            full: `U vozidla je ${missingReceiptCount} tankování bez uložené účtenky.`
           })
         }
 
-        if ((fuelTracking.skippedSegments || []).length) {
+        const missingFuelKmCount = fuelLogsForControl.filter((log) => log.fuel_odometer_km == null).length
+        if (missingFuelKmCount) {
           reviewItems.push({
-            short: `${fuelTracking.skippedSegments.length}x přeskočeno`,
-            full: `Některé úseky spotřeby jsme vynechali, protože mají krátký nebo neplatný km rozdíl, nebo vychází podezřele.`
+            short: `${missingFuelKmCount}x bez km`,
+            full: `U ${missingFuelKmCount} tankování chybí stav km v okamžiku tankování.`
+          })
+        }
+
+        const orderedFuelKmLogs = fuelLogsForControl
+          .filter((log) => Number.isFinite(Number(log.fuel_odometer_km)))
+          .sort((a, b) => new Date(`${a.log_date || '1970-01-01'}T12:00:00`).getTime() - new Date(`${b.log_date || '1970-01-01'}T12:00:00`).getTime())
+        const kmOrderIssues = orderedFuelKmLogs.filter((log, index) => index > 0 && Number(log.fuel_odometer_km || 0) <= Number(orderedFuelKmLogs[index - 1].fuel_odometer_km || 0)).length
+        if (kmOrderIssues) {
+          reviewItems.push({
+            short: `${kmOrderIssues}x km pořadí`,
+            full: `Některá tankování mají km nižší nebo stejný než předchozí tankování.`
           })
         }
 
@@ -3531,7 +3567,7 @@
           vehicleReviewActionMap.set(key, reviewActionHref)
         }
 
-        if (reviewItems.length && overLimitLogs.length < 2) {
+        if (reviewItems.length) {
           const primaryItem = reviewItems[0]
           vehicleReviewCards.push({
             tone:
@@ -3557,7 +3593,7 @@
           tone: 'success',
           label: 'Ke kontrole',
           title: 'Teď je klid',
-          note: 'Vozový park teď nemá žádné výrazné odchylky spotřeby ani propadlé termíny, které by potřebovaly rychlou reakci.'
+          note: 'Vozový park teď nemá chybějící účtenky, problematické km záznamy ani propadlé termíny, které by potřebovaly rychlou reakci.'
         })
       }
 
