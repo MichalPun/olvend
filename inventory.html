@@ -2787,7 +2787,7 @@
       auditRowsBody.innerHTML = rows.map((row) => {
         const unit = row.product.base_unit || 'ks'
         const bookQty = Number(row.balance.quantity_on_hand || 0)
-        const unitCost = getProductUnitCost(row.product)
+        const unitCost = getStockUnitCost(row.product)
         const key = `${row.balance.stock_location_id}:${row.product.id}:${row.balance.batch_id || 'none'}`
         const saved = draftRowMap.get(key) || {}
         return `
@@ -3991,7 +3991,7 @@
         const vatRate = Number(product?.vat_rate || 0)
         const net = Number((gross / (1 + (vatRate / 100))).toFixed(2))
         const vat = Number((gross - net).toFixed(2))
-        const cost = Number((getProductUnitCost(product) * Number(line.quantity || 0)).toFixed(2))
+        const cost = Number((getStockUnitCost(product) * Number(line.quantity || 0)).toFixed(2))
         const bucket = vatBuckets.get(String(vatRate)) || { vatRate, gross: 0, net: 0, vat: 0 }
         bucket.gross = Number((bucket.gross + gross).toFixed(2))
         bucket.net = Number((bucket.net + net).toFixed(2))
@@ -4315,6 +4315,7 @@
           productId: product?.id || '',
           productName: row.productName || '',
           quantity: row.quantity,
+          kind: rows.importMeta?.sourceFormat === 'filled_products' && normalizeText(row.type) === 'ingredient' ? 'package' : (row.kind || 'product'),
           purchasePrice: row.purchasePrice ?? (product?.purchase_price != null ? Number(product.purchase_price) : null),
           lotCode: product ? '' : '',
           importSource: product ? '' : source
@@ -4414,6 +4415,10 @@
           <button class="btn secondary" type="button" data-initial-line-action="create-product">+ Karta</button>
         </div>
         <input data-initial-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
+        <select data-initial-kind>
+          <option value="product" ${row.kind !== 'package' ? 'selected' : ''}>ks / základ</option>
+          <option value="package" ${row.kind === 'package' ? 'selected' : ''}>balení</option>
+        </select>
         <input data-initial-purchase-price type="number" min="0" step="0.0001" placeholder="Kč / jednotka" value="${escapeHtml(purchasePrice)}" />
         <input data-initial-expiry type="date" value="${escapeHtml(row.expiryDate || '')}" />
         <input data-initial-lot placeholder="Šarže / poznámka" value="${escapeHtml(row.lotCode || '')}" />
@@ -4427,14 +4432,24 @@
         .map((row, index) => {
           const searchInput = row.querySelector('[data-initial-product-search]')
           if (searchInput) syncInitialStockProductSearchInput(searchInput)
+          const kind = row.querySelector('[data-initial-kind]')?.value || 'product'
+          const productId = Number(row.querySelector('[data-initial-product]')?.value || 0)
+          const product = productsV13.find((item) => String(item.id) === String(productId))
+          const enteredQuantity = Number(row.querySelector('[data-initial-quantity]')?.value || 0)
+          const pack = kind === 'package' ? getEffectiveDefaultPackage(productId) : null
+          const quantity = pack ? convertPackageQuantityToBase(product, enteredQuantity, pack) : enteredQuantity
+          const packageNote = pack ? `${enteredQuantity} × ${pack.package_name}` : ''
+          const lotCode = [row.querySelector('[data-initial-lot]')?.value.trim() || '', packageNote].filter(Boolean).join(' · ')
           return {
             index,
-            productId: Number(row.querySelector('[data-initial-product]')?.value || 0),
+            kind,
+            productId,
             productSearch: searchInput?.value.trim() || '',
-            quantity: Number(row.querySelector('[data-initial-quantity]')?.value || 0),
+            enteredQuantity,
+            quantity,
             purchasePrice: row.querySelector('[data-initial-purchase-price]')?.value ? Number(row.querySelector('[data-initial-purchase-price]')?.value || 0) : null,
             expiryDate: row.querySelector('[data-initial-expiry]')?.value || '',
-            lotCode: row.querySelector('[data-initial-lot]')?.value.trim() || ''
+            lotCode
           }
         })
         .filter((row) => row.productId || row.quantity > 0 || row.purchasePrice != null || row.expiryDate || row.lotCode)
@@ -5487,7 +5502,7 @@
         const vatRate = isSale ? Number(product?.vat_rate || 0) : 0
         const netTotal = isSale ? Number((grossTotal / (1 + (vatRate / 100))).toFixed(2)) : 0
         const vatTotal = isSale ? Number((grossTotal - netTotal).toFixed(2)) : 0
-        const unitCost = isSale ? Number(getProductUnitCost(product) || 0) : 0
+        const unitCost = isSale ? Number(getStockUnitCost(product) || 0) : 0
         const costTotal = isSale ? Number((unitCost * Number(line.quantity || 0)).toFixed(2)) : 0
         const profitTotal = isSale ? Number((netTotal - costTotal).toFixed(2)) : 0
         const accountingNote = isSale
