@@ -9020,6 +9020,18 @@
       }
     }
 
+    async function applyStockMovementsAtomicallyV13(movements) {
+      if (!movements?.length) return;
+      const { error } = await supabase.rpc('apply_stock_movements_v13', { movement_rows: movements });
+      if (error) {
+        const message = String(error.message || '');
+        if (message.includes('apply_stock_movements_v13') || message.includes('schema cache')) {
+          throw new Error('Atomické uložení skladového pohybu není nasazené. Spusť prosím database/stock_movements_atomic_rpc_v13.sql.');
+        }
+        throw error;
+      }
+    }
+
     function getLoadingSessionWarehouseLabel() {
       if (!currentLoadingSession?.warehouse_id) return 'Bez skladu';
       return warehousesDirectory.find((item) => String(item.id) === String(currentLoadingSession.warehouse_id))?.name || 'Bez skladu';
@@ -9821,22 +9833,16 @@
       );
 
       if (mode === 'load') {
-        await applyStockBalanceDeltaV13(warehouseLocationId, productId, -quantity);
-        await applyStockBalanceDeltaV13(vehicleLocationId, productId, quantity);
-        const { error } = await supabase
-          .from('stock_movements_v13')
-          .insert([{
-            product_id: productId,
-            from_stock_location_id: warehouseLocationId,
-            to_stock_location_id: vehicleLocationId,
-            movement_type: 'load_vehicle',
-            quantity_base_units: quantity,
-            reference_type: referenceType,
-            reference_id: referenceId,
-            note: movementNote,
-            created_by: currentUser.id
-          }]);
-        if (error) throw error;
+        await applyStockMovementsAtomicallyV13([{
+          product_id: productId,
+          from_stock_location_id: warehouseLocationId,
+          to_stock_location_id: vehicleLocationId,
+          movement_type: 'load_vehicle',
+          quantity_base_units: quantity,
+          reference_type: referenceType,
+          reference_id: referenceId,
+          note: movementNote
+        }]);
         await upsertLoadingSessionItem(activeSession.id, productId, 'loaded_quantity', quantity, movementNote);
         setMobileLoadingQty(productId, 0);
         await loadCurrentLoadingSession();
@@ -9844,22 +9850,16 @@
       }
 
       if (mode === 'return') {
-        await applyStockBalanceDeltaV13(vehicleLocationId, productId, -quantity);
-        await applyStockBalanceDeltaV13(warehouseLocationId, productId, quantity);
-        const { error } = await supabase
-          .from('stock_movements_v13')
-          .insert([{
-            product_id: productId,
-            from_stock_location_id: vehicleLocationId,
-            to_stock_location_id: warehouseLocationId,
-            movement_type: 'return',
-            quantity_base_units: quantity,
-            reference_type: referenceType,
-            reference_id: referenceId,
-            note: movementNote,
-            created_by: currentUser.id
-          }]);
-        if (error) throw error;
+        await applyStockMovementsAtomicallyV13([{
+          product_id: productId,
+          from_stock_location_id: vehicleLocationId,
+          to_stock_location_id: warehouseLocationId,
+          movement_type: 'return',
+          quantity_base_units: quantity,
+          reference_type: referenceType,
+          reference_id: referenceId,
+          note: movementNote
+        }]);
         await upsertLoadingSessionItem(activeSession.id, productId, 'returned_quantity', quantity, movementNote);
         setMobileLoadingQty(productId, 0);
         await loadCurrentLoadingSession();
@@ -9867,20 +9867,15 @@
       }
 
       if (mode === 'waste') {
-        await applyStockBalanceDeltaV13(vehicleLocationId, productId, -quantity);
-        const { error } = await supabase
-          .from('stock_movements_v13')
-          .insert([{
-            product_id: productId,
-            from_stock_location_id: vehicleLocationId,
-            movement_type: 'waste',
-            quantity_base_units: quantity,
-            reference_type: referenceType,
-            reference_id: referenceId,
-            note: movementNote,
-            created_by: currentUser.id
-          }]);
-        if (error) throw error;
+        await applyStockMovementsAtomicallyV13([{
+          product_id: productId,
+          from_stock_location_id: vehicleLocationId,
+          movement_type: 'waste',
+          quantity_base_units: quantity,
+          reference_type: referenceType,
+          reference_id: referenceId,
+          note: movementNote
+        }]);
         await upsertLoadingSessionItem(activeSession.id, productId, 'waste_quantity', quantity, movementNote);
         setMobileLoadingQty(productId, 0);
         await loadCurrentLoadingSession();
