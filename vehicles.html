@@ -2137,6 +2137,7 @@
     let vehicleLogsMap = new Map()
     let vehicleExpensesListMap = new Map()
     let vehicleInventoryMap = new Map()
+    let vehicleProductPackagesMap = new Map()
     let vehicleReviewCards = []
     let vehicleReviewActionMap = new Map()
     let recentExpenses = []
@@ -2367,6 +2368,37 @@
       const quantity = Number(value || 0)
       const decimals = Math.abs(quantity % 1) > 0.001 ? 2 : 0
       return `${quantity.toLocaleString('cs-CZ', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${unit || 'ks'}`
+    }
+
+    function getVehicleProductPackages(productId) {
+      return vehicleProductPackagesMap.get(String(productId)) || []
+    }
+
+    function getVehicleDefaultPackage(product) {
+      const pack = getVehicleProductPackages(product?.id)[0]
+      if (Number(pack?.units_per_package || 0) > 1) return pack
+      const name = normalizeText(product?.name || '')
+      const baseUnit = normalizeText(product?.base_unit || '')
+      const parseAmount = (value) => Number(String(value || '').replace(',', '.'))
+      const kgMatch = name.match(/(\d+(?:[,.]\d+)?)\s*kg\b/)
+      if (kgMatch && baseUnit === 'g') return { units_per_package: Number((parseAmount(kgMatch[1]) * 1000).toFixed(3)) }
+      const gramMatch = name.match(/(\d+(?:[,.]\d+)?)\s*g\b/)
+      if (gramMatch && baseUnit === 'g') return { units_per_package: Number(parseAmount(gramMatch[1]).toFixed(3)) }
+      const ksMatch = name.match(/\((\d+(?:[,.]\d+)?)\s*ks\)/)
+      if (ksMatch && baseUnit === 'ks') return { units_per_package: Number(parseAmount(ksMatch[1]).toFixed(3)) }
+      return pack || null
+    }
+
+    function getVehicleStockUnitCost(product) {
+      const purchasePrice = Number(product?.purchase_price || 0)
+      if (!purchasePrice) return 0
+      const baseUnit = normalizeText(product?.base_unit || '')
+      const pack = getVehicleDefaultPackage(product)
+      const unitsPerPackage = Number(pack?.units_per_package || 0)
+      const isPackPricedIngredient = ['ingredient', 'recipe_consumption'].includes(normalizeText(product?.product_category || '')) || normalizeText(product?.usage_type || '') === 'recipe_consumption'
+      if (['g', 'ml'].includes(baseUnit) && unitsPerPackage > 1) return purchasePrice / unitsPerPackage
+      if (baseUnit === 'ks' && isPackPricedIngredient && unitsPerPackage > 1) return purchasePrice / unitsPerPackage
+      return purchasePrice
     }
 
     function getVehicleInventorySummary(vehicleId) {
@@ -3300,6 +3332,7 @@
       vehicleReviewMap = new Map()
       vehicleReviewActionMap = new Map()
       vehicleInventoryMap = new Map()
+      vehicleProductPackagesMap = new Map()
       vehicleReviewCards = []
 
       if (!vehicleIds.length) return
@@ -3333,7 +3366,7 @@
         if (locationIds.length) {
           const balancesResult = await supabase
             .from('stock_location_balances')
-            .select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity, updated_at, products(id, name, sku, base_unit, purchase_price, sale_price)')
+            .select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity, updated_at, products(id, name, sku, base_unit, product_category, usage_type, purchase_price, sale_price)')
             .in('stock_location_id', locationIds)
             .gt('quantity_on_hand', 0)
             .order('updated_at', { ascending: false })
@@ -3341,15 +3374,38 @@
           if (balancesResult.error) {
             console.error('Vehicle stock balances error:', balancesResult.error)
           } else {
+            const balanceRows = balancesResult.data ?? []
+            const productIds = [...new Set(balanceRows.map((balance) => balance.product_id).filter(Boolean))]
+            if (productIds.length) {
+              const packagesResult = await supabase
+                .from('product_packages')
+                .select('id, product_id, package_name, units_per_package, is_default, active')
+                .in('product_id', productIds)
+                .eq('active', true)
+                .order('is_default', { ascending: false })
+              if (packagesResult.error) {
+                console.error('Vehicle product packages error:', packagesResult.error)
+              } else {
+                ;(packagesResult.data ?? []).forEach((pack) => {
+                  const key = String(pack.product_id)
+                  if (!vehicleProductPackagesMap.has(key)) vehicleProductPackagesMap.set(key, [])
+                  vehicleProductPackagesMap.get(key).push(pack)
+                })
+                vehicleProductPackagesMap.forEach((packages, key) => {
+                  packages.sort((a, b) => Number(b.is_default === true) - Number(a.is_default === true) || normalizeText(a.package_name).localeCompare(normalizeText(b.package_name), 'cs'))
+                  vehicleProductPackagesMap.set(key, packages)
+                })
+              }
+            }
             const grouped = new Map()
-            ;(balancesResult.data ?? []).forEach((balance) => {
+            ;(balanceRows).forEach((balance) => {
               const location = locationMap.get(String(balance.stock_location_id))
               if (!location?.vehicle_id) return
               const vehicleKey = String(location.vehicle_id)
               const product = balance.products || {}
               const productKey = `${vehicleKey}:${balance.product_id}`
               const quantity = Number(balance.quantity_on_hand || 0)
-              const unitCost = Number(product.purchase_price || 0)
+              const unitCost = getVehicleStockUnitCost(product)
               const existing = grouped.get(productKey) || {
                 vehicle_id: location.vehicle_id,
                 product_id: balance.product_id,
