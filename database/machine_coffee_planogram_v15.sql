@@ -25,6 +25,18 @@ create table if not exists public.machine_coffee_buttons (
   product_sku text,
   product_name text not null,
   sale_price_czk numeric(10,2),
+  customer_price_czk numeric(10,2),
+  settlement_type text not null default 'none',
+  settlement_amount_czk numeric(10,2) not null default 0,
+  settlement_partner text,
+  settlement_billing_enabled boolean not null default false,
+  settlement_note text,
+  planned_product_name text,
+  planned_product_sku text,
+  planned_price_czk numeric(10,2),
+  substitution_policy text not null default 'exact',
+  allowed_substitutes text,
+  operator_instruction text,
   last_counter integer,
   grid_column integer,
   grid_row_from_bottom integer,
@@ -56,6 +68,19 @@ create index if not exists machine_coffee_containers_machine_idx
 
 create index if not exists machine_coffee_buttons_machine_idx
   on public.machine_coffee_buttons (machine_id, sort_order);
+
+alter table public.machine_coffee_buttons add column if not exists customer_price_czk numeric(10,2);
+alter table public.machine_coffee_buttons add column if not exists settlement_type text not null default 'none';
+alter table public.machine_coffee_buttons add column if not exists settlement_amount_czk numeric(10,2) not null default 0;
+alter table public.machine_coffee_buttons add column if not exists settlement_partner text;
+alter table public.machine_coffee_buttons add column if not exists settlement_billing_enabled boolean not null default false;
+alter table public.machine_coffee_buttons add column if not exists settlement_note text;
+alter table public.machine_coffee_buttons add column if not exists planned_product_name text;
+alter table public.machine_coffee_buttons add column if not exists planned_product_sku text;
+alter table public.machine_coffee_buttons add column if not exists planned_price_czk numeric(10,2);
+alter table public.machine_coffee_buttons add column if not exists substitution_policy text not null default 'exact';
+alter table public.machine_coffee_buttons add column if not exists allowed_substitutes text;
+alter table public.machine_coffee_buttons add column if not exists operator_instruction text;
 
 create index if not exists machine_coffee_recipe_items_button_idx
   on public.machine_coffee_recipe_items (coffee_button_id, sort_order);
