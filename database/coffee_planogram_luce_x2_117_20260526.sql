@@ -1,15 +1,15 @@
 insert into public.machine_coffee_containers (machine_id, container_code, product_id, product_sku, product_name, capacity_quantity, current_quantity, unit, refill_package_quantity, refill_package_unit, min_refill_quantity, sort_order, active) values
-  (95, 'Z1', 105, '51', 'oVe DRINK WITH CHOC WHITE FLAVOUR 1000g', 3000, 1835, 'g', 1000, 'g', 1000, 0, true),
-  (95, 'Z10', 80, '53', 'Kelímek 300 ml (50 ks)', 300, 239, 'ks', 50, 'ks', 50, 1, true),
-  (95, 'Z11', 136, '88', 'VÍČKO HUHTAMAKI PLAST ČERNÉ 300ml', 100, 100, 'ks', 100, 'ks', 100, 2, true),
-  (95, 'Z2', 104, '48', 'oVe COFFEE CREAMER WHITE 1 kg', 3000, 2354, 'g', 1000, 'g', 1000, 3, true),
-  (95, 'Z3', 42, '43', 'Cukr Vending 1,5 kg', 3000, 2729, 'g', 1500, 'g', 1500, 4, true),
-  (95, 'Z4', 106, '47', 'oVe DRINK WITH COCOA ZETA 1 kg', 3000, 2800, 'g', 1000, 'g', 1000, 5, true),
-  (95, 'Z5', 108, '44', 'oVe FD COFFEE SOPHIA 500g', 1500, 1334, 'g', 500, 'g', 500, 6, true),
-  (95, 'Z6', 142, '263', 'AG PRO Matcha Latte pistácie 1kg', 3000, 2703, 'g', 1000, 'g', 1000, 7, true),
-  (95, 'Z7', 143, '262', 'AG PRO Matcha Latte malina 1kg', 3000, 2584, 'g', 1000, 'g', 1000, 8, true),
-  (95, 'Z8', 110, '46', 'oVe SMART CAPPUCCINO IRISH CREAM FLAVOUR 1000g', 3000, 2548, 'g', 1000, 'g', 1000, 9, true),
-  (95, 'Z9', 78, '45', 'Kelímek 180 ml (100 ks)', 400, 335, 'ks', 100, 'ks', 100, 10, true)
+  (95, 'Z1', 105, '51', 'oVe DRINK WITH CHOC WHITE FLAVOUR 1000g', 3000, 1835, 'g', 1000, 'g', 1000, 1, true),
+  (95, 'Z2', 104, '48', 'oVe COFFEE CREAMER WHITE 1 kg', 3000, 2354, 'g', 1000, 'g', 1000, 2, true),
+  (95, 'Z3', 42, '43', 'Cukr Vending 1,5 kg', 3000, 2729, 'g', 1500, 'g', 1500, 3, true),
+  (95, 'Z4', 106, '47', 'oVe DRINK WITH COCOA ZETA 1 kg', 3000, 2800, 'g', 1000, 'g', 1000, 4, true),
+  (95, 'Z5', 108, '44', 'oVe FD COFFEE SOPHIA 500g', 1500, 1334, 'g', 500, 'g', 500, 5, true),
+  (95, 'Z6', 142, '263', 'AG PRO Matcha Latte pistácie 1kg', 3000, 2703, 'g', 1000, 'g', 1000, 6, true),
+  (95, 'Z7', 143, '262', 'AG PRO Matcha Latte malina 1kg', 3000, 2584, 'g', 1000, 'g', 1000, 7, true),
+  (95, 'Z8', 110, '46', 'oVe SMART CAPPUCCINO IRISH CREAM FLAVOUR 1000g', 3000, 2548, 'g', 1000, 'g', 1000, 8, true),
+  (95, 'Z9', 78, '45', 'Kelímek 180 ml (100 ks)', 400, 335, 'ks', 100, 'ks', 100, 9, true),
+  (95, 'Z10', 80, '53', 'Kelímek 300 ml (50 ks)', 300, 239, 'ks', 50, 'ks', 50, 10, true),
+  (95, 'Z11', 136, '88', 'VÍČKO HUHTAMAKI PLAST ČERNÉ 300ml', 100, 100, 'ks', 100, 'ks', 100, 11, true)
 on conflict (machine_id, container_code) do update set product_id=excluded.product_id, product_sku=excluded.product_sku, product_name=excluded.product_name, capacity_quantity=excluded.capacity_quantity, current_quantity=excluded.current_quantity, unit=excluded.unit, refill_package_quantity=excluded.refill_package_quantity, refill_package_unit=excluded.refill_package_unit, min_refill_quantity=excluded.min_refill_quantity, sort_order=excluded.sort_order, active=excluded.active;
 
 insert into public.machine_coffee_buttons (machine_id, selection_code, product_id, product_sku, product_name, sale_price_czk, customer_price_czk, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, planned_product_name, planned_product_sku, planned_price_czk, substitution_policy, allowed_substitutes, operator_instruction, last_counter, grid_column, grid_row_from_bottom, sort_order, active) values
