@@ -755,6 +755,22 @@
       gap: 10px;
     }
 
+    .vehicle-stock-table {
+      overflow:auto;
+      border:1px solid rgba(255,255,255,0.08);
+      border-radius:12px;
+    }
+
+    .vehicle-stock-table table {
+      min-width: 720px;
+    }
+
+    .vehicle-stock-table th,
+    .vehicle-stock-table td {
+      padding: 9px 10px;
+      vertical-align: middle;
+    }
+
     .detail-item {
       padding: 14px 16px;
       border-radius: 14px;
@@ -1757,6 +1773,7 @@
                   <th>Dnes používá</th>
                   <th>Sklad</th>
                   <th>Km</th>
+                  <th>Naloženo</th>
                   <th>Poslední tankování</th>
                   <th>Účtenka</th>
                   <th>Spotřeba</th>
@@ -2120,6 +2137,7 @@
     let vehicleReviewMap = new Map()
     let vehicleLogsMap = new Map()
     let vehicleExpensesListMap = new Map()
+    let vehicleInventoryMap = new Map()
     let vehicleReviewCards = []
     let vehicleReviewActionMap = new Map()
     let recentExpenses = []
@@ -2344,6 +2362,22 @@
     function formatLiters(value) {
       if (value == null || Number.isNaN(Number(value))) return '-'
       return `${Number(value).toFixed(1).replace('.', ',')} l`
+    }
+
+    function formatQuantity(value, unit = 'ks') {
+      const quantity = Number(value || 0)
+      const decimals = Math.abs(quantity % 1) > 0.001 ? 2 : 0
+      return `${quantity.toLocaleString('cs-CZ', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${unit || 'ks'}`
+    }
+
+    function getVehicleInventorySummary(vehicleId) {
+      const rows = vehicleInventoryMap.get(String(vehicleId)) || []
+      return {
+        rows,
+        productCount: rows.length,
+        quantityTotal: rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+        valueTotal: rows.reduce((sum, row) => sum + Number(row.value || 0), 0)
+      }
     }
 
     function getLatestFuelLog(vehicleId) {
@@ -2734,6 +2768,7 @@
       const reviewItems = vehicleReviewMap.get(key) || []
       const logs = vehicleLogsMap.get(key) || []
       const expenses = vehicleExpensesListMap.get(key) || []
+      const inventorySummary = getVehicleInventorySummary(vehicle.id)
       const operationalState = getVehicleOperationalState(vehicle.id)
       const assignedDriver = vehicle.assigned_employee_id ? getAssignedEmployeeName(vehicle) : 'Bez přiřazení'
       const weightedConsumption = consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dat')
@@ -2758,6 +2793,11 @@
             <div class="detail-box-label">Náklady celkem</div>
             <div class="detail-box-value">${escapeHtml(formatMoney(expenseInsight.totalAmount || 0))}</div>
             <div class="detail-box-note">${escapeHtml(`Tankování ${formatMoney(expenseInsight.fuelAmount || 0)} · ostatní ${formatMoney(expenseInsight.operatingAmount || 0)}`)}</div>
+          </article>
+          <article class="detail-box">
+            <div class="detail-box-label">Naložené zboží</div>
+            <div class="detail-box-value">${escapeHtml(String(inventorySummary.productCount))}</div>
+            <div class="detail-box-note">${escapeHtml(`${formatMoney(inventorySummary.valueTotal)} · ${formatQuantity(inventorySummary.quantityTotal, 'ks')} součtem řádků`)}</div>
           </article>
         </div>
 
@@ -2801,6 +2841,46 @@
               </article>
             `}
           </div>
+        </section>
+
+        <section class="detail-section">
+          <h4>Naložené zboží</h4>
+          ${inventorySummary.rows.length ? `
+            <div class="vehicle-stock-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Produkt</th>
+                    <th>SKU</th>
+                    <th>Množství</th>
+                    <th>Rezervace</th>
+                    <th>Hodnota</th>
+                    <th>Aktualizace</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${inventorySummary.rows.map((row) => `
+                    <tr>
+                      <td data-label="Produkt"><strong>${escapeHtml(row.product_name || 'Položka')}</strong></td>
+                      <td data-label="SKU">${escapeHtml(row.sku || '-')}</td>
+                      <td data-label="Množství"><strong>${escapeHtml(formatQuantity(row.quantity, row.base_unit || 'ks'))}</strong></td>
+                      <td data-label="Rezervace">${escapeHtml(row.reserved ? formatQuantity(row.reserved, row.base_unit || 'ks') : '-')}</td>
+                      <td data-label="Hodnota">${escapeHtml(formatMoney(row.value || 0))}</td>
+                      <td data-label="Aktualizace">${escapeHtml(row.updated_at ? new Date(row.updated_at).toLocaleString('cs-CZ') : '-')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+            <div class="action-row" style="margin-top:12px;">
+              <a class="btn secondary small" href="inventory.html?state=vehicle">Otevřít sklad vozidel</a>
+            </div>
+          ` : `
+            <article class="detail-item">
+              <div class="detail-item-title">Auto teď nemá evidovanou zásobu</div>
+              <div class="detail-item-note">Jakmile se zboží naloží ze skladu na vozidlo, propíše se sem aktuální stav podle skladové evidence.</div>
+            </article>
+          `}
         </section>
 
         <section class="detail-section">
@@ -3003,6 +3083,7 @@
           : 'Nezadáno'
         const consumptionInsight = vehicleConsumptionMap.get(String(vehicle.id)) || null
         const expenseInsight = vehicleExpenseMap.get(String(vehicle.id)) || { totalAmount: 0, fuelAmount: 0, operatingAmount: 0 }
+        const inventorySummary = getVehicleInventorySummary(vehicle.id)
         const reviewItems = vehicleReviewMap.get(String(vehicle.id)) || []
         const operationalState = getVehicleOperationalState(vehicle.id)
         const operationalBadge = getOperationalBadge(operationalState)
@@ -3062,6 +3143,10 @@
           <td data-label="Km">
             <span class="km-badge">${escapeHtml(odometerValue)}</span>
             ${vehicle.next_service_odometer_km ? `<span class="subtext">servis ${escapeHtml(String(vehicle.next_service_odometer_km))} km</span>` : ''}
+          </td>
+          <td data-label="Naloženo">
+            <strong>${escapeHtml(inventorySummary.productCount ? `${inventorySummary.productCount} položek` : 'Prázdné')}</strong>
+            <span class="subtext">${escapeHtml(inventorySummary.productCount ? formatMoney(inventorySummary.valueTotal) : 'Bez evidované zásoby')}</span>
           </td>
           <td data-label="Poslední tankování">
             <strong>${escapeHtml(latestFuelLabel)}</strong>
@@ -3277,6 +3362,7 @@
       vehicleExpenseMap = new Map()
       vehicleReviewMap = new Map()
       vehicleReviewActionMap = new Map()
+      vehicleInventoryMap = new Map()
       vehicleReviewCards = []
 
       if (!vehicleIds.length) return
@@ -3293,6 +3379,73 @@
           .in('vehicle_id', vehicleIds)
           .order('expense_date', { ascending: false })
       ])
+
+      const stockLocationsResult = await supabase
+        .from('stock_locations')
+        .select('id, vehicle_id, name')
+        .eq('location_type', 'vehicle')
+        .in('vehicle_id', vehicleIds)
+
+      if (stockLocationsResult.error) {
+        console.error('Vehicle stock locations error:', stockLocationsResult.error)
+      } else {
+        const vehicleLocations = stockLocationsResult.data ?? []
+        const locationIds = vehicleLocations.map((location) => location.id).filter(Boolean)
+        const locationMap = new Map(vehicleLocations.map((location) => [String(location.id), location]))
+
+        if (locationIds.length) {
+          const balancesResult = await supabase
+            .from('stock_location_balances')
+            .select('id, stock_location_id, product_id, quantity_on_hand, reserved_quantity, updated_at, products(id, name, sku, base_unit, purchase_price, sale_price)')
+            .in('stock_location_id', locationIds)
+            .gt('quantity_on_hand', 0)
+            .order('updated_at', { ascending: false })
+
+          if (balancesResult.error) {
+            console.error('Vehicle stock balances error:', balancesResult.error)
+          } else {
+            const grouped = new Map()
+            ;(balancesResult.data ?? []).forEach((balance) => {
+              const location = locationMap.get(String(balance.stock_location_id))
+              if (!location?.vehicle_id) return
+              const vehicleKey = String(location.vehicle_id)
+              const product = balance.products || {}
+              const productKey = `${vehicleKey}:${balance.product_id}`
+              const quantity = Number(balance.quantity_on_hand || 0)
+              const unitCost = Number(product.purchase_price || 0)
+              const existing = grouped.get(productKey) || {
+                vehicle_id: location.vehicle_id,
+                product_id: balance.product_id,
+                product_name: product.name || 'Položka',
+                sku: product.sku || '',
+                base_unit: product.base_unit || 'ks',
+                quantity: 0,
+                reserved: 0,
+                value: 0,
+                updated_at: balance.updated_at
+              }
+              existing.quantity += quantity
+              existing.reserved += Number(balance.reserved_quantity || 0)
+              existing.value += quantity * unitCost
+              if (new Date(balance.updated_at || 0).getTime() > new Date(existing.updated_at || 0).getTime()) {
+                existing.updated_at = balance.updated_at
+              }
+              grouped.set(productKey, existing)
+            })
+
+            grouped.forEach((row) => {
+              const key = String(row.vehicle_id)
+              if (!vehicleInventoryMap.has(key)) vehicleInventoryMap.set(key, [])
+              vehicleInventoryMap.get(key).push(row)
+            })
+
+            vehicleInventoryMap.forEach((rows, key) => {
+              rows.sort((a, b) => Number(b.value || 0) - Number(a.value || 0) || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
+              vehicleInventoryMap.set(key, rows)
+            })
+          }
+        }
+      }
 
       if (logsResult.error) {
         console.error('Vehicle logs error:', logsResult.error)
