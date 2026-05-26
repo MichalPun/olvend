@@ -4058,10 +4058,32 @@
         const candidates = [product.name, product.sku, product.ean].map((value) => normalizeText(value))
         const compactCandidates = [product.name, product.sku, product.ean].map((value) => normalizeLookupValue(value))
         return candidates.includes(normalized) || compactCandidates.includes(compact)
-      }) || productsV13.find((product) => {
-        const productName = normalizeText(product.name)
-        return productName && (productName.includes(normalized) || normalized.includes(productName))
-      }) || null
+      }) || findProductByImportTokenScore(normalized)
+    }
+    function getImportTokens(value) {
+      const ignored = new Set(['a', 's', 'se', 'bez', 'ruzne', 'druhy', 'ks', 'g', 'kg', 'ml', 'l'])
+      return normalizeText(value)
+        .split(/[^a-z0-9]+/i)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2 && !ignored.has(token))
+    }
+    function findProductByImportTokenScore(normalizedName) {
+      const sourceTokens = new Set(getImportTokens(normalizedName))
+      if (!sourceTokens.size) return null
+      const scored = productsV13
+        .map((product) => {
+          const productTokens = new Set(getImportTokens(product.name))
+          const overlap = [...sourceTokens].filter((token) => productTokens.has(token)).length
+          const compactProduct = normalizeLookupValue(product.name)
+          const compactSource = normalizeLookupValue(normalizedName)
+          const strongContainment = compactProduct.length >= 8 && (compactProduct.includes(compactSource) || compactSource.includes(compactProduct))
+          return { product, score: overlap + (strongContainment ? 4 : 0) }
+        })
+        .filter((item) => item.score >= 2)
+        .sort((a, b) => b.score - a.score || normalizeText(a.product.name).localeCompare(normalizeText(b.product.name), 'cs'))
+      if (!scored.length) return null
+      if (scored.length > 1 && scored[0].score === scored[1].score) return null
+      return scored[0].product
     }
     function findProductForImportRow(row) {
       const code = normalizeLookupValue(row?.code || row?.productCode || '')
@@ -4906,7 +4928,7 @@
       }])
       if (error) throw error
     }
-    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative }) {
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative, applyBalances = true }) {
       const movements = []
       const sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
       let remaining = Number(quantity || 0)
@@ -4916,8 +4938,10 @@
         if (currentQty <= 0) continue
         const movedQty = Math.min(currentQty, remaining)
         const batchId = record.batch_id || null
-        await addBalanceToBatch(fromStockLocationId, productId, batchId, -movedQty)
-        if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, batchId, movedQty)
+        if (applyBalances) {
+          await addBalanceToBatch(fromStockLocationId, productId, batchId, -movedQty)
+          if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, batchId, movedQty)
+        }
         movements.push({
           product_id: productId,
           batch_id: batchId,
@@ -4938,8 +4962,10 @@
           const available = Number((Number(quantity || 0) - remaining).toFixed(3))
           throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
         }
-        await addBalanceToBatch(fromStockLocationId, productId, null, -remaining)
-        if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, null, remaining)
+        if (applyBalances) {
+          await addBalanceToBatch(fromStockLocationId, productId, null, -remaining)
+          if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, null, remaining)
+        }
         movements.push({
           product_id: productId,
           batch_id: null,
@@ -4955,6 +4981,17 @@
       }
       return movements
     }
+    async function applyStockMovementsAtomically(movements) {
+      if (!movements.length) return
+      const { error } = await supabase.rpc('apply_stock_movements_v13', { movement_rows: movements })
+      if (error) {
+        const message = String(error.message || '')
+        if (message.includes('apply_stock_movements_v13') || message.includes('schema cache')) {
+          throw new Error('Atomické uložení převodky není nasazené. Spusť prosím database/stock_movements_atomic_rpc_v13.sql.')
+        }
+        throw error
+      }
+    }
     function buildSaleMovement({ productId, quantity, unitPrice, referenceId, note }) {
       return {
         product_id: productId,
@@ -4969,7 +5006,7 @@
         note
       }
     }
-    async function buildRecipeSaleMovements({ soldProduct, quantity, fromStockLocationId, unitPrice, referenceId, note, allowNegative }) {
+    async function buildRecipeSaleMovements({ soldProduct, quantity, fromStockLocationId, unitPrice, referenceId, note, allowNegative, applyBalances = true }) {
       const movements = [buildSaleMovement({ productId: soldProduct.id, quantity, unitPrice, referenceId, note: [note, 'tržba za složenou kartu'].filter(Boolean).join(' · ') || null })]
       const recipeItems = getRecipeItemsForProduct(soldProduct.id)
       if (!recipeItems.length) throw new Error(`Produkt ${soldProduct.name} nemá vyplněnou recepturu.`)
@@ -4988,7 +5025,8 @@
           referenceType: 'manual_sale',
           referenceId,
           note: [note, `spotřeba receptury ${soldProduct.name}`].filter(Boolean).join(' · ') || null,
-          allowNegative
+          allowNegative,
+          applyBalances
         })
         movements.push(...ingredientMovements)
       }
@@ -5570,7 +5608,8 @@
               unitPrice,
               referenceId: transferReference,
               note: lineNote,
-              allowNegative: false
+              allowNegative: false,
+              applyBalances: false
             })
             : await moveStockPreservingBatches({
               productId: line.productId,
@@ -5582,14 +5621,12 @@
               referenceType: isSale ? 'manual_sale' : 'manual_transfer',
               referenceId: transferReference,
               note: lineNote,
-              allowNegative: false
+              allowNegative: false,
+              applyBalances: false
             })
           movementsToInsert.push(...lineMovements)
         }
-        const { error: movementError } = await supabase
-          .from('stock_movements_v13')
-          .insert(movementsToInsert)
-        if (movementError) throw movementError
+        await applyStockMovementsAtomically(movementsToInsert)
       } catch (error) {
         await restoreStockLocationSnapshot(balanceSnapshot)
         throw error

@@ -1,0 +1,140 @@
+create or replace function public.apply_stock_movements_v13(movement_rows jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  movement_row jsonb;
+  v_product_id bigint;
+  v_batch_id bigint;
+  v_from_location_id bigint;
+  v_to_location_id bigint;
+  v_movement_type text;
+  v_quantity numeric(12,3);
+  v_unit_price numeric(12,2);
+  v_reference_type text;
+  v_reference_id text;
+  v_note text;
+  source_balance record;
+  target_balance record;
+  inserted_count integer := 0;
+begin
+  if movement_rows is null or jsonb_typeof(movement_rows) <> 'array' then
+    raise exception 'movement_rows must be a JSON array';
+  end if;
+
+  for movement_row in
+    select value from jsonb_array_elements(movement_rows)
+  loop
+    v_product_id := nullif(movement_row->>'product_id', '')::bigint;
+    v_batch_id := nullif(movement_row->>'batch_id', '')::bigint;
+    v_from_location_id := nullif(movement_row->>'from_stock_location_id', '')::bigint;
+    v_to_location_id := nullif(movement_row->>'to_stock_location_id', '')::bigint;
+    v_movement_type := nullif(movement_row->>'movement_type', '');
+    v_quantity := nullif(movement_row->>'quantity_base_units', '')::numeric;
+    v_unit_price := nullif(movement_row->>'unit_price', '')::numeric;
+    v_reference_type := nullif(movement_row->>'reference_type', '');
+    v_reference_id := nullif(movement_row->>'reference_id', '');
+    v_note := nullif(movement_row->>'note', '');
+
+    if v_product_id is null then
+      raise exception 'Movement is missing product_id';
+    end if;
+    if v_movement_type is null then
+      raise exception 'Movement for product % is missing movement_type', v_product_id;
+    end if;
+    if v_quantity is null or v_quantity <= 0 then
+      raise exception 'Movement for product % has invalid quantity %', v_product_id, v_quantity;
+    end if;
+
+    if v_from_location_id is not null then
+      select id, quantity_on_hand
+      into source_balance
+      from public.stock_location_balances
+      where stock_location_id = v_from_location_id
+        and product_id = v_product_id
+        and batch_id is not distinct from v_batch_id
+      order by id
+      limit 1
+      for update;
+
+      if source_balance.id is null or coalesce(source_balance.quantity_on_hand, 0) + 0.0001 < v_quantity then
+        raise exception 'Insufficient stock for product % at stock location %', v_product_id, v_from_location_id;
+      end if;
+
+      update public.stock_location_balances
+      set
+        quantity_on_hand = round((coalesce(quantity_on_hand, 0) - v_quantity)::numeric, 3),
+        updated_at = now()
+      where id = source_balance.id;
+    end if;
+
+    if v_to_location_id is not null then
+      select id, quantity_on_hand
+      into target_balance
+      from public.stock_location_balances
+      where stock_location_id = v_to_location_id
+        and product_id = v_product_id
+        and batch_id is not distinct from v_batch_id
+      order by id
+      limit 1
+      for update;
+
+      if target_balance.id is not null then
+        update public.stock_location_balances
+        set
+          quantity_on_hand = round((coalesce(quantity_on_hand, 0) + v_quantity)::numeric, 3),
+          updated_at = now()
+        where id = target_balance.id;
+      else
+        insert into public.stock_location_balances (
+          stock_location_id,
+          product_id,
+          batch_id,
+          quantity_on_hand,
+          reserved_quantity,
+          updated_at
+        ) values (
+          v_to_location_id,
+          v_product_id,
+          v_batch_id,
+          v_quantity,
+          0,
+          now()
+        );
+      end if;
+    end if;
+
+    insert into public.stock_movements_v13 (
+      product_id,
+      batch_id,
+      from_stock_location_id,
+      to_stock_location_id,
+      movement_type,
+      quantity_base_units,
+      unit_price,
+      reference_type,
+      reference_id,
+      note
+    ) values (
+      v_product_id,
+      v_batch_id,
+      v_from_location_id,
+      v_to_location_id,
+      v_movement_type,
+      v_quantity,
+      v_unit_price,
+      v_reference_type,
+      v_reference_id,
+      v_note
+    );
+
+    inserted_count := inserted_count + 1;
+  end loop;
+
+  return jsonb_build_object('inserted', inserted_count);
+end;
+$$;
+
+grant execute on function public.apply_stock_movements_v13(jsonb) to anon, authenticated;
