@@ -760,15 +760,13 @@
     }
 
     .finance-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 12px;
+      display: block;
       margin-bottom: 16px;
     }
 
     .finance-controls {
       display: grid;
-      grid-template-columns: repeat(3, minmax(170px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px;
       margin-bottom: 16px;
     }
@@ -786,7 +784,8 @@
       text-transform: uppercase;
     }
 
-    .finance-control select {
+    .finance-control select,
+    .finance-control input {
       width: 100%;
       min-height: 44px;
       border: 1px solid var(--border);
@@ -799,9 +798,65 @@
       outline: none;
     }
 
-    .finance-control select:focus {
+    .finance-control select:focus,
+    .finance-control input:focus {
       border-color: rgba(213,16,26,0.42);
       box-shadow: 0 0 0 3px rgba(213,16,26,0.12);
+    }
+
+    .finance-custom-date {
+      display: none;
+    }
+
+    .finance-custom-date.show {
+      display: grid;
+    }
+
+    .finance-summary-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+
+    .finance-summary-table th,
+    .finance-summary-table td {
+      padding: 11px 12px;
+      border-right: 1px solid rgba(255,255,255,0.07);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      text-align: right;
+      vertical-align: top;
+    }
+
+    .finance-summary-table th:first-child,
+    .finance-summary-table td:first-child {
+      text-align: left;
+    }
+
+    .finance-summary-table th {
+      color: var(--muted);
+      background: rgba(255,255,255,0.04);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .finance-summary-table td strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .finance-summary-table td span {
+      display: block;
+      margin-top: 5px;
+      color: var(--soft);
+      font-size: 12px;
+      line-height: 1.35;
     }
 
     .finance-panels {
@@ -1184,6 +1239,7 @@
 
     :root[data-olvend-theme="light"] .dashboard-dropdown-btn,
     :root[data-olvend-theme="light"] .finance-control select,
+    :root[data-olvend-theme="light"] .finance-control input,
     :root[data-olvend-theme="light"] .dropdown-item,
     :root[data-olvend-theme="light"] .tool-btn,
     :root[data-olvend-theme="light"] .back-btn,
@@ -1207,6 +1263,7 @@
     :root[data-olvend-theme="light"] .widget,
     :root[data-olvend-theme="light"] .kpi-card,
     :root[data-olvend-theme="light"] .finance-stock-split,
+    :root[data-olvend-theme="light"] .finance-summary-table,
     :root[data-olvend-theme="light"] .action-card,
     :root[data-olvend-theme="light"] .list-item,
     :root[data-olvend-theme="light"] .user-panel,
@@ -1800,10 +1857,21 @@
               <div class="finance-control">
                 <label for="financePeriodFilter">Období</label>
                 <select id="financePeriodFilter">
+                  <option value="today">Dnes</option>
+                  <option value="yesterday">Včera</option>
                   <option value="7">7 dní</option>
                   <option value="30" selected>30 dní</option>
                   <option value="90">90 dní</option>
+                  <option value="custom">Vlastní</option>
                 </select>
+              </div>
+              <div class="finance-control finance-custom-date" id="financeDateFromWrap">
+                <label for="financeDateFrom">Od</label>
+                <input id="financeDateFrom" type="date" />
+              </div>
+              <div class="finance-control finance-custom-date" id="financeDateToWrap">
+                <label for="financeDateTo">Do</label>
+                <input id="financeDateTo" type="date" />
               </div>
               <div class="finance-control">
                 <label for="financeLocationFilter">Místo</label>
@@ -2089,6 +2157,10 @@
     const manualAdjustmentSaveBtn = document.getElementById("manualAdjustmentSaveBtn");
     const manualAdjustmentStatusLine = document.getElementById("manualAdjustmentStatusLine");
     const financePeriodFilter = document.getElementById("financePeriodFilter");
+    const financeDateFrom = document.getElementById("financeDateFrom");
+    const financeDateTo = document.getElementById("financeDateTo");
+    const financeDateFromWrap = document.getElementById("financeDateFromWrap");
+    const financeDateToWrap = document.getElementById("financeDateToWrap");
     const financeLocationFilter = document.getElementById("financeLocationFilter");
     const financeSortFilter = document.getElementById("financeSortFilter");
 
@@ -2709,11 +2781,70 @@
     }
 
     function getFinanceFilters() {
+      const range = getFinanceDateRange(financePeriodFilter?.value || "30");
       return {
-        periodDays: Number(financePeriodFilter?.value || 30),
+        period: financePeriodFilter?.value || "30",
+        periodLabel: range.label,
+        startDate: range.start,
+        endDate: range.end,
         locationId: financeLocationFilter?.value || "",
         sort: financeSortFilter?.value || "revenue"
       };
+    }
+
+    function startOfLocalDay(date) {
+      const result = new Date(date);
+      result.setHours(0, 0, 0, 0);
+      return result;
+    }
+
+    function addDays(date, days) {
+      const result = new Date(date);
+      result.setDate(result.getDate() + days);
+      return result;
+    }
+
+    function formatDateInput(date) {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    }
+
+    function parseDateInput(value, fallback) {
+      if (!value) return fallback;
+      const date = new Date(`${value}T00:00:00`);
+      return Number.isNaN(date.getTime()) ? fallback : date;
+    }
+
+    function getFinanceDateRange(period) {
+      const today = startOfLocalDay(new Date());
+      const tomorrow = addDays(today, 1);
+      if (period === "today") return { start: today, end: tomorrow, label: "Dnes" };
+      if (period === "yesterday") return { start: addDays(today, -1), end: today, label: "Včera" };
+      if (period === "custom") {
+        const defaultFrom = addDays(today, -29);
+        const from = parseDateInput(financeDateFrom?.value, defaultFrom);
+        const to = parseDateInput(financeDateTo?.value, today);
+        const start = startOfLocalDay(from);
+        const end = addDays(startOfLocalDay(to < start ? start : to), 1);
+        return {
+          start,
+          end,
+          label: `${start.toLocaleDateString("cs-CZ")} - ${addDays(end, -1).toLocaleDateString("cs-CZ")}`
+        };
+      }
+      const days = Number(period || 30);
+      return { start: addDays(today, -(Math.max(1, days) - 1)), end: tomorrow, label: `${days} dní` };
+    }
+
+    function updateFinanceCustomDateVisibility() {
+      const isCustom = financePeriodFilter?.value === "custom";
+      financeDateFromWrap?.classList.toggle("show", isCustom);
+      financeDateToWrap?.classList.toggle("show", isCustom);
+      if (isCustom && financeDateFrom && !financeDateFrom.value) {
+        financeDateFrom.value = formatDateInput(addDays(startOfLocalDay(new Date()), -29));
+      }
+      if (isCustom && financeDateTo && !financeDateTo.value) {
+        financeDateTo.value = formatDateInput(startOfLocalDay(new Date()));
+      }
     }
 
     function renderFinanceDashboard(finance) {
@@ -2724,18 +2855,32 @@
       const note = document.getElementById("financeNote");
       if (!kpiGrid || !chart || !split || !body || !note) return;
 
-      kpiGrid.innerHTML = [
-        { cls: "success", label: `Tržby ${finance.periodDays} dní`, value: formatMoney(finance.revenue), note: "Podle zapsaných prodejek." },
-        { cls: "warning", label: "Náklad prodaného", value: formatMoney(finance.cost), note: "Množství krát jednotková nákupka." },
-        { cls: "info", label: "Hrubý zisk", value: formatMoney(finance.profit), note: `${finance.margin.toFixed(1).replace(".", ",")} % marže.` },
-        { cls: "success", label: "Hodnota zásob", value: formatMoney(finance.stockValue), note: finance.locationLabel || "Aktuální stav krát jednotková nákupka." }
-      ].map((item) => `
-        <article class="kpi-card ${item.cls}">
-          <div class="kpi-label">${escapeHtml(item.label)}</div>
-          <div class="kpi-value">${escapeHtml(item.value)}</div>
-          <div class="kpi-note">${escapeHtml(item.note)}</div>
-        </article>
-      `).join("");
+      kpiGrid.innerHTML = `
+        <table class="finance-summary-table">
+          <thead>
+            <tr>
+              <th>Období / místo</th>
+              <th>Tržby</th>
+              <th>Náklad</th>
+              <th>Hrubý zisk</th>
+              <th>Marže</th>
+              <th>Hodnota zásob</th>
+              <th>Prodejní řádky</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>${escapeHtml(finance.periodLabel || "")}</strong><span>${escapeHtml(finance.locationLabel || "Všechna místa")}</span></td>
+              <td><strong>${escapeHtml(formatMoney(finance.revenue))}</strong><span>prodejky</span></td>
+              <td><strong>${escapeHtml(formatMoney(finance.cost))}</strong><span>jednotková nákupka</span></td>
+              <td><strong>${escapeHtml(formatMoney(finance.profit))}</strong><span>bez DPH rozpisu</span></td>
+              <td><strong>${escapeHtml(`${finance.margin.toFixed(1).replace(".", ",")} %`)}</strong><span>hrubá marže</span></td>
+              <td><strong>${escapeHtml(formatMoney(finance.stockValue))}</strong><span>aktuální stav</span></td>
+              <td><strong>${escapeHtml(String(finance.movementCount || 0))}</strong><span>pohyby sale</span></td>
+            </tr>
+          </tbody>
+        </table>
+      `;
 
       const maxRevenue = Math.max(1, ...finance.daily.map((day) => day.revenue));
       chart.innerHTML = finance.daily.length
@@ -2771,20 +2916,22 @@
             <td>${row.margin.toFixed(1).replace(".", ",")} %</td>
           </tr>
         `).join("")
-        : '<tr><td colspan="6">Zatím tu nejsou žádné prodejky za posledních 30 dní.</td></tr>';
+        : `<tr><td colspan="6">Zatím tu nejsou žádné prodejky pro období ${escapeHtml(finance.periodLabel || "")}.</td></tr>`;
 
       note.textContent = finance.warning || "Hodnota zásob používá jednotkovou nákupní cenu po přepočtu balení. Prodejky počítáme z pohybů typu sale.";
     }
 
     async function loadFinanceDashboardData() {
+      updateFinanceCustomDateVisibility();
       const filters = getFinanceFilters();
-      const since = new Date(Date.now() - filters.periodDays * 24 * 60 * 60 * 1000).toISOString();
+      const since = filters.startDate.toISOString();
+      const until = filters.endDate.toISOString();
       const [productsResult, packagesResult, locationsResult, balancesResult, movementsResult] = await Promise.all([
         supabase.from("products").select("id, name, product_category, usage_type, purchase_price, sale_price, base_unit"),
         supabase.from("product_packages").select("id, product_id, package_name, units_per_package, is_default, active").eq("active", true).order("is_default", { ascending: false }),
         supabase.from("stock_locations").select("id, name, location_type, active").eq("active", true).order("name", { ascending: true }),
         supabase.from("stock_location_balances").select("stock_location_id, product_id, quantity_on_hand"),
-        supabase.from("stock_movements_v13").select("product_id, movement_type, quantity_base_units, unit_price, created_at, reference_type, from_stock_location_id, note").eq("movement_type", "sale").gte("created_at", since).order("created_at", { ascending: true })
+        supabase.from("stock_movements_v13").select("product_id, movement_type, quantity_base_units, unit_price, created_at, reference_type, from_stock_location_id, note").eq("movement_type", "sale").gte("created_at", since).lt("created_at", until).order("created_at", { ascending: true })
       ]);
 
       if (productsResult.error) throw productsResult.error;
@@ -2816,9 +2963,11 @@
       const dailyRows = new Map();
       let revenue = 0;
       let cost = 0;
+      let movementCount = 0;
 
       for (const movement of movementsResult.data || []) {
         if (selectedLocationId && String(movement.from_stock_location_id || "") !== String(selectedLocationId)) continue;
+        movementCount += 1;
         const product = productMap.get(String(movement.product_id));
         const qty = Number(movement.quantity_base_units || 0);
         const sale = qty * getSaleUnitPrice(movement, product);
@@ -2865,8 +3014,9 @@
         profit,
         margin: revenue > 0 ? (profit / revenue) * 100 : 0,
         stockValue,
-        periodDays: filters.periodDays,
+        periodLabel: filters.periodLabel,
         locationLabel,
+        movementCount,
         stockSplit: Array.from(stockSplitMap.entries())
           .map(([type, value]) => ({ label: getFinanceLocationGroupLabel(type), value }))
           .filter((row) => row.value > 0)
@@ -2875,20 +3025,23 @@
         products: Array.from(productRows.values())
           .map((row) => ({ ...row, profit: row.revenue - row.cost, margin: row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0 }))
           .sort((a, b) => sortAccessor(b) - sortAccessor(a))
-          .slice(0, 8),
-        warning: movementsResult.data?.length ? "" : `Zatím nejsou zapsané prodejky za posledních ${filters.periodDays} dní.`
+          .slice(0, 12),
+        warning: movementCount ? "" : `Zatím nejsou zapsané prodejky pro období ${filters.periodLabel}.`
       };
     }
 
     async function refreshFinanceDashboard() {
+      updateFinanceCustomDateVisibility();
+      const fallbackRange = getFinanceDateRange(financePeriodFilter?.value || "30");
       const financeData = await loadFinanceDashboardData().catch((error) => ({
         revenue: 0,
         cost: 0,
         profit: 0,
         margin: 0,
         stockValue: 0,
-        periodDays: Number(financePeriodFilter?.value || 30),
+        periodLabel: fallbackRange.label,
         locationLabel: "",
+        movementCount: 0,
         stockSplit: [],
         daily: [],
         products: [],
@@ -3955,14 +4108,16 @@
 
       try {
         const liveData = await loadServiceDashboardData({ forceReload: options.forceReload });
+        const fallbackRange = getFinanceDateRange(financePeriodFilter?.value || "30");
         const financeData = await loadFinanceDashboardData().catch((error) => ({
           revenue: 0,
           cost: 0,
           profit: 0,
           margin: 0,
           stockValue: 0,
-          periodDays: Number(financePeriodFilter?.value || 30),
+          periodLabel: fallbackRange.label,
           locationLabel: "",
+          movementCount: 0,
           stockSplit: [],
           daily: [],
           products: [],
@@ -4003,8 +4158,9 @@
           profit: 0,
           margin: 0,
           stockValue: 0,
-          periodDays: Number(financePeriodFilter?.value || 30),
+          periodLabel: getFinanceDateRange(financePeriodFilter?.value || "30").label,
           locationLabel: "",
+          movementCount: 0,
           stockSplit: [],
           daily: [],
           products: [],
@@ -4073,7 +4229,7 @@
       renderActions(currentActions);
     });
 
-    [financePeriodFilter, financeLocationFilter, financeSortFilter].forEach((filter) => {
+    [financePeriodFilter, financeDateFrom, financeDateTo, financeLocationFilter, financeSortFilter].forEach((filter) => {
       filter?.addEventListener("change", refreshFinanceDashboard);
     });
 
@@ -4365,6 +4521,7 @@
       showPinnedActionsOnly = getShowPinnedActionsOnly();
       togglePinnedActionsBtn.classList.toggle("accent", showPinnedActionsOnly);
       togglePinnedActionsBtn.textContent = showPinnedActionsOnly ? "Zobrazit vše" : "Jen moje zkratky";
+      updateFinanceCustomDateVisibility();
 
       const defaultMode = "service";
       const savedMode = localStorage.getItem(getModeKey()) || defaultMode;
