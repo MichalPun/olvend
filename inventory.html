@@ -5611,43 +5611,50 @@
         : warehouses.find((item) => String(item.id) === String(locationEntityId))
       const stockLocationId = await ensureStockLocation(locationType, locationEntityId, source?.name || `${locationType === 'vehicle' ? 'Vozidlo' : 'Sklad'} ${locationEntityId}`)
       const referenceId = `initial-stock:${locationType}:${Date.now()}`
-      const movementsToInsert = shouldResetLocation ? await resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId) : []
-      if (!shouldResetLocation) {
-        const productIds = [...new Set(lines.map((line) => line.productId).filter(Boolean))]
-        for (const productId of productIds) {
-          const existingBalances = await getBalanceRecords(stockLocationId, productId)
-          for (const balance of existingBalances) {
-            const currentQty = Number(balance.quantity_on_hand || 0)
-            if (Math.abs(currentQty) <= 0.0001) continue
-            const { error: updateError } = await supabase
-              .from('stock_location_balances')
-              .update({ quantity_on_hand: 0, updated_at: new Date().toISOString() })
-              .eq('id', balance.id)
-            if (updateError) throw updateError
-            movementsToInsert.push({
-              product_id: productId,
-              batch_id: balance.batch_id || null,
-              from_stock_location_id: stockLocationId,
-              to_stock_location_id: null,
-              movement_type: 'adjustment',
-              quantity_base_units: Math.abs(currentQty),
-              reference_type: 'initial_stock',
-              reference_id: referenceId,
-              note: [stockDate, note, 'vynulování položky před opravou počátečního stavu'].filter(Boolean).join(' · ') || null
-            })
+      const balanceSnapshot = await snapshotStockLocationBalances([stockLocationId])
+      let movementsToInsert = []
+      try {
+        movementsToInsert = shouldResetLocation ? await resetLocationBeforeInitialStock(stockLocationId, stockDate, note, referenceId) : []
+        if (!shouldResetLocation) {
+          const productIds = [...new Set(lines.map((line) => line.productId).filter(Boolean))]
+          for (const productId of productIds) {
+            const existingBalances = await getBalanceRecords(stockLocationId, productId)
+            for (const balance of existingBalances) {
+              const currentQty = Number(balance.quantity_on_hand || 0)
+              if (Math.abs(currentQty) <= 0.0001) continue
+              const { error: updateError } = await supabase
+                .from('stock_location_balances')
+                .update({ quantity_on_hand: 0, updated_at: new Date().toISOString() })
+                .eq('id', balance.id)
+              if (updateError) throw updateError
+              movementsToInsert.push({
+                product_id: productId,
+                batch_id: balance.batch_id || null,
+                from_stock_location_id: stockLocationId,
+                to_stock_location_id: null,
+                movement_type: 'adjustment',
+                quantity_base_units: Math.abs(currentQty),
+                reference_type: 'initial_stock',
+                reference_id: referenceId,
+                note: [stockDate, note, 'vynulování položky před opravou počátečního stavu'].filter(Boolean).join(' · ') || null
+              })
+            }
           }
         }
-      }
-      for (const line of lines) {
-        movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
+        for (const line of lines) {
+          movementsToInsert.push(await applyInitialStockLine(stockLocationId, line, stockDate, note, referenceId))
+        }
+        const { error } = await supabase.from('stock_movements_v13').insert(movementsToInsert)
+        if (error) throw error
+      } catch (error) {
+        await restoreStockLocationSnapshot(balanceSnapshot)
+        throw error
       }
       const purchasePriceUpdates = lines
         .filter((line) => line.productId && line.purchasePrice != null && Number.isFinite(line.purchasePrice) && line.purchasePrice > 0)
         .map((line) => ({ productId: line.productId, purchasePrice: Number(line.purchasePrice.toFixed(4)) }))
       const uniquePurchasePriceUpdates = [...new Map(purchasePriceUpdates.map((line) => [String(line.productId), line])).values()]
       const productIdsToActivate = [...new Set(lines.filter((line) => line.productId && line.quantity > 0).map((line) => line.productId))]
-      const { error } = await supabase.from('stock_movements_v13').insert(movementsToInsert)
-      if (error) throw error
       if (productIdsToActivate.length) {
         const { error: activeError } = await supabase
           .from('products')
