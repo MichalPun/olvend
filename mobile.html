@@ -1331,6 +1331,7 @@
       stockDraftItems: [],
       fuelReceiptUploading: false,
       endingShift: false,
+      creatingServiceRequest: false,
       setupWarnings: []
     }
 
@@ -1837,16 +1838,16 @@
       els.serviceList.innerHTML = openServices.map((item) => {
         const old = item.created_at && (Date.now() - new Date(item.created_at).getTime()) > 3 * 24 * 60 * 60 * 1000
         const delayText = getServiceDelayText(item)
-        if (old) {
-          return `
-            <article class="task-card locked-panel">
-              <div class="task-head">
-                <div>
-                  <h4>${escapeHtml(item.title || 'Servis')}</h4>
-                  ${renderServiceMeta(item)}
-                </div>
-                <span class="badge ${delayText ? 'yellow' : 'red'}">${delayText ? 'Čeká' : 'Doplnit'}</span>
+        return `
+          <article class="task-card ${old ? 'locked-panel' : ''}">
+            <div class="task-head">
+              <div>
+                <h4>${escapeHtml(item.title || 'Servis')}</h4>
+                ${renderServiceMeta(item)}
               </div>
+              <span class="badge ${old ? (delayText ? 'yellow' : 'red') : (item.priority === 'high' || item.priority === 'critical' ? 'yellow' : 'blue')}">${escapeHtml(old ? (delayText ? 'Čeká' : 'Doplnit') : (item.priority || 'normal'))}</span>
+            </div>
+            ${old ? `
               <div class="attention-box">
                 <strong>${delayText ? 'Uložený důvod prodlení' : 'Důvod prodlení'}</strong>
                 <span>${escapeHtml(delayText || 'Napiš konkrétně, proč zásah stále není hotový.')}</span>
@@ -1858,18 +1859,7 @@
                 </label>
                 <button class="primary-btn" data-service-action="followup" data-id="${item.id}" type="button">Uložit důvod</button>
               </div>
-            </article>
-          `
-        }
-        return `
-          <article class="task-card">
-            <div class="task-head">
-              <div>
-                <h4>${escapeHtml(item.title || 'Servis')}</h4>
-                ${renderServiceMeta(item)}
-              </div>
-              <span class="badge ${item.priority === 'high' || item.priority === 'critical' ? 'yellow' : 'blue'}">${escapeHtml(item.priority || 'normal')}</span>
-            </div>
+            ` : ''}
             <div class="card-actions">
               <button class="primary-btn wide-action" data-service-action="start" data-id="${item.id}" type="button">Zahájit zásah</button>
               <button class="secondary-btn" data-service-action="replace" data-id="${item.id}" type="button">Předat</button>
@@ -3316,6 +3306,7 @@
     }
 
     async function createMobileServiceRequest() {
+      if (state.creatingServiceRequest) return
       const title = String(els.newServiceTitleInput?.value || '').trim()
       const description = String(els.newServiceDescriptionInput?.value || '').trim()
       const machineId = String(els.newServiceMachineSelect?.value || '').trim()
@@ -3324,6 +3315,11 @@
 
       if (!locationId) throw new Error('Vyber lokalitu nebo automat.')
       if (!title) throw new Error('Doplň, co je potřeba řešit.')
+      state.creatingServiceRequest = true
+      if (els.createServiceButton) {
+        els.createServiceButton.disabled = true
+        els.createServiceButton.textContent = 'Zakládám servis...'
+      }
 
       const basePayload = {
         location_id: Number(locationId),
@@ -3371,24 +3367,32 @@
         }
       ]
 
-      let lastError = null
-      for (const payload of attempts) {
-        const { error } = await supabase.from('service_requests').insert([payload])
-        if (!error) {
-          if (els.newServiceTitleInput) els.newServiceTitleInput.value = ''
-          if (els.newServiceDescriptionInput) els.newServiceDescriptionInput.value = ''
-          if (els.newServicePrioritySelect) els.newServicePrioritySelect.value = 'normal'
-          if (els.createServicePanel) els.createServicePanel.open = false
-          await loadServices()
-          renderServices()
-          renderImportant()
-          showMessage('Servis je založený a vidíš ho v seznamu.', 'success')
-          return
+      try {
+        let lastError = null
+        for (const payload of attempts) {
+          const { error } = await supabase.from('service_requests').insert([payload])
+          if (!error) {
+            if (els.newServiceTitleInput) els.newServiceTitleInput.value = ''
+            if (els.newServiceDescriptionInput) els.newServiceDescriptionInput.value = ''
+            if (els.newServicePrioritySelect) els.newServicePrioritySelect.value = 'normal'
+            if (els.createServicePanel) els.createServicePanel.open = false
+            await loadServices()
+            renderServices()
+            renderImportant()
+            showMessage('Servis je založený a vidíš ho v seznamu.', 'success')
+            return
+          }
+          lastError = error
         }
-        lastError = error
-      }
 
-      throw lastError || new Error('Servis se nepodařilo založit.')
+        throw lastError || new Error('Servis se nepodařilo založit.')
+      } finally {
+        state.creatingServiceRequest = false
+        if (els.createServiceButton) {
+          els.createServiceButton.disabled = false
+          els.createServiceButton.textContent = 'Založit servis'
+        }
+      }
     }
 
     function bindEvents() {
@@ -3486,7 +3490,12 @@
       els.serviceList.addEventListener('click', (event) => {
         const button = event.target.closest('[data-service-action]')
         if (!button) return
-        handleServiceAction(button.dataset.serviceAction, button.dataset.id).catch(handleError)
+        button.disabled = true
+        handleServiceAction(button.dataset.serviceAction, button.dataset.id)
+          .catch(handleError)
+          .finally(() => {
+            button.disabled = false
+          })
       })
       els.stockRequestList.addEventListener('click', (event) => {
         const button = event.target.closest('[data-stock-request-action="confirm-ready"]')
