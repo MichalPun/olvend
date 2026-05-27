@@ -394,6 +394,36 @@
       font-weight: 800;
     }
 
+    .inventory-count-line {
+      grid-template-columns: 1fr minmax(86px, 112px);
+    }
+
+    .inventory-count-line label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .inventory-count-line label:last-child {
+      grid-column: 1 / -1;
+    }
+
+    .inventory-count-line input {
+      min-height: 44px;
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--input);
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 900;
+      padding: 9px 11px;
+    }
+
     .mini-btn {
       min-height: 42px;
       padding: 10px 12px;
@@ -1079,6 +1109,16 @@
           </button>
         </div>
 
+        <details class="mobile-panel" id="vehicleInventoryPanel" open>
+          <summary>
+            <span>Inventura auta</span>
+            <span class="badge yellow" id="vehicleInventoryCount">0</span>
+          </summary>
+          <div class="details-body">
+            <div class="stack" id="vehicleInventoryList"></div>
+          </div>
+        </details>
+
         <details class="mobile-panel" id="stockFormDetails" open>
           <summary>
             <span id="stockFormTitle">Nový skladový doklad</span>
@@ -1339,6 +1379,8 @@
       acknowledgements: [],
       stockRequests: [],
       stockRequestItems: [],
+      inventoryAudits: [],
+      inventoryAuditItems: [],
       selectedStockType: 'vehicle_load',
       manualVehicleLoad: false,
       stockDraftItems: [],
@@ -1415,6 +1457,8 @@
       stockDraftList: document.getElementById('stockDraftList'),
       createStockRequestButton: document.getElementById('createStockRequestButton'),
       stockRequestList: document.getElementById('stockRequestList'),
+      vehicleInventoryCount: document.getElementById('vehicleInventoryCount'),
+      vehicleInventoryList: document.getElementById('vehicleInventoryList'),
       tripVehicleLabel: document.getElementById('tripVehicleLabel'),
       tripVehicleNote: document.getElementById('tripVehicleNote'),
       tripStateBadge: document.getElementById('tripStateBadge'),
@@ -1936,6 +1980,12 @@
         badge: item.status === 'ready' ? 'Převzít' : 'Čeká',
         type: item.status === 'ready' ? 'green' : 'yellow'
       }))
+      state.inventoryAudits.filter((item) => ['assigned', 'counted'].includes(item.status)).slice(0, 2).forEach((item) => items.push({
+        title: `Inventura auta #${item.id}`,
+        text: item.status === 'counted' ? 'Odesláno, čeká na manažerské vyhodnocení.' : 'Spočítej vybrané položky v autě.',
+        badge: 'Inventura',
+        type: item.status === 'counted' ? 'green' : 'yellow'
+      }))
 
       els.importantCount.textContent = `${items.length}`
       els.importantList.innerHTML = items.length
@@ -2119,6 +2169,76 @@
       `
     }
 
+    function getVehicleInventoryItems(auditId) {
+      return state.inventoryAuditItems.filter((item) => String(item.audit_id) === String(auditId))
+    }
+
+    function getVehicleInventoryStatusLabel(status) {
+      return {
+        assigned: 'K vyplnění',
+        counted: 'Odesláno',
+        evaluated: 'Vyhodnoceno',
+        closed: 'Uzavřeno'
+      }[status] || status || 'Inventura'
+    }
+
+    function renderVehicleInventories() {
+      if (!els.vehicleInventoryList) return
+      const activeAudits = state.inventoryAudits.filter((audit) => ['assigned', 'counted'].includes(audit.status))
+      if (els.vehicleInventoryCount) els.vehicleInventoryCount.textContent = `${activeAudits.length}`
+      if (!activeAudits.length) {
+        els.vehicleInventoryList.innerHTML = '<div class="empty">Na dnešek nemáš zadanou inventuru auta.</div>'
+        return
+      }
+      els.vehicleInventoryList.innerHTML = activeAudits.map((audit) => {
+        const items = getVehicleInventoryItems(audit.id)
+        const completed = items.filter((item) => item.counted_at).length
+        const vehicle = state.vehicles.find((item) => String(item.id) === String(audit.vehicle_id))
+        const vehicleLabel = vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : 'Vozidlo'
+        const locked = audit.status === 'counted'
+        return `
+          <article class="task-card" data-inventory-audit-card="${escapeHtml(String(audit.id))}">
+            <div class="task-head">
+              <div>
+                <h4>Inventura auta #${escapeHtml(String(audit.id))}</h4>
+                <div class="meta"><span>${escapeHtml(vehicleLabel)}</span><span>${escapeHtml(audit.audit_date || todayIso)}</span></div>
+              </div>
+              <span class="badge ${locked ? 'green' : 'yellow'}">${escapeHtml(getVehicleInventoryStatusLabel(audit.status))}</span>
+            </div>
+            ${audit.note ? `<div class="attention-box"><strong>Poznámka</strong><span>${escapeHtml(audit.note)}</span></div>` : ''}
+            <div class="stock-draft">
+              ${items.map((item) => {
+                const product = item.products || state.products.find((row) => String(row.id) === String(item.product_id)) || {}
+                const unit = product.base_unit || 'ks'
+                const value = item.counted_at ? Number(item.counted_quantity || 0) : ''
+                return `
+                  <div class="draft-line inventory-count-line" data-inventory-item-id="${escapeHtml(String(item.id))}">
+                    <div>
+                      <strong>${escapeHtml(product.name || item.product_name || 'Produkt')}</strong>
+                      <span>Evidence při zadání ${escapeHtml(formatNumber(item.book_quantity || 0))} ${escapeHtml(unit)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}</span>
+                    </div>
+                    <label>
+                      Fyzicky
+                      <input data-inventory-count inputmode="decimal" value="${escapeHtml(String(value))}" placeholder="0" ${locked ? 'disabled' : ''} />
+                    </label>
+                    <label>
+                      Poznámka
+                      <input data-inventory-note value="${escapeHtml(item.counted_note || '')}" placeholder="Volitelné" ${locked ? 'disabled' : ''} />
+                    </label>
+                  </div>
+                `
+              }).join('')}
+            </div>
+            <div class="card-actions">
+              <button class="secondary-btn" data-inventory-action="save" data-audit-id="${escapeHtml(String(audit.id))}" type="button" ${locked ? 'disabled' : ''}>Uložit rozpracované</button>
+              <button class="primary-btn wide-action" data-inventory-action="submit" data-audit-id="${escapeHtml(String(audit.id))}" type="button" ${locked ? 'disabled' : ''}>Odeslat inventuru</button>
+            </div>
+            <div class="meta"><span>${completed}/${items.length} řádků vyplněno</span><span>Bez skladového pohybu</span></div>
+          </article>
+        `
+      }).join('')
+    }
+
     function renderEmployee() {
       els.employeeSummary.textContent = `${getEmployeeName()} · ${state.employee?.role || 'bez role'}`
     }
@@ -2208,6 +2328,7 @@
       renderProducts()
       renderStockRequests()
       renderStockDraft()
+      renderVehicleInventories()
       renderEmployee()
       renderHrRequestDefaults()
       renderVehicleForm()
@@ -2468,6 +2589,92 @@
       state.stockRequestItems = items || []
     }
 
+    async function loadVehicleInventories() {
+      state.setupWarnings = state.setupWarnings.filter((message) => !message.includes('Inventura vozidla'))
+      const { data, error } = await supabase
+        .from('inventory_audits')
+        .select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, responsible_name, note, status, counted_at, created_at')
+        .eq('scope_type', 'vehicle')
+        .eq('assigned_employee_id', state.employee.id)
+        .in('status', ['assigned', 'counted'])
+        .order('created_at', { ascending: false })
+        .limit(10)
+      if (error) {
+        state.inventoryAudits = []
+        state.inventoryAuditItems = []
+        state.setupWarnings.push('Inventura vozidla ještě není připravená v databázi.')
+        return
+      }
+      state.inventoryAudits = data || []
+      const auditIds = state.inventoryAudits.map((audit) => audit.id)
+      if (!auditIds.length) {
+        state.inventoryAuditItems = []
+        return
+      }
+      const { data: items, error: itemsError } = await supabase
+        .from('inventory_audit_items')
+        .select('id, audit_id, stock_location_id, product_id, batch_id, book_quantity, counted_quantity, counted_note, counted_at, products(id, name, sku, base_unit)')
+        .in('audit_id', auditIds)
+        .order('id', { ascending: true })
+      if (itemsError) {
+        state.inventoryAuditItems = []
+        state.setupWarnings.push(`Položky inventury vozidla se nepodařilo načíst: ${itemsError.message}`)
+        return
+      }
+      state.inventoryAuditItems = items || []
+    }
+
+    async function saveVehicleInventory(auditId, submit = false) {
+      const audit = state.inventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) throw new Error('Inventura už není v seznamu.')
+      if (audit.status === 'counted') throw new Error('Tahle inventura už je odeslaná manažerovi.')
+      const card = els.vehicleInventoryList?.querySelector(`[data-inventory-audit-card="${CSS.escape(String(auditId))}"]`)
+      if (!card) throw new Error('Nevidím formulář inventury.')
+      const itemRows = [...card.querySelectorAll('[data-inventory-item-id]')]
+      if (!itemRows.length) throw new Error('Inventura nemá položky.')
+      const now = new Date().toISOString()
+      const updates = itemRows.map((row) => {
+        const rawCount = row.querySelector('[data-inventory-count]')?.value
+        const countedQuantity = rawCount === '' ? 0 : Number(String(rawCount).replace(',', '.'))
+        if (!Number.isFinite(countedQuantity) || countedQuantity < 0) {
+          throw new Error('Zadej fyzický stav jako nezáporné číslo.')
+        }
+        return supabase
+          .from('inventory_audit_items')
+          .update({
+            counted_quantity: countedQuantity,
+            counted_note: row.querySelector('[data-inventory-note]')?.value.trim() || null,
+            counted_at: now
+          })
+          .eq('id', row.dataset.inventoryItemId)
+      })
+      const results = await Promise.all(updates)
+      const itemError = results.find((result) => result.error)?.error
+      if (itemError) throw itemError
+      if (submit) {
+        const total = itemRows.reduce((sum, row) => {
+          const rawCount = row.querySelector('[data-inventory-count]')?.value
+          const countedQuantity = rawCount === '' ? 0 : Number(String(rawCount).replace(',', '.'))
+          return sum + countedQuantity
+        }, 0)
+        const { error } = await supabase
+          .from('inventory_audits')
+          .update({
+            status: 'counted',
+            counted_at: now,
+            counted_quantity_total: Number(total.toFixed(3))
+          })
+          .eq('id', auditId)
+        if (error) throw error
+        showMessage('Inventura je odeslaná. Stav skladu se zatím nemění, čeká se na manažerské vyhodnocení.')
+      } else {
+        showMessage('Rozpracovaná inventura je uložená.')
+      }
+      await loadVehicleInventories()
+      renderVehicleInventories()
+      renderImportant()
+    }
+
     function activateStockType(type, options = {}) {
       state.selectedStockType = type
       state.manualVehicleLoad = Boolean(options.manualLoad)
@@ -2515,7 +2722,8 @@
         loadReferenceData(),
         loadInstructions(),
         loadServices(),
-        loadStockRequests()
+        loadStockRequests(),
+        loadVehicleInventories()
       ])
       renderAll()
     }
@@ -3525,6 +3733,16 @@
         const button = event.target.closest('[data-stock-request-action="confirm-ready"]')
         if (!button) return
         confirmReadyStockRequest(button.dataset.requestId).catch(handleError)
+      })
+      els.vehicleInventoryList?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-inventory-action]')
+        if (!button) return
+        button.disabled = true
+        saveVehicleInventory(button.dataset.auditId, button.dataset.inventoryAction === 'submit')
+          .catch(handleError)
+          .finally(() => {
+            button.disabled = false
+          })
       })
       els.stockDraftList.addEventListener('click', (event) => {
         const button = event.target.closest('[data-remove-draft-index]')
