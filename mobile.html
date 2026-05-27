@@ -978,6 +978,46 @@
           <h2>Servisy</h2>
           <span id="serviceCount">0</span>
         </div>
+        <details class="mobile-panel" id="createServicePanel">
+          <summary>
+            <span>Založit servis</span>
+            <span class="badge green">Nový</span>
+          </summary>
+          <div class="details-body">
+            <div class="form">
+              <label>
+                Lokalita
+                <select id="newServiceLocationSelect">
+                  <option value="">Vyber lokalitu</option>
+                </select>
+              </label>
+              <label>
+                Automat
+                <select id="newServiceMachineSelect">
+                  <option value="">Obecně na lokalitu</option>
+                </select>
+              </label>
+              <label>
+                Co je potřeba řešit
+                <input id="newServiceTitleInput" placeholder="Např. nejdou kelímky, závada kávovaru..." />
+              </label>
+              <label>
+                Popis pro servis
+                <textarea id="newServiceDescriptionInput" placeholder="Krátce napiš, co se děje a kde přesně to je."></textarea>
+              </label>
+              <label>
+                Priorita
+                <select id="newServicePrioritySelect">
+                  <option value="normal">Normální</option>
+                  <option value="high">Vysoká</option>
+                  <option value="critical">Kritická</option>
+                  <option value="low">Nízká</option>
+                </select>
+              </label>
+              <button class="primary-btn" id="createServiceButton" type="button">Založit servis</button>
+            </div>
+          </div>
+        </details>
         <div class="stack" id="serviceList"></div>
       </section>
 
@@ -1280,6 +1320,8 @@
       events: [],
       vehicles: [],
       products: [],
+      locations: [],
+      machines: [],
       services: [],
       instructions: [],
       acknowledgements: [],
@@ -1323,6 +1365,13 @@
       endShiftNoteInput: document.getElementById('endShiftNoteInput'),
       endShiftButton: document.getElementById('endShiftButton'),
       serviceCount: document.getElementById('serviceCount'),
+      createServicePanel: document.getElementById('createServicePanel'),
+      newServiceLocationSelect: document.getElementById('newServiceLocationSelect'),
+      newServiceMachineSelect: document.getElementById('newServiceMachineSelect'),
+      newServiceTitleInput: document.getElementById('newServiceTitleInput'),
+      newServiceDescriptionInput: document.getElementById('newServiceDescriptionInput'),
+      newServicePrioritySelect: document.getElementById('newServicePrioritySelect'),
+      createServiceButton: document.getElementById('createServiceButton'),
       serviceList: document.getElementById('serviceList'),
       stockRequestCount: document.getElementById('stockRequestCount'),
       stockVehicleLabel: document.getElementById('stockVehicleLabel'),
@@ -1466,17 +1515,31 @@
     }
 
     function getServiceLocationLabel(item) {
+      if (item?.machine_location_name || item?.machine_location_city) {
+        return [item.machine_location_name, item.machine_location_city].filter(Boolean).join(' · ')
+      }
       return [item?.location_name, item?.location_city].filter(Boolean).join(' · ') || 'Bez lokality'
+    }
+
+    function getServiceMachineLabel(item) {
+      return item?.machine_name || ''
     }
 
     function renderServiceMeta(item) {
       const description = String(item?.description || '').trim()
+      const machineLabel = getServiceMachineLabel(item)
       return `
         <div class="service-meta">
           <div class="service-meta-row">
             <strong>Lokalita</strong>
             <span>${escapeHtml(getServiceLocationLabel(item))}</span>
           </div>
+          ${machineLabel ? `
+            <div class="service-meta-row">
+              <strong>Automat</strong>
+              <span>${escapeHtml(machineLabel)}</span>
+            </div>
+          ` : ''}
           ${description ? `
             <div class="service-meta-row">
               <strong>Popis</strong>
@@ -1694,6 +1757,35 @@
         ))
       ].join('')
       renderStockVehicleSelect()
+    }
+
+    function renderNewServiceOptions() {
+      if (!els.newServiceLocationSelect || !els.newServiceMachineSelect) return
+
+      const selectedLocationId = String(els.newServiceLocationSelect.value || '')
+      const selectedMachineId = String(els.newServiceMachineSelect.value || '')
+
+      els.newServiceLocationSelect.innerHTML = [
+        '<option value="">Vyber lokalitu</option>',
+        ...state.locations.map((location) => (
+          `<option value="${location.id}">${escapeHtml([location.name, location.city].filter(Boolean).join(' · ') || 'Bez názvu')}</option>`
+        ))
+      ].join('')
+      els.newServiceLocationSelect.value = state.locations.some((location) => String(location.id) === selectedLocationId)
+        ? selectedLocationId
+        : ''
+
+      const locationFilter = String(els.newServiceLocationSelect.value || '')
+      const machines = state.machines.filter((machine) => !locationFilter || String(machine.location_id || '') === locationFilter)
+      els.newServiceMachineSelect.innerHTML = [
+        '<option value="">Obecně na lokalitu</option>',
+        ...machines.map((machine) => (
+          `<option value="${machine.id}" data-location-id="${machine.location_id || ''}">${escapeHtml([machine.name, machine.machine_type].filter(Boolean).join(' · ') || 'Automat')}</option>`
+        ))
+      ].join('')
+      els.newServiceMachineSelect.value = machines.some((machine) => String(machine.id) === selectedMachineId)
+        ? selectedMachineId
+        : ''
     }
 
     function getCurrentVehicleId() {
@@ -2168,14 +2260,35 @@
     }
 
     async function loadReferenceData() {
-      const [vehicles, products] = await Promise.all([
+      const [vehicles, products, locations, machines] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, ean, base_unit, active').eq('active', true).order('name', { ascending: true }).limit(1000)
+        supabase.from('products').select('id, name, sku, ean, base_unit, active').eq('active', true).order('name', { ascending: true }).limit(1000),
+        supabase.from('locations').select('id, name, city, active').order('name', { ascending: true }),
+        supabase.from('machines').select('id, location_id, name, machine_type, active').order('name', { ascending: true })
       ])
       if (vehicles.error) throw vehicles.error
       if (products.error) throw products.error
       state.vehicles = vehicles.data || []
       state.products = products.data || []
+      if (locations.error) {
+        const { data: fallbackLocations, error: fallbackLocationsError } = await supabase
+          .from('locations')
+          .select('id, name, city')
+          .order('name', { ascending: true })
+        state.locations = fallbackLocationsError ? [] : (fallbackLocations || [])
+      } else {
+        state.locations = (locations.data || []).filter((item) => item.active !== false)
+      }
+      if (machines.error) {
+        const { data: fallbackMachines, error: fallbackMachinesError } = await supabase
+          .from('machines')
+          .select('id, location_id, name, machine_type')
+          .order('name', { ascending: true })
+        state.machines = fallbackMachinesError ? [] : (fallbackMachines || [])
+      } else {
+        state.machines = (machines.data || []).filter((item) => item.active !== false)
+      }
+      renderNewServiceOptions()
     }
 
     async function loadInstructions() {
@@ -2214,7 +2327,7 @@
     }
 
     async function loadServices() {
-      const baseSelect = 'id, title, description, priority, status, due_date, created_at, location_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
+      const baseSelect = 'id, title, description, priority, status, due_date, created_at, location_id, machine_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
       let result = await supabase
         .from('service_requests')
         .select(`${baseSelect}, delay_reason, delay_note`)
@@ -2237,7 +2350,22 @@
       }
 
       const services = result.data || []
-      const locationIds = [...new Set(services.map((item) => item.location_id).filter(Boolean))]
+      const machineIds = [...new Set(services.map((item) => item.machine_id).filter(Boolean))]
+      let machineMap = new Map()
+      if (machineIds.length) {
+        const { data: machines, error: machinesError } = await supabase
+          .from('machines')
+          .select('id, location_id, name, machine_type')
+          .in('id', machineIds)
+        if (!machinesError) {
+          machineMap = new Map((machines || []).map((item) => [String(item.id), item]))
+        }
+      }
+
+      const locationIds = [...new Set(services.map((item) => {
+        const machine = machineMap.get(String(item.machine_id || ''))
+        return machine?.location_id || item.location_id
+      }).filter(Boolean))]
       let locationMap = new Map()
 
       if (locationIds.length) {
@@ -2251,11 +2379,16 @@
       }
 
       state.services = services.map((item) => {
-        const location = locationMap.get(String(item.location_id || ''))
+        const machine = machineMap.get(String(item.machine_id || ''))
+        const requestLocation = locationMap.get(String(item.location_id || ''))
+        const machineLocation = locationMap.get(String(machine?.location_id || ''))
         return {
           ...item,
-          location_name: location?.name || null,
-          location_city: location?.city || null
+          location_name: requestLocation?.name || null,
+          location_city: requestLocation?.city || null,
+          machine_name: machine?.name || null,
+          machine_location_name: machineLocation?.name || null,
+          machine_location_city: machineLocation?.city || null
         }
       })
     }
@@ -3186,6 +3319,82 @@
       renderImportant()
     }
 
+    async function createMobileServiceRequest() {
+      const title = String(els.newServiceTitleInput?.value || '').trim()
+      const description = String(els.newServiceDescriptionInput?.value || '').trim()
+      const machineId = String(els.newServiceMachineSelect?.value || '').trim()
+      const selectedMachine = state.machines.find((machine) => String(machine.id) === machineId)
+      const locationId = String(selectedMachine?.location_id || els.newServiceLocationSelect?.value || '').trim()
+
+      if (!locationId) throw new Error('Vyber lokalitu nebo automat.')
+      if (!title) throw new Error('Doplň, co je potřeba řešit.')
+
+      const basePayload = {
+        location_id: Number(locationId),
+        machine_id: machineId ? Number(machineId) : null,
+        title,
+        description: description || null,
+        priority: els.newServicePrioritySelect?.value || 'normal',
+        status: 'assigned',
+        due_date: todayIso,
+        assigned_employee_id: state.employee?.id || null,
+        assigned_at: new Date().toISOString(),
+        created_by: state.employee?.id || null
+      }
+      const attempts = [
+        basePayload,
+        (() => {
+          const payload = { ...basePayload }
+          delete payload.assigned_at
+          return payload
+        })(),
+        (() => {
+          const payload = { ...basePayload }
+          delete payload.machine_id
+          delete payload.assigned_at
+          return payload
+        })(),
+        {
+          location_id: basePayload.location_id,
+          title: basePayload.title,
+          description: basePayload.description,
+          priority: basePayload.priority,
+          status: basePayload.status,
+          due_date: basePayload.due_date,
+          assigned_employee_id: basePayload.assigned_employee_id,
+          created_by: basePayload.created_by
+        },
+        {
+          location_id: basePayload.location_id,
+          title: basePayload.title,
+          description: basePayload.description,
+          priority: basePayload.priority,
+          status: basePayload.status,
+          due_date: basePayload.due_date,
+          assigned_employee_id: basePayload.assigned_employee_id
+        }
+      ]
+
+      let lastError = null
+      for (const payload of attempts) {
+        const { error } = await supabase.from('service_requests').insert([payload])
+        if (!error) {
+          if (els.newServiceTitleInput) els.newServiceTitleInput.value = ''
+          if (els.newServiceDescriptionInput) els.newServiceDescriptionInput.value = ''
+          if (els.newServicePrioritySelect) els.newServicePrioritySelect.value = 'normal'
+          if (els.createServicePanel) els.createServicePanel.open = false
+          await loadServices()
+          renderServices()
+          renderImportant()
+          showMessage('Servis je založený a vidíš ho v seznamu.', 'success')
+          return
+        }
+        lastError = error
+      }
+
+      throw lastError || new Error('Servis se nepodařilo založit.')
+    }
+
     function bindEvents() {
       document.querySelectorAll('[data-open-screen]').forEach((button) => {
         button.addEventListener('click', () => openScreen(button.dataset.openScreen))
@@ -3214,6 +3423,17 @@
 
       els.startShiftButton.addEventListener('click', () => startShift().catch(handleError))
       els.endShiftButton.addEventListener('click', () => endShift().catch(handleError))
+      els.newServiceLocationSelect?.addEventListener('change', renderNewServiceOptions)
+      els.newServiceMachineSelect?.addEventListener('change', () => {
+        const selected = els.newServiceMachineSelect.selectedOptions[0]
+        const locationId = selected?.dataset.locationId || ''
+        if (locationId && els.newServiceLocationSelect) {
+          els.newServiceLocationSelect.value = locationId
+          renderNewServiceOptions()
+          els.newServiceMachineSelect.value = selected.value
+        }
+      })
+      els.createServiceButton?.addEventListener('click', () => createMobileServiceRequest().catch(handleError))
       els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
       els.loadWholeVehicleButton?.addEventListener('click', () => loadWholeVehicleForUnload().catch(handleError))
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
