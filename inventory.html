@@ -187,10 +187,17 @@
     .transfer-lines { display:grid; gap:10px; margin-top:16px; }
     .transfer-line-head, .transfer-line-row { display:grid; grid-template-columns:minmax(320px,1.7fr) minmax(88px,0.32fr) minmax(108px,0.34fr) minmax(128px,0.45fr) minmax(190px,0.8fr) 44px; gap:8px; align-items:center; }
     .initial-stock-head, .initial-stock-row { grid-template-columns:minmax(280px,1.5fr) minmax(120px,0.45fr) minmax(160px,0.55fr) minmax(180px,0.8fr) 44px; }
-    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(320px,1.7fr) minmax(88px,0.32fr) minmax(108px,0.34fr) minmax(128px,0.45fr) minmax(190px,0.8fr) 44px; }
+    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(300px,1.55fr) minmax(86px,0.28fr) minmax(106px,0.32fr) minmax(132px,0.42fr) minmax(120px,0.36fr) minmax(180px,0.72fr) 44px; }
     .transfer-line-head { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; }
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
+    .transfer-line-row.has-shortage { border-color:rgba(239,68,68,0.75); background:rgba(239,68,68,0.08); }
     .transfer-line-row input, .transfer-line-row select { padding:10px; border-radius:10px; }
+    .transfer-line-availability { min-height:40px; display:flex; flex-direction:column; justify-content:center; gap:2px; padding:8px 10px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.03); font-size:12px; font-weight:800; color:var(--text); }
+    .transfer-line-availability span { color:var(--muted); font-size:11px; font-weight:700; }
+    .transfer-line-availability.ok { border-color:rgba(34,197,94,0.32); color:#bbf7d0; }
+    .transfer-line-availability.warn { border-color:rgba(245,158,11,0.55); color:#fed7aa; background:rgba(245,158,11,0.08); }
+    .transfer-line-availability.bad { border-color:rgba(239,68,68,0.65); color:#fecaca; background:rgba(239,68,68,0.10); }
+    .transfer-line-availability.muted { color:var(--muted); }
     .initial-stock-line-head, .initial-stock-line-row { grid-template-columns:minmax(260px,1.5fr) minmax(110px,0.45fr) minmax(120px,0.5fr) minmax(120px,0.5fr) minmax(160px,0.7fr) 44px; }
     .initial-stock-product-cell { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
     .initial-stock-product-cell input { min-width:0; }
@@ -1066,6 +1073,7 @@
               <span>Produkt</span>
               <span>Množství</span>
               <span>Jednotka</span>
+              <span>Na zdroji</span>
               <span>Tržba s DPH</span>
               <span>Poznámka řádku</span>
               <span></span>
@@ -3990,6 +3998,70 @@
       }
       return product
     }
+    function getSimpleTransferSourceLocationId() {
+      const direction = document.getElementById('simpleTransferDirection')?.value || 'warehouse_to_vehicle'
+      if (direction === 'warehouse_to_vehicle') {
+        const warehouseId = document.getElementById('simpleTransferWarehouseId')?.value || ''
+        return stockLocationsV13.find((location) => location.location_type === 'warehouse' && String(location.warehouse_id) === String(warehouseId))?.id || null
+      }
+      if (direction === 'machines_sale') {
+        const warehouse = getAggregateMachinesWarehouse()
+        return stockLocationsV13.find((location) => location.location_type === 'warehouse' && String(location.warehouse_id) === String(warehouse?.id))?.id || null
+      }
+      const vehicleId = document.getElementById('simpleTransferVehicleId')?.value || ''
+      return stockLocationsV13.find((location) => location.location_type === 'vehicle' && String(location.vehicle_id) === String(vehicleId))?.id || null
+    }
+    function getSimpleTransferAvailableQuantity(productId) {
+      const sourceLocationId = getSimpleTransferSourceLocationId()
+      if (!sourceLocationId || !productId) return null
+      return stockBalancesV13
+        .filter((balance) => String(balance.stock_location_id) === String(sourceLocationId) && String(balance.product_id) === String(productId))
+        .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+    }
+    function getSimpleTransferAvailabilityState(line) {
+      const direction = document.getElementById('simpleTransferDirection')?.value || 'warehouse_to_vehicle'
+      const checkedDirections = ['vehicle_to_machines', 'vehicle_to_warehouse', 'vehicle_sale', 'machines_sale', 'warehouse_to_vehicle']
+      if (!checkedDirections.includes(direction)) return { cls: 'muted', label: '-', note: 'Bez kontroly zdroje', missing: 0 }
+      if (!line.productId) return { cls: 'muted', label: '-', note: 'Vyber produkt', missing: 0 }
+      const available = getSimpleTransferAvailableQuantity(line.productId)
+      if (available == null) return { cls: 'warn', label: '?', note: 'Vyber zdroj', missing: 0 }
+      const required = Number(line.quantity || 0)
+      const product = productsV13.find((item) => String(item.id) === String(line.productId))
+      const unit = product?.base_unit || 'ks'
+      if (!required) return { cls: 'muted', label: formatQuantityValue(available, unit), note: 'Na zdroji', missing: 0, available }
+      const missing = Number((required - available).toFixed(3))
+      if (missing > 0.0001) {
+        return { cls: 'bad', label: formatQuantityValue(available, unit), note: `Chybí ${formatQuantityValue(missing, unit)}`, missing, available }
+      }
+      return { cls: 'ok', label: formatQuantityValue(available, unit), note: 'Na zdroji OK', missing: 0, available }
+    }
+    function syncSimpleTransferAvailability() {
+      const lines = collectSimpleTransferLines()
+      const lineMap = new Map(lines.map((line) => [line.index, line]))
+      simpleTransferLines.querySelectorAll('.transfer-line-row').forEach((row, index) => {
+        const state = getSimpleTransferAvailabilityState(lineMap.get(index) || { productId: 0, quantity: 0 })
+        row.classList.toggle('has-shortage', state.missing > 0.0001)
+        const box = row.querySelector('[data-transfer-availability]')
+        if (box) {
+          box.className = `transfer-line-availability ${state.cls}`
+          box.innerHTML = `${escapeHtml(state.label)}<span>${escapeHtml(state.note)}</span>`
+        }
+      })
+      const shortageCount = lines.filter((line) => getSimpleTransferAvailabilityState(line).missing > 0.0001).length
+      if (shortageCount && simpleTransferImportStatus) {
+        simpleTransferImportStatus.className = 'helper-line error'
+        simpleTransferImportStatus.textContent = `Pozor: ${shortageCount} řádků převádí víc kusů, než je na zdroji. Uprav množství nebo zkontroluj vybrané auto.`
+      } else if (!shortageCount && simpleTransferImportStatus?.textContent?.startsWith('Pozor:')) {
+        simpleTransferImportStatus.className = 'helper-line'
+        simpleTransferImportStatus.textContent = 'Stavy na zdroji sedí. Převodku můžeš uložit.'
+      }
+      return shortageCount
+    }
+    function getSimpleTransferShortages() {
+      return collectSimpleTransferLines()
+        .map((line) => ({ line, state: getSimpleTransferAvailabilityState(line) }))
+        .filter((item) => item.state.missing > 0.0001)
+    }
     function addSimpleTransferLine(row = {}) {
       const wrapper = document.createElement('div')
       wrapper.className = 'transfer-line-row simple-transfer-row'
@@ -4005,6 +4077,7 @@
           <option value="product" ${defaultKind !== 'package' ? 'selected' : ''}>ks / základ</option>
           <option value="package" ${defaultKind === 'package' ? 'selected' : ''}>balení</option>
         </select>
+        <div class="transfer-line-availability muted" data-transfer-availability>-<span>Na zdroji</span></div>
         <input data-transfer-income type="number" min="0" step="0.01" placeholder="Kč s DPH" value="${escapeHtml(totalIncome)}" ${isSaleLine ? '' : 'disabled'} />
         <input data-transfer-note placeholder="Poznámka" value="${escapeHtml(row.note || '')}" />
         <button class="icon-btn" type="button" data-transfer-line-action="remove" title="Odebrat řádek">×</button>
@@ -4012,6 +4085,7 @@
       `
       simpleTransferLines.appendChild(wrapper)
       updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
     }
     function collectSimpleTransferLines() {
       return [...simpleTransferLines.querySelectorAll('.transfer-line-row')]
@@ -4380,6 +4454,7 @@
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
       updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
       simpleTransferLines.lastElementChild?.scrollIntoView({ block: 'nearest' })
     }
     function fillInitialStockFromImport(file, rows) {
@@ -4462,6 +4537,7 @@
       } else {
         addSimpleTransferLine({ productId })
       }
+      syncSimpleTransferAvailability()
       simpleTransferModalBackdrop.classList.add('show')
     }
     function closeSimpleTransferModal() {
@@ -5671,6 +5747,14 @@
       if (!lines.length) throw new Error(isSale ? 'Přidej aspoň jeden řádek prodejky.' : 'Přidej aspoň jeden řádek převodky.')
       const invalidLine = lines.find((line) => !line.productId || line.quantity <= 0)
       if (invalidLine) throw new Error(`Na řádku ${invalidLine.index + 1} vyber položku a kladné množství.`)
+      const shortages = getSimpleTransferShortages()
+      if (shortages.length) {
+        const first = shortages[0]
+        const product = productsV13.find((item) => String(item.id) === String(first.line.productId))
+        const unit = product?.base_unit || 'ks'
+        syncSimpleTransferAvailability()
+        throw new Error(`Řádek ${first.line.index + 1}: ${product?.name || 'položka'} - chceš převést ${formatQuantityValue(first.line.quantity, unit)}, ale na zdroji je jen ${formatQuantityValue(first.state.available || 0, unit)}.`)
+      }
       const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
       const vehicle = vehicles.find((item) => String(item.id) === String(vehicleId))
       const vehicleLocationId = needsVehicle ? await ensureStockLocation('vehicle', vehicleId, vehicle?.name || `Vozidlo ${vehicleId}`) : null
@@ -6043,8 +6127,12 @@
       button.closest('.transfer-line-row')?.remove()
       if (!simpleTransferLines.querySelector('.transfer-line-row')) addSimpleTransferLine()
       updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
     })
-    simpleTransferLines.addEventListener('input', updateSimpleTransferSalesSummary)
+    simpleTransferLines.addEventListener('input', () => {
+      updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
+    })
     simpleTransferLines.addEventListener('change', (event) => {
       const productSelect = event.target.closest('[data-transfer-product]')
       if (productSelect) {
@@ -6054,7 +6142,10 @@
         if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
       }
       updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
     })
+    document.getElementById('simpleTransferVehicleId').addEventListener('change', syncSimpleTransferAvailability)
+    document.getElementById('simpleTransferWarehouseId').addEventListener('change', syncSimpleTransferAvailability)
     simpleTransferImportFile.addEventListener('change', async () => {
       const file = simpleTransferImportFile.files?.[0]
       if (!file) return
