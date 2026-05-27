@@ -3081,6 +3081,10 @@
                     <p class="step-copy" id="activeDaySummaryNote">Po startu tu uvidíš průběh dne.</p>
                   </section>
 
+                  <section class="step-block" id="desktopLoadingCard" hidden>
+                    <div id="desktopLoadingBody"></div>
+                  </section>
+
                   <section class="step-block" id="movementCallout">
                     <div class="step-kicker">Pohyb</div>
                     <h3 class="step-title" id="movementTitle">Zatím bez přesunů</h3>
@@ -3604,6 +3608,8 @@
     const movementCallout = document.getElementById('movementCallout');
     const movementTitle = document.getElementById('movementTitle');
     const movementText = document.getElementById('movementText');
+    const desktopLoadingCard = document.getElementById('desktopLoadingCard');
+    const desktopLoadingBody = document.getElementById('desktopLoadingBody');
     const locationTrackingCard = document.getElementById('locationTrackingCard');
     const locationTrackingSummary = document.getElementById('locationTrackingSummary');
     const locationTrackingStatusLine = document.getElementById('locationTrackingStatusLine');
@@ -5165,6 +5171,10 @@
 
     function scrollToMobileLoadingCard() {
       window.setTimeout(() => {
+        if (!isCompactMobileLayout() && desktopLoadingCard && !desktopLoadingCard.hidden) {
+          desktopLoadingCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
         const loadingButton = document.querySelector('[data-mobile-loading-open="load"]');
         const loadingPanel = loadingButton?.closest('.mobile-section-card') || mobileFocusPanel;
         loadingPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -7056,6 +7066,7 @@
       if (locationTrackingCard) locationTrackingCard.hidden = false;
       if (serviceInlineCard) serviceInlineCard.hidden = !assignedServiceRequests.length;
       if (finishDayBlock) finishDayBlock.hidden = !todayAttendance;
+      renderDesktopLoadingCard();
 
       const startFieldsDisabled = Boolean(todayAttendance);
       startLocationType.disabled = startFieldsDisabled;
@@ -9841,6 +9852,17 @@
       `;
     }
 
+    function renderDesktopLoadingCard() {
+      if (!desktopLoadingCard || !desktopLoadingBody) return;
+      const shouldShow = Boolean(todayAttendance?.id && (todayAttendance?.vehicle_id || startVehicleSelect.value));
+      desktopLoadingCard.hidden = !shouldShow;
+      if (!shouldShow) {
+        desktopLoadingBody.innerHTML = '';
+        return;
+      }
+      desktopLoadingBody.innerHTML = renderMobileLoadingSessionCard(getPreferredBagetteWarehouseId());
+    }
+
     async function runMobileBulkLoadFromPreparedRows() {
       const rows = getPreparedLoadingRows().filter((row) => Number(row.planned_qty || 0) > 0);
       if (!rows.length) {
@@ -10438,6 +10460,8 @@
       } catch (error) {
         console.error('loadRecentLoadingRecommendations failed', error);
       }
+
+      renderDesktopLoadingCard();
     }
 
     startLocationType.addEventListener('change', updateLocationVisibility);
@@ -10543,6 +10567,7 @@
         setActionsStatus(error.message || 'Akci se nepodařilo uložit.', 'error');
       } finally {
         renderMobileShiftUI();
+        renderDesktopLoadingCard();
       }
     });
 
@@ -10967,6 +10992,70 @@
           ...mobileLoadingNotes,
           [String(target.dataset.mobileLoadingNoteInput)]: target.value
         };
+      }
+    });
+
+    actionGrid?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest('#desktopLoadingCard')) return;
+      if (target instanceof HTMLInputElement && target.dataset.mobileLoadingQtyInput) {
+        setMobileLoadingQty(target.dataset.mobileLoadingQtyInput, Number(target.value || 0));
+      }
+      if ((target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) && target.dataset.mobileLoadingNoteInput) {
+        mobileLoadingNotes = {
+          ...mobileLoadingNotes,
+          [String(target.dataset.mobileLoadingNoteInput)]: target.value
+        };
+      }
+    });
+
+    actionGrid?.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest('button');
+      if (!button || !button.closest('#desktopLoadingCard')) return;
+
+      try {
+        if (button.hasAttribute('data-mobile-loading-clear')) {
+          const productId = button.dataset.mobileLoadingClear || '';
+          setMobileLoadingQty(productId, 0);
+          mobileLoadingNotes = {
+            ...mobileLoadingNotes,
+            [String(productId)]: ''
+          };
+          renderDesktopLoadingCard();
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-loading-open')) {
+          const nextMode = button.dataset.mobileLoadingOpen || 'load';
+          if (nextMode !== 'load' && !currentLoadingSession?.id) {
+            const warehouseId = String(getPreferredBagetteWarehouseId() || '');
+            if (!warehouseId) throw new Error('Vyber sklad pro dnešní nakládku.');
+            await ensureCurrentLoadingSession(warehouseId);
+            await loadCurrentLoadingSession();
+            renderDesktopLoadingCard();
+          }
+          openLoadingPicker(nextMode);
+          return;
+        }
+
+        if (button.hasAttribute('data-mobile-loading-pick-all')) {
+          button.disabled = true;
+          const result = await runMobileBulkLoadFromPreparedRows();
+          await refreshPageData();
+          renderDesktopLoadingCard();
+          if (result.warnings.length) {
+            setActionsStatus(`Nakládka hotová částečně · ${result.processedRows} položek · ${Math.round(result.processedUnits)} ks. Zkontroluj odchylky.`, 'warning');
+          } else {
+            setActionsStatus(`Nakládka hotová · ${result.processedRows} položek · ${Math.round(result.processedUnits)} ks celkem.`, 'success');
+          }
+        }
+      } catch (error) {
+        console.error(error);
+        setActionsStatus(error.message || 'Nakládku se nepodařilo uložit.', 'error');
+      } finally {
+        renderMobileShiftUI();
       }
     });
 

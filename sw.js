@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v15-mobile-loading-link';
+const CACHE_NAME = 'olvend-v15-morning-loading-desktop';
 const APP_SHELL = [
   './',
   './index.html',
