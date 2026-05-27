@@ -6357,6 +6357,45 @@
       return '';
     }
 
+    function hasVehicleOption(vehicleId) {
+      if (!vehicleId || !startVehicleSelect) return false;
+      return [...startVehicleSelect.options].some((option) => option.value === String(vehicleId));
+    }
+
+    function getResolvedAttendanceVehicleId() {
+      const candidates = [
+        todayAttendance?.vehicle_id,
+        startVehicleSelect?.value,
+        mobilePrestartVehicleId,
+        todayPlannedShift?.vehicle_id,
+        vehiclesDirectory.find((vehicle) => String(vehicle.assigned_employee_id || '') === String(currentUser?.id || ''))?.id
+      ];
+      const vehicleId = candidates.find((value) => String(value || '').trim());
+      return vehicleId ? Number(vehicleId) : null;
+    }
+
+    async function attachVehicleAndWarehouseToTodayAttendance(vehicleId, warehouseId = null) {
+      if (!todayAttendance?.id) return;
+      const patch = {};
+      if (vehicleId && !todayAttendance.vehicle_id) patch.vehicle_id = Number(vehicleId);
+      if (warehouseId && !todayAttendance.start_warehouse_id) patch.start_warehouse_id = Number(warehouseId);
+      if (!Object.keys(patch).length) return;
+
+      const { error } = await supabase
+        .from('attendance_days')
+        .update(patch)
+        .eq('id', Number(todayAttendance.id));
+      if (error) throw error;
+
+      todayAttendance = {
+        ...todayAttendance,
+        ...patch
+      };
+      if (patch.vehicle_id && startVehicleSelect && hasVehicleOption(patch.vehicle_id)) {
+        startVehicleSelect.value = String(patch.vehicle_id);
+      }
+    }
+
     function isOfficeStartWithoutVehicle() {
       return !todayAttendance?.actual_start && startDayMode?.value === 'office';
     }
@@ -6364,7 +6403,8 @@
     function applySuggestedVehicle(force = false) {
       if (!startVehicleSelect) return;
       if (todayAttendance?.actual_start) {
-        startVehicleSelect.value = todayAttendance.vehicle_id ? String(todayAttendance.vehicle_id) : '';
+        const suggestedVehicleId = todayAttendance.vehicle_id ? String(todayAttendance.vehicle_id) : findSuggestedVehicleId();
+        startVehicleSelect.value = hasVehicleOption(suggestedVehicleId) ? suggestedVehicleId : '';
         return;
       }
 
@@ -8932,6 +8972,12 @@
     function getPreferredBagetteWarehouseId() {
       if (todayAttendance?.start_warehouse_id) return todayAttendance.start_warehouse_id;
       if (todayPlannedShift?.warehouse_id) return todayPlannedShift.warehouse_id;
+      const resolvedVehicleId = getResolvedAttendanceVehicleId();
+      const vehicleWarehouseId = resolvedVehicleId
+        ? vehiclesDirectory.find((item) => String(item.id) === String(resolvedVehicleId))?.warehouse_id
+        : null;
+      if (vehicleWarehouseId) return vehicleWarehouseId;
+      if (currentUser?.warehouse_id) return currentUser.warehouse_id;
       if (warehousesDirectory.length === 1) return warehousesDirectory[0].id;
 
       const totalsByWarehouse = new Map();
@@ -9543,7 +9589,7 @@
     }
 
     async function loadCurrentLoadingSession() {
-      if (!todayAttendance?.id || !todayAttendance?.vehicle_id) {
+      if (!todayAttendance?.id || !getResolvedAttendanceVehicleId()) {
         currentLoadingSession = null;
         currentLoadingSessionItems = [];
         mobileLoadingQuantities = {};
@@ -9599,7 +9645,8 @@
 
     async function ensureCurrentLoadingSession(warehouseId, note = null) {
       if (currentLoadingSession?.id) return currentLoadingSession;
-      if (!todayAttendance?.id || !todayAttendance?.vehicle_id) {
+      const resolvedVehicleId = getResolvedAttendanceVehicleId();
+      if (!todayAttendance?.id || !resolvedVehicleId) {
         throw new Error('Nakládku můžeš založit až po připojení vozidla ke směně.');
       }
       const resolvedWarehouseId = Number(warehouseId || getPreferredBagetteWarehouseId() || 0);
@@ -9607,10 +9654,12 @@
         throw new Error('Vyber sklad, ze kterého budeš nakládat.');
       }
 
+      await attachVehicleAndWarehouseToTodayAttendance(resolvedVehicleId, resolvedWarehouseId);
+
       const payload = {
         attendance_day_id: Number(todayAttendance.id),
         employee_id: currentUser.id,
-        vehicle_id: Number(todayAttendance.vehicle_id),
+        vehicle_id: Number(resolvedVehicleId),
         warehouse_id: resolvedWarehouseId,
         route_plan_id: todayRoutePlan?.id ? Number(todayRoutePlan.id) : null,
         session_date: todayAttendance.attendance_date,
@@ -9802,7 +9851,8 @@
     }
 
     async function saveLoadingSessionMovement(productId, mode, quantity, note = null) {
-      if (!todayAttendance?.id || !todayAttendance?.vehicle_id) {
+      const resolvedVehicleId = getResolvedAttendanceVehicleId();
+      if (!todayAttendance?.id || !resolvedVehicleId) {
         throw new Error('Nakládku můžeš zapisovat jen ke dnešní směně s vozidlem.');
       }
 
@@ -9819,7 +9869,7 @@
       if (!warehouseId) throw new Error('Session nemá vybraný sklad.');
 
       const warehouseLocationId = await ensureStockLocationV13('warehouse', warehouseId, null);
-      const vehicleLocationId = await ensureStockLocationV13('vehicle', null, todayAttendance.vehicle_id);
+      const vehicleLocationId = await ensureStockLocationV13('vehicle', null, resolvedVehicleId);
       const product = loadingCatalogProducts.find((item) => String(item.product_id) === String(productId))
         || bagettePilotProducts.find((item) => String(item.product_id) === String(productId));
       const referenceType = 'loading_session';
