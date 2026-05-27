@@ -73,9 +73,10 @@
     .inline-field-action { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }
     .series-preview { padding:12px 14px; border-radius:12px; background:rgba(255,255,255,0.045); border:1px solid var(--border); font-size:14px; font-weight:900; min-height:45px; display:flex; align-items:center; }
     .invoice-lines { display:grid; gap:10px; overflow-x:auto; padding-bottom:4px; }
-    .invoice-line { display:grid; grid-template-columns:minmax(360px,1.5fr) 110px 150px 90px 140px 140px 76px; gap:10px; align-items:start; min-width:1110px; padding:14px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
+    .invoice-line { display:grid; grid-template-columns:minmax(390px,1.45fr) 100px 90px 130px 130px 80px 130px 130px 76px; gap:10px; align-items:start; min-width:1360px; padding:14px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
     .invoice-line-total { padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:rgba(255,255,255,0.035); min-height:45px; display:flex; align-items:center; font-weight:900; white-space:nowrap; }
     .product-picker-main { display:grid; gap:6px; min-width:0; }
+    .product-picker-row { display:grid; grid-template-columns:150px minmax(0,1fr); gap:8px; }
     .product-search { padding:12px 14px; border-radius:12px; font-size:14px; }
     :root[data-olvend-theme="light"] input,
     :root[data-olvend-theme="light"] select,
@@ -881,6 +882,10 @@
     function productUnitCost(product) {
       return Number(product?.purchase_price || 0)
     }
+    function lineKind(rowOrLine) {
+      const value = rowOrLine?.querySelector ? rowOrLine.querySelector('[data-line-kind]')?.value : (rowOrLine?.lineType || rowOrLine?.line_type || rowOrLine?.source_type)
+      return value === 'non_stock' ? 'non_stock' : 'stock'
+    }
     function profitForLines(lines) {
       const cost = roundMoney(lines.reduce((sum, line) => sum + (Number(line.quantity || 0) * Number(line.unitCost || 0)), 0))
       const net = roundMoney(lines.reduce((sum, line) => sum + Number(line.net || 0), 0))
@@ -924,13 +929,24 @@
         const unitPrice = Number(line.unitPrice ?? line.unit_price ?? 0)
         const vatRate = Number(line.vatRate ?? line.vat_rate ?? 0)
         const net = roundMoney(Number(line.quantity || 0) * unitPrice)
-        return { ...line, net, gross: roundMoney(net * (1 + vatRate / 100)) }
+        const product = productById(line.productId ?? line.product_id)
+        return {
+          ...line,
+          lineType: lineKind(line),
+          productName: line.productName || line.product_name || productLabel(product) || 'Položka',
+          unitCost: Number(line.unitCost ?? line.unit_cost ?? productUnitCost(product) ?? 0),
+          net,
+          gross: roundMoney(net * (1 + vatRate / 100))
+        }
       }
       lines.forEach((line) => {
-        const productId = line.productId ?? line.product_id ?? ''
+        const type = lineKind(line)
+        const productId = type === 'stock' ? (line.productId ?? line.product_id ?? '') : ''
+        const productName = type === 'non_stock' ? normalizeText(line.productName || line.product_name || '') : ''
         const unitPrice = Number(line.unitPrice ?? line.unit_price ?? 0)
         const vatRate = Number(line.vatRate ?? line.vat_rate ?? 0)
-        const key = [productId, unitPrice.toFixed(4), vatRate.toFixed(2)].join('|')
+        const unitCost = Number(line.unitCost ?? line.unit_cost ?? 0)
+        const key = [type, productId || productName, unitPrice.toFixed(4), vatRate.toFixed(2), unitCost.toFixed(4)].join('|')
         const current = map.get(key)
         const quantity = Number(line.quantity || 0)
         if (current) {
@@ -949,6 +965,7 @@
     function stockLinesForSalesLines(lines = []) {
       const map = new Map()
       lines.forEach((line) => {
+        if (lineKind(line) === 'non_stock') return
         const productId = line.productId ?? line.product_id
         const quantity = Number(line.quantity || 0)
         if (!productId || quantity <= 0) return
@@ -983,12 +1000,16 @@
       return Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).map((row) => {
         const productInput = row.querySelector('[data-line-product-id]')
         const product = productById(productInput?.value)
+        const type = lineKind(row)
+        const nameValue = row.querySelector('[data-line-product-search]')?.value.trim() || ''
+        const unitValue = row.querySelector('[data-line-unit]')?.value.trim() || ''
         const amounts = lineAmounts(row)
         return {
-          productId: productInput?.value ? Number(productInput.value) : null,
-          productName: productLabel(product) || row.querySelector('[data-line-product-search]')?.value || 'Položka',
-          unit: productUnit(product),
-          unitCost: productUnitCost(product),
+          lineType: type,
+          productId: type === 'stock' && productInput?.value ? Number(productInput.value) : null,
+          productName: type === 'stock' ? (productLabel(product) || nameValue || 'Položka') : (nameValue || 'Neskladová položka'),
+          unit: unitValue || productUnit(product),
+          unitCost: Number(row.querySelector('[data-line-unit-cost]')?.value || 0),
           ...amounts
         }
       })
@@ -1019,19 +1040,29 @@
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       documentNumberPreview.textContent = documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value)
       if (!variableSymbol.value.trim()) variableSymbol.value = documentNumberPreview.textContent.replace(/\D/g, '').slice(-10)
-      const unmatched = Array.from(invoiceLines.querySelectorAll('[data-line-product-id]')).filter((input) => !input.value).length
-      setLineStatus(unmatched ? `${unmatched} položek ještě nemá vybranou kartu zásoby.` : 'Položky jsou připravené k uložení.', unmatched ? 'error' : 'success')
+      const unmatched = Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).filter((row) => lineKind(row) === 'stock' && !row.querySelector('[data-line-product-id]')?.value).length
+      setLineStatus(unmatched ? `${unmatched} skladových položek ještě nemá vybranou kartu zásoby.` : 'Položky jsou připravené k uložení.', unmatched ? 'error' : 'success')
       return { totalNet, totalGross: totals.total }
     }
     function syncLineProduct(row) {
       const product = productBySearchValue(row.querySelector('[data-line-product-search]')?.value || '')
       const hidden = row.querySelector('[data-line-product-id]')
+      const type = lineKind(row)
+      if (type === 'non_stock') {
+        hidden.value = ''
+        updateLineTotals()
+        return
+      }
       hidden.value = product ? String(product.id) : ''
       if (product) {
         const priceInput = row.querySelector('[data-line-unit-price]')
         const vatInput = row.querySelector('[data-line-vat]')
+        const unitInput = row.querySelector('[data-line-unit]')
+        const costInput = row.querySelector('[data-line-unit-cost]')
         if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(Number(product.sale_price || 0))
         if (vatInput && product.vat_rate != null) vatInput.value = String(Number(product.vat_rate || 0))
+        if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
+        if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
       }
       updateLineTotals()
     }
@@ -1039,18 +1070,28 @@
       const key = `line-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const product = productById(source.product_id || source.productId)
       const listId = `products-${key}`
+      const type = lineKind(source)
       const quantity = Number(source.quantity ?? 1)
       const unitPrice = Number(source.unit_price ?? source.unitPrice ?? product?.sale_price ?? 0)
+      const unit = source.unit || productUnit(product)
+      const unitCost = Number(source.unit_cost ?? source.unitCost ?? productUnitCost(product) ?? 0)
       const vatRate = Number(source.vat_rate ?? source.vatRate ?? product?.vat_rate ?? 21)
       const net = roundMoney(quantity * unitPrice)
       const gross = roundMoney(net * (1 + vatRate / 100))
+      const lineName = type === 'stock' ? productLabel(product) : (source.product_name || source.productName || '')
       invoiceLines.insertAdjacentHTML('beforeend', `
         <div class="invoice-line" data-invoice-line="${escapeHtml(key)}">
           <div class="field">
             <label>Položka</label>
             <div class="product-picker-main">
-              <input type="hidden" data-line-product-id value="${escapeHtml(String(product?.id || ''))}" />
-              <input class="product-search" data-line-product-search type="search" list="${escapeHtml(listId)}" autocomplete="off" placeholder="Začni psát název, SKU nebo EAN..." value="${escapeHtml(productLabel(product))}" />
+              <div class="product-picker-row">
+                <select data-line-kind>
+                  <option value="stock"${type === 'stock' ? ' selected' : ''}>Skladová</option>
+                  <option value="non_stock"${type === 'non_stock' ? ' selected' : ''}>Neskladová</option>
+                </select>
+                <input class="product-search" data-line-product-search type="search" list="${escapeHtml(listId)}" autocomplete="off" placeholder="Název položky, SKU nebo EAN..." value="${escapeHtml(lineName)}" />
+              </div>
+              <input type="hidden" data-line-product-id value="${escapeHtml(String(type === 'stock' ? product?.id || '' : ''))}" />
               <datalist id="${escapeHtml(listId)}">${productDatalistOptions()}</datalist>
             </div>
           </div>
@@ -1059,8 +1100,16 @@
             <input data-line-qty type="number" min="0" step="0.001" value="${escapeHtml(String(quantity || 1))}" />
           </div>
           <div class="field">
+            <label>MJ</label>
+            <input data-line-unit type="text" value="${escapeHtml(unit || 'ks')}" />
+          </div>
+          <div class="field">
             <label>Cena bez DPH</label>
             <input data-line-unit-price type="number" min="0" step="0.01" value="${escapeHtml(String(unitPrice || 0))}" />
+          </div>
+          <div class="field">
+            <label>Nákup bez DPH</label>
+            <input data-line-unit-cost type="number" min="0" step="0.01" value="${escapeHtml(String(unitCost || 0))}" />
           </div>
           <div class="field">
             <label>DPH %</label>
@@ -1303,10 +1352,10 @@
     }
     async function applyDocumentStockImpact(documentId, lines, options) {
       if (!isStockImpactStatus(options.status)) return
-      const stockLocationId = Number(options.stockLocationId || 0)
-      if (!stockLocationId) throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
       const stockLines = stockLinesForSalesLines(lines)
       if (!stockLines.length) return
+      const stockLocationId = Number(options.stockLocationId || 0)
+      if (!stockLocationId) throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
       const isReturn = options.documentType === 'credit_note'
       const deltaMap = new Map()
       stockLines.forEach((line) => {
@@ -1836,7 +1885,7 @@
         setStatus('Načítám vystavené faktury...')
         const [documentsResult, itemsResult, productsResult, locationsResult, recipesResult, recipeItemsResult] = await Promise.all([
           supabase.from('sales_documents').select('*').order('issued_at', { ascending:false }),
-          supabase.from('sales_document_items').select('id, document_id, product_id, quantity, unit_price, vat_rate, source_type, source_id, products(name)').order('id', { ascending:true }),
+          supabase.from('sales_document_items').select('id, document_id, product_id, product_name, unit, unit_cost, quantity, unit_price, vat_rate, source_type, source_id, products(name)').order('id', { ascending:true }),
           supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, purchase_price, sale_price, vat_rate, active, note').eq('active', true).order('name', { ascending:true }),
           supabase.from('stock_locations').select('id, name, location_type, warehouse_id, vehicle_id, active, note').eq('active', true).order('name', { ascending:true }),
           supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending:true }),
@@ -1850,8 +1899,10 @@
         renderStockIssueLocations(stockIssueLocation.value)
         documentItems = (itemsResult.data || []).map((item) => ({
           ...item,
-          product_name: item.products?.name || productById(item.product_id)?.name || 'Položka',
-          unit: productById(item.product_id)?.base_unit || 'ks'
+          lineType: item.source_type === 'non_stock' ? 'non_stock' : 'stock',
+          product_name: item.product_name || item.products?.name || productById(item.product_id)?.name || 'Položka',
+          unit: item.unit || productById(item.product_id)?.base_unit || 'ks',
+          unitCost: Number(item.unit_cost || productUnitCost(productById(item.product_id)) || 0)
         }))
         const itemMap = new Map()
         documentItems.forEach((item) => {
@@ -1870,11 +1921,12 @@
     }
     async function saveDocument() {
       const lines = mergeInvoiceLines(getModalLines().filter((line) => line.quantity > 0))
-      const invalid = lines.find((line) => !line.productId || line.unitPrice < 0)
+      const invalid = lines.find((line) => line.unitPrice < 0 || (line.lineType === 'stock' ? !line.productId : !String(line.productName || '').trim()))
       if (!customerName.value.trim()) throw new Error('Doplň odběratele.')
       if (!lines.length) throw new Error('Přidej aspoň jednu položku.')
-      if (invalid) throw new Error('U každé položky vyber kartu zásoby a zadej cenu.')
-      if (isStockImpactStatus(documentStatus.value || 'issued') && !stockIssueLocation.value) {
+      if (invalid) throw new Error('U skladové položky vyber kartu zásoby, u neskladové zadej název a cenu.')
+      const needsStockIssueLocation = isStockImpactStatus(documentStatus.value || 'issued') && stockLinesForSalesLines(lines).length > 0
+      if (needsStockIssueLocation && !stockIssueLocation.value) {
         throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
       }
       const totals = documentTotals(lines)
@@ -1936,10 +1988,13 @@
       const { error: itemsError } = await supabase.from('sales_document_items').insert(lines.map((line) => ({
         document_id: documentId,
         product_id: line.productId,
+        product_name: line.productName,
+        unit: line.unit || 'ks',
+        unit_cost: line.unitCost || 0,
         quantity: line.quantity,
         unit_price: line.unitPrice,
         vat_rate: line.vatRate,
-        source_type: 'manual'
+        source_type: line.lineType === 'non_stock' ? 'non_stock' : 'manual'
       })))
       if (itemsError) throw itemsError
       if (existingDocument) await reverseDocumentStockImpact(existingDocument)
@@ -2065,7 +2120,7 @@
     invoiceLines.addEventListener('change', (event) => {
       const row = event.target.closest('[data-invoice-line]')
       if (!row) return
-      if (event.target.matches('[data-line-product-search]')) syncLineProduct(row)
+      if (event.target.matches('[data-line-product-search], [data-line-kind]')) syncLineProduct(row)
       updateLineTotals()
     })
     invoiceLines.addEventListener('click', (event) => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v15-issued-invoices';
+const CACHE_NAME = 'olvend-v15-issued-invoices-nonstock';
 const APP_SHELL = [
   './',
   './index.html',
