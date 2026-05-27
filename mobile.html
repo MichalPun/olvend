@@ -3062,43 +3062,23 @@
       return created.id
     }
 
-    async function getBalanceRecord(stockLocationId, productId) {
-      const { data, error } = await supabase
-        .from('stock_location_balances')
-        .select('id, quantity_on_hand')
-        .eq('stock_location_id', stockLocationId)
-        .eq('product_id', productId)
-        .is('batch_id', null)
-        .limit(1)
-        .maybeSingle()
-      if (error) throw error
-      return data || null
-    }
-
-    async function applyBalanceDelta(stockLocationId, productId, delta) {
-      if (!stockLocationId || !productId || !delta) return
-      const record = await getBalanceRecord(stockLocationId, productId)
-      const currentQty = Number(record?.quantity_on_hand || 0)
-      const nextQty = Number((currentQty + delta).toFixed(3))
-      if (record?.id) {
-        const { error } = await supabase
-          .from('stock_location_balances')
-          .update({ quantity_on_hand: nextQty, updated_at: new Date().toISOString() })
-          .eq('id', record.id)
-        if (error) throw error
-        return
-      }
-      const { error } = await supabase.from('stock_location_balances').insert({
-        stock_location_id: stockLocationId,
-        product_id: productId,
-        quantity_on_hand: nextQty,
-        reserved_quantity: 0
-      })
-      if (error) throw error
-    }
-
     function getRequestQuantity(item) {
       return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
+    }
+
+    async function applyStockMovementsAtomically(movements) {
+      if (!movements.length) return
+      const { error } = await supabase.rpc('apply_stock_movements_v13', { movement_rows: movements })
+      if (error) {
+        const message = String(error.message || '')
+        if (message.includes('Insufficient stock')) {
+          throw new Error('Na zvoleném skladě nebo vozidle není dost kusů pro tento pohyb.')
+        }
+        if (message.includes('apply_stock_movements_v13') || message.includes('schema cache')) {
+          throw new Error('Atomické uložení skladového pohybu není nasazené. Spusť prosím database/stock_movements_atomic_rpc_v13.sql.')
+        }
+        throw error
+      }
     }
 
     async function applyStockRequestToInventory(request, items = getStockRequestItems(request.id)) {
@@ -3128,10 +3108,9 @@
 
         if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
           if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro nakládku chybí sklad nebo vozidlo.')
-          await applyBalanceDelta(warehouseLocationId, productId, -quantity)
-          await applyBalanceDelta(vehicleLocationId, productId, quantity)
           movementRows.push({
             product_id: productId,
+            batch_id: null,
             from_stock_location_id: warehouseLocationId,
             to_stock_location_id: vehicleLocationId,
             movement_type: 'load_vehicle',
@@ -3145,10 +3124,9 @@
 
         if (request.request_type === 'vehicle_unload') {
           if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro vykládku chybí sklad nebo vozidlo.')
-          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
-          await applyBalanceDelta(warehouseLocationId, productId, quantity)
           movementRows.push({
             product_id: productId,
+            batch_id: null,
             from_stock_location_id: vehicleLocationId,
             to_stock_location_id: warehouseLocationId,
             movement_type: 'return',
@@ -3162,10 +3140,11 @@
 
         if (request.request_type === 'vehicle_sale') {
           if (!vehicleLocationId) throw new Error('Pro prodej chybí vozidlo.')
-          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
           movementRows.push({
             product_id: productId,
+            batch_id: null,
             from_stock_location_id: vehicleLocationId,
+            to_stock_location_id: null,
             movement_type: 'sale',
             quantity_base_units: quantity,
             reference_type: 'mobile_stock_request',
@@ -3177,10 +3156,11 @@
 
         if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
           if (!vehicleLocationId) throw new Error('Pro vratku/odpis chybí vozidlo.')
-          await applyBalanceDelta(vehicleLocationId, productId, -quantity)
           movementRows.push({
             product_id: productId,
+            batch_id: null,
             from_stock_location_id: vehicleLocationId,
+            to_stock_location_id: null,
             movement_type: 'waste',
             quantity_base_units: quantity,
             reference_type: 'mobile_stock_request',
@@ -3192,8 +3172,7 @@
       }
 
       if (!movementRows.length) throw new Error('Skladový doklad nemá platnou položku se skladovou kartou.')
-      const { error: movementError } = await supabase.from('stock_movements_v13').insert(movementRows)
-      if (movementError) throw movementError
+      await applyStockMovementsAtomically(movementRows)
 
       const { error: requestError } = await supabase
         .from('mobile_stock_requests')
