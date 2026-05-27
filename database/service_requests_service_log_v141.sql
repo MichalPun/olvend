@@ -17,7 +17,8 @@ alter table public.service_requests
       'need_spare_part',
       'need_machine_replacement',
       'not_found',
-      'return_later'
+      'return_later',
+      'return_with_part'
     )
     or service_result is null
   );

@@ -729,6 +729,33 @@
       font-weight: 800;
     }
 
+    .service-meta {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .service-meta-row {
+      display: grid;
+      gap: 3px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.32;
+    }
+
+    .service-meta-row strong {
+      color: #eef2f8;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .service-meta-row span {
+      overflow-wrap: anywhere;
+    }
+
     .card-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1425,6 +1452,47 @@
       }).format(new Date(value))
     }
 
+    function cleanDelayReason(value) {
+      return String(value || '')
+        .replace(/^(\s*Důvod\s+prodlení\s*:\s*)+/i, '')
+        .trim()
+    }
+
+    function getServiceDelayText(item) {
+      return cleanDelayReason(item?.delay_note)
+        || cleanDelayReason(item?.internal_service_note)
+        || cleanDelayReason(item?.next_recommendation)
+        || ''
+    }
+
+    function getServiceLocationLabel(item) {
+      return [item?.location_name, item?.location_city].filter(Boolean).join(' · ') || 'Bez lokality'
+    }
+
+    function renderServiceMeta(item) {
+      const description = String(item?.description || '').trim()
+      return `
+        <div class="service-meta">
+          <div class="service-meta-row">
+            <strong>Lokalita</strong>
+            <span>${escapeHtml(getServiceLocationLabel(item))}</span>
+          </div>
+          ${description ? `
+            <div class="service-meta-row">
+              <strong>Popis</strong>
+              <span>${escapeHtml(description)}</span>
+            </div>
+          ` : ''}
+          ${item?.due_date ? `
+            <div class="service-meta-row">
+              <strong>Termín</strong>
+              <span>${escapeHtml(item.due_date)}</span>
+            </div>
+          ` : ''}
+        </div>
+      `
+    }
+
     function getCurrentBreakState() {
       let openBreak = null
       const sorted = [...state.events].sort((a, b) => String(a.event_time || '').localeCompare(String(b.event_time || '')))
@@ -1678,24 +1746,25 @@
 
       els.serviceList.innerHTML = openServices.map((item) => {
         const old = item.created_at && (Date.now() - new Date(item.created_at).getTime()) > 3 * 24 * 60 * 60 * 1000
+        const delayText = getServiceDelayText(item)
         if (old) {
           return `
             <article class="task-card locked-panel">
               <div class="task-head">
                 <div>
                   <h4>${escapeHtml(item.title || 'Servis')}</h4>
-                  <div class="meta"><span>${escapeHtml(item.location_name || 'Lokalita')}</span><span>${escapeHtml(item.description || 'Bez popisu')}</span>${item.due_date ? `<span>Termín ${escapeHtml(item.due_date)}</span>` : ''}</div>
+                  ${renderServiceMeta(item)}
                 </div>
-                <span class="badge red">Doplnit</span>
+                <span class="badge ${delayText ? 'yellow' : 'red'}">${delayText ? 'Čeká' : 'Doplnit'}</span>
               </div>
               <div class="attention-box">
-                <strong>Důvod prodlení</strong>
-                <span>Tady jen napiš, proč zásah stále není hotový. Samotný servis se bude řešit samostatně.</span>
+                <strong>${delayText ? 'Uložený důvod prodlení' : 'Důvod prodlení'}</strong>
+                <span>${escapeHtml(delayText || 'Napiš konkrétně, proč zásah stále není hotový.')}</span>
               </div>
               <div class="service-form">
                 <label>
                   Proč to trvá
-                  <textarea data-service-followup-reason data-id="${item.id}" placeholder="Např. čekáme na díl, domluva se zákazníkem, návrat technika v pátek...">${escapeHtml(item.internal_service_note || item.next_recommendation || '')}</textarea>
+                  <textarea data-service-followup-reason data-id="${item.id}" placeholder="Např. čekáme na díl, domluva se zákazníkem, návrat technika v pátek...">${escapeHtml(delayText)}</textarea>
                 </label>
                 <button class="primary-btn" data-service-action="followup" data-id="${item.id}" type="button">Uložit důvod</button>
               </div>
@@ -1707,7 +1776,7 @@
             <div class="task-head">
               <div>
                 <h4>${escapeHtml(item.title || 'Servis')}</h4>
-                <div class="meta"><span>${escapeHtml(item.location_name || 'Lokalita')}</span><span>${escapeHtml(item.description || 'Bez popisu')}</span>${item.due_date ? `<span>Termín ${escapeHtml(item.due_date)}</span>` : ''}</div>
+                ${renderServiceMeta(item)}
               </div>
               <span class="badge ${item.priority === 'high' || item.priority === 'critical' ? 'yellow' : 'blue'}">${escapeHtml(item.priority || 'normal')}</span>
             </div>
@@ -2145,18 +2214,50 @@
     }
 
     async function loadServices() {
-      const { data, error } = await supabase
+      const baseSelect = 'id, title, description, priority, status, due_date, created_at, location_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
+      let result = await supabase
         .from('service_requests')
-        .select('id, title, description, priority, status, due_date, created_at, location_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note')
+        .select(`${baseSelect}, delay_reason, delay_note`)
         .eq('assigned_employee_id', state.employee.id)
         .neq('status', 'cancelled')
         .order('created_at', { ascending: false })
         .limit(30)
-      if (error) {
+      if (result.error && String(result.error.message || '').toLowerCase().includes('delay_')) {
+        result = await supabase
+          .from('service_requests')
+          .select(baseSelect)
+          .eq('assigned_employee_id', state.employee.id)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false })
+          .limit(30)
+      }
+      if (result.error) {
         state.services = []
         return
       }
-      state.services = data || []
+
+      const services = result.data || []
+      const locationIds = [...new Set(services.map((item) => item.location_id).filter(Boolean))]
+      let locationMap = new Map()
+
+      if (locationIds.length) {
+        const { data: locations, error: locationsError } = await supabase
+          .from('locations')
+          .select('id, name, city')
+          .in('id', locationIds)
+        if (!locationsError) {
+          locationMap = new Map((locations || []).map((item) => [String(item.id), item]))
+        }
+      }
+
+      state.services = services.map((item) => {
+        const location = locationMap.get(String(item.location_id || ''))
+        return {
+          ...item,
+          location_name: location?.name || null,
+          location_city: location?.city || null
+        }
+      })
     }
 
     async function loadStockRequests() {
@@ -2997,25 +3098,36 @@
       }
 
       if (action === 'followup') {
-        const reason = els.serviceList.querySelector(`[data-service-followup-reason][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        const reason = cleanDelayReason(els.serviceList.querySelector(`[data-service-followup-reason][data-id="${CSS.escape(String(id))}"]`)?.value || '')
         if (!reason) throw new Error('Doplň důvod, proč servis stále není hotový.')
-        const note = `Důvod prodlení: ${reason}`
         const { error } = await supabase.from('mobile_service_followups').insert({
           service_request_id: id,
           employee_id: state.employee.id,
           attendance_day_id: state.attendanceDay?.id || null,
-          followup_reason: note,
+          followup_reason: reason,
           next_required_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
           escalation_level: 1
         })
         if (error) console.warn('Follow-up audit note was not saved, continuing with service note.', error)
-        const { error: updateError } = await supabase.from('service_requests').update({
-          status: 'in_progress',
-          internal_service_note: note
-        }).eq('id', id)
+
+        const updates = [
+          { status: 'blocked', delay_reason: 'other', delay_note: reason, internal_service_note: reason, next_recommendation: reason },
+          { status: 'in_progress', internal_service_note: reason, next_recommendation: reason },
+          { status: 'in_progress', internal_service_note: reason },
+          { status: 'in_progress' }
+        ]
+        let updateError = null
+        for (const payload of updates) {
+          const result = await supabase.from('service_requests').update(payload).eq('id', id)
+          if (!result.error) {
+            updateError = null
+            break
+          }
+          updateError = result.error
+        }
         if (updateError) throw updateError
         state.services = state.services.map((service) => String(service.id) === String(id)
-          ? { ...service, status: 'in_progress', internal_service_note: note, next_recommendation: service.next_recommendation || reason }
+          ? { ...service, status: 'blocked', delay_reason: 'other', delay_note: reason, internal_service_note: reason, next_recommendation: reason }
           : service)
         renderServices()
         renderImportant()
