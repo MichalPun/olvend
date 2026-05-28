@@ -2182,6 +2182,30 @@
       }[status] || status || 'Inventura'
     }
 
+    function getInventoryCountPackage(product) {
+      const id = String(product?.id || '')
+      const sku = String(product?.sku || '')
+      const name = String(product?.name || '').toLowerCase()
+      if (id === '78' || sku === '45' || name.includes('kelímek 180')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
+      if (id === '79' || sku === '255' || name.includes('kelímek 250')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
+      if (id === '80' || sku === '53' || name.includes('kelímek 300')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 50 }
+      return null
+    }
+
+    function displayInventoryCountValue(item, product) {
+      const counted = Number(item.counted_quantity || 0)
+      const countPackage = getInventoryCountPackage(product)
+      if (!item.counted_at) return ''
+      return countPackage ? Number((counted / countPackage.factor).toFixed(3)) : counted
+    }
+
+    function inventoryCountInputToBase(rawValue, factor = 1) {
+      if (rawValue === '') return 0
+      const quantity = Number(String(rawValue).replace(',', '.'))
+      if (!Number.isFinite(quantity) || quantity < 0) throw new Error('Zadej fyzický stav jako nezáporné číslo.')
+      return Number((quantity * factor).toFixed(3))
+    }
+
     function renderVehicleInventories() {
       if (!els.vehicleInventoryList) return
       const activeAudits = state.inventoryAudits.filter((audit) => ['assigned', 'counted'].includes(audit.status))
@@ -2210,15 +2234,18 @@
               ${items.map((item) => {
                 const product = item.products || state.products.find((row) => String(row.id) === String(item.product_id)) || {}
                 const unit = product.base_unit || 'ks'
-                const value = item.counted_at ? Number(item.counted_quantity || 0) : ''
+                const countPackage = getInventoryCountPackage(product)
+                const inputUnit = countPackage?.inputUnit || unit
+                const value = displayInventoryCountValue(item, product)
+                const countHelp = countPackage ? ` · zadávej ${countPackage.inputUnit} (1 tyč = ${formatNumber(countPackage.factor)} ${countPackage.baseUnit})` : ''
                 return `
-                  <div class="draft-line inventory-count-line" data-inventory-item-id="${escapeHtml(String(item.id))}">
+                  <div class="draft-line inventory-count-line" data-inventory-item-id="${escapeHtml(String(item.id))}" data-inventory-package-factor="${escapeHtml(String(countPackage?.factor || 1))}">
                     <div>
                       <strong>${escapeHtml(product.name || item.product_name || 'Produkt')}</strong>
-                      <span>Evidence při zadání ${escapeHtml(formatNumber(item.book_quantity || 0))} ${escapeHtml(unit)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}</span>
+                      <span>Evidence při zadání ${escapeHtml(formatNumber(item.book_quantity || 0))} ${escapeHtml(unit)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}${escapeHtml(countHelp)}</span>
                     </div>
                     <label>
-                      Fyzicky
+                      Fyzicky (${escapeHtml(inputUnit)})
                       <input data-inventory-count inputmode="decimal" value="${escapeHtml(String(value))}" placeholder="0" ${locked ? 'disabled' : ''} />
                     </label>
                     <label>
@@ -2643,10 +2670,7 @@
       const now = new Date().toISOString()
       const updates = itemRows.map((row) => {
         const rawCount = row.querySelector('[data-inventory-count]')?.value
-        const countedQuantity = rawCount === '' ? 0 : Number(String(rawCount).replace(',', '.'))
-        if (!Number.isFinite(countedQuantity) || countedQuantity < 0) {
-          throw new Error('Zadej fyzický stav jako nezáporné číslo.')
-        }
+        const countedQuantity = inventoryCountInputToBase(rawCount, Number(row.dataset.inventoryPackageFactor || 1))
         return supabase
           .from('inventory_audit_items')
           .update({
@@ -2665,8 +2689,7 @@
       if (submit) {
         const total = itemRows.reduce((sum, row) => {
           const rawCount = row.querySelector('[data-inventory-count]')?.value
-          const countedQuantity = rawCount === '' ? 0 : Number(String(rawCount).replace(',', '.'))
-          return sum + countedQuantity
+          return sum + inventoryCountInputToBase(rawCount, Number(row.dataset.inventoryPackageFactor || 1))
         }, 0)
         const { error } = await supabase
           .from('inventory_audits')
