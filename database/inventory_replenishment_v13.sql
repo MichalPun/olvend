@@ -161,6 +161,7 @@ create table if not exists public.stock_movements_v13 (
       'load_vehicle',
       'fill_machine',
       'sale',
+      'sale_revenue',
       'consumption',
       'return',
       'adjustment',

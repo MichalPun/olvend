@@ -4292,12 +4292,14 @@
     }
     function closeMovementModal() { movementModalBackdrop.classList.remove('show'); movementForm.reset() }
     function simpleTransferProductOptionsHtml(selectedId = '') {
+      const direction = document.getElementById('simpleTransferDirection')?.value || ''
       return '<option value="">Vyber položku</option>' + productsV13
         .filter((product) => product.active !== false || String(product.id) === String(selectedId))
         .map((item) => {
           const markers = []
-          if (getRecipeForProduct(item.id)) markers.push('receptura')
-          if (canProductBeSoldDirectly(item)) markers.push('přímý prodej')
+          const hasRecipe = Boolean(getRecipeForProduct(item.id))
+          if (hasRecipe) markers.push('receptura')
+          if (canProductBeSoldDirectly(item) && !(direction === 'machines_sale' && hasRecipe)) markers.push('přímý prodej')
           const label = [item.sku, item.name, markers.join(' / '), item.active === false ? 'neaktivní karta' : ''].filter(Boolean).join(' · ')
           return `<option value="${escapeHtml(String(item.id))}" ${String(item.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(label)}</option>`
         })
@@ -4358,11 +4360,49 @@
         .filter((balance) => String(balance.stock_location_id) === String(sourceLocationId) && String(balance.product_id) === String(productId))
         .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
     }
+    function getRecipeConsumptionRequirements(productId, quantity) {
+      const recipeItems = getRecipeItemsForProduct(productId)
+      return recipeItems
+        .map((item) => {
+          const ingredient = productsV13.find((product) => String(product.id) === String(item.product_id))
+          if (!ingredient) return null
+          const required = Number((Number(quantity || 0) * convertRecipeQuantityToBase(item.quantity, item.unit, ingredient.base_unit)).toFixed(3))
+          return required > 0 ? { product: ingredient, quantity: required } : null
+        })
+        .filter(Boolean)
+    }
+    function getRecipeAvailabilityState(line) {
+      const requirements = getRecipeConsumptionRequirements(line.productId, line.quantity)
+      if (!requirements.length) return null
+      const shortages = requirements
+        .map((requirement) => {
+          const available = getSimpleTransferAvailableQuantity(requirement.product.id)
+          const missing = available == null ? 0 : Number((requirement.quantity - available).toFixed(3))
+          return { ...requirement, available, missing }
+        })
+        .filter((requirement) => requirement.available == null || requirement.missing > 0.0001)
+      if (shortages.length) {
+        const first = shortages[0]
+        const unit = first.product.base_unit || 'ks'
+        if (first.available == null) return { cls: 'warn', label: 'Receptura', note: 'Vyber zdroj', missing: 0 }
+        return {
+          cls: 'bad',
+          label: 'Receptura',
+          note: `Chybí ${first.product.name}: ${formatQuantityValue(first.missing, unit)}`,
+          missing: first.missing,
+          available: first.available
+        }
+      }
+      return { cls: 'ok', label: 'Receptura', note: 'Suroviny OK', missing: 0 }
+    }
     function getSimpleTransferAvailabilityState(line) {
       const direction = document.getElementById('simpleTransferDirection')?.value || 'warehouse_to_vehicle'
       const checkedDirections = ['vehicle_to_machines', 'vehicle_to_warehouse', 'vehicle_sale', 'machines_sale', 'warehouse_to_vehicle']
       if (!checkedDirections.includes(direction)) return { cls: 'muted', label: '-', note: 'Bez kontroly zdroje', missing: 0 }
       if (!line.productId) return { cls: 'muted', label: '-', note: 'Vyber produkt', missing: 0 }
+      if (direction === 'machines_sale' && getRecipeForProduct(line.productId)) {
+        return getRecipeAvailabilityState(line) || { cls: 'bad', label: 'Receptura', note: 'Chybí receptura', missing: Number(line.quantity || 0) || 1 }
+      }
       const available = getSimpleTransferAvailableQuantity(line.productId)
       if (available == null) return { cls: 'warn', label: '?', note: 'Vyber zdroj', missing: 0 }
       const required = Number(line.quantity || 0)
@@ -4390,7 +4430,7 @@
       const shortageCount = lines.filter((line) => getSimpleTransferAvailabilityState(line).missing > 0.0001).length
       if (shortageCount && simpleTransferImportStatus) {
         simpleTransferImportStatus.className = 'helper-line error'
-        simpleTransferImportStatus.textContent = `Pozor: ${shortageCount} řádků převádí víc kusů, než je na zdroji. Uprav množství nebo zkontroluj vybrané auto.`
+        simpleTransferImportStatus.textContent = `Pozor: ${shortageCount} řádků potřebuje víc zásoby nebo surovin, než je na zdroji. Uprav množství nebo zkontroluj sklad Automaty.`
       } else if (!shortageCount && simpleTransferImportStatus?.textContent?.startsWith('Pozor:')) {
         simpleTransferImportStatus.className = 'helper-line'
         simpleTransferImportStatus.textContent = 'Stavy na zdroji sedí. Převodku můžeš uložit.'
@@ -4541,10 +4581,10 @@
         return findProductForImportName(row?.productName || row?.name || '')
       }
       const code = normalizeLookupValue(row?.code || row?.productCode || '')
-      if (code) {
-        const byCode = productsV13.find((product) => [product.sku, product.ean, product.code].some((value) => normalizeLookupValue(value) === code))
-        if (byCode) return byCode
-      }
+      const byCode = code
+        ? productsV13.find((product) => [product.sku, product.ean, product.code].some((value) => normalizeLookupValue(value) === code))
+        : null
+      if (byCode) return byCode
       return findProductForImportName(row?.productName || row?.name || '')
     }
     function formatImportSource(row = {}) {
@@ -4781,7 +4821,7 @@
         document.getElementById('simpleTransferVehicleId').closest('.field').style.display = 'none'
         document.getElementById('simpleTransferVehicleId').required = false
         document.getElementById('simpleTransferModalTitle').textContent = 'PRODEJKA z automatů'
-        document.getElementById('simpleTransferHelper').textContent = 'Odečte prodané zboží ze souhrnného skladu Automaty a do pohybů uloží tržbu, DPH, náklad a marži.'
+        document.getElementById('simpleTransferHelper').textContent = 'U recepturových nápojů odečte suroviny ze skladu Automaty a tržbu uloží zvlášť k prodané volbě.'
         saveSimpleTransferBtn.textContent = 'Uložit prodejku'
       }
       simpleTransferLines.innerHTML = ''
@@ -4789,7 +4829,7 @@
       const unmatched = importedRows.filter((row) => !row.productId).length
       const sourceSuffix = rows.importMeta?.sourceFormat === 'filled_products'
         ? ' Mezisoučty jsou přeskočené.'
-        : (rows.importMeta?.sourceFormat === 'telemetry_sales_by_product' ? ' Tržby s DPH jsou načtené ze sloupce Income. Kódy z VendSoftu nejsou naše SKU, páruju proto podle názvu.' : '')
+        : (rows.importMeta?.sourceFormat === 'telemetry_sales_by_product' ? ' Tržby s DPH jsou načtené ze sloupce Income. Kávové volby se budou odečítat přes receptury.' : '')
       const suffix = unmatched ? ` ${unmatched} položek se nepodařilo spárovat, vyber je ručně.${sourceSuffix}` : ` Všechny položky jsou spárované.${sourceSuffix}`
       simpleTransferImportStatus.textContent = `Načteno ${importedRows.length} řádků ze souboru ${file.name}.${suffix}`
       simpleTransferImportStatus.className = `helper-line${unmatched ? ' error' : ''}`
@@ -4848,7 +4888,7 @@
         : (isVehicleToMachines
           ? 'Převede zboží z auta do souhrnného skladu Automaty. Samotný prodej zapisujeme až prodejkou z automatů.'
           : (isMachineSale
-            ? 'Odečte prodané zboží ze souhrnného skladu Automaty a vytvoří dohledatelnou prodejku.'
+            ? 'U recepturových nápojů odečte suroviny ze skladu Automaty a tržbu nechá na prodané volbě.'
             : (isLegacyVehicleSale ? 'Ručně odečte prodané kusy z vozidla. Tuhle starší volbu necháváme jen pro opravy starých dokladů.' : 'Převede množství ze skladu na vozidlo. Sklad odečítáme podle nejbližší expirace.')))
       if (correctionDoc) document.getElementById('simpleTransferHelper').textContent = 'Uložením se nejdřív vyrovná původní doklad opačnými pohyby a potom se zapíše tato opravená verze.'
       document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = (isSale || isVehicleToMachines) ? 'none' : ''
@@ -5450,13 +5490,13 @@
         throw error
       }
     }
-    function buildSaleMovement({ productId, quantity, unitPrice, referenceId, note }) {
+    function buildSaleMovement({ productId, quantity, unitPrice, referenceId, note, movementType = 'sale' }) {
       return {
         product_id: productId,
         batch_id: null,
         from_stock_location_id: null,
         to_stock_location_id: null,
-        movement_type: 'sale',
+        movement_type: movementType,
         quantity_base_units: quantity,
         unit_price: unitPrice || null,
         reference_type: 'manual_sale',
@@ -5465,7 +5505,7 @@
       }
     }
     async function buildRecipeSaleMovements({ soldProduct, quantity, fromStockLocationId, unitPrice, referenceId, note, allowNegative, applyBalances = true }) {
-      const movements = [buildSaleMovement({ productId: soldProduct.id, quantity, unitPrice, referenceId, note: [note, 'tržba za složenou kartu'].filter(Boolean).join(' · ') || null })]
+      const movements = [buildSaleMovement({ productId: soldProduct.id, quantity, unitPrice, referenceId, movementType: 'sale_revenue', note: [note, 'tržba za složenou kartu'].filter(Boolean).join(' · ') || null })]
       const recipeItems = getRecipeItemsForProduct(soldProduct.id)
       if (!recipeItems.length) throw new Error(`Produkt ${soldProduct.name} nemá vyplněnou recepturu.`)
       for (const item of recipeItems) {
