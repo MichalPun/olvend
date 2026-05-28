@@ -222,6 +222,11 @@
     .audit-start-card span { display:block; margin-top:2px; color:var(--muted); font-size:12px; line-height:1.35; }
     .audit-workbench { display:none; margin-bottom:10px; }
     .audit-workbench.show { display:block; }
+    .audit-result-panel { display:none; margin-top:10px; border:1px solid rgba(46,204,113,0.22); border-radius:8px; background:rgba(46,204,113,0.055); overflow:hidden; }
+    .audit-result-panel.show { display:block; }
+    .audit-result-head { min-height:44px; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .audit-result-head h3 { margin:0; font-size:16px; }
+    .audit-result-body { padding:10px 12px; display:grid; gap:8px; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
     .switch-row { display:flex; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .switch-row input { width:auto; }
@@ -709,6 +714,13 @@
                 </table>
               </div>
               <div class="empty-state" id="auditEmpty" style="display:none;">Nejdřív vytvoř pracovní inventurní soupis.</div>
+            </div>
+            <div class="audit-result-panel" id="auditResultPanel">
+              <div class="audit-result-head">
+                <h3>Výsledek inventury</h3>
+                <button class="btn secondary small" type="button" id="printAuditProtocolBtn">Tisk protokolu</button>
+              </div>
+              <div class="audit-result-body" id="auditResultContent"></div>
             </div>
           </div>
         </section>
@@ -1391,6 +1403,9 @@
     const auditSummary = document.getElementById('auditSummary')
     const auditRowsBody = document.getElementById('auditRowsBody')
     const auditEmpty = document.getElementById('auditEmpty')
+    const auditResultPanel = document.getElementById('auditResultPanel')
+    const auditResultContent = document.getElementById('auditResultContent')
+    const printAuditProtocolBtn = document.getElementById('printAuditProtocolBtn')
     const buildAuditSheetBtn = document.getElementById('buildAuditSheetBtn')
     const closeAuditSheetBtn = document.getElementById('closeAuditSheetBtn')
     const exportAuditSheetBtn = document.getElementById('exportAuditSheetBtn')
@@ -1514,6 +1529,7 @@
     let purchaseProductProfiles = []
     let bagettePilotMode = 'receipt'
     let currentDetailContext = null
+    let currentAuditProtocol = null
     let editingTransferDoc = null
     let pendingInitialStockProductRow = null
     let manualTransferDocsCollapsed = true
@@ -3004,6 +3020,94 @@
       link.click()
       URL.revokeObjectURL(link.href)
     }
+    function auditProtocolRowsHtml(rows) {
+      return rows.map((row) => {
+        const unit = row.unitLabel || ''
+        const product = row.productLabel || row.products?.name || row.product_name || 'Produkt'
+        const sku = row.productMeta || (row.products?.sku ? `SKU ${row.products.sku}` : '')
+        const location = row.locationLabel || getStockLocationDisplayName(row.stock_location_id) || '-'
+        const batch = row.batchLabel || (row.batch_id ? `Šarže #${row.batch_id}` : '-')
+        const book = Number(row.bookQuantity ?? row.book_quantity ?? 0)
+        const counted = Number(row.countedQuantity ?? row.counted_quantity ?? 0)
+        const diff = Number(row.differenceQuantity ?? row.difference_quantity ?? 0)
+        const value = Number(row.differenceValue ?? row.difference_value ?? 0)
+        const note = row.note || row.counted_note || ''
+        return `<tr>
+          <td><strong>${escapeHtml(product)}</strong><span>${escapeHtml(sku)}</span></td>
+          <td>${escapeHtml(location)}</td>
+          <td>${escapeHtml(batch)}</td>
+          <td class="num">${escapeHtml(`${book.toLocaleString('cs-CZ')} ${unit}`.trim())}</td>
+          <td class="num">${escapeHtml(`${counted.toLocaleString('cs-CZ')} ${unit}`.trim())}</td>
+          <td class="num">${escapeHtml(`${diff.toLocaleString('cs-CZ')} ${unit}`.trim())}</td>
+          <td class="num">${escapeHtml(formatStockMoney(value))}</td>
+          <td>${escapeHtml(note)}</td>
+        </tr>`
+      }).join('')
+    }
+    function buildAuditProtocolHtml(protocol) {
+      const totals = protocol.totals || {}
+      const rows = protocol.rows || []
+      const title = protocol.title || `Inventurní protokol #${protocol.audit?.id || ''}`
+      return `<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111827;}
+    h1{font-size:22px;margin:0 0 6px;} .meta{color:#4b5563;margin-bottom:16px;}
+    .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0;}
+    .box{border:1px solid #d1d5db;border-radius:8px;padding:10px;} .label{font-size:11px;text-transform:uppercase;color:#6b7280;font-weight:800;} .value{font-size:18px;font-weight:900;margin-top:4px;}
+    table{width:100%;border-collapse:collapse;font-size:12px;} th,td{border-bottom:1px solid #e5e7eb;padding:7px 6px;text-align:left;vertical-align:top;} th{background:#f3f4f6;text-transform:uppercase;font-size:10px;color:#4b5563;} td span{display:block;color:#6b7280;font-size:11px;margin-top:2px;} .num{text-align:right;white-space:nowrap;}
+    @media print{body{margin:14mm;} button{display:none;}}
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="meta">${escapeHtml(protocol.subtitle || '')}</div>
+  <div class="summary">
+    <div class="box"><div class="label">Účetní stav</div><div class="value">${escapeHtml(Number(totals.book || 0).toLocaleString('cs-CZ'))}</div></div>
+    <div class="box"><div class="label">Skutečnost</div><div class="value">${escapeHtml(Number(totals.counted || 0).toLocaleString('cs-CZ'))}</div></div>
+    <div class="box"><div class="label">Rozdíl</div><div class="value">${escapeHtml(Number(totals.diff || 0).toLocaleString('cs-CZ'))}</div></div>
+    <div class="box"><div class="label">Hodnota rozdílu</div><div class="value">${escapeHtml(formatStockMoney(totals.value || 0))}</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Produkt</th><th>Místo</th><th>Expirace / šarže</th><th class="num">Účetní</th><th class="num">Skutečnost</th><th class="num">Rozdíl</th><th class="num">Hodnota</th><th>Poznámka</th></tr></thead>
+    <tbody>${auditProtocolRowsHtml(rows)}</tbody>
+  </table>
+  <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))<\/script>
+</body>
+</html>`
+    }
+    function printAuditProtocol(protocol = currentAuditProtocol) {
+      if (!protocol) {
+        auditStatus.textContent = 'Nejdřív uzavři nebo vyhodnoť inventuru.'
+        auditStatus.className = 'status-line error'
+        return
+      }
+      const popup = window.open('', '_blank')
+      if (!popup) {
+        auditStatus.textContent = 'Prohlížeč zablokoval tiskové okno.'
+        auditStatus.className = 'status-line error'
+        return
+      }
+      popup.document.write(buildAuditProtocolHtml(protocol))
+      popup.document.close()
+    }
+    function showAuditResult(protocol) {
+      currentAuditProtocol = protocol
+      const totals = protocol.totals || {}
+      auditResultPanel?.classList.add('show')
+      auditResultContent.innerHTML = `
+        <div class="summary-grid" style="margin:0;">
+          <article class="summary-box"><div class="summary-box-label">Účetní stav</div><div class="summary-box-value">${escapeHtml(Number(totals.book || 0).toFixed(2))}</div></article>
+          <article class="summary-box"><div class="summary-box-label">Skutečnost</div><div class="summary-box-value">${escapeHtml(Number(totals.counted || 0).toFixed(2))}</div></article>
+          <article class="summary-box"><div class="summary-box-label">Rozdíl kusů</div><div class="summary-box-value">${escapeHtml(Number(totals.diff || 0).toFixed(2))}</div></article>
+          <article class="summary-box"><div class="summary-box-label">Hodnota rozdílu</div><div class="summary-box-value">${escapeHtml(formatStockMoney(totals.value || 0))}</div></article>
+        </div>
+        <div class="status-line success">Protokol je připravený k tisku. Řádků v protokolu: ${escapeHtml(String((protocol.rows || []).length))}.</div>
+      `
+    }
     function collectAuditSheetRows() {
       return [...auditRowsBody.querySelectorAll('[data-audit-key]')].map((row) => {
         const bookQuantity = Number(row.dataset.bookQty || 0)
@@ -3020,7 +3124,13 @@
           differenceQuantity,
           unitCost,
           differenceValue: Number((differenceQuantity * unitCost).toFixed(2)),
-          note: row.querySelector('[data-audit-note]')?.value.trim() || ''
+          note: row.querySelector('[data-audit-note]')?.value.trim() || '',
+          productLabel: row.querySelector('td[data-label="Produkt"] strong')?.textContent || '',
+          productMeta: row.querySelector('td[data-label="Produkt"] .subtext')?.textContent || '',
+          locationLabel: row.querySelector('td[data-label="Místo"] strong')?.textContent || '',
+          locationMeta: row.querySelector('td[data-label="Místo"] .subtext')?.textContent || '',
+          batchLabel: row.querySelector('td[data-label="Expirace / šarže"] strong')?.textContent || '',
+          unitLabel: row.querySelector('td[data-label="Účetní stav"] strong')?.textContent?.replace(/^[\d\s.,-]+/, '').trim() || ''
         }
       }).filter((row) => row.stockLocationId && row.productId && Number.isFinite(row.countedQuantity))
     }
@@ -3121,7 +3231,7 @@
       vehicleAuditListEmpty.style.display = vehicleInventoryAudits.length ? 'none' : 'block'
       vehicleAuditListBody.innerHTML = vehicleInventoryAudits.map((audit) => {
         const items = getVehicleAuditItems(audit.id)
-        const counted = items.filter((item) => item.counted_at || Number(item.counted_quantity || 0) !== 0 || item.counted_note).length
+        const counted = items.filter((item) => item.counted_at).length
         const statusLabel = {
           assigned: 'Zadáno operátorce',
           counted: 'Spočítáno',
@@ -3131,17 +3241,22 @@
           cancelled: 'Zrušeno'
         }[audit.status] || audit.status || 'Draft'
         const canEvaluate = ['counted', 'transfer_ready'].includes(audit.status)
-        const canClose = audit.status === 'evaluated'
+          && items.length > 0
+          && counted === items.length
+        const missingCounts = ['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) && counted < items.length
+        const canClose = audit.status === 'evaluated' && !missingCounts
+        const canPrint = ['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) && items.length > 0 && !missingCounts
         return `
           <tr>
             <td data-label="Inventura"><strong>#${escapeHtml(String(audit.id))} · ${escapeHtml(audit.audit_date || '')}</strong><span class="subtext">${escapeHtml(audit.note || 'Bez poznámky')}</span></td>
             <td data-label="Vozidlo / operátor"><strong>${escapeHtml(getVehicleAuditVehicleLabel(audit.vehicle_id))}</strong><span class="subtext">${escapeHtml(getVehicleAuditEmployeeLabel(audit.assigned_employee_id))}</span></td>
             <td data-label="Stav"><span class="badge ${audit.status === 'closed' ? 'green' : audit.status === 'evaluated' ? 'blue' : 'yellow'}">${escapeHtml(statusLabel)}</span></td>
-            <td data-label="Souhrn"><strong>${escapeHtml(String(counted))}/${escapeHtml(String(items.length))} řádků</strong><span class="subtext">Rozdíl ${escapeHtml(formatQuantityValue(audit.difference_quantity_total || 0, 'ks'))} · ${escapeHtml(formatStockMoney(audit.difference_value_total || 0))}</span></td>
+            <td data-label="Souhrn"><strong>${escapeHtml(String(counted))}/${escapeHtml(String(items.length))} řádků</strong><span class="subtext">${missingCounts ? 'Chybí uložené fyzické počty položek' : `Rozdíl ${formatQuantityValue(audit.difference_quantity_total || 0, 'ks')} · ${formatStockMoney(audit.difference_value_total || 0)}`}</span></td>
             <td data-label="Akce">
               <div class="action-row">
                 ${canEvaluate ? `<button class="btn secondary" type="button" data-vehicle-audit-action="evaluate" data-audit-id="${escapeHtml(String(audit.id))}">Převodky hotové, vyhodnotit</button>` : ''}
                 ${canClose ? `<button class="btn" type="button" data-vehicle-audit-action="close" data-audit-id="${escapeHtml(String(audit.id))}">Dorovnat a uzavřít</button>` : ''}
+                ${canPrint ? `<button class="btn secondary" type="button" data-vehicle-audit-action="print" data-audit-id="${escapeHtml(String(audit.id))}">Protokol</button>` : ''}
               </div>
             </td>
           </tr>
@@ -3218,6 +3333,8 @@
       if (!audit) throw new Error('Inventura už není v seznamu.')
       const items = getVehicleAuditItems(auditId)
       if (!items.length) throw new Error('Inventura nemá položky.')
+      const missingCounts = items.filter((item) => !item.counted_at)
+      if (missingCounts.length) throw new Error(`Inventura nemá uložené fyzické počty u ${missingCounts.length} položek. Otevři ji v mobilu a odešli počty znovu.`)
       const vehicleLocation = getVehicleStockLocation(audit.vehicle_id)
       if (!vehicleLocation) throw new Error('Vozidlo nemá skladové místo.')
       const updates = []
@@ -3280,6 +3397,27 @@
       const { error } = await supabase.from('inventory_audits').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', auditId)
       if (error) throw error
       await loadInventoryV13Overview()
+    }
+    function vehicleAuditProtocol(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) return null
+      const rows = getVehicleAuditItems(auditId).map((item) => ({
+        ...item,
+        locationLabel: getStockLocationDisplayName(item.stock_location_id),
+        unitLabel: item.products?.base_unit || ''
+      }))
+      return {
+        audit,
+        title: `Protokol inventury vozidla #${audit.id}`,
+        subtitle: `${audit.audit_date || ''} · ${getVehicleAuditVehicleLabel(audit.vehicle_id)} · ${getVehicleAuditEmployeeLabel(audit.assigned_employee_id)}`,
+        totals: {
+          book: Number(audit.book_quantity_total || rows.reduce((sum, row) => sum + Number(row.book_quantity || 0), 0)),
+          counted: Number(audit.counted_quantity_total || rows.reduce((sum, row) => sum + Number(row.counted_quantity || 0), 0)),
+          diff: Number(audit.difference_quantity_total || rows.reduce((sum, row) => sum + Number(row.difference_quantity || 0), 0)),
+          value: Number(audit.difference_value_total || rows.reduce((sum, row) => sum + Number(row.difference_value || 0), 0))
+        },
+        rows
+      }
     }
     async function closeInventoryAudit() {
       const rows = collectAuditSheetRows()
@@ -3361,6 +3499,13 @@
       localStorage.removeItem(AUDIT_DRAFT_STORAGE_KEY)
       auditStatus.textContent = `Inventura #${audit.id} byla uzavřená a skladové stavy jsou přepsané.`
       auditStatus.className = 'status-line success'
+      showAuditResult({
+        audit,
+        title: `Inventurní protokol #${audit.id}`,
+        subtitle: `${auditDate.value} · ${auditScopeType.options[auditScopeType.selectedIndex]?.text || ''}${auditLocationFilter.value ? ` · ${auditLocationFilter.options[auditLocationFilter.selectedIndex]?.text || ''}` : ''}`,
+        totals,
+        rows
+      })
       await loadInventoryV13Overview()
     }
     function syncStockV13ScrollWidth() {
@@ -6467,11 +6612,14 @@
       }
     })
     exportAuditSheetBtn.addEventListener('click', exportAuditSheetCsv)
+    printAuditProtocolBtn?.addEventListener('click', () => printAuditProtocol())
     clearAuditSheetBtn.addEventListener('click', () => {
       localStorage.removeItem(AUDIT_DRAFT_STORAGE_KEY)
       auditRowsBody.innerHTML = ''
       auditSummary.innerHTML = ''
       auditEmpty.style.display = 'block'
+      auditResultPanel?.classList.remove('show')
+      currentAuditProtocol = null
       auditStatus.textContent = 'Rozpracovaná inventura byla zahozená.'
     })
     openVehicleAuditBuilderBtn?.addEventListener('click', showVehicleAuditBuilder)
@@ -6511,14 +6659,20 @@
       if (!button) return
       try {
         button.disabled = true
+        if (button.dataset.vehicleAuditAction === 'print') {
+          printAuditProtocol(vehicleAuditProtocol(button.dataset.auditId))
+          return
+        }
         if (button.dataset.vehicleAuditAction === 'evaluate') {
           await evaluateVehicleInventoryAudit(button.dataset.auditId)
+          showAuditResult(vehicleAuditProtocol(button.dataset.auditId))
           auditStatus.textContent = 'Inventura je vyhodnocená podle aktuálního stavu auta po převodkách.'
           auditStatus.className = 'status-line success'
         }
         if (button.dataset.vehicleAuditAction === 'close') {
           if (!window.confirm('Tímhle se rozdíl propíše do zásob vozidla jako inventurní dorovnání. Pokračovat?')) return
           await closeVehicleInventoryAudit(button.dataset.auditId)
+          showAuditResult(vehicleAuditProtocol(button.dataset.auditId))
           auditStatus.textContent = 'Inventura vozidla je uzavřená a rozdíly jsou propsané do skladu.'
           auditStatus.className = 'status-line success'
         }
