@@ -3774,7 +3774,7 @@
       }
     }
     function isMobileStockApprovalFlow(type) {
-      return ['vehicle_unload', 'vehicle_return', 'vehicle_writeoff', 'vehicle_sale'].includes(type)
+      return ['vehicle_order', 'vehicle_load', 'vehicle_unload', 'vehicle_return', 'vehicle_writeoff', 'vehicle_sale'].includes(type)
     }
     function getEmployeeLabel(id) {
       const item = mobileStockRequestEmployees.find((employee) => String(employee.id) === String(id))
@@ -3888,6 +3888,9 @@
       mobilePickRequestsBody.innerHTML = rows.map((row) => {
         const flow = getMobileStockFlowMeta(row.request_type)
         const readyAction = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type) ? 'confirm' : 'ready'
+        const actionLabel = readyAction === 'confirm' && !['vehicle_return', 'vehicle_writeoff'].includes(row.request_type)
+          ? 'Potvrdit doklad'
+          : flow.readyAction
         const itemsLabel = row.items.slice(0, 3).map((item) => `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)} ${item.unit || 'ks'}`).join(' / ')
         const detailRows = row.items.map((item) => {
           const prepared = item.prepared_quantity ?? item.requested_quantity ?? 0
@@ -3920,7 +3923,7 @@
             <td data-label="Akce">
               <div class="action-row mobile-pick-actions">
                 ${row.status === 'requested' ? `<button class="btn secondary" type="button" data-mobile-pick-action="start" data-request-id="${escapeHtml(String(row.id))}">Převzít</button>` : ''}
-                ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}">${escapeHtml(flow.readyAction)}</button>` : ''}
+                ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}">${escapeHtml(actionLabel)}</button>` : ''}
                 ${row.status !== 'cancelled' && row.status !== 'confirmed' ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
               </div>
             </td>
@@ -4062,28 +4065,39 @@
         await updateMobilePickRequestStatus(requestId, 'confirmed')
         return
       }
-      if (!isMobileStockApprovalFlow(request.request_type)) {
-        await updateMobilePickRequestStatus(requestId, 'ready')
-        return
-      }
       const items = getMobileRequestItems(requestId)
-      if (!items.length) throw new Error('Vratka nemá žádné položky.')
+      if (!items.length) throw new Error('Doklad nemá žádné položky.')
       const vehicleId = request.vehicle_id
-      if (!vehicleId) throw new Error('U vratky chybí vozidlo.')
+      if (!vehicleId) throw new Error('U dokladu chybí vozidlo.')
       const vehicle = vehicles.find((item) => String(item.id) === String(vehicleId))
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId))
       const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
       const movements = []
       let warehouseLocationId = null
-      if (request.request_type === 'vehicle_unload') {
+      if (['vehicle_order', 'vehicle_load', 'vehicle_unload'].includes(request.request_type)) {
         const warehouseId = request.warehouse_id || vehicle?.warehouse_id || ''
-        if (!warehouseId) throw new Error('U vykládky chybí cílový sklad.')
+        if (!warehouseId) throw new Error('U dokladu chybí sklad.')
         const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
         warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
       }
       items.forEach((item) => {
         const quantity = getMobilePickQuantity(item)
         if (!item.product_id || quantity <= 0) return
+        if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
+          movements.push({
+            product_id: item.product_id,
+            batch_id: null,
+            from_stock_location_id: warehouseLocationId,
+            to_stock_location_id: vehicleLocationId,
+            movement_type: 'load_vehicle',
+            quantity_base_units: quantity,
+            unit_price: null,
+            reference_type: 'mobile_stock_request',
+            reference_id: referenceId,
+            note: `Mobilní nakládka #${request.id}`
+          })
+          return
+        }
         if (request.request_type === 'vehicle_unload') {
           movements.push({
             product_id: item.product_id,
@@ -4112,7 +4126,7 @@
           note: request.request_type === 'vehicle_sale' ? `Mobilní prodej z vozidla #${request.id}` : `Mobilní vratka/odpis #${request.id}`
         })
       })
-      if (!movements.length) throw new Error('Vratka nemá žádnou platnou položku se skladovou kartou a množstvím.')
+      if (!movements.length) throw new Error('Doklad nemá žádnou platnou položku se skladovou kartou a množstvím.')
       await applyStockMovementsAtomically(movements)
       const { error } = await supabase
         .from('mobile_stock_requests')
@@ -4154,7 +4168,7 @@
       if (action === 'confirm') {
         await saveMobilePickPreparedItems(requestId)
         await applyMobilePickRequestToStock(requestId)
-        setStockV13Status('Vratka byla schválená a propsaná do skladu.', 'success')
+        setStockV13Status('Doklad byl potvrzený a propsaný do skladu.', 'success')
       }
       if (action === 'cancel') {
         await updateMobilePickRequestStatus(requestId, 'cancelled')
