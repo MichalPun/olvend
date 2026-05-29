@@ -802,6 +802,19 @@
       box-shadow: 0 0 0 3px rgba(213,16,26,0.12);
     }
 
+    .stock-checklist-summary {
+      min-height: 44px;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
     .finance-custom-date {
       display: none;
     }
@@ -1943,6 +1956,36 @@
           </div>
         </section>
 
+        <section class="widget span-12" data-id="stock-checklist" draggable="true">
+          <div class="widget-header">
+            <div class="widget-title-wrap">
+              <h2>Denní skladová kontrola</h2>
+              <p id="stockChecklistSubtitle">Kontrola nakládek, vykládek, expirací, převodů do automatů a prodejky podle data.</p>
+            </div>
+            <div class="widget-actions">
+              <button class="widget-action" data-action="smaller">−</button>
+              <button class="widget-action" data-action="bigger">+</button>
+              <button class="widget-action" data-action="up">↑</button>
+              <button class="widget-action" data-action="down">↓</button>
+              <button class="widget-action" data-action="hide">Skrýt</button>
+            </div>
+          </div>
+          <div class="widget-body">
+            <div class="finance-controls">
+              <div class="finance-control">
+                <label for="stockChecklistDate">Datum směny</label>
+                <input id="stockChecklistDate" type="date" />
+              </div>
+              <div class="finance-control">
+                <label>Souhrn</label>
+                <div id="stockChecklistSummary" class="stock-checklist-summary">Načítám...</div>
+              </div>
+            </div>
+            <div id="stockChecklistTable"></div>
+            <div id="stockChecklistNote" class="small-note"></div>
+          </div>
+        </section>
+
         <section class="widget span-12" data-id="finance" draggable="true">
           <div class="widget-header">
             <div class="widget-title-wrap">
@@ -2219,6 +2262,7 @@
 
     const DEFAULT_LAYOUT = [
       { id: "kpi", span: "span-12", hidden: false },
+      { id: "stock-checklist", span: "span-12", hidden: false },
       { id: "finance", span: "span-12", hidden: false },
       { id: "priority", span: "span-12", hidden: false },
       { id: "completed", span: "span-12", hidden: false }
@@ -2226,6 +2270,7 @@
 
     const TECHNICIAN_MOBILE_LAYOUT = [
       { id: "kpi", span: "span-12", hidden: false },
+      { id: "stock-checklist", span: "span-12", hidden: false },
       { id: "finance", span: "span-12", hidden: false },
       { id: "priority", span: "span-12", hidden: false },
       { id: "completed", span: "span-12", hidden: false }
@@ -2259,6 +2304,10 @@
     const financeProductSearch = document.getElementById("financeProductSearch");
     const financeProductTypeFilter = document.getElementById("financeProductTypeFilter");
     const financeMinRevenueFilter = document.getElementById("financeMinRevenueFilter");
+    const stockChecklistDate = document.getElementById("stockChecklistDate");
+    const stockChecklistSummary = document.getElementById("stockChecklistSummary");
+    const stockChecklistTable = document.getElementById("stockChecklistTable");
+    const stockChecklistNote = document.getElementById("stockChecklistNote");
 
     let editMode = false;
     let draggedWidget = null;
@@ -2461,6 +2510,14 @@
         setSpanClass(widget, item.span || "span-6");
         widget.classList.toggle("hidden-widget", !!item.hidden);
         widgetGrid.appendChild(widget);
+        delete widgets[item.id];
+      });
+
+      Object.values(widgets).forEach(widget => {
+        const fallback = DEFAULT_LAYOUT.find(item => item.id === widget.dataset.id) || {};
+        setSpanClass(widget, fallback.span || "span-12");
+        widget.classList.remove("hidden-widget");
+        widgetGrid.appendChild(widget);
       });
 
       updateHiddenList();
@@ -2604,6 +2661,247 @@
           </table>
         </div>
       `;
+    }
+
+    function getDateRangeForDate(value) {
+      const start = parseDateInput(value, startOfLocalDay(new Date()));
+      const end = addDays(start, 1);
+      return { start, end, startIso: start.toISOString(), endIso: end.toISOString(), date: formatDateInput(start) };
+    }
+
+    function normalizeChecklistText(value) {
+      return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function isBagetteLoadItem(item, productMap) {
+      const product = productMap.get(String(item.product_id || ""));
+      const text = normalizeChecklistText([item.product_name, item.sku, product?.name, product?.product_category].filter(Boolean).join(" "));
+      return text.includes("baget") || text.includes("atm") || text.includes("chlebic") || text.includes("strips") || text.includes("food_ready");
+    }
+
+    function isConfirmedRequest(request) {
+      return request?.status === "confirmed" || Boolean(request?.stock_applied_at);
+    }
+
+    function getRequestTime(request) {
+      return request?.stock_applied_at || request?.confirmed_at || request?.prepared_at || request?.created_at || "";
+    }
+
+    function getChecklistStatus(done, partial = false) {
+      if (done) return { badge: "Hotovo", className: "green" };
+      if (partial) return { badge: "Rozpracováno", className: "orange" };
+      return { badge: "Chybí", className: "red" };
+    }
+
+    function renderStockChecklistRows(rows) {
+      if (!stockChecklistTable) return;
+      const body = rows.length
+        ? rows.map(row => `
+          <tr>
+            <td><strong>${escapeHtml(row.task)}</strong><span class="subcell">${escapeHtml(row.owner || "")}</span></td>
+            <td><span class="status-badge ${escapeHtml(row.statusClass)}">${escapeHtml(row.status)}</span></td>
+            <td>${row.detail.map(item => `<span class="subcell">${escapeHtml(item)}</span>`).join("")}</td>
+            <td>${row.href ? `<a class="list-action-btn edit" href="${escapeHtml(row.href)}">${escapeHtml(row.action || "Otevřít")}</a>` : '<span class="subcell">Bez akce</span>'}</td>
+          </tr>
+        `).join("")
+        : '<tr><td colspan="4"><strong>Bez směn</strong><span class="subcell">Pro zvolené datum nejsou směny s vozidlem.</span></td></tr>';
+      stockChecklistTable.innerHTML = `
+        <div class="table-scroll">
+          <table class="dashboard-table">
+            <thead>
+              <tr>
+                <th>Kontrola</th>
+                <th>Stav</th>
+                <th>Důkaz</th>
+                <th>Akce</th>
+              </tr>
+            </thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    async function loadStockChecklistData(dateValue) {
+      const range = getDateRangeForDate(dateValue || getTodayDateString());
+      const nextDate = formatDateInput(addDays(range.start, 1));
+      const nextRange = getDateRangeForDate(nextDate);
+      const [attendanceResult, requestsResult, movementsResult, nextSalesResult] = await Promise.all([
+        supabase
+          .from("attendance_days")
+          .select("id, employee_id, attendance_date, status, vehicle_id, actual_start, actual_end")
+          .eq("attendance_date", range.date)
+          .order("actual_start", { ascending: true }),
+        supabase
+          .from("mobile_stock_requests")
+          .select("id, request_type, status, employee_id, vehicle_id, requested_for_date, prepared_at, confirmed_at, stock_applied_at, note, created_at")
+          .eq("requested_for_date", range.date)
+          .in("request_type", ["vehicle_order", "vehicle_load", "vehicle_unload", "vehicle_return", "vehicle_writeoff"]),
+        supabase
+          .from("stock_movements_v13")
+          .select("id, movement_type, reference_type, reference_id, from_stock_location_id, to_stock_location_id, created_at, note")
+          .gte("created_at", range.startIso)
+          .lt("created_at", range.endIso)
+          .in("movement_type", ["fill_machine", "sale", "sale_revenue"]),
+        supabase
+          .from("stock_movements_v13")
+          .select("id, movement_type, reference_type, reference_id, created_at, note")
+          .gte("created_at", nextRange.startIso)
+          .lt("created_at", nextRange.endIso)
+          .in("movement_type", ["sale", "sale_revenue"])
+      ]);
+      if (attendanceResult.error) throw attendanceResult.error;
+      if (requestsResult.error) throw requestsResult.error;
+      if (movementsResult.error) throw movementsResult.error;
+      if (nextSalesResult.error) throw nextSalesResult.error;
+
+      const attendanceDays = attendanceResult.data || [];
+      const requests = requestsResult.data || [];
+      const movements = movementsResult.data || [];
+      const nextSales = nextSalesResult.data || [];
+      const requestIds = requests.map(item => item.id);
+      const employeeIds = [...new Set([...attendanceDays.map(item => item.employee_id), ...requests.map(item => item.employee_id)].filter(Boolean))];
+      const vehicleIds = [...new Set([...attendanceDays.map(item => item.vehicle_id), ...requests.map(item => item.vehicle_id)].filter(Boolean))];
+
+      const [itemsResult, employeesResult, vehiclesResult] = await Promise.all([
+        requestIds.length
+          ? supabase.from("mobile_stock_request_items").select("request_id, product_id, product_name, sku, requested_quantity, prepared_quantity, confirmed_quantity, unit").in("request_id", requestIds)
+          : Promise.resolve({ data: [], error: null }),
+        employeeIds.length
+          ? supabase.from("employees").select("id, name, surname, email").in("id", employeeIds)
+          : Promise.resolve({ data: [], error: null }),
+        vehicleIds.length
+          ? supabase.from("vehicles").select("id, name, plate, brand, model").in("id", vehicleIds)
+          : Promise.resolve({ data: [], error: null })
+      ]);
+      if (itemsResult.error) throw itemsResult.error;
+      if (employeesResult.error) throw employeesResult.error;
+      if (vehiclesResult.error) throw vehiclesResult.error;
+
+      const items = itemsResult.data || [];
+      const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+      const productsResult = productIds.length
+        ? await supabase.from("products").select("id, name, product_category, usage_type").in("id", productIds)
+        : { data: [], error: null };
+      if (productsResult.error) throw productsResult.error;
+
+      const productMap = new Map((productsResult.data || []).map(item => [String(item.id), item]));
+      const employeeMap = new Map((employeesResult.data || []).map(item => [String(item.id), item]));
+      const vehicleMap = new Map((vehiclesResult.data || []).map(item => [String(item.id), item]));
+      const itemsByRequest = new Map();
+      items.forEach(item => {
+        const key = String(item.request_id);
+        if (!itemsByRequest.has(key)) itemsByRequest.set(key, []);
+        itemsByRequest.get(key).push(item);
+      });
+      const requestsWithItems = requests.map(request => ({ ...request, items: itemsByRequest.get(String(request.id)) || [] }));
+      const activeShifts = attendanceDays
+        .filter(day => day.vehicle_id)
+        .filter(day => !["cancelled", "rejected"].includes(String(day.status || "").toLowerCase()));
+      const shifts = activeShifts.length ? activeShifts : requestsWithItems
+        .filter(request => request.vehicle_id)
+        .map(request => ({ employee_id: request.employee_id, vehicle_id: request.vehicle_id, attendance_date: range.date }));
+
+      const rows = [];
+      shifts.forEach((shift, index) => {
+        const employee = getEmployeeLabel(employeeMap.get(String(shift.employee_id)));
+        const vehicle = vehicleMap.get(String(shift.vehicle_id));
+        const vehicleLabel = [vehicle?.name, vehicle?.plate].filter(Boolean).join(" · ") || `Vozidlo ${shift.vehicle_id || index + 1}`;
+        const owner = `${employee} · ${vehicleLabel}`;
+        const sameShift = (request) => String(request.employee_id || "") === String(shift.employee_id || "") || String(request.vehicle_id || "") === String(shift.vehicle_id || "");
+        const loadRequests = requestsWithItems.filter(request => ["vehicle_order", "vehicle_load"].includes(request.request_type) && sameShift(request) && request.items.some(item => isBagetteLoadItem(item, productMap)));
+        const unloadRequests = requestsWithItems.filter(request => request.request_type === "vehicle_unload" && sameShift(request));
+        const expiryRequests = requestsWithItems.filter(request => ["vehicle_return", "vehicle_writeoff"].includes(request.request_type) && sameShift(request));
+        const loadDone = loadRequests.some(isConfirmedRequest);
+        const unloadDone = unloadRequests.some(isConfirmedRequest);
+        const expiryDone = expiryRequests.some(isConfirmedRequest);
+        const loadStatus = getChecklistStatus(loadDone, loadRequests.length > 0);
+        const unloadStatus = getChecklistStatus(unloadDone, unloadRequests.length > 0);
+        const expiryStatus = getChecklistStatus(expiryDone, expiryRequests.length > 0);
+        rows.push({
+          task: "Ranní nakládka baget",
+          owner,
+          status: loadStatus.badge,
+          statusClass: loadStatus.className,
+          detail: loadRequests.length ? loadRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Čeká se na mobilní nakládku s bagetami/ATM položkami."],
+          href: "inventory.html?tab=movements",
+          action: "Sklad"
+        });
+        rows.push({
+          task: "Odpolední vykládka",
+          owner,
+          status: unloadStatus.badge,
+          statusClass: unloadStatus.className,
+          detail: unloadRequests.length ? unloadRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Čeká se na mobilní vykládku z vozidla."],
+          href: "inventory.html?tab=movements",
+          action: "Sklad"
+        });
+        rows.push({
+          task: "Expirace / vratky",
+          owner,
+          status: expiryStatus.badge,
+          statusClass: expiryStatus.className,
+          detail: expiryRequests.length ? expiryRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Není zapsaná vratka/odpis ani potvrzení, že nic není."],
+          href: "inventory.html?tab=movements",
+          action: "Sklad"
+        });
+      });
+
+      const machineMoves = movements.filter(item => item.movement_type === "fill_machine");
+      const machineStatus = getChecklistStatus(machineMoves.length > 0);
+      rows.push({
+        task: "Manuální převod vozidlo -> automaty",
+        owner: "Sklad / manager",
+        status: machineStatus.badge,
+        statusClass: machineStatus.className,
+        detail: machineMoves.length ? [`${machineMoves.length} pohybů fill_machine`, `poslední ${formatClock(machineMoves[0]?.created_at)}`] : ["Čeká se na převod z vozidla do automatů."],
+        href: "inventory.html?tab=movements",
+        action: "Pohyby"
+      });
+      const saleMovesToday = movements.filter(item => ["sale", "sale_revenue"].includes(item.movement_type));
+      const saleMoves = nextSales.length ? nextSales : saleMovesToday;
+      const salesStatus = getChecklistStatus(saleMoves.length > 0);
+      rows.push({
+        task: `Prodejka za den ${range.date}`,
+        owner: "Následující den",
+        status: salesStatus.badge,
+        statusClass: salesStatus.className,
+        detail: saleMoves.length ? [`${saleMoves.length} prodejkových pohybů`, nextSales.length ? `zapsáno ${nextDate}` : `zapsáno ve stejný den`] : [`Čeká se na prodejku, typicky ${nextDate}.`],
+        href: "inventory.html?tab=movements",
+        action: "Prodejky"
+      });
+
+      return { rows, expectedShiftCount: shifts.length, date: range.date, nextDate };
+    }
+
+    async function renderStockChecklist() {
+      if (!stockChecklistDate || !stockChecklistSummary) return;
+      try {
+        stockChecklistSummary.textContent = "Načítám...";
+        stockChecklistNote.textContent = "";
+        const checklist = await loadStockChecklistData(stockChecklistDate.value || getTodayDateString());
+        renderStockChecklistRows(checklist.rows);
+        const done = checklist.rows.filter(row => row.statusClass === "green").length;
+        const missing = checklist.rows.length - done;
+        stockChecklistSummary.textContent = `${done}/${checklist.rows.length} hotovo`;
+        stockChecklistSummary.className = missing ? "stock-checklist-summary status-badge orange" : "stock-checklist-summary status-badge green";
+        stockChecklistNote.textContent = checklist.expectedShiftCount
+          ? `Pro ${checklist.date} eviduji ${checklist.expectedShiftCount} směn s vozidlem. Nakládka, vykládka a expirace se čekají pro každou operátorku zvlášť. Prodejka se hlídá i na následující den ${checklist.nextDate}.`
+          : `Pro ${checklist.date} nejsou v docházce směny s vozidlem. Společné kontroly se přesto hlídají podle skladových pohybů.`;
+      } catch (error) {
+        console.error(error);
+        stockChecklistSummary.textContent = "Chyba";
+        stockChecklistSummary.className = "stock-checklist-summary status-badge red";
+        renderStockChecklistRows([{
+          task: "Denní kontrola se nepodařila načíst",
+          owner: "Nástěnka",
+          status: "Chyba",
+          statusClass: "red",
+          detail: [error.message],
+          href: "inventory.html",
+          action: "Sklad"
+        }]);
+      }
     }
 
     function setText(id, value) {
@@ -4250,6 +4548,7 @@
           warning: `Finanční přehled se nepodařilo načíst: ${error.message}`
         }));
         renderKpis(liveData.kpis);
+        await renderStockChecklist();
         renderFinanceDashboard(financeData);
         renderList("operationsList", liveData.today, { mobileLimit: 3, moreHref: "mobile.html" });
         renderList("priorityList", liveData.priority, { mobileLimit: 3, moreHref: "technical-jobs.html?tab=service" });
@@ -4258,6 +4557,7 @@
       } catch (error) {
         console.error(error);
         renderKpis(data.kpis);
+        await renderStockChecklist();
         renderList("priorityList", data.priority.length ? data.priority : [{
           title: "Přehled se nepodařilo načíst",
           subtitle: `Nástěnka teď nedotáhla reálná data: ${error.message}`,
@@ -4348,6 +4648,7 @@
     [financePeriodFilter, financeDateFrom, financeDateTo, financeLocationFilter, financeProductTypeFilter, financeMinRevenueFilter].forEach((filter) => {
       filter?.addEventListener("change", refreshFinanceDashboard);
     });
+    stockChecklistDate?.addEventListener("change", renderStockChecklist);
     document.querySelectorAll("[data-finance-sort]").forEach((button) => {
       button.addEventListener("click", () => {
         const key = button.getAttribute("data-finance-sort") || "revenue";
@@ -4628,6 +4929,9 @@
       if (!shouldContinue) return;
 
       updateFinanceCustomDateVisibility();
+      if (stockChecklistDate && !stockChecklistDate.value) {
+        stockChecklistDate.value = getTodayDateString();
+      }
 
       const defaultMode = "service";
       const savedMode = localStorage.getItem(getModeKey()) || defaultMode;
