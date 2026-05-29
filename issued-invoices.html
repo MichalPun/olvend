@@ -904,7 +904,7 @@
         return {
           label: 'Zahraničí EU bez DPH',
           summaryLabel: 'Základ',
-          invoiceText: 'Plnění je fakturováno bez DPH. Daň odvede zákazník.',
+          invoiceText: 'Daň odvede zákazník (reverse charge).',
           moneyCode: 'reverse_charge'
         }
       }
@@ -931,12 +931,14 @@
       return mode !== 'domestic'
     }
     function effectiveVatRate(rate, mode = currentVatMode()) {
+      return Number(rate || 0)
+    }
+    function taxVatRate(rate, mode = currentVatMode()) {
       return isNoVatMode(mode) ? 0 : Number(rate || 0)
     }
     function syncVatInputsForMode(mode = currentVatMode()) {
       invoiceLines.querySelectorAll('[data-line-vat]').forEach((input) => {
-        input.disabled = isNoVatMode(mode)
-        if (isNoVatMode(mode)) input.value = '0'
+        input.disabled = false
       })
     }
     function lineAmounts(row) {
@@ -944,7 +946,7 @@
       const unitPrice = Number(row.querySelector('[data-line-unit-price]')?.value || 0)
       const vatRate = effectiveVatRate(row.querySelector('[data-line-vat]')?.value || 0)
       const net = roundMoney(quantity * unitPrice)
-      const gross = roundMoney(net * (1 + (vatRate / 100)))
+      const gross = roundMoney(net * (1 + (taxVatRate(vatRate) / 100)))
       return { quantity, unitPrice, vatRate, net, gross }
     }
     function productUnitCost(product) {
@@ -984,8 +986,8 @@
       const map = new Map()
       lines.forEach((line) => {
         const rate = effectiveVatRate(line.vatRate || line.vat_rate || 0, mode)
-        const key = isNoVatMode(mode) ? 'base' : String(rate)
-        const current = map.get(key) || { rate, label: isNoVatMode(mode) ? 'Základ' : `${rate}`, net:0, vat:0, gross:0 }
+        const key = String(rate)
+        const current = map.get(key) || { rate, label: `${rate}`, net:0, vat:0, gross:0 }
         current.net = roundMoney(current.net + Number(line.net || 0))
         current.gross = roundMoney(current.gross + (isNoVatMode(mode) ? Number(line.net || 0) : Number(line.gross || 0)))
         current.vat = roundMoney(current.gross - current.net)
@@ -1023,7 +1025,7 @@
           productName: line.productName || line.product_name || productLabel(product) || 'Položka',
           unitCost: Number(line.unitCost ?? line.unit_cost ?? productUnitCost(product) ?? 0),
           net,
-          gross: roundMoney(net * (1 + vatRate / 100))
+          gross: roundMoney(net * (1 + taxVatRate(vatRate, mode) / 100))
         }
       }
       lines.forEach((line) => {
@@ -1179,7 +1181,7 @@
       const unitCost = Number(source.unit_cost ?? source.unitCost ?? productUnitCost(product) ?? 0)
       const vatRate = effectiveVatRate(source.vat_rate ?? source.vatRate ?? product?.vat_rate ?? 21)
       const net = roundMoney(quantity * unitPrice)
-      const gross = roundMoney(net * (1 + vatRate / 100))
+      const gross = roundMoney(net * (1 + taxVatRate(vatRate) / 100))
       const lineName = type === 'stock' ? productLabel(product) : (source.product_name || source.productName || '')
       invoiceLines.insertAdjacentHTML('beforeend', `
         <div class="invoice-line" data-invoice-line="${escapeHtml(key)}">
@@ -1285,7 +1287,7 @@
       return vatBreakdown(invoiceItems(row).map((item) => {
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const vatRate = effectiveVatRate(item.vat_rate || 0, mode)
-        const gross = roundMoney(net * (1 + vatRate / 100))
+        const gross = roundMoney(net * (1 + taxVatRate(vatRate, mode) / 100))
         return { vatRate, net, gross }
       }), mode)
     }
@@ -1307,6 +1309,20 @@
         rounding: roundMoney(rounding),
         total: roundMoney(grossBeforeRounding + rounding)
       }
+    }
+    function vatRateModeLabel(rate) {
+      const value = Number(rate || 0)
+      if (value >= 21) return 'základní sazbě DPH'
+      if (value > 0) return 'snížené sazbě DPH'
+      return 'nulové sazbě DPH'
+    }
+    function reverseChargeBaseNotes(vatRows, currency, exchangeRateValue, vatMode) {
+      if (vatMode !== 'eu_reverse_charge') return []
+      const rate = currency === 'CZK' ? 1 : Number(exchangeRateValue || 0)
+      if (currency !== 'CZK' && rate <= 0) return []
+      return vatRows
+        .filter((row) => Number(row.net || 0) > 0)
+        .map((row) => `Pro režim Přenesení daň. povinnosti ve ${vatRateModeLabel(row.rate)} činí základ: ${formatMoney(amountToCzk(row.net, currency, rate), 'CZK')}`)
     }
     function sortBalancesByExpiry(a, b) {
       const batchA = a.inventory_batches || {}
@@ -1576,9 +1592,10 @@
       const grossBeforeRounding = amounts.grossBeforeRounding
       const rounding = amounts.rounding
       const totalToPay = amounts.total
+      const reverseChargeNotes = reverseChargeBaseNotes(vatRows, currency, meta.exchangeRate, vatMode)
       const vatSummaryRows = vatRows.map((item) => `
           <tr>
-            <td>${escapeHtml(isNoVatMode(vatMode) ? vatModeInfo.summaryLabel : `${Number(item.rate || 0).toLocaleString('cs-CZ')} %`)}</td>
+            <td>${escapeHtml(`${Number(item.rate || 0).toLocaleString('cs-CZ')} %`)}</td>
             <td class="num">${escapeHtml(formatMoney(item.net, currency))}</td>
             <td class="num">${escapeHtml(formatMoney(item.vat, currency))}</td>
             <td class="num">${escapeHtml(formatMoney(item.gross, currency))}</td>
@@ -1587,13 +1604,13 @@
       const rows = items.map((item) => {
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const vatRate = effectiveVatRate(item.vat_rate || 0, vatMode)
-        const gross = roundMoney(net * (1 + vatRate / 100))
+        const gross = roundMoney(net * (1 + taxVatRate(vatRate, vatMode) / 100))
         return `
           <tr>
             <td>${escapeHtml(item.product_name || 'Položka')}</td>
             <td class="num">${escapeHtml(formatQuantityWithUnit(item.quantity, productUnit(item)))}</td>
             <td class="num">${escapeHtml(formatMoney(item.unit_price, currency))}</td>
-            <td class="num">${escapeHtml(isNoVatMode(vatMode) ? 'bez DPH' : `${Number(vatRate || 0).toLocaleString('cs-CZ')} %`)}</td>
+            <td class="num">${escapeHtml(`${Number(vatRate || 0).toLocaleString('cs-CZ')} %`)}</td>
             <td class="num">${escapeHtml(formatMoney(net, currency))}</td>
             <td class="num">${escapeHtml(formatMoney(gross, currency))}</td>
           </tr>
@@ -1634,7 +1651,7 @@
                   <div>Datum vystavení: <strong>${escapeHtml(formatDate(row.issued_at))}</strong></div>
                   <div>DUZP: <strong>${escapeHtml(formatDate(meta.taxableSupplyDate || row.issued_at))}</strong></div>
                   <div>Splatnost: <strong>${escapeHtml(formatDate(meta.dueDate))}</strong></div>
-                  <div>Měna: <strong>${escapeHtml(currency)}</strong>${currency !== 'CZK' && meta.exchangeRate ? ` · kurz ${escapeHtml(meta.exchangeRate)}` : ''}</div>
+                  <div>Měna: <strong>${escapeHtml(currency)}</strong></div>
                   <div>Variabilní symbol: <strong>${escapeHtml(meta.variableSymbol || '')}</strong></div>
                   <div>Účet: <strong>${escapeHtml(payment.account || '')}</strong></div>
                 </div>
@@ -1659,12 +1676,12 @@
                 <div style="text-align:center;"><img src="${qrUrl}" alt="QR platba" width="96" height="96"><div class="muted" style="font-size:11px;">QR platba</div></div>
               </div>
             </div>
-            <table><thead><tr><th>Položka</th><th class="num">Množství</th><th class="num">Cena</th><th class="num">DPH</th><th class="num">Bez DPH</th><th class="num">S DPH</th></tr></thead><tbody>${rows}</tbody></table>
+            <table><thead><tr><th>Položka</th><th class="num">Množství</th><th class="num">Cena</th><th class="num">Sazba</th><th class="num">Bez DPH</th><th class="num">${escapeHtml(isNoVatMode(vatMode) ? 'Celkem' : 'S DPH')}</th></tr></thead><tbody>${rows}</tbody></table>
             <div class="totals">
               <div>
-                <table style="margin-top:0;"><thead><tr><th>${escapeHtml(vatModeInfo.summaryLabel)}</th><th class="num">Základ</th><th class="num">DPH</th><th class="num">Celkem</th></tr></thead><tbody>${vatSummaryRows}</tbody></table>
+                <table style="margin-top:0;"><thead><tr><th>Sazba</th><th class="num">Základ</th><th class="num">DPH</th><th class="num">Celkem</th></tr></thead><tbody>${vatSummaryRows}</tbody></table>
                 ${vatModeInfo.invoiceText ? `<div class="note">${escapeHtml(vatModeInfo.invoiceText)}</div>` : ''}
-                ${currency !== 'CZK' ? `<div class="note">Pozn.: u daňových dokladů v cizí měně je potřeba evidovat základ daně a DPH také v Kč podle použitého účetního/daňového kurzu. Kurz zde ukládáme k dokladu pro kontrolu.</div>` : ''}
+                ${reverseChargeNotes.length ? `<div class="note">${reverseChargeNotes.map(escapeHtml).join('<br>')}</div>` : ''}
               </div>
               <div class="box" style="margin-top:0;">
                 <div class="total-line"><span>Celkem bez DPH</span><strong>${escapeHtml(formatMoney(netTotal, currency))}</strong></div>
@@ -1717,6 +1734,7 @@
       const amounts = rowAmounts(row)
       const items = invoiceItems(row)
       const vatRows = amounts.vatRows || []
+      const reverseChargeNotes = reverseChargeBaseNotes(vatRows, currency, meta.exchangeRate, vatMode)
       const qrDataUrl = await qrPaymentDataUrl(row)
       let y = 18
 
@@ -1772,9 +1790,9 @@
       doc.text('Položka', 14, y)
       doc.text('Množ.', 94, y, { align: 'right' })
       doc.text('Cena', 118, y, { align: 'right' })
-      doc.text('DPH', 137, y, { align: 'right' })
+      doc.text('Sazba', 137, y, { align: 'right' })
       doc.text('Bez DPH', 166, y, { align: 'right' })
-      doc.text('S DPH', 196, y, { align: 'right' })
+      doc.text(isNoVatMode(vatMode) ? 'Celkem' : 'S DPH', 196, y, { align: 'right' })
       doc.setDrawColor(229, 231, 235)
       doc.line(14, y + 3, 196, y + 3)
       y += 9
@@ -1786,12 +1804,12 @@
         }
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const vatRate = effectiveVatRate(item.vat_rate || 0, vatMode)
-        const gross = roundMoney(net * (1 + vatRate / 100))
+        const gross = roundMoney(net * (1 + taxVatRate(vatRate, vatMode) / 100))
         const nameLines = doc.splitTextToSize(String(item.product_name || 'Polozka'), 68)
         doc.text(nameLines, 14, y)
         doc.text(formatQuantityWithUnit(item.quantity, productUnit(item)), 94, y, { align: 'right' })
         doc.text(formatMoney(item.unit_price, currency), 118, y, { align: 'right' })
-        doc.text(isNoVatMode(vatMode) ? 'bez DPH' : `${Number(vatRate || 0).toLocaleString('cs-CZ')} %`, 137, y, { align: 'right' })
+        doc.text(`${Number(vatRate || 0).toLocaleString('cs-CZ')} %`, 137, y, { align: 'right' })
         doc.text(formatMoney(net, currency), 166, y, { align: 'right' })
         doc.text(formatMoney(gross, currency), 196, y, { align: 'right' })
         y += Math.max(8, nameLines.length * 5)
@@ -1811,7 +1829,7 @@
         y += 9
         doc.setFont(pdfFont, 'normal')
         vatRows.forEach((item) => {
-          doc.text(isNoVatMode(vatMode) ? vatModeInfo.summaryLabel : `${Number(item.rate || 0).toLocaleString('cs-CZ')} %`, 14, y)
+          doc.text(`${Number(item.rate || 0).toLocaleString('cs-CZ')} %`, 14, y)
           doc.text(formatMoney(item.net, currency), 42, y, { align: 'right' })
           doc.text(formatMoney(item.vat, currency), 70, y, { align: 'right' })
           doc.text(formatMoney(item.gross, currency), 100, y, { align: 'right' })
@@ -1841,6 +1859,12 @@
       if (vatModeInfo.invoiceText) {
         y += 10
         addPdfWrappedText(doc, vatModeInfo.invoiceText, 14, y, 160, 5)
+      }
+      if (reverseChargeNotes.length) {
+        y += 7
+        reverseChargeNotes.forEach((note) => {
+          y = addPdfWrappedText(doc, note, 14, y, 170, 5)
+        })
       }
       pdfText(doc, `Vystaveno v interním systému OLVEND.`, 14, 287)
       return doc
@@ -1957,7 +1981,7 @@
       const itemRows = invoiceItems(row).map((item) => {
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const vatRate = effectiveVatRate(item.vat_rate || 0, vatMode)
-        const gross = roundMoney(net * (1 + vatRate / 100))
+        const gross = roundMoney(net * (1 + taxVatRate(vatRate, vatMode) / 100))
         const unit = productUnit(item)
         return `
       <Polozka>
