@@ -1149,7 +1149,7 @@
 
         <details class="mobile-panel" id="vehicleInventoryPanel" open>
           <summary>
-            <span>Inventura auta</span>
+            <span>Inventura</span>
             <span class="badge yellow" id="vehicleInventoryCount">0</span>
           </summary>
           <div class="details-body">
@@ -2123,8 +2123,8 @@
         type: item.status === 'ready' ? 'green' : 'yellow'
       }))
       state.inventoryAudits.filter((item) => ['assigned', 'counted'].includes(item.status)).slice(0, 2).forEach((item) => items.push({
-        title: `Inventura auta #${item.id}`,
-        text: item.status === 'counted' ? 'Odesláno, čeká na manažerské vyhodnocení.' : 'Spočítej vybrané položky v autě.',
+        title: `${item.scope_type === 'warehouse' ? 'Inventura skladu' : 'Inventura auta'} #${item.id}`,
+        text: item.status === 'counted' ? 'Odesláno, čeká na manažerské vyhodnocení.' : `Spočítej vybrané položky ${item.scope_type === 'warehouse' ? 've skladu.' : 'v autě.'}`,
         badge: 'Inventura',
         type: item.status === 'counted' ? 'green' : 'yellow'
       }))
@@ -2324,6 +2324,12 @@
       }[status] || status || 'Inventura'
     }
 
+    function getInventoryAuditTargetLabel(audit) {
+      if (audit.scope_type === 'warehouse') return audit.stock_locations?.name || 'Sklad'
+      const vehicle = state.vehicles.find((item) => String(item.id) === String(audit.vehicle_id))
+      return vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : 'Vozidlo'
+    }
+
     function getInventoryCountPackage(product) {
       const id = String(product?.id || '')
       const sku = String(product?.sku || '')
@@ -2353,21 +2359,20 @@
       const activeAudits = state.inventoryAudits.filter((audit) => ['assigned', 'counted'].includes(audit.status))
       if (els.vehicleInventoryCount) els.vehicleInventoryCount.textContent = `${activeAudits.length}`
       if (!activeAudits.length) {
-        els.vehicleInventoryList.innerHTML = '<div class="empty">Na dnešek nemáš zadanou inventuru auta.</div>'
+        els.vehicleInventoryList.innerHTML = '<div class="empty">Na dnešek nemáš zadanou inventuru.</div>'
         return
       }
       els.vehicleInventoryList.innerHTML = activeAudits.map((audit) => {
         const items = getVehicleInventoryItems(audit.id)
         const completed = items.filter((item) => item.counted_at).length
-        const vehicle = state.vehicles.find((item) => String(item.id) === String(audit.vehicle_id))
-        const vehicleLabel = vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : 'Vozidlo'
+        const targetLabel = getInventoryAuditTargetLabel(audit)
         const locked = audit.status === 'counted'
         return `
           <article class="task-card" data-inventory-audit-card="${escapeHtml(String(audit.id))}">
             <div class="task-head">
               <div>
-                <h4>Inventura auta #${escapeHtml(String(audit.id))}</h4>
-                <div class="meta"><span>${escapeHtml(vehicleLabel)}</span><span>${escapeHtml(audit.audit_date || todayIso)}</span></div>
+                <h4>${audit.scope_type === 'warehouse' ? 'Inventura skladu' : 'Inventura auta'} #${escapeHtml(String(audit.id))}</h4>
+                <div class="meta"><span>${escapeHtml(targetLabel)}</span><span>${escapeHtml(audit.audit_date || todayIso)}</span></div>
               </div>
               <span class="badge ${locked ? 'green' : 'yellow'}">${escapeHtml(getVehicleInventoryStatusLabel(audit.status))}</span>
             </div>
@@ -2787,11 +2792,11 @@
     }
 
     async function loadVehicleInventories() {
-      state.setupWarnings = state.setupWarnings.filter((message) => !message.includes('Inventura vozidla'))
+      state.setupWarnings = state.setupWarnings.filter((message) => !message.includes('Inventura'))
       const { data, error } = await supabase
         .from('inventory_audits')
-        .select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, responsible_name, note, status, counted_at, created_at')
-        .eq('scope_type', 'vehicle')
+        .select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, responsible_name, note, status, counted_at, created_at, stock_locations(id, name, location_type)')
+        .in('scope_type', ['vehicle', 'warehouse'])
         .eq('assigned_employee_id', state.employee.id)
         .in('status', ['assigned', 'counted'])
         .order('created_at', { ascending: false })
@@ -2799,7 +2804,7 @@
       if (error) {
         state.inventoryAudits = []
         state.inventoryAuditItems = []
-        state.setupWarnings.push('Inventura vozidla ještě není připravená v databázi.')
+        state.setupWarnings.push('Inventury ještě nejsou připravené v databázi.')
         return
       }
       state.inventoryAudits = data || []
@@ -2815,7 +2820,7 @@
         .order('id', { ascending: true })
       if (itemsError) {
         state.inventoryAuditItems = []
-        state.setupWarnings.push(`Položky inventury vozidla se nepodařilo načíst: ${itemsError.message}`)
+        state.setupWarnings.push(`Položky inventury se nepodařilo načíst: ${itemsError.message}`)
         return
       }
       state.inventoryAuditItems = items || []
