@@ -4058,6 +4058,16 @@
     function getMobilePickQuantity(item) {
       return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
     }
+    async function mobileStockReferenceAlreadyApplied(referenceId) {
+      const { data, error } = await supabase
+        .from('stock_movements_v13')
+        .select('id')
+        .eq('reference_type', 'mobile_stock_request')
+        .eq('reference_id', referenceId)
+        .limit(1)
+      if (error) throw error
+      return Boolean(data?.length)
+    }
     async function applyMobilePickRequestToStock(requestId) {
       const request = mobileStockRequests.find((item) => String(item.id) === String(requestId))
       if (!request) throw new Error('Mobilní požadavek už není v načteném seznamu. Dej obnovit a zkus to znovu.')
@@ -4073,6 +4083,20 @@
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId))
       const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
       const movements = []
+      if (await mobileStockReferenceAlreadyApplied(referenceId)) {
+        const { error } = await supabase
+          .from('mobile_stock_requests')
+          .update({
+            status: 'confirmed',
+            confirmed_by: getStoredEmployeeId(),
+            confirmed_at: request.confirmed_at || new Date().toISOString(),
+            stock_applied_at: request.stock_applied_at || new Date().toISOString(),
+            stock_reference_id: referenceId
+          })
+          .eq('id', requestId)
+        if (error) throw error
+        return
+      }
       let warehouseLocationId = null
       if (['vehicle_order', 'vehicle_load', 'vehicle_unload'].includes(request.request_type)) {
         const warehouseId = request.warehouse_id || vehicle?.warehouse_id || ''
