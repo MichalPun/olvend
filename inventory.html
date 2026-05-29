@@ -123,6 +123,8 @@
     .mobile-pick-detail-row td { padding:0 10px 10px; background:rgba(255,255,255,0.015); }
     .mobile-pick-detail { margin:0; padding:10px 0 0; border:0; box-shadow:none; background:transparent; }
     .mobile-pick-detail summary { padding:0 0 8px; margin:0; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; }
+    .mobile-pick-shortage td { background:rgba(239,68,68,0.08); }
+    .mobile-pick-stock-warning { color:#fecaca; font-weight:800; }
     .mobile-pick-add-line { display:grid; grid-template-columns:minmax(260px,1fr) 120px minmax(180px,0.8fr) auto; gap:8px; align-items:center; margin-top:10px; padding:10px; border:1px solid rgba(255,255,255,0.07); border-radius:12px; background:rgba(255,255,255,0.025); }
     .mobile-pick-add-line select,
     .mobile-pick-add-line input { min-height:34px; padding:7px 9px; border-radius:9px; font-size:12px; }
@@ -3874,6 +3876,24 @@
     function getMobileRequestItems(requestId) {
       return mobileStockRequestItems.filter((item) => String(item.request_id) === String(requestId))
     }
+    function getMobilePickSourceLocation(row) {
+      if (row.request_type === 'vehicle_order' || row.request_type === 'vehicle_load') {
+        const vehicle = vehicles.find((item) => String(item.id) === String(row.vehicle_id))
+        const warehouseId = row.warehouse_id || vehicle?.warehouse_id || ''
+        return stockLocationsV13.find((location) => location.location_type === 'warehouse' && String(location.warehouse_id) === String(warehouseId)) || null
+      }
+      if (['vehicle_unload', 'vehicle_sale', 'vehicle_return', 'vehicle_writeoff'].includes(row.request_type)) {
+        return stockLocationsV13.find((location) => location.location_type === 'vehicle' && String(location.vehicle_id) === String(row.vehicle_id)) || null
+      }
+      return null
+    }
+    function getMobilePickAvailableQuantity(row, productId) {
+      const sourceLocation = getMobilePickSourceLocation(row)
+      if (!sourceLocation || !productId) return null
+      return stockBalancesV13
+        .filter((balance) => String(balance.stock_location_id) === String(sourceLocation.id) && String(balance.product_id) === String(productId))
+        .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+    }
     function getMobilePickRequestRows() {
       const employeeIds = new Set()
       mobileStockRequests.forEach((request) => {
@@ -3951,11 +3971,16 @@
         const itemsLabel = row.items.slice(0, 3).map((item) => `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)} ${item.unit || 'ks'}`).join(' / ')
         const detailRows = row.items.map((item) => {
           const prepared = item.prepared_quantity ?? item.requested_quantity ?? 0
+          const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
+          const unit = item.unit || product?.base_unit || 'ks'
+          const available = getMobilePickAvailableQuantity(row, item.product_id)
+          const hasShortage = available !== null && Number(prepared || 0) > available + 0.0001
           return `
-            <tr>
-              <td><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml([item.sku, item.unit].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
+            <tr class="${hasShortage ? 'mobile-pick-shortage' : ''}">
+              <td><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml([item.sku ? `SKU ${item.sku}` : '', unit].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
               <td>${escapeHtml(Number(item.requested_quantity || 0).toFixed(2))}</td>
-              <td>${escapeHtml(item.unit || 'ks')}</td>
+              <td>${escapeHtml(unit)}</td>
+              <td class="${hasShortage ? 'mobile-pick-stock-warning' : ''}">${available === null ? '-' : escapeHtml(`${formatQuantityValue(available, unit)}`)}</td>
               <td><input data-mobile-pick-qty data-item-id="${escapeHtml(String(item.id))}" type="number" step="0.001" min="0" value="${escapeHtml(prepared)}" /></td>
               <td><input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" /></td>
               <td><button class="btn secondary" type="button" data-mobile-pick-action="remove-item" data-request-id="${escapeHtml(String(row.id))}" data-item-id="${escapeHtml(String(item.id))}">Odebrat</button></td>
@@ -3996,6 +4021,7 @@
                         <th>Položka</th>
                         <th>${escapeHtml(flow.requestedLabel)}</th>
                         <th>MJ</th>
+                        <th>Skladem</th>
                         <th>${escapeHtml(flow.preparedLabel)}</th>
                         <th>Poznámka</th>
                         <th>Akce</th>
@@ -4125,6 +4151,38 @@
       if (error) throw error
       return Boolean(data?.length)
     }
+    function validateMobilePickMovementAvailability(movements) {
+      const requiredBySource = new Map()
+      movements.forEach((movement) => {
+        if (!movement.from_stock_location_id || !movement.product_id) return
+        const product = productsV13.find((item) => String(item.id) === String(movement.product_id))
+        const allowNegative = product?.product_category === 'food_ready'
+          && movement.movement_type === 'load_vehicle'
+          && movement.reference_type === 'mobile_stock_request'
+        if (allowNegative) return
+        const key = [movement.from_stock_location_id, movement.product_id, movement.batch_id || 'none'].join(':')
+        const current = requiredBySource.get(key) || {
+          stockLocationId: movement.from_stock_location_id,
+          productId: movement.product_id,
+          batchId: movement.batch_id || null,
+          quantity: 0
+        }
+        current.quantity = Number((current.quantity + Number(movement.quantity_base_units || 0)).toFixed(3))
+        requiredBySource.set(key, current)
+      })
+      for (const required of requiredBySource.values()) {
+        const available = stockBalancesV13
+          .filter((balance) => String(balance.stock_location_id) === String(required.stockLocationId)
+            && String(balance.product_id) === String(required.productId)
+            && String(balance.batch_id || 'none') === String(required.batchId || 'none'))
+          .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+        if (available + 0.0001 < required.quantity) {
+          const product = productsV13.find((item) => String(item.id) === String(required.productId))
+          const unit = product?.base_unit || 'ks'
+          throw new Error(`Nedostatek zásoby: ${product?.name || `produkt #${required.productId}`} na ${getStockLocationDisplayName(required.stockLocationId)} (požadováno ${formatQuantityValue(required.quantity, unit)}, dostupné ${formatQuantityValue(available, unit)}).`)
+        }
+      }
+    }
     async function applyMobilePickRequestToStock(requestId) {
       const request = mobileStockRequests.find((item) => String(item.id) === String(requestId))
       if (!request) throw new Error('Mobilní požadavek už není v načteném seznamu. Dej obnovit a zkus to znovu.')
@@ -4208,6 +4266,7 @@
         })
       })
       if (!movements.length) throw new Error('Doklad nemá žádnou platnou položku se skladovou kartou a množstvím.')
+      validateMobilePickMovementAvailability(movements)
       await applyStockMovementsAtomically(movements)
       const { error } = await supabase
         .from('mobile_stock_requests')
