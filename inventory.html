@@ -4932,8 +4932,22 @@
       return shortageCount
     }
     function getSimpleTransferShortages() {
-      return collectSimpleTransferLines()
-        .map((line) => ({ line, state: getSimpleTransferAvailabilityState(line) }))
+      const grouped = new Map()
+      collectSimpleTransferLines().forEach((line) => {
+        if (!line.productId) {
+          grouped.set(`line:${line.index}`, { line, quantity: Number(line.quantity || 0) })
+          return
+        }
+        const key = String(line.productId)
+        const current = grouped.get(key) || { line, quantity: 0 }
+        current.quantity = Number((current.quantity + Number(line.quantity || 0)).toFixed(3))
+        grouped.set(key, current)
+      })
+      return [...grouped.values()]
+        .map((item) => ({
+          line: item.line,
+          state: getSimpleTransferAvailabilityState({ ...item.line, quantity: item.quantity })
+        }))
         .filter((item) => item.state.missing > 0.0001)
     }
     function addSimpleTransferLine(row = {}) {
@@ -5920,9 +5934,18 @@
       }])
       if (error) throw error
     }
-    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative, applyBalances = true }) {
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative, applyBalances = true, sourceRecordsCache = null }) {
       const movements = []
-      const sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      const cacheKey = `${fromStockLocationId || ''}:${productId || ''}`
+      let sourceRecords = []
+      if (fromStockLocationId && sourceRecordsCache) {
+        if (!sourceRecordsCache.has(cacheKey)) {
+          sourceRecordsCache.set(cacheKey, (await getBalanceRecords(fromStockLocationId, productId)).map((record) => ({ ...record })))
+        }
+        sourceRecords = sourceRecordsCache.get(cacheKey) || []
+      } else {
+        sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      }
       let remaining = Number(quantity || 0)
       for (const record of sourceRecords) {
         if (remaining <= 0.0001) break
@@ -5930,6 +5953,7 @@
         if (currentQty <= 0) continue
         const movedQty = Math.min(currentQty, remaining)
         const batchId = record.batch_id || null
+        record.quantity_on_hand = Number((currentQty - movedQty).toFixed(3))
         if (applyBalances) {
           await addBalanceToBatch(fromStockLocationId, productId, batchId, -movedQty)
           if (toStockLocationId) await addBalanceToBatch(toStockLocationId, productId, batchId, movedQty)
@@ -6652,6 +6676,7 @@
           await logManualTransferCorrectionDoc(correctionDoc)
         }
         const movementsToInsert = []
+        const sourceRecordsCache = new Map()
         for (const line of lines) {
           const product = productsV13.find((item) => String(item.id) === String(line.productId))
           const grossTotal = isSale
@@ -6690,7 +6715,8 @@
               referenceId: transferReference,
               note: lineNote,
               allowNegative: false,
-              applyBalances: false
+              applyBalances: false,
+              sourceRecordsCache
             })
           movementsToInsert.push(...lineMovements)
         }
