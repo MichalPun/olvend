@@ -950,17 +950,35 @@
     function productUnitCost(product) {
       return Number(product?.purchase_price || 0)
     }
+    function currentExchangeRate() {
+      const currency = invoiceCurrency?.value || 'CZK'
+      if (currency === 'CZK') return 1
+      return Number(exchangeRate?.value || 0)
+    }
+    function invoiceCurrencyUnitPriceFromCzk(czkPrice) {
+      const price = Number(czkPrice || 0)
+      const currency = invoiceCurrency?.value || 'CZK'
+      const rate = currentExchangeRate()
+      if (currency === 'EUR' && rate > 0) return roundMoney(price / rate)
+      return price
+    }
+    function amountToCzk(amount, currency = invoiceCurrency?.value || 'CZK', rate = currentExchangeRate()) {
+      const value = Number(amount || 0)
+      if (currency === 'CZK') return value
+      return rate > 0 ? roundMoney(value * rate) : 0
+    }
     function lineKind(rowOrLine) {
       const value = rowOrLine?.querySelector ? rowOrLine.querySelector('[data-line-kind]')?.value : (rowOrLine?.lineType || rowOrLine?.line_type || rowOrLine?.source_type)
       return value === 'non_stock' ? 'non_stock' : 'stock'
     }
-    function profitForLines(lines) {
+    function profitForLines(lines, currency = invoiceCurrency?.value || 'CZK', rate = currentExchangeRate()) {
       const cost = roundMoney(lines.reduce((sum, line) => sum + (Number(line.quantity || 0) * Number(line.unitCost || 0)), 0))
       const net = roundMoney(lines.reduce((sum, line) => sum + Number(line.net || 0), 0))
-      const profit = roundMoney(net - cost)
-      const margin = net > 0 ? roundMoney((profit / net) * 100) : 0
+      const netCzk = amountToCzk(net, currency, rate)
+      const profit = roundMoney(netCzk - cost)
+      const margin = netCzk > 0 ? roundMoney((profit / netCzk) * 100) : 0
       const missingCostCount = lines.filter((line) => line.productId && Number(line.unitCost || 0) <= 0).length
-      return { cost, net, profit, margin, missingCostCount }
+      return { cost, net, netCzk, profit, margin, missingCostCount }
     }
     function vatBreakdown(lines, mode = currentVatMode()) {
       const map = new Map()
@@ -1086,9 +1104,10 @@
     function updateLineTotals() {
       syncVatInputsForMode()
       const lines = getModalLines()
-      const profit = profitForLines(lines)
       const totals = documentTotals(lines)
       const currency = invoiceCurrency.value || 'CZK'
+      const rate = currentExchangeRate()
+      const profit = profitForLines(lines, currency, rate)
       const vatMode = vatModeMeta(currentVatMode())
       let totalNet = 0
       let totalGross = 0
@@ -1096,6 +1115,8 @@
         const amounts = lineAmounts(row)
         totalNet += amounts.net
         totalGross += amounts.gross
+        const priceLabel = row.querySelector('[data-line-price-label]')
+        if (priceLabel) priceLabel.textContent = `Cena bez DPH (${currency})`
         row.querySelector('[data-line-net]').textContent = formatMoney(amounts.net, currency)
         row.querySelector('[data-line-gross]').textContent = formatMoney(amounts.gross, currency)
       })
@@ -1106,14 +1127,22 @@
         { label:'Celkem bez DPH', value: formatMoney(totalNet, currency), note:'Součet položek.' },
         { label:'DPH', value: formatMoney(totals.vatRows.reduce((sum, row) => sum + row.vat, 0), currency), note:'Součet podle sazeb.' },
         { label:'K úhradě', value: formatMoney(totals.total, currency), note: totals.rounding ? `Včetně zaokrouhlení ${formatMoney(totals.rounding, currency)}.` : 'Částka k úhradě.' },
-        { label:'Očekávaný zisk', value: formatMoney(profit.profit, currency), note:`Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} % bez DPH.` },
-        { label:'Měna', value: currency, note: currency === 'EUR' ? `Kurz ${Number(exchangeRate.value || 0).toLocaleString('cs-CZ')}.` : 'Tuzemský doklad v Kč.' },
+        { label:'Očekávaný zisk', value: formatMoney(profit.profit, 'CZK'), note: currency === 'EUR' ? `Tržba ${formatMoney(profit.net, currency)} = ${formatMoney(profit.netCzk, 'CZK')} kurzem ${rate || 0}. Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} %.` : `Marže ${profit.margin.toLocaleString('cs-CZ', { minimumFractionDigits:1, maximumFractionDigits:1 })} % bez DPH.` },
+        { label:'Měna', value: currency, note: currency === 'EUR' ? (rate > 0 ? `Kurz ${rate.toLocaleString('cs-CZ')}.` : 'Doplň kurz pro výpočet zisku v Kč.') : 'Tuzemský doklad v Kč.' },
         { label:'Režim DPH', value: vatMode.label, note: vatMode.invoiceText || 'Standardní tuzemské DPH.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       documentNumberPreview.textContent = documentSeriesNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || null, documentType.value)
       if (!variableSymbol.value.trim()) variableSymbol.value = documentNumberPreview.textContent.replace(/\D/g, '').slice(-10)
       const unmatched = Array.from(invoiceLines.querySelectorAll('[data-invoice-line]')).filter((row) => lineKind(row) === 'stock' && !row.querySelector('[data-line-product-id]')?.value).length
-      setLineStatus(unmatched ? `${unmatched} skladových položek ještě nemá vybranou kartu zásoby.` : 'Položky jsou připravené k uložení.', unmatched ? 'error' : 'success')
+      const missingRate = currency !== 'CZK' && rate <= 0
+      setLineStatus(
+        unmatched
+          ? `${unmatched} skladových položek ještě nemá vybranou kartu zásoby.`
+          : missingRate
+            ? 'Doplň kurz vůči CZK, aby se správně spočítal zisk a kontrola nákladů.'
+            : 'Položky jsou připravené k uložení.',
+        unmatched || missingRate ? 'error' : 'success'
+      )
       return { totalNet, totalGross: totals.total }
     }
     function syncLineProduct(row) {
@@ -1131,7 +1160,7 @@
         const vatInput = row.querySelector('[data-line-vat]')
         const unitInput = row.querySelector('[data-line-unit]')
         const costInput = row.querySelector('[data-line-unit-cost]')
-        if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(Number(product.sale_price || 0))
+        if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(invoiceCurrencyUnitPriceFromCzk(product.sale_price))
         if (vatInput && product.vat_rate != null) vatInput.value = String(Number(product.vat_rate || 0))
         if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
         if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
@@ -1144,7 +1173,8 @@
       const listId = `products-${key}`
       const type = lineKind(source)
       const quantity = Number(source.quantity ?? 1)
-      const unitPrice = Number(source.unit_price ?? source.unitPrice ?? product?.sale_price ?? 0)
+      const hasSourcePrice = source.unit_price != null || source.unitPrice != null
+      const unitPrice = Number(hasSourcePrice ? (source.unit_price ?? source.unitPrice) : invoiceCurrencyUnitPriceFromCzk(product?.sale_price || 0))
       const unit = source.unit || productUnit(product)
       const unitCost = Number(source.unit_cost ?? source.unitCost ?? productUnitCost(product) ?? 0)
       const vatRate = effectiveVatRate(source.vat_rate ?? source.vatRate ?? product?.vat_rate ?? 21)
@@ -1176,11 +1206,11 @@
             <input data-line-unit type="text" value="${escapeHtml(unit || 'ks')}" />
           </div>
           <div class="field">
-            <label>Cena bez DPH</label>
+            <label data-line-price-label>Cena bez DPH (${escapeHtml(invoiceCurrency?.value || 'CZK')})</label>
             <input data-line-unit-price type="number" min="0" step="0.01" value="${escapeHtml(String(unitPrice || 0))}" />
           </div>
           <div class="field">
-            <label>Nákup bez DPH</label>
+            <label>Nákup bez DPH (Kč)</label>
             <input data-line-unit-cost type="number" min="0" step="0.01" value="${escapeHtml(String(unitCost || 0))}" />
           </div>
           <div class="field">
@@ -2075,6 +2105,9 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
       const needsStockIssueLocation = isStockImpactStatus(documentStatus.value || 'issued') && stockLinesForSalesLines(lines).length > 0
       if (needsStockIssueLocation && !stockIssueLocation.value) {
         throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
+      }
+      if ((invoiceCurrency.value || 'CZK') !== 'CZK' && currentExchangeRate() <= 0) {
+        throw new Error('U cizí měny doplň kurz vůči CZK kvůli výpočtu zisku a účetní kontrole.')
       }
       const totals = documentTotals(lines, vatMode)
       const total = totals.total
