@@ -524,7 +524,7 @@
           </div>
           <div class="footer-actions">
             <button class="btn secondary" id="cancelInvoiceImportBtn" type="button">Zrušit</button>
-            <button class="btn" id="saveInvoiceImportBtn" type="submit">Připravit příjem</button>
+            <button class="btn" id="saveInvoiceImportBtn" type="submit">Přijmout na sklad</button>
           </div>
         </div>
       </form>
@@ -2131,7 +2131,7 @@
       }
       return result
     }
-    async function createReceiptFromInvoiceImport() {
+    async function createReceiptFromInvoiceImport({ autoReceive = false } = {}) {
       if (!currentInvoiceImport) throw new Error('Chybí rozpracovaný doklad.')
       syncInvoiceImportLinesFromDom()
       const supplierId = parseRequiredEntityId(invoiceImportSupplierId.value, 'Dodavatel')
@@ -2202,6 +2202,11 @@
         ...line,
         unitCost: line.receivedQuantity > 0 ? Number((line.costTotal / line.receivedQuantity).toFixed(2)) : null
       }))
+      const requiresReceiptDetails = groupedLines.some((line) => {
+        const product = getProductById(line.productId)
+        return productNeedsExpiry(product) || productNeedsBatch(product)
+      })
+      const shouldReceiveNow = autoReceive && !requiresReceiptDetails
       const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''} ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
       const { data: order, error: orderError } = await insertPurchaseOrder({
           supplier_id: supplierId,
@@ -2225,21 +2230,59 @@
         note: baseNote
       })
       await updatePurchaseOrder(order.id, { note: `[rada:${assignedSeries}] ${baseNote}`.trim() })
-      const { error: itemsError } = await supabase.from('purchase_order_items').insert(groupedLines.map((line) => ({
+      const { data: savedItems, error: itemsError } = await supabase.from('purchase_order_items').insert(groupedLines.map((line) => ({
         purchase_order_id: order.id,
         product_id: line.productId,
         ordered_quantity: line.receivedQuantity,
         received_quantity: 0,
         unit_cost: line.unitCost || null,
         note: [`[dph:${Number(line.vatRate || 0)}][celkem-bez-dph:${Number(line.costTotal || 0).toFixed(2)}][celkem-s-dph:${Number(line.grossTotal || 0).toFixed(2)}]`, line.priceChecks?.length ? `[kontrola-ceny] ${line.priceChecks.slice(0, 3).join(' | ')}` : '', line.notes.slice(0, 4).join('\n')].filter(Boolean).join('\n')
-      })))
+      }))).select('id, product_id, ordered_quantity, unit_cost')
       if (itemsError) throw itemsError
       await saveSupplierMappingsFromImport(supplierId, importLines.map((line) => ({
         ...line,
         productId: line.productId,
         unitCost: line.unitCost
       })))
-      return { orderId: order.id, warehouseId }
+      if (shouldReceiveNow) {
+        const receivedAt = new Date().toISOString()
+        for (const line of groupedLines) {
+          const product = getProductById(line.productId)
+          const item = (savedItems || []).find((row) => String(row.product_id) === String(line.productId))
+          const batchId = await ensureInventoryBatch(product, {
+            supplierName: suppliers.find((item) => String(item.id) === String(supplierId))?.name || '',
+            receivedAt,
+            note: `Příjem dokladu ${order.id}`
+          })
+          const { error: movementError } = await supabase.from('stock_movements_v13').insert([{
+            product_id: line.productId,
+            batch_id: batchId,
+            to_stock_location_id: stockLocationId,
+            movement_type: 'receipt',
+            quantity_base_units: line.receivedQuantity,
+            unit_price: line.unitCost || null,
+            reference_type: 'purchase_order',
+            reference_id: String(order.id),
+            note: baseNote
+          }])
+          if (movementError) throw movementError
+          await upsertBalance(stockLocationId, line.productId, line.receivedQuantity, batchId)
+          if (item?.id) {
+            const { error: itemUpdateError } = await supabase
+              .from('purchase_order_items')
+              .update({ received_quantity: line.receivedQuantity })
+              .eq('id', item.id)
+            if (itemUpdateError) throw itemUpdateError
+          }
+        }
+        const { error: receiveError } = await updatePurchaseOrder(order.id, {
+          status: 'received',
+          received_at: receivedAt,
+          received_stock_location_id: stockLocationId
+        })
+        if (receiveError) throw receiveError
+      }
+      return { orderId: order.id, warehouseId, received: shouldReceiveNow, requiresReceiptDetails }
     }
     function getRecurringItemsForOrder(recurringOrderId) {
       return recurringItems.filter((item) => String(item.recurring_order_id) === String(recurringOrderId))
@@ -3878,20 +3921,24 @@
       event.preventDefault()
       try {
         saveInvoiceImportBtn.disabled = true
-        saveInvoiceImportBtn.textContent = 'Připravuji...'
-        const preparedReceipt = await createReceiptFromInvoiceImport()
+        saveInvoiceImportBtn.textContent = 'Přijímám...'
+        const preparedReceipt = await createReceiptFromInvoiceImport({ autoReceive: true })
         closeInvoiceImportModal()
         await loadPage()
-        openReceiptModal(preparedReceipt.orderId)
-        receiptWarehouseId.value = String(preparedReceipt.warehouseId)
-        setStatus('Příjem z faktury je připravený. Zkontroluj sklad a potvrď naskladnění.', 'success')
+        if (preparedReceipt.received) {
+          setStatus('Doklad byl načtený a rovnou přijatý na sklad.', 'success')
+        } else {
+          openReceiptModal(preparedReceipt.orderId)
+          receiptWarehouseId.value = String(preparedReceipt.warehouseId)
+          setStatus('Doklad má položku s povinnou expirací nebo šarží. Množství je předvyplněné, doplň jen povinné údaje a potvrď příjem.', 'success')
+        }
       } catch (error) {
         console.error(error)
-        setInvoiceImportStatus(`Nepodařilo se připravit příjem: ${error.message}`, 'error')
-        setStatus(`Nepodařilo se připravit příjem z faktury: ${error.message}`, 'error')
+        setInvoiceImportStatus(`Nepodařilo se přijmout doklad: ${error.message}`, 'error')
+        setStatus(`Nepodařilo se přijmout doklad: ${error.message}`, 'error')
       } finally {
         saveInvoiceImportBtn.disabled = false
-        saveInvoiceImportBtn.textContent = 'Připravit příjem'
+        saveInvoiceImportBtn.textContent = 'Přijmout na sklad'
       }
     })
     purchaseSettingsForm.addEventListener('submit', async (event) => {
