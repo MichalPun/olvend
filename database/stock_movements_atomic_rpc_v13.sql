@@ -16,6 +16,7 @@ declare
   v_reference_type text;
   v_reference_id text;
   v_note text;
+  v_allow_negative_source boolean;
   source_balance record;
   target_balance record;
   inserted_count integer := 0;
@@ -48,7 +49,18 @@ begin
       raise exception 'Movement for product % has invalid quantity %', v_product_id, v_quantity;
     end if;
 
+    v_allow_negative_source := false;
     if v_from_location_id is not null then
+      select exists (
+        select 1
+        from public.products p
+        where p.id = v_product_id
+          and p.product_category = 'food_ready'
+          and v_movement_type = 'load_vehicle'
+          and v_reference_type in ('mobile_stock_request', 'loading_session')
+      )
+      into v_allow_negative_source;
+
       select id, quantity_on_hand
       into source_balance
       from public.stock_location_balances
@@ -59,15 +71,33 @@ begin
       limit 1
       for update;
 
-      if source_balance.id is null or coalesce(source_balance.quantity_on_hand, 0) + 0.0001 < v_quantity then
+      if not v_allow_negative_source and (source_balance.id is null or coalesce(source_balance.quantity_on_hand, 0) + 0.0001 < v_quantity) then
         raise exception 'Insufficient stock for product % at stock location %', v_product_id, v_from_location_id;
       end if;
 
-      update public.stock_location_balances
-      set
-        quantity_on_hand = round((coalesce(quantity_on_hand, 0) - v_quantity)::numeric, 3),
-        updated_at = now()
-      where id = source_balance.id;
+      if source_balance.id is not null then
+        update public.stock_location_balances
+        set
+          quantity_on_hand = round((coalesce(quantity_on_hand, 0) - v_quantity)::numeric, 3),
+          updated_at = now()
+        where id = source_balance.id;
+      else
+        insert into public.stock_location_balances (
+          stock_location_id,
+          product_id,
+          batch_id,
+          quantity_on_hand,
+          reserved_quantity,
+          updated_at
+        ) values (
+          v_from_location_id,
+          v_product_id,
+          v_batch_id,
+          round((-v_quantity)::numeric, 3),
+          0,
+          now()
+        );
+      end if;
     end if;
 
     if v_to_location_id is not null then
