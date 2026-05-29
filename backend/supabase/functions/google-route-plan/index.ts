@@ -126,10 +126,8 @@ Deno.serve(async (req) => {
         origin: waypoint(origin),
         destination: waypoint(destination),
         travelMode: "DRIVE",
-        routingPreference: "TRAFFIC_AWARE",
         languageCode: "cs",
         units: "METRIC",
-        departureTime: payload.departureTime || new Date().toISOString(),
       };
 
       const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
@@ -161,7 +159,7 @@ Deno.serve(async (req) => {
       return json({
         provider: "google_routes",
         mode: "distance",
-        routingPreference: "TRAFFIC_AWARE",
+        routingPreference: "TRAFFIC_UNAWARE",
         route: {
           distanceMeters: Number(route.distanceMeters || 0),
           durationSeconds: parseDurationSeconds(route.duration),
