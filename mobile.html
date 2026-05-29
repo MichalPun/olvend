@@ -3194,6 +3194,7 @@
       }
 
       const needsApproval = state.selectedStockType === 'vehicle_order' || state.selectedStockType === 'vehicle_writeoff'
+      const appliesImmediately = !needsApproval
       const note = els.stockNoteInput.value.trim() || null
       const draftItems = state.stockDraftItems.map((item) => ({ ...item }))
       const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId() || null
@@ -3210,13 +3211,13 @@
           .from('mobile_stock_requests')
           .insert({
             request_type: state.selectedStockType,
-            status: needsApproval ? 'requested' : 'confirmed',
+            status: needsApproval ? 'requested' : 'picking',
             employee_id: state.employee?.id || null,
             vehicle_id: vehicleId,
             attendance_day_id: state.attendanceDay?.id || null,
             requested_for_date: requestedForDate,
-            confirmed_by: needsApproval ? null : state.employee?.id || null,
-            confirmed_at: needsApproval ? null : new Date().toISOString(),
+            confirmed_by: null,
+            confirmed_at: null,
             note
           })
           .select('*')
@@ -3231,7 +3232,8 @@
           sku: item.sku,
           unit: item.unit,
           requested_quantity: item.quantity,
-          confirmed_quantity: needsApproval ? null : item.quantity,
+          prepared_quantity: appliesImmediately ? item.quantity : null,
+          confirmed_quantity: null,
           note: item.note
         }))
 
@@ -3245,7 +3247,7 @@
         }
 
         const storedItems = savedItems?.length ? savedItems : itemRows
-        if (request.status === 'confirmed') {
+        if (appliesImmediately) {
           await applyStockRequestToInventory(request, storedItems)
         }
 
@@ -3515,6 +3517,63 @@
       return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
     }
 
+    async function getBalanceRecords(stockLocationId, productId) {
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('id, batch_id, quantity_on_hand')
+        .eq('stock_location_id', stockLocationId)
+        .eq('product_id', productId)
+        .gt('quantity_on_hand', 0)
+        .order('batch_id', { ascending: true, nullsFirst: false })
+      if (error) throw error
+      return data || []
+    }
+
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, referenceId, note, allowNegative = false }) {
+      const movements = []
+      const sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      let remaining = Number(quantity || 0)
+      for (const record of sourceRecords) {
+        if (remaining <= 0.0001) break
+        const currentQty = Number(record.quantity_on_hand || 0)
+        if (currentQty <= 0) continue
+        const movedQty = Math.min(currentQty, remaining)
+        movements.push({
+          product_id: productId,
+          batch_id: record.batch_id || null,
+          from_stock_location_id: fromStockLocationId,
+          to_stock_location_id: toStockLocationId,
+          movement_type: movementType,
+          quantity_base_units: movedQty,
+          reference_type: 'mobile_stock_request',
+          reference_id: referenceId,
+          created_by: state.employee?.id || null,
+          note
+        })
+        remaining = Number((remaining - movedQty).toFixed(3))
+      }
+      if (remaining > 0.0001) {
+        if (!allowNegative) {
+          const product = state.products.find((item) => String(item.id) === String(productId))
+          const available = Number((Number(quantity || 0) - remaining).toFixed(3))
+          throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
+        }
+        movements.push({
+          product_id: productId,
+          batch_id: null,
+          from_stock_location_id: fromStockLocationId,
+          to_stock_location_id: toStockLocationId,
+          movement_type: movementType,
+          quantity_base_units: remaining,
+          reference_type: 'mobile_stock_request',
+          reference_id: referenceId,
+          created_by: state.employee?.id || null,
+          note: [note, 'část bez dohledané šarže'].filter(Boolean).join(' · ') || null
+        })
+      }
+      return movements
+    }
+
     async function applyStockMovementsAtomically(movements) {
       if (!movements.length) return
       const { error } = await supabase.rpc('apply_stock_movements_v13', { movement_rows: movements })
@@ -3580,34 +3639,30 @@
 
         if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
           if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro nakládku chybí sklad nebo vozidlo.')
-          movementRows.push({
-            product_id: productId,
-            batch_id: null,
-            from_stock_location_id: warehouseLocationId,
-            to_stock_location_id: vehicleLocationId,
-            movement_type: 'load_vehicle',
-            quantity_base_units: quantity,
-            reference_type: 'mobile_stock_request',
-            reference_id: referenceId,
-            created_by: state.employee.id,
-            note: `Mobilní nakládka #${request.id}`
-          })
+          const product = state.products.find((row) => String(row.id) === String(productId))
+          movementRows.push(...await moveStockPreservingBatches({
+            productId,
+            quantity,
+            fromStockLocationId: warehouseLocationId,
+            toStockLocationId: vehicleLocationId,
+            movementType: 'load_vehicle',
+            referenceId,
+            note: `Mobilní nakládka #${request.id}`,
+            allowNegative: product?.product_category === 'food_ready'
+          }))
         }
 
         if (request.request_type === 'vehicle_unload') {
           if (!warehouseLocationId || !vehicleLocationId) throw new Error('Pro vykládku chybí sklad nebo vozidlo.')
-          movementRows.push({
-            product_id: productId,
-            batch_id: null,
-            from_stock_location_id: vehicleLocationId,
-            to_stock_location_id: warehouseLocationId,
-            movement_type: 'return',
-            quantity_base_units: quantity,
-            reference_type: 'mobile_stock_request',
-            reference_id: referenceId,
-            created_by: state.employee.id,
+          movementRows.push(...await moveStockPreservingBatches({
+            productId,
+            quantity,
+            fromStockLocationId: vehicleLocationId,
+            toStockLocationId: warehouseLocationId,
+            movementType: 'return',
+            referenceId,
             note: `Mobilní vykládka #${request.id}`
-          })
+          }))
         }
 
         if (request.request_type === 'vehicle_sale') {
