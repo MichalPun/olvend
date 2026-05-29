@@ -1,5 +1,10 @@
 alter table public.service_requests
+  alter column location_id drop not null;
+
+alter table public.service_requests
   add column if not exists service_scope text not null default 'internal',
+  add column if not exists external_service_place text,
+  add column if not exists external_service_address text,
   add column if not exists external_customer_name text,
   add column if not exists external_customer_company_id text,
   add column if not exists external_customer_contact text,
