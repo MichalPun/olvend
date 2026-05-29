@@ -89,6 +89,13 @@
     .product-picker-main { display:grid; gap:6px; min-width:0; }
     .product-picker-row { display:grid; grid-template-columns:150px minmax(0,1fr); gap:8px; }
     .product-search { padding:12px 14px; border-radius:12px; font-size:14px; }
+    .travel-route-panel { grid-column:1 / -1; display:none; grid-template-columns:minmax(240px,1fr) minmax(240px,1fr) 120px auto minmax(180px,0.7fr); gap:8px; align-items:end; padding:10px; border:1px solid rgba(88,166,255,0.18); border-radius:10px; background:rgba(88,166,255,0.06); }
+    .travel-route-panel.show { display:grid; }
+    .travel-route-panel .route-check { min-height:34px; display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; font-weight:800; }
+    .travel-route-panel .route-check input { width:auto; min-height:0; }
+    .travel-route-status { color:var(--muted); font-size:12px; line-height:1.35; }
+    .travel-route-status.success { color:#9be7b8; }
+    .travel-route-status.error { color:#ffb0b6; }
     :root[data-olvend-theme="light"] input,
     :root[data-olvend-theme="light"] select,
     :root[data-olvend-theme="light"] textarea,
@@ -696,6 +703,11 @@
         localStorage.setItem(SALES_PAYMENT_KEY, JSON.stringify(payment))
       }
     }
+    async function getAccessToken() {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+      return data?.session?.access_token || null
+    }
     function loadSalesSeries() {
       if (salesSeriesSettingsCache) return salesSeriesSettingsCache
       const saved = safeJson(localStorage.getItem(SALES_SERIES_KEY), {}) || {}
@@ -888,6 +900,15 @@
     }
     function productById(id) {
       return products.find((product) => String(product.id) === String(id)) || null
+    }
+    function isServiceInvoiceProduct(product) {
+      return product?.usage_type === 'service_use'
+    }
+    function isTravelExpenseLine(row) {
+      const value = row?.querySelector
+        ? row.querySelector('[data-line-product-search]')?.value
+        : row?.productName || row?.product_name || ''
+      return normalizeText(value).includes('cestovne')
     }
     function productUnit(productOrItem) {
       const product = productById(productOrItem?.product_id || productOrItem?.productId)
@@ -1145,14 +1166,103 @@
             : 'Položky jsou připravené k uložení.',
         unmatched || missingRate ? 'error' : 'success'
       )
+      syncTravelRoutePanels()
       return { totalNet, totalGross: totals.total }
+    }
+    function routeAddressText(value) {
+      return String(value || '').replace(/\s*\n+\s*/g, ', ').replace(/\s{2,}/g, ' ').trim()
+    }
+    function defaultTravelOrigin() {
+      const settings = loadPaymentSettings()
+      return routeAddressText(settings.sellerAddress || '')
+    }
+    function defaultTravelDestination() {
+      const customer = currentCustomerDetail()
+      return routeAddressText(customerDeliveryAddress(customer) || customerBillingAddress(customer) || customer.address || '')
+    }
+    function syncTravelRoutePanel(row) {
+      const panel = row.querySelector('[data-travel-route-panel]')
+      if (!panel) return
+      const shouldShow = isTravelExpenseLine(row)
+      panel.classList.toggle('show', shouldShow)
+      if (!shouldShow) return
+      const origin = panel.querySelector('[data-travel-origin]')
+      const destination = panel.querySelector('[data-travel-destination]')
+      if (origin && !origin.value.trim()) origin.value = defaultTravelOrigin()
+      if (destination && !destination.value.trim()) destination.value = defaultTravelDestination()
+    }
+    function syncTravelRoutePanels() {
+      invoiceLines.querySelectorAll('[data-invoice-line]').forEach(syncTravelRoutePanel)
+    }
+    async function calculateTravelRoute(row) {
+      const panel = row.querySelector('[data-travel-route-panel]')
+      if (!panel) return
+      const origin = routeAddressText(panel.querySelector('[data-travel-origin]')?.value)
+      const destination = routeAddressText(panel.querySelector('[data-travel-destination]')?.value)
+      const status = panel.querySelector('[data-travel-route-status]')
+      const quantityInput = row.querySelector('[data-line-qty]')
+      const roundTrip = panel.querySelector('[data-travel-roundtrip]')?.checked
+
+      const setTravelStatus = (message, type = '') => {
+        if (!status) return
+        status.textContent = message
+        status.className = 'travel-route-status'
+        if (type) status.classList.add(type)
+      }
+
+      if (!origin || !destination) {
+        setTravelStatus('Doplň odkud a kam.', 'error')
+        return
+      }
+
+      setTravelStatus('Počítám trasu přes Google...')
+      try {
+        const accessToken = await getAccessToken()
+        const { data, error } = await supabase.functions.invoke('google-route-plan', {
+          body: {
+            mode: 'distance',
+            origin: { address: origin },
+            destination: { address: destination },
+            stops: [],
+            returnToStart: false,
+            departureTime: new Date().toISOString()
+          },
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
+        })
+        if (error) throw error
+        const meters = Number(data?.route?.distanceMeters || 0)
+        if (!meters) throw new Error(data?.error || 'Google nevrátil vzdálenost.')
+        const oneWayKm = meters / 1000
+        const billedKm = Math.round(oneWayKm * (roundTrip ? 2 : 1) * 10) / 10
+        if (quantityInput) quantityInput.value = String(billedKm)
+        setTravelStatus(`${oneWayKm.toLocaleString('cs-CZ', { maximumFractionDigits:1 })} km${roundTrip ? ' × 2' : ''} · zapsáno ${billedKm.toLocaleString('cs-CZ', { maximumFractionDigits:1 })} km`, 'success')
+        updateLineTotals()
+      } catch (error) {
+        console.error(error)
+        setTravelStatus(`Trasu se nepodařilo spočítat: ${error.message || error}`, 'error')
+      }
     }
     function syncLineProduct(row) {
       const product = productBySearchValue(row.querySelector('[data-line-product-search]')?.value || '')
       const hidden = row.querySelector('[data-line-product-id]')
+      const kindSelect = row.querySelector('[data-line-kind]')
+      if (product && isServiceInvoiceProduct(product) && kindSelect?.value !== 'non_stock') {
+        kindSelect.value = 'non_stock'
+      }
       const type = lineKind(row)
+      if (product && isServiceInvoiceProduct(product)) {
+        const priceInput = row.querySelector('[data-line-unit-price]')
+        const vatInput = row.querySelector('[data-line-vat]')
+        const unitInput = row.querySelector('[data-line-unit]')
+        const costInput = row.querySelector('[data-line-unit-cost]')
+        if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(invoiceCurrencyUnitPriceFromCzk(product.sale_price))
+        if (vatInput && product.vat_rate != null) vatInput.value = String(Number(product.vat_rate || 0))
+        if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
+        if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
+      }
       if (type === 'non_stock') {
         hidden.value = ''
+        syncTravelRoutePanel(row)
         updateLineTotals()
         return
       }
@@ -1167,6 +1277,7 @@
         if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
         if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
       }
+      syncTravelRoutePanel(row)
       updateLineTotals()
     }
     function addInvoiceLine(source = {}) {
@@ -1230,6 +1341,22 @@
           <div class="field">
             <label>&nbsp;</label>
             <button class="btn secondary small" type="button" data-action="remove-line">Odebrat</button>
+          </div>
+          <div class="travel-route-panel" data-travel-route-panel>
+            <div class="field">
+              <label>Trasa odkud</label>
+              <input data-travel-origin type="text" placeholder="Start cesty" />
+            </div>
+            <div class="field">
+              <label>Trasa kam</label>
+              <input data-travel-destination type="text" placeholder="Cíl cesty" />
+            </div>
+            <label class="route-check">
+              <input data-travel-roundtrip type="checkbox" />
+              Tam i zpět
+            </label>
+            <button class="btn secondary small" type="button" data-action="calculate-travel-route">Spočítat km</button>
+            <div class="travel-route-status" data-travel-route-status>Vyplň trasu a spočítám množství v km.</div>
           </div>
         </div>
       `)
@@ -2464,6 +2591,12 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
       updateLineTotals()
     })
     invoiceLines.addEventListener('click', (event) => {
+      const routeButton = event.target.closest('[data-action="calculate-travel-route"]')
+      if (routeButton) {
+        const row = routeButton.closest('[data-invoice-line]')
+        if (row) calculateTravelRoute(row)
+        return
+      }
       const button = event.target.closest('[data-action="remove-line"]')
       if (!button) return
       button.closest('[data-invoice-line]')?.remove()

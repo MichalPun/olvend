@@ -1,6 +1,9 @@
 type LatLngPoint = {
-  latitude: number;
-  longitude: number;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  label?: string;
+  note?: string;
 };
 
 type RouteStopPayload = {
@@ -18,7 +21,9 @@ type RouteStopPayload = {
 };
 
 type RoutePlanPayload = {
-  origin: LatLngPoint & { label?: string; note?: string };
+  mode?: "optimize" | "distance";
+  origin: LatLngPoint;
+  destination?: LatLngPoint;
   stops: RouteStopPayload[];
   returnToStart?: boolean;
   departureTime?: string | null;
@@ -46,15 +51,29 @@ function parseDurationSeconds(input?: string | null) {
   return match ? Math.round(Number(match[1])) : 0;
 }
 
-function latLng(point: LatLngPoint) {
-  return {
-    location: {
-      latLng: {
-        latitude: point.latitude,
-        longitude: point.longitude,
+function hasLatLng(point?: LatLngPoint | null) {
+  return point
+    && !Number.isNaN(Number(point.latitude))
+    && !Number.isNaN(Number(point.longitude));
+}
+
+function waypoint(point: LatLngPoint) {
+  if (hasLatLng(point)) {
+    return {
+      location: {
+        latLng: {
+          latitude: Number(point.latitude),
+          longitude: Number(point.longitude),
+        },
       },
-    },
-  };
+    };
+  }
+
+  if (point?.address) {
+    return { address: point.address };
+  }
+
+  return null;
 }
 
 function normalizeStop(stop: RouteStopPayload, index: number) {
@@ -92,8 +111,63 @@ Deno.serve(async (req) => {
     const origin = payload?.origin;
     const rawStops = Array.isArray(payload?.stops) ? payload.stops : [];
 
-    if (!origin || Number.isNaN(Number(origin.latitude)) || Number.isNaN(Number(origin.longitude))) {
-      return json({ error: "Origin latitude and longitude are required." }, 400);
+    if (!origin || !waypoint(origin)) {
+      return json({ error: "Origin coordinates or address are required." }, 400);
+    }
+
+    if (payload.mode === "distance") {
+      const destination = payload.destination;
+
+      if (!destination || !waypoint(destination)) {
+        return json({ error: "Destination coordinates or address are required." }, 400);
+      }
+
+      const googleRequest = {
+        origin: waypoint(origin),
+        destination: waypoint(destination),
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_AWARE",
+        languageCode: "cs",
+        units: "METRIC",
+        departureTime: payload.departureTime || new Date().toISOString(),
+      };
+
+      const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": googleMapsApiKey,
+          "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.staticDuration",
+        },
+        body: JSON.stringify(googleRequest),
+      });
+
+      const responseText = await response.text();
+      const data = responseText ? JSON.parse(responseText) : {};
+
+      if (!response.ok) {
+        return json({
+          error: data?.error?.message || "Google Routes API request failed.",
+          google_status: response.status,
+        }, 400);
+      }
+
+      const route = Array.isArray(data?.routes) ? data.routes[0] : null;
+
+      if (!route) {
+        return json({ error: "Google Routes API returned no route." }, 400);
+      }
+
+      return json({
+        provider: "google_routes",
+        mode: "distance",
+        routingPreference: "TRAFFIC_AWARE",
+        route: {
+          distanceMeters: Number(route.distanceMeters || 0),
+          durationSeconds: parseDurationSeconds(route.duration),
+          staticDurationSeconds: parseDurationSeconds(route.staticDuration),
+        },
+      });
     }
 
     if (!rawStops.length) {
@@ -109,9 +183,9 @@ Deno.serve(async (req) => {
     const stops = rawStops.map(normalizeStop);
 
     const googleRequest = {
-      origin: latLng(origin),
-      destination: latLng(origin),
-      intermediates: stops.map((stop) => latLng(stop)),
+      origin: waypoint(origin),
+      destination: waypoint(origin),
+      intermediates: stops.map((stop) => waypoint(stop)).filter(Boolean),
       travelMode: "DRIVE",
       routingPreference: "TRAFFIC_AWARE",
       optimizeWaypointOrder: true,
