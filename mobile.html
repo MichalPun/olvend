@@ -615,6 +615,40 @@
       margin-top: 10px;
     }
 
+    .signature-pad {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .signature-pad canvas {
+      width: 100%;
+      height: 180px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: #fff;
+      touch-action: none;
+    }
+
+    .signature-preview {
+      max-width: 100%;
+      min-height: 80px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fff;
+      padding: 8px;
+    }
+
+    .muted-text {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.4;
+    }
+
     .section-title {
       display: flex;
       justify-content: space-between;
@@ -1375,6 +1409,7 @@
       locations: [],
       machines: [],
       services: [],
+      serviceSignatures: [],
       instructions: [],
       acknowledgements: [],
       stockRequests: [],
@@ -1399,6 +1434,8 @@
     const todayIso = getIsoDateOffset(0)
     const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV16'
+    let activeSignatureCanvas = null
+    let lastSignaturePoint = null
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -1589,6 +1626,57 @@
       return item?.machine_name || ''
     }
 
+    function getServiceSignature(serviceId) {
+      return state.serviceSignatures.find((item) => String(item.service_request_id) === String(serviceId)) || null
+    }
+
+    function resetServiceSignatureCanvas(canvas) {
+      const context = canvas?.getContext ? canvas.getContext('2d') : null
+      if (!context) return
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.lineWidth = 4
+      context.lineCap = 'round'
+      context.strokeStyle = '#111827'
+    }
+
+    function resetServiceSignatureCanvases() {
+      els.serviceList.querySelectorAll('[data-service-signature-canvas]').forEach(resetServiceSignatureCanvas)
+    }
+
+    function getSignatureCanvasPoint(canvas, event) {
+      const rect = canvas.getBoundingClientRect()
+      const source = event.touches?.[0] || event.changedTouches?.[0] || event
+      return {
+        x: ((source.clientX - rect.left) / rect.width) * canvas.width,
+        y: ((source.clientY - rect.top) / rect.height) * canvas.height
+      }
+    }
+
+    function beginServiceSignature(event) {
+      const canvas = event.target.closest?.('[data-service-signature-canvas]')
+      if (!canvas) return
+      activeSignatureCanvas = canvas
+      lastSignaturePoint = getSignatureCanvasPoint(canvas, event)
+    }
+
+    function moveServiceSignature(event) {
+      if (!activeSignatureCanvas || !lastSignaturePoint) return
+      event.preventDefault()
+      const context = activeSignatureCanvas.getContext('2d')
+      const nextPoint = getSignatureCanvasPoint(activeSignatureCanvas, event)
+      context.beginPath()
+      context.moveTo(lastSignaturePoint.x, lastSignaturePoint.y)
+      context.lineTo(nextPoint.x, nextPoint.y)
+      context.stroke()
+      lastSignaturePoint = nextPoint
+    }
+
+    function endServiceSignature() {
+      activeSignatureCanvas = null
+      lastSignaturePoint = null
+    }
+
     function renderServiceMeta(item) {
       const description = String(item?.description || '').trim()
       const machineLabel = getServiceMachineLabel(item)
@@ -1614,6 +1702,12 @@
             <div class="service-meta-row">
               <strong>Termín</strong>
               <span>${escapeHtml(item.due_date)}</span>
+            </div>
+          ` : ''}
+          ${item?.service_scope === 'external' || item?.external_customer_name ? `
+            <div class="service-meta-row">
+              <strong>Zákazník</strong>
+              <span>${escapeHtml([item.external_customer_name, item.external_order_number].filter(Boolean).join(' · ') || 'Externí servis')}</span>
             </div>
           ` : ''}
         </div>
@@ -1903,6 +1997,7 @@
       els.serviceList.innerHTML = openServices.map((item) => {
         const old = item.created_at && (Date.now() - new Date(item.created_at).getTime()) > 3 * 24 * 60 * 60 * 1000
         const delayText = getServiceDelayText(item)
+        const signature = getServiceSignature(item.id)
         return `
           <article class="task-card ${old ? 'locked-panel' : ''}">
             <div class="task-head">
@@ -1951,12 +2046,47 @@
                   Díly / co chybí / další domluva
                   <textarea data-service-next data-id="${item.id}" placeholder="Díl, návrat, domluva, požadavek na manažera">${escapeHtml(item.next_recommendation || '')}</textarea>
                 </label>
+                ${item.service_scope === 'external' || item.billable ? `
+                  <label>
+                    Fakturovatelná práce (min)
+                    <input data-service-billable-work data-id="${item.id}" type="number" min="0" step="5" value="${escapeHtml(String(item.billable_work_minutes || item.actual_duration_minutes || ''))}" placeholder="Např. 60" />
+                  </label>
+                  <label>
+                    Fakturovatelná cesta (min)
+                    <input data-service-billable-travel data-id="${item.id}" type="number" min="0" step="5" value="${escapeHtml(String(item.billable_travel_minutes || ''))}" placeholder="Např. 30" />
+                  </label>
+                  <label>
+                    Poznámka pro zákazníka / protokol
+                    <textarea data-service-customer-note data-id="${item.id}" placeholder="Co má zákazník vidět v protokolu">${escapeHtml(item.customer_visible_note || '')}</textarea>
+                  </label>
+                  <div class="signature-pad">
+                    <strong>Podpis zákazníka</strong>
+                    ${signature ? `
+                      <span class="muted-text">Podepsal ${escapeHtml(signature.signer_name)}${signature.signer_role ? ` · ${escapeHtml(signature.signer_role)}` : ''}</span>
+                      <img class="signature-preview" src="${signature.signature_data}" alt="Podpis zákazníka" />
+                    ` : '<span class="muted-text">Nech zákazníka podepsat převzetí zásahu prstem přímo tady.</span>'}
+                    <label>
+                      Podepisující osoba
+                      <input data-service-signature-name data-id="${item.id}" value="${escapeHtml(signature?.signer_name || item.external_customer_contact || '')}" placeholder="Jméno zákazníka" />
+                    </label>
+                    <label>
+                      Role / poznámka
+                      <input data-service-signature-role data-id="${item.id}" value="${escapeHtml(signature?.signer_role || '')}" placeholder="Např. vedoucí provozu" />
+                    </label>
+                    <canvas width="720" height="240" data-service-signature-canvas data-id="${item.id}"></canvas>
+                    <div class="compact-actions">
+                      <button class="secondary-btn" data-service-action="clear-signature" data-id="${item.id}" type="button">Vymazat podpis</button>
+                      <button class="primary-btn" data-service-action="save-signature" data-id="${item.id}" type="button">Uložit podpis</button>
+                    </div>
+                  </div>
+                ` : ''}
                 <button class="primary-btn" data-service-action="save-result" data-id="${item.id}" type="button">Uložit výsledek</button>
               </div>
             </details>
           </article>
         `
       }).join('')
+      resetServiceSignatureCanvases()
     }
 
     function renderImportant() {
@@ -2507,7 +2637,8 @@
     }
 
     async function loadServices() {
-      const baseSelect = 'id, title, description, priority, status, due_date, created_at, location_id, machine_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
+      const legacyServiceSelect = 'id, title, description, priority, status, due_date, created_at, location_id, machine_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
+      const baseSelect = `${legacyServiceSelect}, actual_duration_minutes, service_scope, external_customer_name, external_customer_contact, external_order_number, billable, billing_status, billable_work_minutes, billable_travel_minutes, billable_materials_summary, customer_visible_note`
       let result = await supabase
         .from('service_requests')
         .select(`${baseSelect}, delay_reason, delay_note`)
@@ -2524,12 +2655,31 @@
           .order('created_at', { ascending: false })
           .limit(30)
       }
+      if (result.error && ['service_scope', 'external_customer', 'billable', 'billing_status', 'customer_visible_note', 'actual_duration_minutes'].some((column) => String(result.error.message || '').toLowerCase().includes(column))) {
+        result = await supabase
+          .from('service_requests')
+          .select(legacyServiceSelect)
+          .eq('assigned_employee_id', state.employee.id)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false })
+          .limit(30)
+      }
       if (result.error) {
         state.services = []
+        state.serviceSignatures = []
         return
       }
 
       const services = result.data || []
+      const serviceIds = services.map((item) => item.id).filter(Boolean)
+      state.serviceSignatures = []
+      if (serviceIds.length) {
+        const { data: signatures, error: signatureError } = await supabase
+          .from('service_request_signatures')
+          .select('*')
+          .in('service_request_id', serviceIds)
+        if (!signatureError) state.serviceSignatures = signatures || []
+      }
       const machineIds = [...new Set(services.map((item) => item.machine_id).filter(Boolean))]
       let machineMap = new Map()
       if (machineIds.length) {
@@ -3525,10 +3675,45 @@
         showMessage('Požadavek je připravený pro manažerské rozhodnutí.')
       }
 
+      if (action === 'clear-signature') {
+        const canvas = els.serviceList.querySelector(`[data-service-signature-canvas][data-id="${CSS.escape(String(id))}"]`)
+        resetServiceSignatureCanvas(canvas)
+        showMessage('Podpisové pole je vymazané.')
+      }
+
+      if (action === 'save-signature') {
+        const canvas = els.serviceList.querySelector(`[data-service-signature-canvas][data-id="${CSS.escape(String(id))}"]`)
+        const signerName = els.serviceList.querySelector(`[data-service-signature-name][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        const signerRole = els.serviceList.querySelector(`[data-service-signature-role][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        if (!canvas) throw new Error('Chybí podpisové pole.')
+        if (!signerName) throw new Error('Doplň jméno podepisující osoby.')
+        const payload = {
+          service_request_id: Number(id),
+          signer_name: signerName,
+          signer_role: signerRole || null,
+          signature_data: canvas.toDataURL('image/png'),
+          created_by: state.employee?.id || null
+        }
+        const existing = getServiceSignature(id)
+        const operation = existing
+          ? supabase.from('service_request_signatures').update(payload).eq('id', existing.id).select('*').single()
+          : supabase.from('service_request_signatures').insert([payload]).select('*').single()
+        const { data, error } = await operation
+        if (error) throw error
+        state.serviceSignatures = existing
+          ? state.serviceSignatures.map((item) => String(item.id) === String(existing.id) ? data : item)
+          : [...state.serviceSignatures, data]
+        showMessage('Podpis zákazníka je uložený.')
+      }
+
       if (action === 'save-result') {
         const result = els.serviceList.querySelector(`[data-service-result][data-id="${CSS.escape(String(id))}"]`)?.value || 'fixed'
         const work = els.serviceList.querySelector(`[data-service-work][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
         const next = els.serviceList.querySelector(`[data-service-next][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        const billableWorkRaw = els.serviceList.querySelector(`[data-service-billable-work][data-id="${CSS.escape(String(id))}"]`)?.value || ''
+        const billableTravelRaw = els.serviceList.querySelector(`[data-service-billable-travel][data-id="${CSS.escape(String(id))}"]`)?.value || ''
+        const customerNote = els.serviceList.querySelector(`[data-service-customer-note][data-id="${CSS.escape(String(id))}"]`)?.value.trim() || ''
+        const currentService = state.services.find((service) => String(service.id) === String(id))
         if (!work) throw new Error('Doplň, co se na zásahu udělalo.')
 
         const isDone = ['fixed', 'temporary_fixed', 'not_found'].includes(result)
@@ -3536,6 +3721,11 @@
           service_result: result,
           work_performed: work,
           next_recommendation: next || null,
+          billable_work_minutes: billableWorkRaw ? Number(billableWorkRaw) : currentService?.billable_work_minutes || null,
+          billable_travel_minutes: billableTravelRaw ? Number(billableTravelRaw) : currentService?.billable_travel_minutes || null,
+          customer_visible_note: customerNote || currentService?.customer_visible_note || null,
+          billable_materials_summary: currentService?.billable_materials_summary || currentService?.used_parts || null,
+          billing_status: currentService?.service_scope === 'external' || currentService?.billable ? 'ready' : (currentService?.billing_status || 'not_billable'),
           internal_service_note: result === 'need_machine_replacement'
             ? 'Technik žádá manažerské rozhodnutí o výměně nebo deinstalaci automatu.'
             : next || null,
@@ -3543,8 +3733,17 @@
           service_finished_at: isDone ? new Date().toISOString() : null,
           resolution_note: isDone ? work : null
         }
-        const { error } = await supabase.from('service_requests').update(payload).eq('id', id)
-        if (error) throw error
+        let updatePayload = { ...payload }
+        let updateResult = await supabase.from('service_requests').update(updatePayload).eq('id', id)
+        while (updateResult.error) {
+          const message = String(updateResult.error.message || '').toLowerCase()
+          const missingColumn = ['billable_work_minutes', 'billable_travel_minutes', 'customer_visible_note', 'billable_materials_summary', 'billing_status']
+            .find((column) => message.includes(column))
+          if (!missingColumn || !Object.prototype.hasOwnProperty.call(updatePayload, missingColumn)) break
+          delete updatePayload[missingColumn]
+          updateResult = await supabase.from('service_requests').update(updatePayload).eq('id', id)
+        }
+        if (updateResult.error) throw updateResult.error
 
         if (!isDone) {
           const delayDays = result === 'need_spare_part' ? 3 : 2
@@ -3763,6 +3962,10 @@
             button.disabled = false
           })
       })
+      els.serviceList.addEventListener('pointerdown', beginServiceSignature)
+      els.serviceList.addEventListener('pointermove', moveServiceSignature)
+      els.serviceList.addEventListener('pointerup', endServiceSignature)
+      els.serviceList.addEventListener('pointerleave', endServiceSignature)
       els.stockRequestList.addEventListener('click', (event) => {
         const button = event.target.closest('[data-stock-request-action="confirm-ready"]')
         if (!button) return

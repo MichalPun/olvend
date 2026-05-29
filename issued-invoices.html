@@ -1282,6 +1282,31 @@
     function rowTotal(row) {
       return invoiceItems(row).length ? rowAmounts(row).total : Number(row.total_amount || 0)
     }
+    function rowExchangeRate(row) {
+      const meta = extractMeta(row)
+      const currency = meta.currency || 'CZK'
+      if (currency === 'CZK') return 1
+      return Number(meta.exchangeRate || 0)
+    }
+    function rowTotalCzk(row) {
+      const currency = extractMeta(row).currency || 'CZK'
+      const rate = rowExchangeRate(row)
+      if (currency !== 'CZK' && rate <= 0) return null
+      return amountToCzk(rowTotal(row), currency, rate)
+    }
+    function rowCzkInfo(row) {
+      const currency = extractMeta(row).currency || 'CZK'
+      if (currency === 'CZK') return ''
+      const total = rowTotalCzk(row)
+      return total == null ? 'chybí kurz pro Kč' : `≈ ${formatMoney(total, 'CZK')}`
+    }
+    function sumRowsInCzk(rows) {
+      return rows.reduce((state, row) => {
+        const amount = rowTotalCzk(row)
+        if (amount == null) return { ...state, missingRate: true }
+        return { amount: roundMoney(state.amount + amount), missingRate: state.missingRate }
+      }, { amount: 0, missingRate: false })
+    }
     function rowVatRows(row) {
       const mode = currentVatMode(row)
       return vatBreakdown(invoiceItems(row).map((item) => {
@@ -1522,14 +1547,18 @@
       const paid = rows.filter((row) => row.status === 'paid').length
       const currencies = Array.from(new Set(rows.map((row) => extractMeta(row).currency || 'CZK')))
       const summaryCurrency = currencies.length === 1 ? currencies[0] : 'CZK'
-      const unpaidTotal = rows.filter((row) => ['draft', 'issued'].includes(row.status)).reduce((sum, row) => sum + rowTotal(row), 0)
+      const unpaidRows = rows.filter((row) => ['draft', 'issued'].includes(row.status))
+      const unpaidTotal = unpaidRows.reduce((sum, row) => sum + rowTotal(row), 0)
       const total = rows.reduce((sum, row) => sum + rowTotal(row), 0)
+      const unpaidCzk = sumRowsInCzk(unpaidRows)
+      const totalCzk = sumRowsInCzk(rows)
+      const multiCurrencyNote = 'Přepočteno do Kč kurzem uloženým na dokladech.'
       summaryGrid.innerHTML = [
         { label:'Doklady v přehledu', value: rows.length, note:'Po aktuálních filtrech.' },
         { label:'Vystaveno', value: issued, note:'Čeká na úhradu nebo kontrolu.' },
         { label:'Zaplaceno', value: paid, note:'Uzavřené doklady.' },
-        { label:'Neuhrazeno', value: currencies.length === 1 ? formatMoney(unpaidTotal, summaryCurrency) : 'Více měn', note: currencies.length === 1 ? 'Návrhy a vystavené doklady.' : 'Filtr obsahuje doklady v různých měnách.' },
-        { label:'Celkem', value: currencies.length === 1 ? formatMoney(total, summaryCurrency) : 'Více měn', note: currencies.length === 1 ? 'Hrubý součet dokladů.' : 'Použij filtr na konkrétní měnu/období.' }
+        { label:'Neuhrazeno', value: currencies.length === 1 ? formatMoney(unpaidTotal, summaryCurrency) : (unpaidCzk.missingRate ? 'Chybí kurz' : formatMoney(unpaidCzk.amount, 'CZK')), note: currencies.length === 1 ? 'Návrhy a vystavené doklady.' : multiCurrencyNote },
+        { label:'Celkem', value: currencies.length === 1 ? formatMoney(total, summaryCurrency) : (totalCzk.missingRate ? 'Chybí kurz' : formatMoney(totalCzk.amount, 'CZK')), note: currencies.length === 1 ? 'Hrubý součet dokladů.' : multiCurrencyNote }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
     function renderRows() {
@@ -1539,6 +1568,7 @@
         const type = documentTypeMeta(row.document_type)
         const vatMode = currentVatMode(row)
         const currency = extractMeta(row).currency || 'CZK'
+        const amountSubtext = rowCzkInfo(row) || (isNoVatMode(vatMode) ? 'bez DPH' : 's DPH')
         return `
           <tr data-row-id="${escapeHtml(String(row.id))}">
             <td data-label="Stav"><span class="badge ${status.badge}">${escapeHtml(status.label)}</span></td>
@@ -1546,7 +1576,7 @@
             <td data-label="Odběratel"><strong>${escapeHtml(row.customer_name || 'Odběratel')}</strong><span class="subtext">${escapeHtml(cleanNote(row.note) || 'Bez poznámky')}</span></td>
             <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">Vystaveno</span></td>
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
-            <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(isNoVatMode(vatMode) ? 'bez DPH' : 's DPH')}</span></td>
+            <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(amountSubtext)}</span></td>
             <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
           </tr>
         `
