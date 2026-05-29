@@ -15,6 +15,8 @@ alter table public.service_requests
   add column if not exists billable boolean not null default false,
   add column if not exists billing_status text not null default 'not_billable',
   add column if not exists billing_note text,
+  add column if not exists service_onsite_minutes integer,
+  add column if not exists travel_distance_km numeric(10,1),
   add column if not exists billable_travel_minutes integer,
   add column if not exists billable_work_minutes integer,
   add column if not exists billable_materials_summary text,
