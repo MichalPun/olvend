@@ -815,6 +815,91 @@
       font-weight: 900;
     }
 
+    .stock-check-widget .widget-header {
+      padding-bottom: 10px;
+    }
+
+    .stock-check-widget .widget-title-wrap h2 {
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+
+    .stock-check-widget .widget-title-wrap p {
+      font-size: 12px;
+      margin-top: 3px;
+    }
+
+    .stock-check-widget .widget-body {
+      padding: 0;
+    }
+
+    .stock-check-widget .finance-controls {
+      grid-template-columns: 180px minmax(130px, 180px) 1fr;
+      align-items: end;
+      gap: 8px;
+      margin: 0;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stock-check-widget .finance-control input,
+    .stock-check-widget .stock-checklist-summary {
+      min-height: 34px;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .stock-check-table.dashboard-table th,
+    .stock-check-table.dashboard-table td {
+      padding: 6px 10px;
+      vertical-align: middle;
+    }
+
+    .stock-check-table.dashboard-table strong {
+      font-size: 13px;
+    }
+
+    .stock-check-table .subcell {
+      font-size: 11px;
+      margin-top: 1px;
+    }
+
+    .stock-check-table .status-badge {
+      min-width: 76px;
+      justify-content: center;
+      padding: 5px 8px;
+      font-size: 10px;
+    }
+
+    .stock-check-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .stock-check-action {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      min-height: 26px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .stock-check-action:hover {
+      border-color: rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .stock-check-note {
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--border);
+    }
+
     .finance-custom-date {
       display: none;
     }
@@ -1956,7 +2041,7 @@
           </div>
         </section>
 
-        <section class="widget span-12" data-id="stock-checklist" draggable="true">
+        <section class="widget span-12 stock-check-widget" data-id="stock-checklist" draggable="true">
           <div class="widget-header">
             <div class="widget-title-wrap">
               <h2>Denní skladová kontrola</h2>
@@ -1982,7 +2067,7 @@
               </div>
             </div>
             <div id="stockChecklistTable"></div>
-            <div id="stockChecklistNote" class="small-note"></div>
+            <div id="stockChecklistNote" class="small-note stock-check-note"></div>
           </div>
         </section>
 
@@ -2669,6 +2754,52 @@
       return { start, end, startIso: start.toISOString(), endIso: end.toISOString(), date: formatDateInput(start) };
     }
 
+    const STOCK_CHECKLIST_OVERRIDES_KEY = "daily_stock_checklist_overrides";
+    let stockChecklistOverrides = {};
+
+    async function loadStockChecklistOverrides() {
+      const { data, error } = await supabase
+        .from("app_settings")
+        .select("value")
+        .eq("key", STOCK_CHECKLIST_OVERRIDES_KEY)
+        .maybeSingle();
+      if (error) {
+        console.warn("Nepodařilo se načíst ruční stav skladové kontroly.", error);
+        stockChecklistOverrides = {};
+        return stockChecklistOverrides;
+      }
+      stockChecklistOverrides = data?.value && typeof data.value === "object" && !Array.isArray(data.value) ? data.value : {};
+      return stockChecklistOverrides;
+    }
+
+    function getStockChecklistOverride(date, key) {
+      return stockChecklistOverrides?.[date]?.[key] || null;
+    }
+
+    async function saveStockChecklistOverride(date, key, payload) {
+      const next = { ...(stockChecklistOverrides || {}) };
+      next[date] = { ...(next[date] || {}) };
+      if (payload) {
+        next[date][key] = {
+          ...payload,
+          updated_at: new Date().toISOString(),
+          updated_by: currentUser?.name || currentUser?.email || "Uživatel"
+        };
+      } else {
+        delete next[date][key];
+        if (!Object.keys(next[date]).length) delete next[date];
+      }
+      const { error } = await supabase
+        .from("app_settings")
+        .upsert({
+          key: STOCK_CHECKLIST_OVERRIDES_KEY,
+          value: next,
+          note: "Ruční uzavření řádků denní skladové kontroly."
+        }, { onConflict: "key" });
+      if (error) throw error;
+      stockChecklistOverrides = next;
+    }
+
     function normalizeChecklistText(value) {
       return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     }
@@ -2693,6 +2824,30 @@
       return { badge: "Chybí", className: "red" };
     }
 
+    function getOverrideStatus(override) {
+      if (!override) return null;
+      return {
+        badge: "Není potřeba",
+        className: "blue",
+        detail: [`Ručně uzavřeno: ${override.updated_by || "Uživatel"} · ${formatClock(override.updated_at)}`]
+      };
+    }
+
+    function getChecklistActionHtml(action, row) {
+      if (action.kind === "link") {
+        return `<a class="stock-check-action" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`;
+      }
+      const attrs = [
+        `class="stock-check-action"`,
+        `type="button"`,
+        `data-stock-checklist-action="${escapeHtml(action.type)}"`,
+        `data-override-key="${escapeHtml(row.overrideKey || "")}"`,
+        `data-override-date="${escapeHtml(row.overrideDate || "")}"`,
+        `data-reason="${escapeHtml(action.reason || "")}"`
+      ].join(" ");
+      return `<button ${attrs}>${escapeHtml(action.label)}</button>`;
+    }
+
     function renderStockChecklistRows(rows) {
       if (!stockChecklistTable) return;
       const body = rows.length
@@ -2701,16 +2856,16 @@
             <td><strong>${escapeHtml(row.task)}</strong><span class="subcell">${escapeHtml(row.owner || "")}</span></td>
             <td><span class="status-badge ${escapeHtml(row.statusClass)}">${escapeHtml(row.status)}</span></td>
             <td>${row.detail.map(item => `<span class="subcell">${escapeHtml(item)}</span>`).join("")}</td>
-            <td>${row.href ? `<a class="list-action-btn edit" href="${escapeHtml(row.href)}">${escapeHtml(row.action || "Otevřít")}</a>` : '<span class="subcell">Bez akce</span>'}</td>
+            <td><div class="stock-check-actions">${row.actions?.length ? row.actions.map(action => getChecklistActionHtml(action, row)).join("") : '<span class="subcell">Bez akce</span>'}</div></td>
           </tr>
         `).join("")
         : '<tr><td colspan="4"><strong>Bez směn</strong><span class="subcell">Pro zvolené datum nejsou směny s vozidlem.</span></td></tr>';
       stockChecklistTable.innerHTML = `
         <div class="table-scroll">
-          <table class="dashboard-table">
+          <table class="dashboard-table stock-check-table">
             <thead>
               <tr>
-                <th>Kontrola</th>
+                <th>Úkol</th>
                 <th>Stav</th>
                 <th>Důkaz</th>
                 <th>Akce</th>
@@ -2723,42 +2878,34 @@
     }
 
     async function loadStockChecklistData(dateValue) {
-      const range = getDateRangeForDate(dateValue || getTodayDateString());
-      const nextDate = formatDateInput(addDays(range.start, 1));
-      const nextRange = getDateRangeForDate(nextDate);
-      const [attendanceResult, requestsResult, movementsResult, nextSalesResult] = await Promise.all([
+      const controlRange = getDateRangeForDate(dateValue || getTodayDateString());
+      const workDate = formatDateInput(addDays(controlRange.start, -1));
+      const [attendanceResult, requestsResult, movementsResult] = await Promise.all([
         supabase
           .from("attendance_days")
           .select("id, employee_id, attendance_date, status, vehicle_id, actual_start, actual_end")
-          .eq("attendance_date", range.date)
+          .eq("attendance_date", controlRange.date)
           .order("actual_start", { ascending: true }),
         supabase
           .from("mobile_stock_requests")
           .select("id, request_type, status, employee_id, vehicle_id, requested_for_date, prepared_at, confirmed_at, stock_applied_at, note, created_at")
-          .eq("requested_for_date", range.date)
+          .eq("requested_for_date", controlRange.date)
           .in("request_type", ["vehicle_order", "vehicle_load", "vehicle_unload", "vehicle_return", "vehicle_writeoff"]),
         supabase
           .from("stock_movements_v13")
           .select("id, movement_type, reference_type, reference_id, from_stock_location_id, to_stock_location_id, created_at, note")
-          .gte("created_at", range.startIso)
-          .lt("created_at", range.endIso)
-          .in("movement_type", ["fill_machine", "sale", "sale_revenue"]),
-        supabase
-          .from("stock_movements_v13")
-          .select("id, movement_type, reference_type, reference_id, created_at, note")
-          .gte("created_at", nextRange.startIso)
-          .lt("created_at", nextRange.endIso)
-          .in("movement_type", ["sale", "sale_revenue"])
+          .gte("created_at", controlRange.startIso)
+          .lt("created_at", controlRange.endIso)
+          .in("movement_type", ["fill_machine", "sale", "sale_revenue"])
       ]);
       if (attendanceResult.error) throw attendanceResult.error;
       if (requestsResult.error) throw requestsResult.error;
       if (movementsResult.error) throw movementsResult.error;
-      if (nextSalesResult.error) throw nextSalesResult.error;
+      await loadStockChecklistOverrides();
 
       const attendanceDays = attendanceResult.data || [];
       const requests = requestsResult.data || [];
       const movements = movementsResult.data || [];
-      const nextSales = nextSalesResult.data || [];
       const requestIds = requests.map(item => item.id);
       const employeeIds = [...new Set([...attendanceDays.map(item => item.employee_id), ...requests.map(item => item.employee_id)].filter(Boolean))];
       const vehicleIds = [...new Set([...attendanceDays.map(item => item.vehicle_id), ...requests.map(item => item.vehicle_id)].filter(Boolean))];
@@ -2800,7 +2947,7 @@
         .filter(day => !["cancelled", "rejected"].includes(String(day.status || "").toLowerCase()));
       const shifts = activeShifts.length ? activeShifts : requestsWithItems
         .filter(request => request.vehicle_id)
-        .map(request => ({ employee_id: request.employee_id, vehicle_id: request.vehicle_id, attendance_date: range.date }));
+        .map(request => ({ employee_id: request.employee_id, vehicle_id: request.vehicle_id, attendance_date: controlRange.date }));
 
       const rows = [];
       shifts.forEach((shift, index) => {
@@ -2812,66 +2959,87 @@
         const loadRequests = requestsWithItems.filter(request => ["vehicle_order", "vehicle_load"].includes(request.request_type) && sameShift(request) && request.items.some(item => isBagetteLoadItem(item, productMap)));
         const unloadRequests = requestsWithItems.filter(request => request.request_type === "vehicle_unload" && sameShift(request));
         const expiryRequests = requestsWithItems.filter(request => ["vehicle_return", "vehicle_writeoff"].includes(request.request_type) && sameShift(request));
-        const loadDone = loadRequests.some(isConfirmedRequest);
-        const unloadDone = unloadRequests.some(isConfirmedRequest);
-        const expiryDone = expiryRequests.some(isConfirmedRequest);
+        const loadDone = loadRequests.length > 0 && loadRequests.every(isConfirmedRequest);
+        const unloadDone = unloadRequests.length > 0 && unloadRequests.every(isConfirmedRequest);
+        const expiryDone = expiryRequests.length > 0 && expiryRequests.every(isConfirmedRequest);
         const loadStatus = getChecklistStatus(loadDone, loadRequests.length > 0);
         const unloadStatus = getChecklistStatus(unloadDone, unloadRequests.length > 0);
         const expiryStatus = getChecklistStatus(expiryDone, expiryRequests.length > 0);
+        const unloadOverrideKey = `unload:${shift.employee_id || "none"}:${shift.vehicle_id || "none"}`;
+        const expiryOverrideKey = `expiry:${shift.employee_id || "none"}:${shift.vehicle_id || "none"}`;
+        const unloadOverride = getOverrideStatus(getStockChecklistOverride(controlRange.date, unloadOverrideKey));
+        const expiryOverride = getOverrideStatus(getStockChecklistOverride(controlRange.date, expiryOverrideKey));
         rows.push({
           task: "Ranní nakládka baget",
           owner,
           status: loadStatus.badge,
           statusClass: loadStatus.className,
           detail: loadRequests.length ? loadRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Čeká se na mobilní nakládku s bagetami/ATM položkami."],
-          href: "inventory.html?tab=movements",
-          action: "Sklad"
+          actions: [{ kind: "link", href: "inventory.html?tab=movements", label: "Sklad" }]
         });
         rows.push({
           task: "Odpolední vykládka",
           owner,
-          status: unloadStatus.badge,
-          statusClass: unloadStatus.className,
-          detail: unloadRequests.length ? unloadRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Čeká se na mobilní vykládku z vozidla."],
-          href: "inventory.html?tab=movements",
-          action: "Sklad"
+          status: unloadOverride?.badge || unloadStatus.badge,
+          statusClass: unloadOverride?.className || unloadStatus.className,
+          detail: unloadOverride?.detail || (unloadRequests.length ? unloadRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Čeká se na mobilní vykládku z vozidla."]),
+          overrideKey: unloadOverrideKey,
+          overrideDate: controlRange.date,
+          actions: [
+            unloadOverride
+              ? { type: "clear-override", label: "Vrátit" }
+              : { type: "mark-not-needed", label: "Bez vykládky", reason: "Operátorka dnes nemá vykládku." },
+            { kind: "link", href: "inventory.html?tab=movements", label: "Sklad" }
+          ]
         });
         rows.push({
           task: "Expirace / vratky",
           owner,
-          status: expiryStatus.badge,
-          statusClass: expiryStatus.className,
-          detail: expiryRequests.length ? expiryRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Není zapsaná vratka/odpis ani potvrzení, že nic není."],
-          href: "inventory.html?tab=movements",
-          action: "Sklad"
+          status: expiryOverride?.badge || expiryStatus.badge,
+          statusClass: expiryOverride?.className || expiryStatus.className,
+          detail: expiryOverride?.detail || (expiryRequests.length ? expiryRequests.map(request => `#${request.id} · ${request.status} · ${formatClock(getRequestTime(request))}`) : ["Není zapsaná vratka/odpis ani potvrzení, že nic není."]),
+          overrideKey: expiryOverrideKey,
+          overrideDate: controlRange.date,
+          actions: [
+            expiryOverride
+              ? { type: "clear-override", label: "Vrátit" }
+              : { type: "mark-not-needed", label: "Bez vratky", reason: "Operátorka dnes nemá vratku ani expiraci." },
+            { kind: "link", href: "inventory.html?tab=movements", label: "Sklad" }
+          ]
         });
       });
 
-      const machineMoves = movements.filter(item => item.movement_type === "fill_machine");
+      const movementHasWorkDate = item => String(item.note || "").includes(workDate);
+      const machineMoves = movements.filter(item =>
+        item.movement_type === "fill_machine" &&
+        item.reference_type === "manual_transfer" &&
+        movementHasWorkDate(item)
+      );
       const machineStatus = getChecklistStatus(machineMoves.length > 0);
       rows.push({
-        task: "Manuální převod vozidlo -> automaty",
-        owner: "Sklad / manager",
+        task: `Převodka za ${workDate}`,
+        owner: "Vozidlo -> automaty",
         status: machineStatus.badge,
         statusClass: machineStatus.className,
-        detail: machineMoves.length ? [`${machineMoves.length} pohybů fill_machine`, `poslední ${formatClock(machineMoves[0]?.created_at)}`] : ["Čeká se na převod z vozidla do automatů."],
-        href: "inventory.html?tab=movements",
-        action: "Pohyby"
+        detail: machineMoves.length ? [`${machineMoves.length} pohybů do automatů`, `zapsáno ${controlRange.date} · ${formatClock(machineMoves[0]?.created_at)}`] : [`Čeká se na převodku ze včerejška ${workDate}.`],
+        actions: [{ kind: "link", href: "inventory.html?tab=movements", label: "Pohyby" }]
       });
-      const saleMovesToday = movements.filter(item => ["sale", "sale_revenue"].includes(item.movement_type));
-      const saleMoves = nextSales.length ? nextSales : saleMovesToday;
+      const saleMoves = movements.filter(item =>
+        ["sale", "sale_revenue"].includes(item.movement_type) &&
+        item.reference_type === "manual_sale" &&
+        movementHasWorkDate(item)
+      );
       const salesStatus = getChecklistStatus(saleMoves.length > 0);
       rows.push({
-        task: `Prodejka za den ${range.date}`,
-        owner: "Následující den",
+        task: `Prodejka za ${workDate}`,
+        owner: "Zadává se následující den",
         status: salesStatus.badge,
         statusClass: salesStatus.className,
-        detail: saleMoves.length ? [`${saleMoves.length} prodejkových pohybů`, nextSales.length ? `zapsáno ${nextDate}` : `zapsáno ve stejný den`] : [`Čeká se na prodejku, typicky ${nextDate}.`],
-        href: "inventory.html?tab=movements",
-        action: "Prodejky"
+        detail: saleMoves.length ? [`${saleMoves.length} prodejkových pohybů`, `zapsáno ${controlRange.date} · ${formatClock(saleMoves[0]?.created_at)}`] : [`Čeká se na prodejku za předchozí den ${workDate}.`],
+        actions: [{ kind: "link", href: "inventory.html?tab=movements", label: "Prodejky" }]
       });
 
-      return { rows, expectedShiftCount: shifts.length, date: range.date, nextDate };
+      return { rows, expectedShiftCount: shifts.length, controlDate: controlRange.date, workDate };
     }
 
     async function renderStockChecklist() {
@@ -2881,13 +3049,13 @@
         stockChecklistNote.textContent = "";
         const checklist = await loadStockChecklistData(stockChecklistDate.value || getTodayDateString());
         renderStockChecklistRows(checklist.rows);
-        const done = checklist.rows.filter(row => row.statusClass === "green").length;
+        const done = checklist.rows.filter(row => ["green", "blue"].includes(row.statusClass)).length;
         const missing = checklist.rows.length - done;
-        stockChecklistSummary.textContent = `${done}/${checklist.rows.length} hotovo`;
+        stockChecklistSummary.textContent = `${done}/${checklist.rows.length}`;
         stockChecklistSummary.className = missing ? "stock-checklist-summary status-badge orange" : "stock-checklist-summary status-badge green";
         stockChecklistNote.textContent = checklist.expectedShiftCount
-          ? `Pro ${checklist.date} eviduji ${checklist.expectedShiftCount} směn s vozidlem. Nakládka, vykládka a expirace se čekají pro každou operátorku zvlášť. Prodejka se hlídá i na následující den ${checklist.nextDate}.`
-          : `Pro ${checklist.date} nejsou v docházce směny s vozidlem. Společné kontroly se přesto hlídají podle skladových pohybů.`;
+          ? `Pro ${checklist.controlDate} eviduji ${checklist.expectedShiftCount} směn s vozidlem. Převodka a prodejka se zde hlídají za předchozí provozní den ${checklist.workDate}.`
+          : `Pro ${checklist.controlDate} nejsou v docházce směny s vozidlem. Převodka a prodejka se přesto hlídají za předchozí den ${checklist.workDate}.`;
       } catch (error) {
         console.error(error);
         stockChecklistSummary.textContent = "Chyba";
@@ -2898,8 +3066,7 @@
           status: "Chyba",
           statusClass: "red",
           detail: [error.message],
-          href: "inventory.html",
-          action: "Sklad"
+          actions: [{ kind: "link", href: "inventory.html", label: "Sklad" }]
         }]);
       }
     }
@@ -4649,6 +4816,29 @@
       filter?.addEventListener("change", refreshFinanceDashboard);
     });
     stockChecklistDate?.addEventListener("change", renderStockChecklist);
+    stockChecklistTable?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-stock-checklist-action]");
+      if (!button) return;
+      const action = button.dataset.stockChecklistAction;
+      const key = button.dataset.overrideKey;
+      const date = button.dataset.overrideDate || stockChecklistDate?.value || getTodayDateString();
+      if (!key || !["mark-not-needed", "clear-override"].includes(action)) return;
+
+      try {
+        button.disabled = true;
+        button.textContent = action === "mark-not-needed" ? "Ukládám..." : "Vracím...";
+        await saveStockChecklistOverride(date, key, action === "mark-not-needed" ? {
+          status: "not_needed",
+          reason: button.dataset.reason || "Není potřeba"
+        } : null);
+        await renderStockChecklist();
+      } catch (error) {
+        console.error(error);
+        stockChecklistSummary.textContent = "Chyba";
+        stockChecklistSummary.className = "stock-checklist-summary status-badge red";
+        stockChecklistNote.textContent = `Ruční stav se nepodařilo uložit: ${error.message}`;
+      }
+    });
     document.querySelectorAll("[data-finance-sort]").forEach((button) => {
       button.addEventListener("click", () => {
         const key = button.getAttribute("data-finance-sort") || "revenue";
