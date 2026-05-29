@@ -1760,7 +1760,7 @@
       await addPdfFonts(doc)
       const pdfFont = doc.__olvendPdfFontLoaded ? 'AptosNarrow' : 'helvetica'
       const meta = extractMeta(row)
-      const customer = meta.customer || { name: row.customer_name || '' }
+      const customer = meta.customer || { name: row.customer_name || '', address:'', billingAddress:'', deliveryAddress:'', companyId:'', taxId:'', email:'', phone:'', contactName:'', note:'' }
       const payment = meta.payment || loadPaymentSettings()
       const seller = loadPaymentSettings()
       const number = documentNumber(row)
@@ -1772,87 +1772,153 @@
       const vatRows = amounts.vatRows || []
       const reverseChargeNotes = reverseChargeBaseNotes(vatRows, currency, meta.exchangeRate, vatMode)
       const qrDataUrl = await qrPaymentDataUrl(row)
+      const margin = 14
+      const pageWidth = 210
+      const contentWidth = pageWidth - (margin * 2)
+      const pageBottom = 282
+      const red = [213, 16, 26]
+      const ink = [16, 24, 40]
+      const muted = [102, 112, 133]
+      const border = [229, 231, 235]
+      const softBg = [248, 250, 252]
       let y = 18
 
-      doc.setTextColor(213, 16, 26)
+      const setInk = () => doc.setTextColor(...ink)
+      const setMuted = () => doc.setTextColor(...muted)
+      const setRed = () => doc.setTextColor(...red)
+      const label = (text, x, yy) => {
+        doc.setFont(pdfFont, 'bold')
+        doc.setFontSize(8)
+        setMuted()
+        doc.text(String(text || '').toUpperCase(), x, yy)
+        setInk()
+      }
+      const addPageIfNeeded = (needed = 20) => {
+        if (y + needed <= pageBottom) return
+        doc.addPage()
+        y = 18
+      }
+      const drawBox = (x, yy, width, height) => {
+        doc.setDrawColor(...border)
+        doc.setFillColor(255, 255, 255)
+        doc.roundedRect(x, yy, width, height, 3, 3, 'FD')
+      }
+      const writeLines = (lines, x, yy, width, lineHeight = 4.6) => {
+        doc.setFont(pdfFont, 'normal')
+        doc.setFontSize(9)
+        setMuted()
+        lines.filter(Boolean).forEach((line) => {
+          const wrapped = doc.splitTextToSize(String(line), width)
+          wrapped.forEach((part) => {
+            doc.text(part, x, yy)
+            yy += lineHeight
+          })
+        })
+        setInk()
+        return yy
+      }
+
       doc.setFont(pdfFont, 'bold')
-      doc.setFontSize(16)
-      doc.text(seller.sellerName || 'OLMIKA s.r.o.', 14, y)
-      doc.setTextColor(16, 24, 40)
-      doc.setFontSize(10)
-      doc.text(isNoVatMode(vatMode) ? 'Doklad bez DPH' : 'Daňový doklad', 196, y, { align: 'right' })
+      doc.setFontSize(12)
+      setRed()
+      doc.text(seller.sellerName || 'OLMIKA s.r.o.', margin, y)
       doc.setFontSize(24)
-      doc.text(`${documentTypeMeta(row.document_type).label} ${number}`, 14, y + 14)
-      doc.setDrawColor(213, 16, 26)
+      setInk()
+      doc.text(`${documentTypeMeta(row.document_type).label} ${number}`, margin, y + 14)
+      doc.setFontSize(8)
+      setMuted()
+      doc.text(isNoVatMode(vatMode) ? 'Doklad bez DPH' : 'Daňový doklad', pageWidth - margin, y, { align: 'right' })
+      doc.setDrawColor(...red)
       doc.setLineWidth(1.2)
-      doc.line(14, y + 21, 196, y + 21)
+      doc.line(margin, y + 22, pageWidth - margin, y + 22)
       y += 32
 
-      doc.setFontSize(10)
+      const metaRows = [
+        [`Datum vystavení: ${formatDate(row.issued_at)}`, `DUZP: ${formatDate(meta.taxableSupplyDate || row.issued_at)}`, `Splatnost: ${formatDate(meta.dueDate)}`],
+        [`Měna: ${currency}`, `Variabilní symbol: ${meta.variableSymbol || ''}`, `Účet: ${payment.account || ''}`]
+      ]
       doc.setFont(pdfFont, 'normal')
-      doc.text(`Datum vystavení: ${formatDate(row.issued_at)}`, 14, y)
-      doc.text(`DUZP: ${formatDate(meta.taxableSupplyDate || row.issued_at)}`, 82, y)
-      doc.text(`Splatnost: ${formatDate(meta.dueDate)}`, 140, y)
-      y += 7
-      doc.text(`Variabilní symbol: ${meta.variableSymbol || ''}`, 14, y)
-      doc.text(`Konstantní symbol: ${payment.constantSymbol || ''}`, 82, y)
-      doc.text(`Měna: ${currency}`, 140, y)
-      y += 7
-      doc.text(`Účet: ${payment.account || ''}`, 14, y)
-      y += 12
+      doc.setFontSize(9)
+      setInk()
+      metaRows.forEach((parts) => {
+        parts.forEach((part, index) => doc.text(part, margin + (index * 61), y))
+        y += 6
+      })
+      y += 4
 
-      doc.setFont(pdfFont, 'bold')
-      doc.text('Dodavatel', 14, y)
-      doc.text('Odběratel', 110, y)
-      y += 6
-      doc.setFont(pdfFont, 'normal')
-      let leftY = y
-      leftY = addPdfWrappedText(doc, [seller.sellerName, seller.sellerAddress, seller.sellerCompanyId ? `IČO ${seller.sellerCompanyId}` : '', seller.sellerTaxId ? `DIČ ${seller.sellerTaxId}` : '', seller.sellerEmail].filter(Boolean).join('\n'), 14, leftY, 78)
-      let rightY = y
-      rightY = addPdfWrappedText(doc, customerInvoiceLines(customer, row).join('\n'), 110, rightY, 86)
-      y = Math.max(leftY, rightY) + 8
-
-      doc.setFont(pdfFont, 'bold')
-      doc.text('Platební údaje', 14, y)
-      y += 6
-      doc.setFont(pdfFont, 'normal')
-      addPdfWrappedText(doc, [`VS ${meta.variableSymbol || ''}`, `KS ${payment.constantSymbol || ''}`, `Účet ${payment.account || ''}`, payment.iban ? `IBAN ${payment.iban}` : ''].filter(Boolean).join(' · '), 14, y, 150, 5)
+      const boxTop = y
+      const boxHeight = 36
+      const gap = 6
+      const halfWidth = (contentWidth - gap) / 2
+      drawBox(margin, boxTop, halfWidth, boxHeight)
+      drawBox(margin + halfWidth + gap, boxTop, halfWidth, boxHeight)
+      label('Odběratel', margin + 4, boxTop + 8)
+      writeLines(customerInvoiceLines(customer, row), margin + 4, boxTop + 14, halfWidth - 8, 4.2)
+      label('Platební údaje', margin + halfWidth + gap + 4, boxTop + 8)
+      writeLines([
+        `Variabilní symbol: ${meta.variableSymbol || ''}`,
+        `Konstantní symbol: ${payment.constantSymbol || ''}`,
+        `Účet: ${payment.account || ''}`,
+        payment.iban ? `IBAN: ${payment.iban}` : ''
+      ], margin + halfWidth + gap + 4, boxTop + 14, halfWidth - 36, 4.2)
       if (qrDataUrl) {
-        doc.addImage(qrDataUrl, 'PNG', 166, y - 8, 24, 24)
+        doc.addImage(qrDataUrl, 'PNG', margin + contentWidth - 28, boxTop + 7, 22, 22)
       }
-      y += 14
+      y = boxTop + boxHeight + 8
 
-      doc.setFont(pdfFont, 'bold')
-      doc.text('Položka', 14, y)
-      doc.text('Množ.', 94, y, { align: 'right' })
-      doc.text('Cena', 118, y, { align: 'right' })
-      doc.text('Sazba', 137, y, { align: 'right' })
-      doc.text('Bez DPH', 166, y, { align: 'right' })
-      doc.text(isNoVatMode(vatMode) ? 'Celkem' : 'S DPH', 196, y, { align: 'right' })
-      doc.setDrawColor(229, 231, 235)
-      doc.line(14, y + 3, 196, y + 3)
-      y += 9
+      const sellerTop = y
+      drawBox(margin, sellerTop, contentWidth, 24)
+      label('Dodavatel', margin + 4, sellerTop + 8)
+      writeLines([
+        [seller.sellerName, seller.sellerAddress].filter(Boolean).join(' · '),
+        [seller.sellerCompanyId ? `IČO ${seller.sellerCompanyId}` : '', seller.sellerTaxId ? `DIČ ${seller.sellerTaxId}` : '', seller.sellerEmail].filter(Boolean).join(' · ')
+      ], margin + 4, sellerTop + 14, contentWidth - 8, 4.2)
+      y = sellerTop + 32
+
+      const drawTableHeader = () => {
+        doc.setFillColor(...softBg)
+        doc.setDrawColor(...border)
+        doc.rect(margin, y, contentWidth, 8, 'FD')
+        doc.setFont(pdfFont, 'bold')
+        doc.setFontSize(8)
+        setMuted()
+        doc.text('Položka', margin + 3, y + 5.4)
+        doc.text('Množství', 94, y + 5.4, { align: 'right' })
+        doc.text('Cena', 120, y + 5.4, { align: 'right' })
+        doc.text('Sazba', 140, y + 5.4, { align: 'right' })
+        doc.text('Bez DPH', 168, y + 5.4, { align: 'right' })
+        doc.text(isNoVatMode(vatMode) ? 'Celkem' : 'S DPH', 193, y + 5.4, { align: 'right' })
+        setInk()
+        y += 8
+      }
+      drawTableHeader()
       doc.setFont(pdfFont, 'normal')
+      doc.setFontSize(9)
       items.forEach((item) => {
-        if (y > 265) {
-          doc.addPage()
-          y = 18
-        }
+        const nameLines = doc.splitTextToSize(String(item.product_name || 'Položka'), 70)
+        const rowHeight = Math.max(8, nameLines.length * 4.2 + 3)
+        addPageIfNeeded(rowHeight + 8)
+        if (y < 24) drawTableHeader()
         const net = roundMoney(Number(item.quantity || 0) * Number(item.unit_price || 0))
         const vatRate = effectiveVatRate(item.vat_rate || 0, vatMode)
         const gross = roundMoney(net * (1 + taxVatRate(vatRate, vatMode) / 100))
-        const nameLines = doc.splitTextToSize(String(item.product_name || 'Polozka'), 68)
-        doc.text(nameLines, 14, y)
-        doc.text(formatQuantityWithUnit(item.quantity, productUnit(item)), 94, y, { align: 'right' })
-        doc.text(formatMoney(item.unit_price, currency), 118, y, { align: 'right' })
-        doc.text(`${Number(vatRate || 0).toLocaleString('cs-CZ')} %`, 137, y, { align: 'right' })
-        doc.text(formatMoney(net, currency), 166, y, { align: 'right' })
-        doc.text(formatMoney(gross, currency), 196, y, { align: 'right' })
-        y += Math.max(8, nameLines.length * 5)
+        doc.setDrawColor(...border)
+        doc.line(margin, y + rowHeight, pageWidth - margin, y + rowHeight)
+        setInk()
+        doc.text(nameLines, margin + 3, y + 5)
+        doc.text(formatQuantityWithUnit(item.quantity, productUnit(item)), 94, y + 5, { align: 'right' })
+        doc.text(formatMoney(item.unit_price, currency), 120, y + 5, { align: 'right' })
+        doc.text(`${Number(vatRate || 0).toLocaleString('cs-CZ')} %`, 140, y + 5, { align: 'right' })
+        doc.text(formatMoney(net, currency), 168, y + 5, { align: 'right' })
+        doc.text(formatMoney(gross, currency), 193, y + 5, { align: 'right' })
+        y += rowHeight
       })
-      y += 6
+      y += 8
       if (vatRows.length) {
+        addPageIfNeeded(34)
         doc.setFont(pdfFont, 'bold')
+        doc.setFontSize(10)
+        setInk()
         doc.text('Rozpad DPH', 14, y)
         y += 7
         doc.setFontSize(9)
@@ -1873,36 +1939,44 @@
         })
         doc.setFontSize(10)
       }
-      const totalsY = Math.max(y, 134)
-      doc.line(110, totalsY - 4, 196, totalsY - 4)
+      addPageIfNeeded(46)
+      const totalsY = Math.max(y, 190)
+      drawBox(110, totalsY - 8, 86, 38)
       doc.setFont(pdfFont, 'bold')
       y = totalsY
-      doc.text('Celkem bez DPH', 130, y)
-      doc.text(formatMoney(amounts.net, currency), 196, y, { align: 'right' })
+      doc.setFontSize(9)
+      setInk()
+      doc.text('Celkem bez DPH', 114, y)
+      doc.text(formatMoney(amounts.net, currency), 192, y, { align: 'right' })
       y += 7
       doc.text('DPH celkem', 130, y)
-      doc.text(formatMoney(amounts.vat, currency), 196, y, { align: 'right' })
+      doc.text(formatMoney(amounts.vat, currency), 192, y, { align: 'right' })
       y += 7
       doc.text('Zaokrouhlení', 130, y)
-      doc.text(formatMoney(amounts.rounding, currency), 196, y, { align: 'right' })
+      doc.text(formatMoney(amounts.rounding, currency), 192, y, { align: 'right' })
       y += 9
       doc.setTextColor(213, 16, 26)
       doc.setFontSize(16)
       doc.text('K úhradě', 130, y)
-      doc.text(formatMoney(amounts.total, currency), 196, y, { align: 'right' })
+      doc.text(formatMoney(amounts.total, currency), 192, y, { align: 'right' })
       doc.setTextColor(16, 24, 40)
       doc.setFontSize(10)
       if (vatModeInfo.invoiceText) {
         y += 10
-        addPdfWrappedText(doc, vatModeInfo.invoiceText, 14, y, 160, 5)
+        addPageIfNeeded(12)
+        y = addPdfWrappedText(doc, vatModeInfo.invoiceText, 14, y, 160, 5)
       }
       if (reverseChargeNotes.length) {
         y += 7
         reverseChargeNotes.forEach((note) => {
+          addPageIfNeeded(10)
           y = addPdfWrappedText(doc, note, 14, y, 170, 5)
         })
       }
-      pdfText(doc, `Vystaveno v interním systému OLVEND.`, 14, 287)
+      doc.setFont(pdfFont, 'normal')
+      doc.setFontSize(8)
+      setMuted()
+      doc.text('Faktura byla vystavena a vytištěna v interním systému OLVEND.', 105, 287, { align: 'center' })
       return doc
     }
     function buildInvoiceEmailHtml(row) {
