@@ -4243,52 +4243,57 @@
         const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
         warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
       }
-      items.forEach((item) => {
+      for (const item of items) {
         const quantity = getMobilePickQuantity(item)
-        if (!item.product_id || quantity <= 0) return
+        if (!item.product_id || quantity <= 0) continue
+        const product = productsV13.find((row) => String(row.id) === String(item.product_id))
+        const allowNegativeLoad = product?.product_category === 'food_ready'
         if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
-          movements.push({
-            product_id: item.product_id,
-            batch_id: null,
-            from_stock_location_id: warehouseLocationId,
-            to_stock_location_id: vehicleLocationId,
-            movement_type: 'load_vehicle',
-            quantity_base_units: quantity,
-            unit_price: null,
-            reference_type: 'mobile_stock_request',
-            reference_id: referenceId,
-            note: `Mobilní nakládka #${request.id}`
-          })
-          return
+          movements.push(...await moveStockPreservingBatches({
+            productId: item.product_id,
+            quantity,
+            fromStockLocationId: warehouseLocationId,
+            toStockLocationId: vehicleLocationId,
+            movementType: 'load_vehicle',
+            unitPrice: null,
+            referenceType: 'mobile_stock_request',
+            referenceId,
+            note: `Mobilní nakládka #${request.id}`,
+            allowNegative: allowNegativeLoad,
+            applyBalances: false
+          }))
+          continue
         }
         if (request.request_type === 'vehicle_unload') {
-          movements.push({
-            product_id: item.product_id,
-            batch_id: null,
-            from_stock_location_id: vehicleLocationId,
-            to_stock_location_id: warehouseLocationId,
-            movement_type: 'return',
-            quantity_base_units: quantity,
-            unit_price: null,
-            reference_type: 'mobile_stock_request',
-            reference_id: referenceId,
-            note: `Mobilní vykládka #${request.id}`
-          })
-          return
+          movements.push(...await moveStockPreservingBatches({
+            productId: item.product_id,
+            quantity,
+            fromStockLocationId: vehicleLocationId,
+            toStockLocationId: warehouseLocationId,
+            movementType: 'return',
+            unitPrice: null,
+            referenceType: 'mobile_stock_request',
+            referenceId,
+            note: `Mobilní vykládka #${request.id}`,
+            allowNegative: false,
+            applyBalances: false
+          }))
+          continue
         }
-        movements.push({
-          product_id: item.product_id,
-          batch_id: null,
-          from_stock_location_id: vehicleLocationId,
-          to_stock_location_id: null,
-          movement_type: request.request_type === 'vehicle_sale' ? 'sale' : 'waste',
-          quantity_base_units: quantity,
-          unit_price: null,
-          reference_type: 'mobile_stock_request',
-          reference_id: referenceId,
-          note: request.request_type === 'vehicle_sale' ? `Mobilní prodej z vozidla #${request.id}` : `Mobilní vratka/odpis #${request.id}`
-        })
-      })
+        movements.push(...await moveStockPreservingBatches({
+          productId: item.product_id,
+          quantity,
+          fromStockLocationId: vehicleLocationId,
+          toStockLocationId: null,
+          movementType: request.request_type === 'vehicle_sale' ? 'sale' : 'waste',
+          unitPrice: null,
+          referenceType: 'mobile_stock_request',
+          referenceId,
+          note: request.request_type === 'vehicle_sale' ? `Mobilní prodej z vozidla #${request.id}` : `Mobilní vratka/odpis #${request.id}`,
+          allowNegative: false,
+          applyBalances: false
+        }))
+      }
       if (!movements.length) throw new Error('Doklad nemá žádnou platnou položku se skladovou kartou a množstvím.')
       validateMobilePickMovementAvailability(movements)
       await applyStockMovementsAtomically(movements)
