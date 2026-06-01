@@ -505,15 +505,17 @@
       const childLinks = Array.isArray(item.children) && item.children.length
         ? `<div class="nav-subitems" id="nav-children-${item.key}">${renderNavLinks(item.children)}</div>`
         : "";
+      const itemLabel = `
+        <span class="nav-dot"></span>
+        <span>${item.label}</span>
+        ${status}
+      `;
       return `
         <div class="nav-item-shell ${hasChildren ? "has-children" : ""} ${collapsed ? "collapsed" : ""}">
           <div class="nav-link-row">
-            <a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">
-              <span class="nav-dot"></span>
-              <span>${item.label}</span>
-              ${status}
-            </a>
-            ${hasChildren ? `<button class="nav-collapse-toggle" type="button" data-collapse-nav="${item.key}" aria-expanded="${expanded ? "true" : "false"}" aria-controls="nav-children-${item.key}" title="${expanded ? "Sbalit" : "Rozbalit"}"><span></span></button>` : ""}
+            ${hasChildren
+              ? `<button class="nav-parent-button ${activeClass}" type="button" data-collapse-nav="${item.key}" aria-expanded="${expanded ? "true" : "false"}" aria-controls="nav-children-${item.key}" title="${expanded ? "Sbalit" : "Rozbalit"}">${itemLabel}<span class="nav-chevron"></span></button>`
+              : `<a href="${item.href}" class="${activeClass}" data-nav-key="${item.key}">${itemLabel}</a>`}
           </div>
           ${childLinks}
         </div>
@@ -610,18 +612,23 @@
       .sidebar {
         display: flex;
         flex-direction: column;
-        padding: 24px 18px;
+        padding: 18px 14px;
         border-right: 1px solid rgba(255,255,255,0.08);
         background: rgba(12,13,17,0.92);
         backdrop-filter: blur(14px);
+        overflow-y: auto;
+      }
+
+      .layout {
+        grid-template-columns: 220px minmax(0, 1fr) !important;
       }
 
       .brand {
-        padding: 8px 10px 22px;
+        padding: 6px 8px 16px;
       }
 
       .brand-logo {
-        font-size: 32px;
+        font-size: 28px;
         font-weight: 800;
         letter-spacing: -0.05em;
         line-height: 1;
@@ -635,62 +642,68 @@
 
       .brand-subtitle {
         color: #a5a8b2;
-        font-size: 13px;
-        line-height: 1.5;
+        font-size: 12px;
+        line-height: 1.42;
       }
 
       .global-nav-group,
       .nav-group {
-        margin-bottom: 24px;
+        margin-bottom: 16px;
       }
 
       .global-nav-title,
       .nav-title {
-        margin: 0 0 10px;
+        margin: 0 0 7px;
         color: #a5a8b2;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 800;
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        padding: 0 10px;
+        padding: 0 8px;
       }
 
       .nav {
         display: grid;
-        gap: 8px;
+        gap: 5px;
       }
 
       .nav-item-shell {
         display: grid;
-        gap: 6px;
+        gap: 3px;
       }
 
       .nav-link-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 6px;
-        align-items: center;
+        display: block;
       }
 
-      .nav a {
+      .nav a,
+      .nav-parent-button {
+        width: 100%;
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 12px 14px;
-        border-radius: 14px;
+        gap: 9px;
+        padding: 9px 10px;
+        border-radius: 10px;
         text-decoration: none;
         color: #fff;
-        font-size: 14px;
-        font-weight: 600;
+        font-size: 13px;
+        font-weight: 700;
         transition: 0.2s ease;
         border: 1px solid transparent;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+        font-family: inherit;
+        line-height: 1.18;
       }
 
-      .nav a:hover {
+      .nav a:hover,
+      .nav-parent-button:hover {
         background: rgba(255,255,255,0.05);
       }
 
-      .nav a.active {
+      .nav a.active,
+      .nav-parent-button.active {
         background: rgba(213,16,26,0.14);
         border-color: rgba(213,16,26,0.22);
       }
@@ -703,7 +716,8 @@
         flex: 0 0 8px;
       }
 
-      .nav a.active .nav-dot {
+      .nav a.active .nav-dot,
+      .nav-parent-button.active .nav-dot {
         background: #d5101a;
         box-shadow: 0 0 12px rgba(213,16,26,0.7);
       }
@@ -721,35 +735,19 @@
         border: 1px solid rgba(255,255,255,0.06);
       }
 
-      .nav-collapse-toggle {
-        width: 34px;
-        height: 34px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 12px;
-        background: rgba(255,255,255,0.04);
-        color: #fff;
-        cursor: pointer;
-        transition: 0.2s ease;
-      }
-
-      .nav-collapse-toggle:hover {
-        background: rgba(255,255,255,0.08);
-      }
-
-      .nav-collapse-toggle span {
-        width: 8px;
-        height: 8px;
+      .nav-chevron {
+        width: 7px;
+        height: 7px;
         border-right: 2px solid currentColor;
         border-bottom: 2px solid currentColor;
         transform: rotate(45deg);
-        margin-top: -3px;
+        margin: -3px 2px 0 auto;
+        opacity: 0.72;
         transition: transform 0.2s ease, margin 0.2s ease;
+        flex: 0 0 7px;
       }
 
-      .nav-item-shell.collapsed .nav-collapse-toggle span {
+      .nav-item-shell.collapsed .nav-chevron {
         transform: rotate(-45deg);
         margin-top: 0;
         margin-left: -2px;
@@ -757,19 +755,26 @@
 
       .nav-subitems {
         display: grid;
-        gap: 4px;
-        margin: -2px 0 4px 18px;
-        padding-left: 12px;
+        gap: 3px;
+        margin: 0 0 4px 14px;
+        padding-left: 10px;
         border-left: 1px solid rgba(255,255,255,0.08);
+        max-height: 520px;
+        opacity: 1;
+        overflow: hidden;
+        transition: max-height 0.22s ease, opacity 0.18s ease, margin 0.22s ease;
       }
 
       .nav-item-shell.collapsed .nav-subitems {
-        display: none;
+        max-height: 0;
+        opacity: 0;
+        margin-top: 0;
+        margin-bottom: 0;
       }
 
       .nav-subitems a {
-        padding: 9px 11px;
-        border-radius: 11px;
+        padding: 7px 9px;
+        border-radius: 8px;
         font-size: 12px;
         font-weight: 700;
         color: #d7dae0;
@@ -783,26 +788,26 @@
 
       .sidebar-bottom {
         margin-top: auto;
-        padding: 14px 10px 6px;
+        padding: 10px 8px 4px;
       }
 
       .version-box {
-        padding: 14px;
-        border-radius: 16px;
+        padding: 10px;
+        border-radius: 10px;
         background: rgba(255,255,255,0.04);
         border: 1px solid rgba(255,255,255,0.08);
       }
 
       .version-label {
         color: #7d818c;
-        font-size: 11px;
+        font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.1em;
         margin-bottom: 6px;
       }
 
       .version-value {
-        font-size: 15px;
+        font-size: 13px;
         font-weight: 700;
         color: #fff;
         margin-bottom: 4px;
@@ -1085,6 +1090,10 @@
       }
 
       @media (max-width: 980px) {
+        .layout {
+          grid-template-columns: 1fr !important;
+        }
+
         .sidebar {
           display: none;
         }
@@ -1131,6 +1140,7 @@
 
       :root[data-olvend-theme="light"] .brand-logo,
       :root[data-olvend-theme="light"] .nav a,
+      :root[data-olvend-theme="light"] .nav-parent-button,
       :root[data-olvend-theme="light"] .mobile-nav-current,
       :root[data-olvend-theme="light"] .mobile-nav-panel a,
       :root[data-olvend-theme="light"] .release-head h2,
@@ -1180,6 +1190,7 @@
       }
 
       :root[data-olvend-theme="light"] .nav a:hover,
+      :root[data-olvend-theme="light"] .nav-parent-button:hover,
       :root[data-olvend-theme="light"] .mobile-nav-panel a,
       :root[data-olvend-theme="light"] .release-list li,
       :root[data-olvend-theme="light"] .version-box,
@@ -1212,17 +1223,12 @@
         color: #667085 !important;
       }
 
-      :root[data-olvend-theme="light"] .nav-collapse-toggle {
+      :root[data-olvend-theme="light"] .nav-parent-button {
         color: #18202a !important;
-        background: rgba(15, 23, 42, 0.04) !important;
-        border-color: rgba(15, 23, 42, 0.08) !important;
-      }
-
-      :root[data-olvend-theme="light"] .nav-collapse-toggle:hover {
-        background: rgba(15, 23, 42, 0.08) !important;
       }
 
       :root[data-olvend-theme="light"] .nav a.active,
+      :root[data-olvend-theme="light"] .nav-parent-button.active,
       :root[data-olvend-theme="light"] .mobile-nav-panel a.active {
         background: rgba(15, 23, 42, 0.06) !important;
         border-color: rgba(15, 23, 42, 0.12) !important;
