@@ -438,20 +438,6 @@
       font: inherit;
     }
 
-    .subnav button[draggable="true"] {
-      cursor: grab;
-    }
-
-    .subnav button.dragging {
-      opacity: 0.58;
-      border-color: rgba(213, 16, 26, 0.24);
-    }
-
-    .subnav button.drag-target {
-      background: var(--surface-soft);
-      border-color: var(--border-strong);
-    }
-
     .subnav button:hover {
       background: var(--surface-subtle);
       border-color: var(--border);
@@ -995,6 +981,32 @@
       display: grid;
       gap: 16px;
       order: 1;
+    }
+
+    #requestsSummaryGrid {
+      display: none;
+    }
+
+    .request-table {
+      min-width: 980px;
+      border: 1px solid var(--border);
+    }
+
+    .request-table td {
+      background: var(--panel);
+    }
+
+    .request-table tr:hover td {
+      background: var(--surface-subtle);
+    }
+
+    .request-table .actions-cell {
+      width: 210px;
+      white-space: nowrap;
+    }
+
+    .request-table .actions-cell .mini-btn {
+      margin-right: 6px;
     }
 
     .requests-grid > .panel {
@@ -2137,21 +2149,21 @@
       <div class="hr-shell">
         <aside class="hr-nav">
           <h2 class="hr-nav-title">HR pracovní list</h2>
-          <p class="hr-nav-note">Pořadí si můžeš přeskládat tahem podle toho, co řešíš nejčastěji.</p>
+          <p class="hr-nav-note">Pevný pořádek: evidence, žádosti, plán a pokyny.</p>
           <div class="subnav">
             <button class="hr-tab active" type="button" data-hr-view="overview">
               <span class="subnav-label">Evidence</span>
               <span class="subnav-desc">Lidé, úvazky, dovolené a podklady</span>
             </button>
 
-            <button class="hr-tab" type="button" data-hr-view="planning">
-              <span class="subnav-label">Plán</span>
-              <span class="subnav-desc">Měsíční rozpis, úvazky a publikace</span>
-            </button>
-
             <button class="hr-tab" type="button" data-hr-view="requests">
               <span class="subnav-label">Žádosti</span>
               <span class="subnav-desc">Evidence podkladů, rozhodnutí ve Schvalování</span>
+            </button>
+
+            <button class="hr-tab" type="button" data-hr-view="planning">
+              <span class="subnav-label">Plán</span>
+              <span class="subnav-desc">Měsíční rozpis, úvazky a publikace</span>
             </button>
 
             <button class="hr-tab" type="button" data-hr-view="instructions">
@@ -2892,15 +2904,12 @@
     let requestArchiveMode = 'recent';
     let editingInstructionId = null;
     let pendingInstructionPdfFile = null;
-    let draggedHrTab = null;
     let approvalCenterSnapshot = {
       hr: 0,
       shifts: 0,
       purchases: 0,
       total: 0
     };
-
-    const HR_TAB_ORDER_KEY = 'olvendHrTabOrder';
 
     const hrViewMeta = {
       overview: {
@@ -2946,86 +2955,11 @@
       }
     }
 
-    function saveHrTabOrder() {
-      if (!hrSubnav) return;
-      const order = getViewTabButtons().map((button) => button.dataset.hrView);
-      localStorage.setItem(HR_TAB_ORDER_KEY, JSON.stringify(order));
+    try {
+      localStorage.removeItem('olvendHrTabOrder');
+    } catch (error) {
+      console.error(error);
     }
-
-    function loadHrTabOrder() {
-      if (!hrSubnav) return;
-
-      const raw = localStorage.getItem(HR_TAB_ORDER_KEY);
-      if (!raw) return;
-
-      try {
-        const order = JSON.parse(raw);
-        if (!Array.isArray(order) || !order.length) return;
-
-        const byKey = new Map(getViewTabButtons().map((button) => [button.dataset.hrView, button]));
-        order.forEach((key) => {
-          const button = byKey.get(key);
-          if (button) hrSubnav.appendChild(button);
-        });
-      } catch (error) {
-        console.error(error);
-      }
-    }
-
-    function clearHrDragState() {
-      getViewTabButtons().forEach((button) => button.classList.remove('dragging', 'drag-target'));
-    }
-
-    function setupHrTabReordering() {
-      if (!hrSubnav) return;
-
-      getViewTabButtons().forEach((button) => {
-        button.setAttribute('draggable', 'true');
-
-        button.addEventListener('dragstart', () => {
-          draggedHrTab = button;
-          button.classList.add('dragging');
-        });
-
-        button.addEventListener('dragover', (event) => {
-          if (!draggedHrTab || draggedHrTab === button) return;
-          event.preventDefault();
-          getViewTabButtons().forEach((item) => item.classList.remove('drag-target'));
-          button.classList.add('drag-target');
-        });
-
-        button.addEventListener('drop', (event) => {
-          if (!draggedHrTab || draggedHrTab === button) return;
-          event.preventDefault();
-
-          const rect = button.getBoundingClientRect();
-          const shouldInsertAfter = event.clientY > rect.top + (rect.height / 2);
-
-          if (shouldInsertAfter) {
-            hrSubnav.insertBefore(draggedHrTab, button.nextSibling);
-          } else {
-            hrSubnav.insertBefore(draggedHrTab, button);
-          }
-
-          saveHrTabOrder();
-          clearHrDragState();
-        });
-
-        button.addEventListener('dragend', () => {
-          draggedHrTab = null;
-          clearHrDragState();
-        });
-      });
-
-      hrSubnav.addEventListener('dragover', (event) => {
-        if (draggedHrTab) {
-          event.preventDefault();
-        }
-      });
-    }
-
-    loadHrTabOrder();
-    setupHrTabReordering();
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -4200,63 +4134,58 @@
       const rejectedCount = hrRequestRows.filter((row) => row.status === 'rejected').length;
       const futureVacationCount = hrRequestRows.filter((row) => row.request_type === 'vacation' && row.status === 'approved' && row.date_to >= getTodayDateString()).length;
 
-      requestsSummaryGrid.innerHTML = [
-        {
-          cls: 'warning',
-          label: 'Čeká na schválení',
-          value: String(pendingRows.length),
-          note: 'Žádosti, které právě čekají na rozhodnutí.'
-        },
-        {
-          cls: 'success',
-          label: 'Schváleno',
-          value: String(approvedCount),
-          note: 'Vyřešené žádosti připravené pro další práci.'
-        },
-        {
-          cls: 'danger',
-          label: 'Zamítnuto',
-          value: String(rejectedCount),
-          note: 'Vrácené nebo zamítnuté žádosti.'
-        },
-        {
-          cls: 'info',
-          label: 'Budoucí dovolené',
-          value: String(futureVacationCount),
-          note: 'Schválené dovolené, které se teprve blíží.'
-        }
-      ].map((card) => `
-        <article class="kpi-card ${card.cls}">
-          <div class="kpi-label">${escapeHtml(card.label)}</div>
-          <div class="kpi-value">${escapeHtml(card.value)}</div>
-          <div class="kpi-note">${escapeHtml(card.note)}</div>
-        </article>
-      `).join('');
+      requestsSummaryGrid.innerHTML = '';
+      setRequestsStatus(
+        `Žádosti: ${pendingRows.length} čeká, ${approvedCount} schváleno, ${rejectedCount} zamítnuto, ${futureVacationCount} budoucí dovolené.`,
+        'success'
+      );
 
       if (!pendingRows.length) {
         requestQueueList.innerHTML = '';
         requestQueueEmpty.style.display = 'block';
       } else {
         requestQueueEmpty.style.display = 'none';
-        requestQueueList.innerHTML = pendingRows.map((row) => {
-          const employee = getEmployeeById(row.employee_id);
-          const typeMeta = getRequestTypeMeta(row.request_type);
-          return `
-            <article class="list-item warning">
-              <div class="list-title">${escapeHtml(getEmployeeDisplayName(employee))} · ${escapeHtml(typeMeta.label)}</div>
-              <div class="list-text">${escapeHtml(formatRequestRange(row))}</div>
-              <div class="list-text">${escapeHtml(row.reason || 'Bez doplněného důvodu.')}</div>
-              <div class="instruction-meta" style="margin-top:10px;">
-                <span class="meta-chip">Zadal ${escapeHtml(getEmployeeDisplayName(getEmployeeById(row.created_by_employee_id)) || 'Manažer')}</span>
-                <span class="meta-chip">Vytvořeno ${escapeHtml(formatDateTime(row.created_at))}</span>
-              </div>
-              <div class="instruction-actions" style="margin-top:12px;">
-                <button class="mini-btn" type="button" data-request-action="edit" data-request-id="${row.id}">Upravit</button>
-                <a class="mini-btn approve" href="approval-center.html">Otevřít ve Schvalování</a>
-              </div>
-            </article>
-          `;
-        }).join('');
+        requestQueueList.innerHTML = `
+          <div class="table-wrap">
+            <table class="request-table">
+              <thead>
+                <tr>
+                  <th>Zaměstnanec</th>
+                  <th>Typ</th>
+                  <th>Období</th>
+                  <th>Důvod</th>
+                  <th>Zadal</th>
+                  <th>Vytvořeno</th>
+                  <th>Akce</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pendingRows.map((row) => {
+                  const employee = getEmployeeById(row.employee_id);
+                  const creator = getEmployeeById(row.created_by_employee_id);
+                  const typeMeta = getRequestTypeMeta(row.request_type);
+                  return `
+                    <tr>
+                      <td>
+                        <span class="name-strong">${escapeHtml(getEmployeeDisplayName(employee))}</span>
+                        <span class="subtext">${escapeHtml(employee?.role || employee?.department || 'HR evidence')}</span>
+                      </td>
+                      <td>${escapeHtml(typeMeta.label)}</td>
+                      <td>${escapeHtml(formatRequestRange(row))}</td>
+                      <td>${escapeHtml(row.reason || 'Bez doplněného důvodu.')}</td>
+                      <td>${escapeHtml(getEmployeeDisplayName(creator) || 'Manažer')}</td>
+                      <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+                      <td class="actions-cell">
+                        <button class="mini-btn" type="button" data-request-action="edit" data-request-id="${row.id}">Upravit</button>
+                        <a class="mini-btn approve" href="approval-center.html">Schvalování</a>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
       }
 
       if (!archiveRows.length) {
@@ -4264,26 +4193,49 @@
         requestArchiveEmpty.style.display = 'block';
       } else {
         requestArchiveEmpty.style.display = 'none';
-        requestArchiveList.innerHTML = archiveRows.map((row) => {
-          const employee = getEmployeeById(row.employee_id);
-          const typeMeta = getRequestTypeMeta(row.request_type);
-          const statusMeta = getRequestStatusMeta(row.status);
-          return `
-            <article class="list-item ${row.status === 'approved' ? 'success' : (row.status === 'rejected' ? 'danger' : '')}">
-              <div class="list-title">${escapeHtml(getEmployeeDisplayName(employee))} · ${escapeHtml(typeMeta.label)}</div>
-              <div class="list-text">${escapeHtml(formatRequestRange(row))}</div>
-              <div class="instruction-meta" style="margin-top:10px;">
-                <span class="badge ${escapeHtml(statusMeta.cls)}">${escapeHtml(statusMeta.label)}</span>
-                <span class="meta-chip">Upraveno ${escapeHtml(formatDateTime(row.updated_at || row.created_at))}</span>
-                ${row.approved_by_employee_id ? `<span class="meta-chip">Řešil ${escapeHtml(getEmployeeDisplayName(getEmployeeById(row.approved_by_employee_id)))}</span>` : ''}
-              </div>
-              ${row.manager_note ? `<div class="list-text" style="margin-top:10px;">Poznámka manažera: ${escapeHtml(row.manager_note)}</div>` : ''}
-              <div class="instruction-actions" style="margin-top:12px;">
-                <button class="mini-btn" type="button" data-request-action="edit" data-request-id="${row.id}">Otevřít</button>
-              </div>
-            </article>
-          `;
-        }).join('');
+        requestArchiveList.innerHTML = `
+          <div class="table-wrap">
+            <table class="request-table">
+              <thead>
+                <tr>
+                  <th>Zaměstnanec</th>
+                  <th>Typ</th>
+                  <th>Období</th>
+                  <th>Stav</th>
+                  <th>Řešil</th>
+                  <th>Aktualizováno</th>
+                  <th>Poznámka</th>
+                  <th>Akce</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${archiveRows.map((row) => {
+                  const employee = getEmployeeById(row.employee_id);
+                  const typeMeta = getRequestTypeMeta(row.request_type);
+                  const statusMeta = getRequestStatusMeta(row.status);
+                  const approver = getEmployeeById(row.approved_by_employee_id);
+                  return `
+                    <tr>
+                      <td>
+                        <span class="name-strong">${escapeHtml(getEmployeeDisplayName(employee))}</span>
+                        <span class="subtext">${escapeHtml(employee?.role || employee?.department || 'HR evidence')}</span>
+                      </td>
+                      <td>${escapeHtml(typeMeta.label)}</td>
+                      <td>${escapeHtml(formatRequestRange(row))}</td>
+                      <td><span class="badge ${escapeHtml(statusMeta.cls)}">${escapeHtml(statusMeta.label)}</span></td>
+                      <td>${escapeHtml(getEmployeeDisplayName(approver) || '-')}</td>
+                      <td>${escapeHtml(formatDateTime(row.updated_at || row.created_at))}</td>
+                      <td>${escapeHtml(row.manager_note || '-')}</td>
+                      <td class="actions-cell">
+                        <button class="mini-btn" type="button" data-request-action="edit" data-request-id="${row.id}">Otevřít</button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
       }
     }
 
@@ -4326,12 +4278,9 @@
 
       hrRequestRows = data ?? [];
       renderHrRequests();
-      setRequestsStatus(
-        hrRequestRows.length
-          ? 'Žádosti jsou načtené. Tady řešíš evidenci, samotná rozhodnutí patří do Schvalování.'
-          : 'Zatím tu nejsou žádné žádosti. Můžeš založit první.',
-        'success'
-      );
+      if (!hrRequestRows.length) {
+        setRequestsStatus('Zatím tu nejsou žádné žádosti. Můžeš založit první.', 'success');
+      }
     }
 
     function filterRows() {
