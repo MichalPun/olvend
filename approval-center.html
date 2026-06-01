@@ -322,6 +322,7 @@
                 <option value="employee_request">Požadavky zaměstnanců</option>
                 <option value="shift">Směny</option>
                 <option value="purchase">Nákupy</option>
+                <option value="control">Kontroly</option>
               </select>
               <select id="statusFilter">
                 <option value="">Všechny stavy</option>
@@ -548,6 +549,16 @@
         other: 'Jiné'
       };
       return map[type] || 'Žádost';
+    }
+
+    function getApprovalSourceSubLabel(sourceType) {
+      const map = {
+        employee_request: 'HR / zaměstnanec',
+        shift: 'Docházka / vozidlo',
+        purchase: 'Dodávka / sklad',
+        control: 'Kontrola / výjimka'
+      };
+      return map[sourceType] || 'Schvalování';
     }
 
     async function hydrateCurrentUser() {
@@ -875,15 +886,222 @@
       });
     }
 
+    function createControlItem({ id, createdAt, typeLabel, createdBy, description, detailDescription = '', priority = 'attention', priorityLabel = 'Pozornost', statusClass = 'red', openHref, searchText }) {
+      return {
+        id,
+        sourceType: 'control',
+        sourceId: id,
+        typeLabel,
+        createdBy,
+        createdAt,
+        dateLabel: formatDateOnly(createdAt),
+        startLabel: '-',
+        endLabel: '-',
+        hoursLabel: '-',
+        description,
+        detailDescription,
+        statusKey: 'review',
+        statusLabel: 'Ke kontrole',
+        statusClass,
+        priority,
+        priorityLabel,
+        searchHaystack: normalizeText(searchText || `${createdBy} ${description} ${detailDescription}`),
+        openHref,
+        canBulkAutoClose: false,
+        actions: ['detail']
+      };
+    }
+
+    async function loadPlanningControlApprovals() {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const from = `${year}-${String(month).padStart(2, '0')}-01`;
+      const to = new Date(year, month, 0).toLocaleDateString('en-CA');
+
+      const { data: plans, error: plansError } = await supabase
+        .from('shift_plans')
+        .select('id')
+        .eq('period_type', 'month')
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (plansError) {
+        if (/shift_plans/i.test(String(plansError.message || ''))) return [];
+        throw plansError;
+      }
+
+      const planId = plans?.[0]?.id;
+      if (!planId) return [];
+
+      const [{ data: days, error: daysError }, { data: availability, error: availabilityError }] = await Promise.all([
+        supabase.from('shift_plan_days').select('employee_id, plan_date, shift_type').eq('shift_plan_id', planId),
+        supabase.from('employee_availability').select('employee_id, available_date, availability_status').gte('available_date', from).lte('available_date', to)
+      ]);
+      if (daysError || availabilityError) {
+        const message = String((daysError || availabilityError)?.message || '');
+        if (/shift_plan_days|employee_availability/i.test(message)) return [];
+        throw daysError || availabilityError;
+      }
+
+      const employeeIds = [...new Set((days || []).map((item) => item.employee_id).filter(Boolean))];
+      const { data: employees } = employeeIds.length
+        ? await supabase.from('employees').select('id, name, surname, email').in('id', employeeIds)
+        : { data: [] };
+      const employeeMap = new Map((employees || []).map((employee) => [
+        String(employee.id),
+        [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Zaměstnanec'
+      ]));
+      const availabilityMap = new Map((availability || []).map((row) => [`${row.employee_id}::${row.available_date}`, row.availability_status]));
+
+      return (days || [])
+        .filter((day) => availabilityMap.get(`${day.employee_id}::${day.plan_date}`) === 'unavailable')
+        .slice(0, 12)
+        .map((day) => {
+          const employee = employeeMap.get(String(day.employee_id)) || 'Zaměstnanec';
+          return createControlItem({
+            id: `planning-${day.employee_id}-${day.plan_date}`,
+            createdAt: `${day.plan_date}T08:00:00`,
+            typeLabel: 'Plán směn',
+            createdBy: employee,
+            description: `${employee} · konflikt dostupnosti`,
+            detailDescription: `Naplánovaná směna ${day.shift_type || 'směna'} koliduje s dostupností „nemůžu“.`,
+            priority: 'urgent',
+            priorityLabel: 'Konflikt',
+            openHref: 'hr-planning.html'
+          });
+        });
+    }
+
+    async function loadFleetControlApprovals() {
+      const vehiclesResult = await supabase
+        .from('vehicles')
+        .select('id, name, plate, stk_valid_until, insurance_valid_until, next_service_date, current_odometer_km, tolerated_consumption_l_100km')
+        .order('name', { ascending: true });
+      if (vehiclesResult.error) {
+        if (/vehicles|tolerated_consumption_l_100km|stk_valid_until|insurance_valid_until|next_service_date/i.test(String(vehiclesResult.error.message || ''))) return [];
+        throw vehiclesResult.error;
+      }
+
+      const { data: logs, error: logsError } = await supabase
+        .from('vehicle_operation_logs')
+        .select('vehicle_id, employee_id, log_date, distance_km, fuel_liters, status')
+        .order('log_date', { ascending: false });
+      if (logsError) {
+        if (/vehicle_operation_logs/i.test(String(logsError.message || ''))) return [];
+        throw logsError;
+      }
+
+      const logsByVehicle = new Map();
+      (logs || []).forEach((log) => {
+        const key = String(log.vehicle_id);
+        if (!logsByVehicle.has(key)) logsByVehicle.set(key, []);
+        logsByVehicle.get(key).push(log);
+      });
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const items = [];
+      (vehiclesResult.data || []).forEach((vehicle) => {
+        const vehicleLabel = [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') || 'Vozidlo';
+        const vehicleLogs = logsByVehicle.get(String(vehicle.id)) || [];
+        if (vehicleLogs.some((log) => String(log.status) === 'review')) {
+          items.push(createControlItem({
+            id: `fleet-log-${vehicle.id}`,
+            createdAt: new Date().toISOString(),
+            typeLabel: 'Vozidla',
+            createdBy: vehicleLabel,
+            description: `${vehicleLabel} · km ke kontrole`,
+            detailDescription: 'Některý provozní log je ručně upravený nebo nesedí km.',
+            priorityLabel: 'Kontrola',
+            openHref: 'vehicles.html'
+          }));
+        }
+
+        [
+          { date: vehicle.stk_valid_until, label: 'STK' },
+          { date: vehicle.insurance_valid_until, label: 'Pojištění' },
+          { date: vehicle.next_service_date, label: 'Servis' }
+        ].forEach((check) => {
+          if (!check.date) return;
+          const target = new Date(`${check.date}T00:00:00`);
+          const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000);
+          if (diffDays <= 30) {
+            items.push(createControlItem({
+              id: `fleet-${vehicle.id}-${check.label}`,
+              createdAt: `${check.date}T08:00:00`,
+              typeLabel: 'Vozidla',
+              createdBy: vehicleLabel,
+              description: `${vehicleLabel} · ${check.label}`,
+              detailDescription: diffDays < 0 ? `${check.label} je po termínu.` : `${check.label} končí za ${diffDays} dní.`,
+              priority: diffDays < 0 ? 'urgent' : 'attention',
+              priorityLabel: diffDays < 0 ? 'Po termínu' : 'Brzy',
+              statusClass: diffDays < 0 ? 'red' : 'orange',
+              openHref: 'vehicles.html'
+            }));
+          }
+        });
+      });
+      return items.slice(0, 12);
+    }
+
+    async function loadServiceControlApprovals() {
+      const today = new Date().toLocaleDateString('en-CA');
+      const { data: requests, error } = await supabase
+        .from('service_requests')
+        .select('id, title, location_id, assigned_employee_id, priority, due_date, estimated_duration_minutes, status')
+        .in('status', ['new', 'assigned', 'in_progress'])
+        .order('due_date', { ascending: true });
+      if (error) {
+        if (/service_requests/i.test(String(error.message || ''))) return [];
+        throw error;
+      }
+
+      const locationIds = [...new Set((requests || []).map((item) => item.location_id).filter(Boolean))];
+      const { data: locations } = locationIds.length
+        ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
+        : { data: [] };
+      const locationMap = new Map((locations || []).map((item) => [String(item.id), item]));
+
+      return (requests || [])
+        .filter((item) => !item.assigned_employee_id || item.priority === 'critical' || (item.due_date && item.due_date < today))
+        .slice(0, 12)
+        .map((item) => {
+          const location = locationMap.get(String(item.location_id));
+          const locationLabel = [location?.name, location?.city].filter(Boolean).join(' · ') || 'Bez lokality';
+          const isOverdue = item.due_date && item.due_date < today;
+          return createControlItem({
+            id: `service-${item.id}`,
+            createdAt: `${item.due_date || today}T08:00:00`,
+            typeLabel: 'Servis',
+            createdBy: locationLabel,
+            description: `${item.title || 'Servisní požadavek'} · ${locationLabel}`,
+            detailDescription: [
+              !item.assigned_employee_id ? 'Bez přiřazeného zaměstnance' : '',
+              item.priority === 'critical' ? 'Kritická priorita' : '',
+              item.estimated_duration_minutes ? `Plán ${item.estimated_duration_minutes} min` : '',
+              isOverdue ? `Po termínu od ${formatDate(item.due_date)}` : item.due_date ? `Termín ${formatDate(item.due_date)}` : 'Bez termínu'
+            ].filter(Boolean).join(' · '),
+            priority: item.priority === 'critical' || isOverdue ? 'urgent' : 'attention',
+            priorityLabel: item.priority === 'critical' || isOverdue ? 'Urgentní' : 'Doplnit',
+            statusClass: item.priority === 'critical' || isOverdue ? 'red' : 'orange',
+            openHref: 'service-requests.html'
+          });
+        });
+    }
+
     function renderSummary() {
       const employeeRequests = approvalItems.filter((item) => item.sourceType === 'employee_request').length;
       const shifts = approvalItems.filter((item) => item.sourceType === 'shift').length;
       const purchases = approvalItems.filter((item) => item.sourceType === 'purchase').length;
+      const controls = approvalItems.filter((item) => item.sourceType === 'control').length;
       const urgent = approvalItems.filter((item) => item.priority === 'urgent').length;
       const cards = [
         { label: 'Požadavky zaměstnanců', value: employeeRequests, note: 'Dovolené, doktor a další žádosti.' },
         { label: 'Směny a výjimky', value: shifts, note: 'Chybějící konce, domácí starty a kontroly.' },
         { label: 'Nákupy', value: purchases, note: 'Návrhy objednávek a dnešní příjmy.' },
+        { label: 'Kontroly', value: controls, note: 'Plán směn, vozidla a servisní výjimky.' },
         { label: 'Urgentní', value: urgent, note: 'Položky, které by neměly viset.' }
       ];
       summaryGrid.innerHTML = cards.map((card) => `
@@ -958,7 +1176,7 @@
       approvalEmpty.style.display = 'none';
       approvalBody.innerHTML = regularRows.map((row) => `
         <tr>
-          <td class="col-type" data-label="Typ"><span class="cell-main">${escapeHtml(row.typeLabel)}</span><span class="subtext">${escapeHtml(row.sourceType === 'employee_request' ? 'HR / zaměstnanec' : row.sourceType === 'shift' ? 'Docházka / vozidlo' : 'Dodávka / sklad')}</span></td>
+          <td class="col-type" data-label="Typ"><span class="cell-main">${escapeHtml(row.typeLabel)}</span><span class="subtext">${escapeHtml(getApprovalSourceSubLabel(row.sourceType))}</span></td>
           <td class="col-person" data-label="Vytvořil"><span class="cell-main">${escapeHtml(row.createdBy)}</span></td>
           <td class="col-date" data-label="Datum"><span class="cell-main">${escapeHtml(row.dateLabel || formatDateTime(row.createdAt))}</span></td>
           <td class="queue-description" data-label="Popis"><span class="cell-main">${escapeHtml(row.description)}</span>${row.detailDescription ? `<span class="subtext">${escapeHtml(row.detailDescription)}</span>` : ''}</td>
@@ -978,12 +1196,15 @@
 
     async function reloadAll() {
       setStatus('Načítám centrální schvalování...');
-      const [employeeRequests, shifts, purchases] = await Promise.all([
+      const [employeeRequests, shifts, purchases, planningControls, fleetControls, serviceControls] = await Promise.all([
         loadEmployeeRequestApprovals(),
         loadShiftApprovals(),
-        loadPurchaseApprovals()
+        loadPurchaseApprovals(),
+        loadPlanningControlApprovals(),
+        loadFleetControlApprovals(),
+        loadServiceControlApprovals()
       ]);
-      approvalItems = [...employeeRequests, ...shifts, ...purchases];
+      approvalItems = [...employeeRequests, ...shifts, ...purchases, ...planningControls, ...fleetControls, ...serviceControls];
       selectedRowIds = new Set();
       renderSummary();
       renderApprovalTable();

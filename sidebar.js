@@ -316,8 +316,7 @@
           label: "Rozhodnutí a úkoly",
           children: [
             { key: "approvals", href: "approval-center.html", label: "Schvalování" },
-            { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
-            { key: "manager-review", href: "manager-review.html", label: "Kontrola manažera" }
+            { key: "tasks", href: "tasks.html", label: "Manažerský blok" }
           ]
         },
         {
