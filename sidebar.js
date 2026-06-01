@@ -310,11 +310,46 @@
       key: "management",
       title: "Řízení",
       items: [
-        { key: "approvals", href: "approval-center.html", label: "Schvalování" },
-        { key: "hr", href: "hr.html", label: "HR" },
-        { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
-        { key: "reporty", href: "reporty.html", label: "Reporty" },
-        { key: "settings", href: "settings.html", label: "Nastavení" }
+        {
+          key: "management-work",
+          href: "tasks.html",
+          label: "Rozhodnutí a úkoly",
+          children: [
+            { key: "approvals", href: "approval-center.html", label: "Schvalování" },
+            { key: "tasks", href: "tasks.html", label: "Manažerský blok" },
+            { key: "manager-review", href: "manager-review.html", label: "Kontrola manažera" }
+          ]
+        },
+        {
+          key: "management-people",
+          href: "hr.html",
+          label: "Lidé a směny",
+          children: [
+            { key: "hr", href: "hr.html", label: "HR přehled" },
+            { key: "hr-planning", href: "hr-planning.html", label: "Plán směn" },
+            { key: "employees", href: "employees.html", label: "Zaměstnanci" }
+          ]
+        },
+        {
+          key: "management-reports",
+          href: "reporty.html",
+          label: "Reporty a kontrola",
+          children: [
+            { key: "reporty", href: "reporty.html", label: "Přehled reportů" },
+            { key: "report-attendance", href: "report-attendance.html", label: "Docházka" },
+            { key: "report-shift-overview", href: "report-shift-overview.html", label: "Směny" },
+            { key: "report-vehicles", href: "report-vehicles.html", label: "Vozidla" }
+          ]
+        },
+        {
+          key: "management-admin",
+          href: "settings.html",
+          label: "Administrace",
+          children: [
+            { key: "settings", href: "settings.html", label: "Nastavení systému" },
+            { key: "company", href: "company.html", label: "Firma" }
+          ]
+        }
       ]
     }
   ];
@@ -501,7 +536,10 @@
   function renderMobileLinks() {
     return navGroups.map((group) => {
       const flattenedItems = flattenNavItems(group.items);
-      const filteredItems = flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "sales-invoices", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
+      const managementMobileKeys = ["approvals", "tasks", "hr", "hr-planning", "employees", "reporty", "settings"];
+      const filteredItems = group.key === "management"
+        ? flattenedItems.filter((item) => !item.soon && managementMobileKeys.includes(item.key))
+        : flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "sales-invoices", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
       if (!filteredItems.length) return "";
 
       return `
