@@ -716,6 +716,11 @@
     }
 
     function getPrimaryActionLabel(row, action) {
+      if (action === 'confirmPurchase') return row.purchaseStatus === 'draft' ? 'Schválit objednávku' : 'Potvrdit objednáno';
+      if (action === 'resolveVehicle') return 'Označit zkontrolované';
+      if (action === 'assignServiceToMe') return 'Přiřadit mně';
+      if (action === 'nudgeService') return 'Urgovat technika';
+      if (action === 'postponeService') return 'Odložit o den';
       if (action === 'approve') return row.sourceType === 'purchase' ? 'Schválit objednávku' : 'Schválit';
       if (action === 'reject') {
         if (row.sourceType === 'purchase' && row.purchaseStatus === 'ordered') return 'Zrušit dodávku';
@@ -728,8 +733,11 @@
 
     function getDetailDecisionNote(row) {
       if (!row) return '';
-      if (row.sourceType === 'control') return 'Kontroly zatím nemají jednotný stavový zápis, proto se řeší otevřením původního modulu.';
-      if (row.sourceType === 'purchase' && row.purchaseStatus === 'ordered') return 'Dodávku můžeš zrušit tady. Samotný příjem položek zůstává v nákupech, protože zapisuje sklad.';
+      if (row.sourceType === 'purchase' && row.purchaseStatus === 'ordered') return 'Potvrzení znamená: objednávka podle stálého nastavení je opravdu objednaná. Ze Schvalování zmizí, skladový příjem zůstane v nákupech.';
+      if (row.sourceType === 'purchase') return 'Schválením se návrh označí jako objednaný a ze Schvalování zmizí.';
+      if (row.actionKind === 'vehicle_review') return 'Uzavře všechny review logy tohoto vozidla přímo tady. Karta vozidla zůstane beze změny, jen už nebude viset ke kontrole.';
+      if (row.actionKind === 'service_review') return 'Servis se tady neposílá pryč: můžeš ho přiřadit sobě, urgovat přiřazeného technika nebo posunout termín.';
+      if (row.sourceType === 'control') return 'Tahle kontrola potřebuje doplnit konkrétní údaj v původním modulu, aby se problém jen neschoval.';
       if (row.queueKind === 'missing_end') return `Zapomenutý konec se uzavře na limit ${String(getForgottenShiftHoursLimit()).replace('.', ',')} h a zapíše se stopa do docházky.`;
       return 'Rozhodnutí se uloží hned a položka zmizí z pracovní fronty.';
     }
@@ -753,12 +761,14 @@
         return;
       }
 
-      const primaryActions = row.actions.filter((action) => ['approve', 'reject', 'autoClose'].includes(action));
+      const primaryActions = row.actions.filter((action) => ['approve', 'reject', 'autoClose', 'confirmPurchase', 'resolveVehicle', 'assignServiceToMe', 'nudgeService', 'postponeService'].includes(action));
       const actionButtons = primaryActions.map((action) => `
-        <button class="btn ${action === 'approve' ? '' : 'secondary'}" type="button"
+        <button class="btn ${['approve', 'confirmPurchase', 'resolveVehicle', 'assignServiceToMe', 'nudgeService'].includes(action) ? '' : 'secondary'}" type="button"
           data-action="${escapeHtml(action)}"
           data-source-type="${escapeHtml(row.sourceType)}"
           data-source-id="${escapeHtml(row.sourceId)}"
+          data-target-id="${escapeHtml(row.targetId || '')}"
+          data-assigned-employee-id="${escapeHtml(row.assignedEmployeeId || '')}"
           data-queue-kind="${escapeHtml(row.queueKind || '')}"
           data-purchase-status="${escapeHtml(row.purchaseStatus || '')}">
           ${escapeHtml(getPrimaryActionLabel(row, action))}
@@ -766,7 +776,7 @@
       `).join('');
 
       const fallbackAction = actionButtons
-        ? `<a class="btn secondary wide" href="${escapeHtml(row.openHref)}">Otevřít původní modul</a>`
+        ? ''
         : `<a class="btn secondary wide" href="${escapeHtml(row.openHref)}">Otevřít původní modul</a>`;
 
       approvalDetailPanel.innerHTML = `
@@ -1108,7 +1118,8 @@
         itemsByOrder.get(key).push(item);
       });
 
-      return orders.map((row) => {
+      const confirmationMarker = '[SCHVALOVANI_POTVRZENO]';
+      return orders.filter((row) => !String(row.note || '').includes(confirmationMarker)).map((row) => {
         const orderItems = itemsByOrder.get(String(row.id)) || [];
         const supplierName = supplierMap.get(String(row.supplier_id)) || 'Dodavatel';
         const itemPreview = orderItems
@@ -1141,16 +1152,19 @@
           openHref: 'purchases.html',
           purchaseStatus: row.status,
           canBulkAutoClose: false,
-          actions: row.status === 'draft' ? ['approve', 'reject', 'detail'] : ['detail', 'reject']
+          actions: row.status === 'draft' ? ['confirmPurchase', 'reject', 'detail'] : ['confirmPurchase', 'reject', 'detail']
         };
       });
     }
 
-    function createControlItem({ id, createdAt, typeLabel, createdBy, description, detailDescription = '', priority = 'attention', priorityLabel = 'Pozornost', statusClass = 'red', openHref, searchText }) {
+    function createControlItem({ id, createdAt, typeLabel, createdBy, description, detailDescription = '', priority = 'attention', priorityLabel = 'Pozornost', statusClass = 'red', openHref, searchText, targetId = null, assignedEmployeeId = null, actions = ['detail'], actionKind = 'control' }) {
       return {
         id,
         sourceType: 'control',
         sourceId: id,
+        targetId,
+        assignedEmployeeId,
+        actionKind,
         typeLabel,
         createdBy,
         createdAt,
@@ -1168,7 +1182,7 @@
         searchHaystack: normalizeText(searchText || `${createdBy} ${description} ${detailDescription}`),
         openHref,
         canBulkAutoClose: false,
-        actions: ['detail']
+        actions
       };
     }
 
@@ -1269,13 +1283,16 @@
         if (vehicleLogs.some((log) => String(log.status) === 'review')) {
           items.push(createControlItem({
             id: `fleet-log-${vehicle.id}`,
+            targetId: vehicle.id,
             createdAt: new Date().toISOString(),
             typeLabel: 'Vozidla',
             createdBy: vehicleLabel,
             description: `${vehicleLabel} · km ke kontrole`,
             detailDescription: 'Některý provozní log je ručně upravený nebo nesedí km.',
             priorityLabel: 'Kontrola',
-            openHref: 'vehicles.html'
+            openHref: 'vehicles.html',
+            actionKind: 'vehicle_review',
+            actions: ['resolveVehicle', 'detail']
           }));
         }
 
@@ -1296,8 +1313,8 @@
               description: `${vehicleLabel} · ${check.label}`,
               detailDescription: diffDays < 0 ? `${check.label} je po termínu.` : `${check.label} končí za ${diffDays} dní.`,
               priority: diffDays < 0 ? 'urgent' : 'attention',
-              priorityLabel: diffDays < 0 ? 'Po termínu' : 'Brzy',
-              statusClass: diffDays < 0 ? 'red' : 'orange',
+            priorityLabel: diffDays < 0 ? 'Po termínu' : 'Brzy',
+            statusClass: diffDays < 0 ? 'red' : 'orange',
               openHref: 'vehicles.html'
             }));
           }
@@ -1319,10 +1336,20 @@
       }
 
       const locationIds = [...new Set((requests || []).map((item) => item.location_id).filter(Boolean))];
-      const { data: locations } = locationIds.length
-        ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
-        : { data: [] };
+      const employeeIds = [...new Set((requests || []).map((item) => item.assigned_employee_id).filter(Boolean))];
+      const [{ data: locations }, { data: employees }] = await Promise.all([
+        locationIds.length
+          ? supabase.from('locations').select('id, name, city').in('id', locationIds)
+          : Promise.resolve({ data: [] }),
+        employeeIds.length
+          ? supabase.from('employees').select('id, name, surname, email').in('id', employeeIds)
+          : Promise.resolve({ data: [] })
+      ]);
       const locationMap = new Map((locations || []).map((item) => [String(item.id), item]));
+      const employeeMap = new Map((employees || []).map((item) => [
+        String(item.id),
+        [item.name, item.surname].filter(Boolean).join(' ').trim() || item.email || 'Technik'
+      ]));
 
       return (requests || [])
         .filter((item) => !item.assigned_employee_id || item.priority === 'critical' || (item.due_date && item.due_date < today))
@@ -1330,15 +1357,21 @@
         .map((item) => {
           const location = locationMap.get(String(item.location_id));
           const locationLabel = [location?.name, location?.city].filter(Boolean).join(' · ') || 'Bez lokality';
+          const technicianLabel = item.assigned_employee_id ? employeeMap.get(String(item.assigned_employee_id)) || 'Přiřazený technik' : 'Bez technika';
           const isOverdue = item.due_date && item.due_date < today;
+          const actions = !item.assigned_employee_id
+            ? ['assignServiceToMe', 'postponeService', 'detail']
+            : ['nudgeService', 'postponeService', 'detail'];
           return createControlItem({
             id: `service-${item.id}`,
+            targetId: item.id,
+            assignedEmployeeId: item.assigned_employee_id || null,
             createdAt: `${item.due_date || today}T08:00:00`,
             typeLabel: 'Servis',
             createdBy: locationLabel,
             description: `${item.title || 'Servisní požadavek'} · ${locationLabel}`,
             detailDescription: [
-              !item.assigned_employee_id ? 'Bez přiřazeného zaměstnance' : '',
+              !item.assigned_employee_id ? 'Bez přiřazeného technika' : `Technik: ${technicianLabel}`,
               item.priority === 'critical' ? 'Kritická priorita' : '',
               item.estimated_duration_minutes ? `Plán ${item.estimated_duration_minutes} min` : '',
               isOverdue ? `Po termínu od ${formatDate(item.due_date)}` : item.due_date ? `Termín ${formatDate(item.due_date)}` : 'Bez termínu'
@@ -1346,7 +1379,9 @@
             priority: item.priority === 'critical' || isOverdue ? 'urgent' : 'attention',
             priorityLabel: item.priority === 'critical' || isOverdue ? 'Urgentní' : 'Doplnit',
             statusClass: item.priority === 'critical' || isOverdue ? 'red' : 'orange',
-            openHref: 'service-requests.html'
+            openHref: 'service-requests.html',
+            actionKind: 'service_review',
+            actions
           });
         });
     }
@@ -1495,27 +1530,157 @@
       if (error) throw error;
     }
 
+    async function confirmPurchaseOrderInApprovals(orderId, purchaseStatus) {
+      const marker = '[SCHVALOVANI_POTVRZENO]';
+      const { data: order, error: orderError } = await supabase
+        .from('purchase_orders')
+        .select('id, status, note')
+        .eq('id', orderId)
+        .single();
+      if (orderError) throw orderError;
+
+      const stamp = new Date().toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const existingNote = String(order.note || '').trim();
+      const note = existingNote.includes(marker)
+        ? existingNote
+        : [existingNote, `${marker} Potvrzeno ve Schvalování ${stamp}: objednávka odpovídá stálému nastavení.`].filter(Boolean).join('\n');
+      const nextStatus = purchaseStatus === 'draft' || order.status === 'draft' ? 'ordered' : order.status;
+      await setPurchaseOrderStatus(orderId, nextStatus, { note });
+    }
+
+    async function resolveVehicleReview(vehicleId) {
+      const { data: logs, error: logsError } = await supabase
+        .from('vehicle_operation_logs')
+        .select('id, trip_note')
+        .eq('vehicle_id', vehicleId)
+        .eq('status', 'review');
+      if (logsError) throw logsError;
+      if (!logs?.length) return;
+
+      const stamp = new Date().toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      for (const log of logs) {
+        const note = [String(log.trip_note || '').trim(), `Schvalování: zkontrolováno ${stamp}.`].filter(Boolean).join('\n');
+        const { error } = await supabase
+          .from('vehicle_operation_logs')
+          .update({ status: 'closed', trip_note: note })
+          .eq('id', log.id);
+        if (error) throw error;
+      }
+    }
+
+    async function updateServiceRequestWithFallback(serviceId, payload) {
+      const attempts = [
+        payload,
+        (() => {
+          const reduced = { ...payload };
+          delete reduced.assigned_at;
+          delete reduced.delay_note;
+          delete reduced.delay_reason;
+          return reduced;
+        })(),
+        (() => {
+          const reduced = { status: payload.status || 'assigned' };
+          if (payload.assigned_employee_id) reduced.assigned_employee_id = payload.assigned_employee_id;
+          if (payload.due_date) reduced.due_date = payload.due_date;
+          return reduced;
+        })()
+      ];
+      let lastError = null;
+      for (const candidate of attempts) {
+        const { error } = await supabase.from('service_requests').update(candidate).eq('id', serviceId);
+        if (!error) return;
+        lastError = error;
+      }
+      throw lastError || new Error('Servisní požadavek se nepodařilo upravit.');
+    }
+
+    async function assignServiceToMe(serviceId) {
+      if (!currentUser?.id) throw new Error('Nejde dohledat přihlášeného uživatele.');
+      await updateServiceRequestWithFallback(serviceId, {
+        assigned_employee_id: currentUser.id,
+        assigned_at: new Date().toISOString(),
+        status: 'assigned',
+        delay_note: 'Přiřazeno manažerem ze Schvalování.',
+        delay_reason: null
+      });
+    }
+
+    async function nudgeServiceTechnician(serviceId, assignedEmployeeId) {
+      const { data: request, error: requestError } = await supabase
+        .from('service_requests')
+        .select('id, title, due_date, assigned_employee_id')
+        .eq('id', serviceId)
+        .single();
+      if (requestError) throw requestError;
+      const assigneeId = assignedEmployeeId || request.assigned_employee_id;
+      if (!assigneeId) {
+        await assignServiceToMe(serviceId);
+        return;
+      }
+
+      const today = new Date().toLocaleDateString('en-CA');
+      const title = `Urgence servisu: ${request.title || `požadavek ${serviceId}`}`;
+      const note = `Servisní požadavek visí ve Schvalování. Zkontroluj stav a posuň ho dál.\n\nTermín: ${request.due_date ? formatDate(request.due_date) : 'bez termínu'}`;
+      const { error: taskError } = await supabase
+        .from('tasks')
+        .insert([{
+          title,
+          note,
+          priority: 'today',
+          status: 'new',
+          due_date: today,
+          assigned_employee_id: assigneeId,
+          created_by: currentUser?.id || null
+        }]);
+      if (taskError) throw taskError;
+
+      await updateServiceRequestWithFallback(serviceId, {
+        status: request.status || 'assigned',
+        delay_reason: 'need_help',
+        delay_note: `Urgováno ze Schvalování ${new Date().toLocaleString('cs-CZ')}.`
+      });
+    }
+
+    async function postponeServiceRequest(serviceId) {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      await updateServiceRequestWithFallback(serviceId, {
+        due_date: tomorrow.toLocaleDateString('en-CA'),
+        status: 'assigned',
+        delay_reason: 'other',
+        delay_note: 'Odloženo o den ze Schvalování.'
+      });
+    }
+
     async function handleApprovalAction(button) {
       const action = button.dataset.action;
       const sourceType = button.dataset.sourceType;
       const sourceId = button.dataset.sourceId;
+      const targetId = button.dataset.targetId;
+      const assignedEmployeeId = button.dataset.assignedEmployeeId;
       const queueKind = button.dataset.queueKind;
       const purchaseStatus = button.dataset.purchaseStatus;
 
       try {
         button.disabled = true;
-        if (sourceType === 'employee_request') {
+        if (action === 'confirmPurchase') {
+          await confirmPurchaseOrderInApprovals(sourceId, purchaseStatus);
+        } else if (action === 'resolveVehicle') {
+          await resolveVehicleReview(targetId || String(sourceId).replace(/^fleet-log-/, ''));
+        } else if (action === 'assignServiceToMe') {
+          await assignServiceToMe(targetId || String(sourceId).replace(/^service-/, ''));
+        } else if (action === 'nudgeService') {
+          await nudgeServiceTechnician(targetId || String(sourceId).replace(/^service-/, ''), assignedEmployeeId);
+        } else if (action === 'postponeService') {
+          await postponeServiceRequest(targetId || String(sourceId).replace(/^service-/, ''));
+        } else if (sourceType === 'employee_request') {
           await setHrRequestStatus(sourceId, action === 'approve' ? 'approved' : 'rejected');
         } else if (sourceType === 'shift' && queueKind === 'home_start') {
           await resolveHomeStartApproval(sourceId, action === 'approve' ? 'approve' : 'reject');
         } else if (sourceType === 'shift' && queueKind === 'missing_end' && action === 'autoClose') {
           await autoCloseForgottenShift(sourceId);
         } else if (sourceType === 'purchase' && purchaseStatus === 'draft') {
-          if (action === 'approve') {
-            await setPurchaseOrderStatus(sourceId, 'ordered');
-          } else {
-            await setPurchaseOrderStatus(sourceId, 'cancelled');
-          }
+          await setPurchaseOrderStatus(sourceId, 'cancelled');
         } else if (sourceType === 'purchase' && purchaseStatus === 'ordered' && action === 'reject') {
           await setPurchaseOrderStatus(sourceId, 'cancelled');
         } else {
