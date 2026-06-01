@@ -51,7 +51,7 @@
       versionNote: ""
     },
     "hr.html": {
-      currentLabel: "HR",
+      currentLabel: "Lidé a směny",
       activeKey: "hr",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -171,7 +171,7 @@
     },
     "hr-planning.html": {
       currentLabel: "Plán směn",
-      activeKey: "hr",
+      activeKey: "hr-planning",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -219,8 +219,8 @@
       versionNote: ""
     },
     "employees.html": {
-      currentLabel: "Nastavení",
-      activeKey: "settings",
+      currentLabel: "Zaměstnanci",
+      activeKey: "employees",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""

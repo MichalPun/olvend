@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v15-vehicle-inventory';
+const CACHE_NAME = 'olvend-v16-people-shifts';
 const APP_SHELL = [
   './',
   './index.html',
