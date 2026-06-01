@@ -381,6 +381,35 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="emailModalBackdrop">
+    <div class="modal" style="max-width:760px;height:auto;max-height:90vh;">
+      <form id="emailForm">
+        <div class="modal-header">
+          <h3 id="emailModalTitle">Odeslat fakturu</h3>
+          <button class="close-btn" type="button" id="closeEmailModalBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid" style="grid-template-columns:1fr;">
+            <div class="field">
+              <label for="emailToInput">E-mail příjemce</label>
+              <input id="emailToInput" type="email" required />
+            </div>
+            <div class="field">
+              <label for="emailAttachmentInput">Další přílohy k e-mailu</label>
+              <input id="emailAttachmentInput" type="file" multiple accept=".pdf,image/png,image/jpeg,image/webp,application/pdf" />
+              <span class="subtext">Faktura PDF se přiloží automaticky. Sem můžeš přidat podklady, screenshoty nebo další PDF.</span>
+            </div>
+          </div>
+          <div class="status-line" id="emailStatusLine">Vyber případné podklady k faktuře.</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn secondary" type="button" id="cancelEmailBtn">Zrušit</button>
+          <button class="btn" type="submit" id="sendEmailBtn">Odeslat e-mail</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script src="./sidebar.js?v=20260526telemetry"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -445,6 +474,15 @@
     const customerQuickStatus = document.getElementById('customerQuickStatus')
     const closeCustomerModalBtn = document.getElementById('closeCustomerModalBtn')
     const cancelCustomerBtn = document.getElementById('cancelCustomerBtn')
+    const emailModalBackdrop = document.getElementById('emailModalBackdrop')
+    const emailForm = document.getElementById('emailForm')
+    const emailModalTitle = document.getElementById('emailModalTitle')
+    const emailToInput = document.getElementById('emailToInput')
+    const emailAttachmentInput = document.getElementById('emailAttachmentInput')
+    const emailStatusLine = document.getElementById('emailStatusLine')
+    const closeEmailModalBtn = document.getElementById('closeEmailModalBtn')
+    const cancelEmailBtn = document.getElementById('cancelEmailBtn')
+    const sendEmailBtn = document.getElementById('sendEmailBtn')
 
     const SALES_SERIES_KEY = 'olvend.salesDocumentSeries.v1'
     const SALES_CUSTOMERS_KEY = 'olvend.salesCustomers.v1'
@@ -473,6 +511,7 @@
     let salesSeriesSettingsCache = null
     let companyProfileCache = null
     let salesPaymentCache = null
+    let currentEmailRowId = null
     const recipeProductMarker = 'olvend_recipe_product_id'
     let jsPdfLoadPromise = null
     let qrCodeLoadPromise = null
@@ -531,6 +570,11 @@
       customerQuickStatus.textContent = message
       customerQuickStatus.className = 'status-line'
       if (type) customerQuickStatus.classList.add(type)
+    }
+    function setEmailStatus(message, type = '') {
+      emailStatusLine.textContent = message
+      emailStatusLine.className = 'status-line'
+      if (type) emailStatusLine.classList.add(type)
     }
     function downloadTextFile(fileName, content, mime = 'application/xml;charset=utf-8') {
       const blob = new Blob([content], { type: mime })
@@ -2213,11 +2257,50 @@
       }
       return error.message || String(error)
     }
-    async function sendDocumentEmail(row) {
+    function closeEmailModal() {
+      emailModalBackdrop.classList.remove('show')
+      currentEmailRowId = null
+      emailForm.reset()
+      sendEmailBtn.disabled = false
+      setEmailStatus('Vyber případné podklady k faktuře.')
+    }
+    function openEmailModal(row) {
       const meta = extractMeta(row)
       const customer = meta.customer || {}
-      const defaultEmail = customer.email || ''
-      const to = window.prompt('Na jaký e-mail mám fakturu odeslat?', defaultEmail)
+      currentEmailRowId = row.id
+      emailForm.reset()
+      emailModalTitle.textContent = `Odeslat fakturu · ${documentNumber(row)}`
+      emailToInput.value = customer.email || ''
+      setEmailStatus('Faktura PDF se přiloží automaticky. Další podklady jsou volitelné.')
+      emailModalBackdrop.classList.add('show')
+      setTimeout(() => emailToInput.focus(), 0)
+    }
+    function fileToEmailAttachment(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onerror = () => reject(new Error(`Soubor ${file.name} se nepodařilo načíst.`))
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '')
+          resolve({
+            fileName: file.name,
+            contentType: file.type || 'application/octet-stream',
+            contentBase64: dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
+          })
+        }
+        reader.readAsDataURL(file)
+      })
+    }
+    async function readEmailAttachments() {
+      const files = Array.from(emailAttachmentInput.files || [])
+      const maxBytes = 12 * 1024 * 1024
+      const tooLarge = files.find((file) => file.size > maxBytes)
+      if (tooLarge) throw new Error(`Příloha ${tooLarge.name} je moc velká. Limit je 12 MB na soubor.`)
+      return Promise.all(files.map(fileToEmailAttachment))
+    }
+    async function sendDocumentEmail(row, options = {}) {
+      const meta = extractMeta(row)
+      const customer = meta.customer || {}
+      const to = String(options.to || '').trim()
       if (!to) return
       setStatus(`Připravuji PDF a odesílám fakturu ${documentNumber(row)}...`)
       const pdf = await createInvoicePdf(row)
@@ -2231,7 +2314,8 @@
           subject,
           html: buildInvoiceEmailHtml(row),
           pdfBase64,
-          fileName
+          fileName,
+          attachments: options.attachments || []
         }
       })
       if (error) throw new Error(await functionInvokeErrorMessage(error))
@@ -2568,6 +2652,31 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
     customerModalBackdrop.addEventListener('click', (event) => {
       if (event.target === customerModalBackdrop) closeCustomerModal()
     })
+    closeEmailModalBtn.addEventListener('click', closeEmailModal)
+    cancelEmailBtn.addEventListener('click', closeEmailModal)
+    emailModalBackdrop.addEventListener('click', (event) => {
+      if (event.target === emailModalBackdrop) closeEmailModal()
+    })
+    emailForm.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const row = documents.find((item) => String(item.id) === String(currentEmailRowId))
+      if (!row) {
+        setEmailStatus('Doklad se nepodařilo najít. Obnov stránku a zkus to znovu.', 'error')
+        return
+      }
+      try {
+        sendEmailBtn.disabled = true
+        setEmailStatus('Načítám přílohy a připravuji e-mail...')
+        const attachments = await readEmailAttachments()
+        await sendDocumentEmail(row, { to: emailToInput.value, attachments })
+        closeEmailModal()
+      } catch (error) {
+        console.error(error)
+        setEmailStatus(`E-mail se nepodařilo odeslat: ${error.message}`, 'error')
+      } finally {
+        sendEmailBtn.disabled = false
+      }
+    })
     fetchCustomerAresBtn.addEventListener('click', async () => {
       fetchCustomerAresBtn.disabled = true
       fetchCustomerAresBtn.textContent = 'Načítám...'
@@ -2644,7 +2753,7 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
       try {
         if (button.dataset.action === 'edit') openInvoiceModal(row)
         if (button.dataset.action === 'print') printDocument(row)
-        if (button.dataset.action === 'email') await sendDocumentEmail(row)
+        if (button.dataset.action === 'email') openEmailModal(row)
         if (button.dataset.action === 'money-s3') exportMoneyS3(row)
         if (button.dataset.action === 'paid') await updateDocumentStatus(row.id, 'paid')
         if (button.dataset.action === 'cancel') {

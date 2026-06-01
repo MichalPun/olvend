@@ -20,6 +20,10 @@ function cleanEmail(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function cleanAttachmentName(value: unknown, fallback: string) {
+  return String(value || fallback).replace(/[^\w.\-]+/g, "_").slice(0, 120);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -51,19 +55,32 @@ Deno.serve(async (req) => {
     const pdfBase64 = String(payload?.pdfBase64 || "").trim();
     const fileName = String(payload?.fileName || "faktura.pdf").replace(/[^\w.\-]+/g, "_");
     const documentId = payload?.documentId ? Number(payload.documentId) : null;
+    const extraAttachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
 
     if (!to || !to.includes("@")) return json({ error: "Recipient email is required." }, 400);
     if (!pdfBase64) return json({ error: "PDF attachment is required." }, 400);
+
+    const attachments: Array<Record<string, string>> = [{
+      filename: fileName,
+      content: pdfBase64,
+    }];
+
+    for (const [index, attachment] of extraAttachments.entries()) {
+      const content = String(attachment?.contentBase64 || attachment?.content || "").trim();
+      if (!content) continue;
+      attachments.push({
+        filename: cleanAttachmentName(attachment?.fileName || attachment?.filename, `podklad-${index + 1}`),
+        content,
+        content_type: String(attachment?.contentType || attachment?.content_type || "application/octet-stream"),
+      });
+    }
 
     const mailPayload: Record<string, unknown> = {
       from: emailFrom,
       to: [to],
       subject,
       html: html || "<p>Dobrý den,<br>v příloze zasíláme fakturu.</p>",
-      attachments: [{
-        filename: fileName,
-        content: pdfBase64,
-      }],
+      attachments,
     };
     if (cc) mailPayload.cc = [cc];
     if (bcc) mailPayload.bcc = [bcc];
