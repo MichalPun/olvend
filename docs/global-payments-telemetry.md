@@ -15,8 +15,9 @@
 - pravdepodobny prvni integracni model pro OLVEND tedy neni realtime API, ale prijem a zpracovani pravidelneho `DEX` exportu
 - to je v poradku pro prvni fazi telemetrie, jen musime presne vedet, jak casto soubor chodi, jak se predava a co v nem realne je
 - podle ukazky Kotlin klienta se DEX posila pres HTTP POST jako XML obalka `VDITransaction` s elementem `RawDEX`
-- prvni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
-- endpoint pro dodavatele bude po nasazeni ve tvaru `https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=...`
+- interni prijimaci endpoint v OLVENDu je Supabase Edge Function `gp-vendsoft-telemetry`
+- kvuli TLS duvere nekterych GP terminalu preferujeme pro dodavatele verejnou proxy URL mimo Supabase: `https://<render-service>.onrender.com/gp-vendsoft-telemetry`
+- proxy prijme stejny XML payload a serverove ho preposle do Supabase Edge Function s internim tokenem
 - pokud prijde XML obalka, `DeviceID` bereme jako hlavni identifikator pro mapovani automatu; idealne tam GP nastavi nase stavajici `ID telemetrie` typu `604315`
 - pro aktualni VendSoft kompatibilni wrapper z Android/Kotlin klienta bude `ProviderID="IMA"` a `DeviceID` musi byt nase `Telemetry ID`; napriklad automat 100 `ARIA L EVO` ma `DeviceID="582176"`
 - `RawDEX` doporucujeme posilat v `<![CDATA[...]]>`, aby XML nerozbilo pripadne `&`, `<` nebo jine znaky v DEX radcich
@@ -156,13 +157,27 @@ Dodavatel muze pouzit stejny model jako pro VendSoft:
 </VDITransaction>
 ```
 
-Endpoint vraci HTTP 200, aby odesilaci aplikace povazovala davku za prijatou. Pokud bude v Supabase nastaveny `TELEMETRY_INGEST_TOKEN`, token se posila bud v query parametru `?token=...`, nebo v hlavicce `x-olvend-telemetry-token`.
+Supabase endpoint vraci HTTP 200, aby odesilaci aplikace povazovala davku za prijatou. Pokud bude v Supabase nastaveny `TELEMETRY_INGEST_TOKEN`, token se posila bud v query parametru `?token=...`, nebo v hlavicce `x-olvend-telemetry-token`.
+
+Pro GP terminaly s problemem duvery k Supabase certifikatu pouzijeme proxy:
+
+```text
+https://<render-service>.onrender.com/gp-vendsoft-telemetry
+```
+
+Pokud je na proxy nastavene `TELEMETRY_PROXY_TOKEN`, URL pro GP bude:
+
+```text
+https://<render-service>.onrender.com/gp-vendsoft-telemetry?proxy_token=...
+```
+
+XML payload zustava stejny. Proxy internim serverovym volanim prida `x-olvend-telemetry-token` a preposle payload do Supabase.
 
 Minimalni Kotlin nastaveni na strane odesilatele:
 
 ```kotlin
 MachineParam.Telemetry.server =
-    "https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/gp-vendsoft-telemetry?token=..."
+    "https://<render-service>.onrender.com/gp-vendsoft-telemetry"
 
 // deviceId nastavovat na ID telemetrie z OLVEND/VendSoft evidence, ne na seriove cislo automatu.
 val telemetry = VendSoft(dex = rawDex, deviceId = "582176", customerId = "OLVEND")
