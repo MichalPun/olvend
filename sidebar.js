@@ -162,6 +162,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "budget.html": {
+      currentLabel: "Rozpočet",
+      activeKey: "budget",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "suppliers.html": {
       currentLabel: "Dodavatelé",
       activeKey: "suppliers",
@@ -300,6 +307,7 @@
           children: [
             { key: "purchases", href: "purchases.html?view=received", label: "Přijaté doklady" },
             { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
+            { key: "budget", href: "budget.html", label: "Rozpočet" },
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
             { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
           ]
@@ -540,7 +548,7 @@
       const managementMobileKeys = ["approvals", "tasks", "hr", "hr-planning", "employees", "reporty", "settings"];
       const filteredItems = group.key === "management"
         ? flattenedItems.filter((item) => !item.soon && managementMobileKeys.includes(item.key))
-        : flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "sales-invoices", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
+        : flattenedItems.filter((item) => !item.soon || ["home", "shift", "machines", "inventory", "purchases", "sales-invoices", "budget", "suppliers", "warehouses", "service", "fleet", "hr", "settings"].includes(item.key));
       if (!filteredItems.length) return "";
 
       return `
