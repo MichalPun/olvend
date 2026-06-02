@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v16-people-shifts';
+const CACHE_NAME = 'olvend-v16-budget';
 const APP_SHELL = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ const APP_SHELL = [
   './vehicles.html',
   './warehouses.html',
   './company.html',
+  './budget.html',
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',
