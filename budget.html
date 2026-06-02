@@ -452,7 +452,11 @@
       { key:'machines', label:'Prodej automatů', inputId:'marginMachinesInput', revenueKey:'4_1_trzba_prodej_automatu', profitKey:'4_2_zisk_prodej_automatu' }
     ]
     const DEFAULT_LINES = [
-      { category_key:'sales_documents', label:'Vydané doklady', line_type:'income', data_source:'sales_documents', target_amount:0, note:'Faktury, účtenky a dobropisy ve stavu vystaveno/zaplaceno.' },
+      { category_key:'3_1_trzba_potravinove_automaty', label:'Tržby potravinové automaty', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako food/snack nebo podle názvu.' },
+      { category_key:'3_2_trzba_kavove_automaty', label:'Tržby kávové automaty', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako nápoj/káva nebo podle názvu automatu.' },
+      { category_key:'3_5_trzba_prodej_surovin', label:'Tržby prodej surovin', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako suroviny/ingredient.' },
+      { category_key:'4_1_trzba_prodej_automatu', label:'Tržby prodej automatů', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Prodej celých automatů podle produktové karty nebo názvu položky.' },
+      { category_key:'sales_documents', label:'Vydané doklady nezařazené', line_type:'income', data_source:'sales_documents', target_amount:0, note:'Jen položky vydaných dokladů, které zatím nejdou bezpečně zařadit.' },
       { category_key:'sales_revenue', label:'Tržby ze skladových pohybů', line_type:'income', data_source:'stock_movements_v13', target_amount:0, note:'Pohyby typu sale_revenue, případně sale s cenou.' },
       { category_key:'purchase_goods', label:'Nákup zboží', line_type:'cost', data_source:'purchase_orders', target_amount:0, note:'Přijaté a objednané položky podle jednotkové ceny.' },
       { category_key:'fuel', label:'PHM vozidel', line_type:'cost', data_source:'vehicle_operation_logs', target_amount:0, note:'Tankování a náklady PHM ze směn a provozních logů.' },
@@ -587,6 +591,24 @@
       return DEFAULT_LINES.map((line) => ({ ...line }))
     }
 
+    function normalizeScenarioLines(lines = []) {
+      return lines.map((line) => {
+        if (line.category_key !== 'sales_documents') return line
+        return {
+          ...line,
+          label: line.label === 'Vydané doklady' ? 'Vydané doklady nezařazené' : line.label,
+          note: line.note || 'Jen položky vydaných dokladů, které zatím nejdou bezpečně zařadit.'
+        }
+      })
+    }
+
+    function mergeScenarioLinesWithDefaults(lines = []) {
+      const normalized = normalizeScenarioLines(lines)
+      const existing = new Set(normalized.map((line) => line.category_key))
+      const missingDefaults = DEFAULT_LINES.filter((line) => !existing.has(line.category_key)).map((line) => ({ ...line }))
+      return [...normalized, ...missingDefaults]
+    }
+
     function normalizeCategoryKey(value) {
       return String(value || '')
         .trim()
@@ -595,6 +617,13 @@
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-z0-9]+/g, '_')
         .replace(/^_+|_+$/g, '')
+    }
+
+    function normalizeText(value) {
+      return String(value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
     }
 
     function localStorageKey(key) {
@@ -811,6 +840,79 @@
       return rows.reduce((sum, row) => sum + toNumber(mapper(row)), 0)
     }
 
+    function salesLineAmount(row) {
+      return toNumber(row.quantity) * toNumber(row.unit_price)
+    }
+
+    function classifySalesLine(row) {
+      const product = row.products || {}
+      const category = product.product_category || ''
+      const usage = product.usage_type || ''
+      const text = normalizeText([
+        row.product_name,
+        product.name,
+        product.note,
+        category,
+        usage
+      ].filter(Boolean).join(' '))
+
+      if (
+        text.includes('prodej automatu') ||
+        text.includes('prodej automat') ||
+        text.includes('prodej zarizeni')
+      ) return '4_1_trzba_prodej_automatu'
+
+      if (
+        category === 'ingredient' ||
+        usage === 'recipe_consumption' ||
+        text.includes('surovin')
+      ) return '3_5_trzba_prodej_surovin'
+
+      if (
+        category === 'beverage_ready' ||
+        text.includes('kavov') ||
+        text.includes('kava') ||
+        text.includes('coffee') ||
+        text.includes('luce') ||
+        text.includes('lei 600')
+      ) return '3_2_trzba_kavove_automaty'
+
+      if (
+        category === 'food_ready' ||
+        category === 'snack_ready' ||
+        text.includes('baget') ||
+        text.includes('potravin') ||
+        text.includes('snack')
+      ) return '3_1_trzba_potravinove_automaty'
+
+      return 'sales_documents'
+    }
+
+    async function loadSalesDocumentItemActuals(salesDocuments) {
+      const ids = salesDocuments.map((row) => row.id).filter(Boolean)
+      const actuals = {
+        '3_1_trzba_potravinove_automaty': 0,
+        '3_2_trzba_kavove_automaty': 0,
+        '3_5_trzba_prodej_surovin': 0,
+        '4_1_trzba_prodej_automatu': 0,
+        sales_documents: 0,
+        sales_documents_total: sumRows(salesDocuments, (row) => row.total_amount)
+      }
+      if (!ids.length) return actuals
+
+      const items = await safeQuery(() => supabase
+        .from('sales_document_items')
+        .select('document_id, product_id, product_name, quantity, unit_price, source_type, products(name, product_category, usage_type, note)')
+        .in('document_id', ids), [])
+
+      items.forEach((item) => {
+        const key = classifySalesLine(item)
+        actuals[key] = toNumber(actuals[key]) + salesLineAmount(item)
+      })
+
+      return actuals
+    }
+
     async function loadScenario(key) {
       const monthDate = `${key}-01`
       const local = readLocalScenario(key)
@@ -821,13 +923,14 @@
         state.scenario = scenarios[0]
         state.lines = await safeQuery(() => supabase.from('budget_lines').select('*').eq('scenario_id', scenarios[0].id).order('sort_order', { ascending:true }), [])
         if (!state.lines.length) state.lines = cloneDefaultLines()
+        state.lines = mergeScenarioLinesWithDefaults(state.lines)
         return
       }
 
       if (local) {
         state.persistence = 'browser'
         state.scenario = local.scenario
-        state.lines = local.lines
+        state.lines = mergeScenarioLinesWithDefaults(local.lines)
         return
       }
 
@@ -844,6 +947,7 @@
         .in('status', ['issued', 'paid'])
         .gte('issued_at', bounds.startIso)
         .lt('issued_at', bounds.endIso), [])
+      const salesDocumentActuals = await loadSalesDocumentItemActuals(salesDocuments)
 
       const stockRevenue = await safeQuery(() => supabase
         .from('stock_movements_v13')
@@ -880,7 +984,7 @@
       const manualExpenses = await loadExpenseEntriesForMonth(key)
 
       return addManualExpensesToActuals({
-        sales_documents: sumRows(salesDocuments, (row) => row.total_amount),
+        ...salesDocumentActuals,
         sales_revenue: sumRows(stockRevenue, (row) => toNumber(row.unit_price) * toNumber(row.quantity_base_units)),
         purchase_goods: sumRows(purchaseOrders, (order) => sumRows(order.purchase_order_items || [], (item) => (toNumber(item.received_quantity) || toNumber(item.ordered_quantity)) * toNumber(item.unit_cost))),
         fuel: sumRows(fuelLogs, (row) => row.fuel_cost),
@@ -1252,7 +1356,12 @@
 
     function renderTrend() {
       const rows = state.history.map((item) => {
-        const income = toNumber(item.actuals.sales_documents) + toNumber(item.actuals.sales_revenue)
+        const income = toNumber(item.actuals['3_1_trzba_potravinove_automaty'])
+          + toNumber(item.actuals['3_2_trzba_kavove_automaty'])
+          + toNumber(item.actuals['3_5_trzba_prodej_surovin'])
+          + toNumber(item.actuals['4_1_trzba_prodej_automatu'])
+          + toNumber(item.actuals.sales_documents)
+          + toNumber(item.actuals.sales_revenue)
         const cost = toNumber(item.actuals.purchase_goods) + toNumber(item.actuals.fuel) + toNumber(item.actuals.vehicle_expenses) + toNumber(item.actuals.service_capacity)
         return { key:item.key, income, cost, profit:income - cost }
       })
