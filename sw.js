@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v17-mobile-work-summary';
+const CACHE_NAME = 'olvend-v18-mobile-work-summary-toggle';
 const APP_SHELL = [
   './',
   './index.html',
