@@ -242,6 +242,42 @@
       gap: 12px;
     }
 
+    .work-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .work-summary-card {
+      display: grid;
+      gap: 8px;
+      padding: 15px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--panel);
+    }
+
+    .work-summary-card span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .work-summary-card strong {
+      color: var(--text);
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .work-summary-card small {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
     .tile,
     .card,
     details {
@@ -972,6 +1008,25 @@
           </div>
         </div>
 
+        <div class="section" id="workSummarySection">
+          <div class="section-head">
+            <h2>Moje práce</h2>
+            <span id="workSummaryMonthLabel">Tento měsíc</span>
+          </div>
+          <div class="work-summary-grid">
+            <div class="work-summary-card">
+              <span>Dnes odpracováno</span>
+              <strong id="todayWorkedMetric">-</strong>
+              <small id="todayWorkMeta">Směna zatím není načtená.</small>
+            </div>
+            <div class="work-summary-card">
+              <span>Tento měsíc</span>
+              <strong id="monthWorkedMetric">-</strong>
+              <small id="monthWorkMeta">Načítám odpracované hodiny.</small>
+            </div>
+          </div>
+        </div>
+
         <div class="section" id="instructionSection">
           <div class="section-head">
             <h2>Pokyny dne</h2>
@@ -980,7 +1035,7 @@
           <div class="stack" id="instructionList"></div>
         </div>
 
-        <div class="section">
+        <div class="section" id="quickActionsSection">
           <div class="section-head">
             <h2>Rychlé akce</h2>
             <span>Dnes</span>
@@ -1433,6 +1488,7 @@
     const state = {
       employee: null,
       attendanceDay: null,
+      monthlyAttendanceDays: [],
       vehicleLog: null,
       events: [],
       vehicles: [],
@@ -1463,6 +1519,7 @@
     }
 
     const todayIso = getIsoDateOffset(0)
+    const monthStartIso = `${todayIso.slice(0, 7)}-01`
     const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV16'
     let activeSignatureCanvas = null
@@ -1476,6 +1533,13 @@
       heroTitle: document.getElementById('heroTitle'),
       heroText: document.getElementById('heroText'),
       shiftMainButton: document.getElementById('shiftMainButton'),
+      workSummarySection: document.getElementById('workSummarySection'),
+      workSummaryMonthLabel: document.getElementById('workSummaryMonthLabel'),
+      todayWorkedMetric: document.getElementById('todayWorkedMetric'),
+      todayWorkMeta: document.getElementById('todayWorkMeta'),
+      monthWorkedMetric: document.getElementById('monthWorkedMetric'),
+      monthWorkMeta: document.getElementById('monthWorkMeta'),
+      quickActionsSection: document.getElementById('quickActionsSection'),
       runningShiftActions: document.getElementById('runningShiftActions'),
       breakButton: document.getElementById('breakButton'),
       openEndShiftButton: document.getElementById('openEndShiftButton'),
@@ -1786,6 +1850,28 @@
       return `${hours} h ${String(rest).padStart(2, '0')} min`
     }
 
+    function getDayPayableMinutes(day, now = new Date()) {
+      if (!day?.actual_start) return 0
+      if (Number.isFinite(Number(day.payable_minutes)) && (day.actual_end || day.status === 'closed')) {
+        return Math.max(0, Number(day.payable_minutes))
+      }
+      const endTime = day.actual_end ? new Date(day.actual_end) : now
+      const rawMinutes = Math.max(0, Math.round((endTime.getTime() - new Date(day.actual_start).getTime()) / 60000))
+      return Math.max(0, rawMinutes - Number(day.break_minutes || 0))
+    }
+
+    function getMonthLabel() {
+      return new Intl.DateTimeFormat('cs-CZ', { month: 'long', year: 'numeric' }).format(new Date(`${monthStartIso}T00:00:00`))
+    }
+
+    function scrollToTodayDetails() {
+      openScreen('today')
+      window.setTimeout(() => {
+        const target = els.workSummarySection || els.quickActionsSection
+        target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 80)
+    }
+
     function buildStoragePath(prefix, file) {
       const safeName = String(file?.name || 'uctenka.jpg')
         .normalize('NFD')
@@ -1885,8 +1971,10 @@
         els.shiftMainButton.textContent = 'Zobrazit dnešek'
         els.breakButton.textContent = breakState.isOnBreak ? 'Ukončit pauzu' : 'Pauza'
       } else if (isClosed) {
+        const workedMinutes = getDayPayableMinutes(day)
+        const breakMinutes = Number(day.break_minutes || 0)
         els.heroTitle.textContent = 'Děkujeme za směnu'
-        els.heroText.textContent = `Dnešní práce je uložená. Směna byla ukončena ${formatDateTime(day.actual_end)}.`
+        els.heroText.textContent = `Dnešní práce je uložená. Odpracováno ${formatMinutesDuration(workedMinutes)} · pauza ${formatMinutesDuration(breakMinutes)} · konec ${formatDateTime(day.actual_end)}.`
         els.shiftMainButton.textContent = 'Zobrazit dnešek'
       } else {
         els.heroTitle.textContent = 'Začni směnu'
@@ -1920,6 +2008,27 @@
       if (state.vehicleLog?.end_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.end_odometer_km
       else if (state.vehicleLog?.start_odometer_km != null) els.endOdometerInput.value = state.vehicleLog.start_odometer_km
       els.endKmLabel.style.display = state.attendanceDay?.vehicle_id && state.vehicleLog?.end_odometer_km == null ? 'grid' : 'none'
+    }
+
+    function renderWorkSummary() {
+      const day = state.attendanceDay
+      const todayPayableMinutes = getDayPayableMinutes(day)
+      const todayBreakMinutes = day?.actual_start ? Number(day.break_minutes || 0) : 0
+      const monthPayableMinutes = state.monthlyAttendanceDays.reduce((total, item) => {
+        if (item.id === day?.id) return total + todayPayableMinutes
+        return total + getDayPayableMinutes(item)
+      }, 0)
+      const workedDays = state.monthlyAttendanceDays.filter((item) => item.actual_start).length
+
+      els.workSummaryMonthLabel.textContent = getMonthLabel()
+      els.todayWorkedMetric.textContent = day?.actual_start ? formatMinutesDuration(todayPayableMinutes) : '-'
+      els.todayWorkMeta.textContent = day?.actual_start
+        ? `${day.actual_end ? 'Ukončeno' : 'Běží'} · pauza ${formatMinutesDuration(todayBreakMinutes)}${day.actual_start ? ` · start ${formatDateTime(day.actual_start)}` : ''}`
+        : 'Dnešní směna zatím nezačala.'
+      els.monthWorkedMetric.textContent = formatMinutesDuration(monthPayableMinutes)
+      els.monthWorkMeta.textContent = workedDays
+        ? `${workedDays} směn od ${monthStartIso}.`
+        : 'Zatím bez odpracovaných směn v tomto měsíci.'
     }
 
     function renderInstructions() {
@@ -2530,6 +2639,7 @@
 
     function renderAll() {
       renderShiftState()
+      renderWorkSummary()
       renderInstructions()
       renderVehicles()
       renderServices()
@@ -2581,6 +2691,18 @@
         .maybeSingle()
       if (error) throw error
       state.attendanceDay = data
+    }
+
+    async function loadMonthlyAttendanceDays() {
+      const { data, error } = await supabase
+        .from('attendance_days')
+        .select('id, attendance_date, status, actual_start, actual_end, break_minutes, payable_minutes')
+        .eq('employee_id', state.employee.id)
+        .gte('attendance_date', monthStartIso)
+        .lte('attendance_date', todayIso)
+        .order('attendance_date', { ascending: true })
+      if (error) throw error
+      state.monthlyAttendanceDays = data || []
     }
 
     async function loadVehicleLog() {
@@ -2947,6 +3069,7 @@
       await loadVehicleLog()
       await Promise.all([
         loadAttendanceEvents(),
+        loadMonthlyAttendanceDays(),
         loadReferenceData(),
         loadInstructions(),
         loadServices(),
@@ -3991,9 +4114,9 @@
         if (running && getBlockingService()) {
           openScreen('service')
         } else if (running) {
-          openScreen('today')
+          scrollToTodayDetails()
         } else {
-          openScreen(day?.actual_end ? 'today' : 'shift')
+          day?.actual_end ? scrollToTodayDetails() : openScreen('shift')
         }
       })
       els.breakButton.addEventListener('click', () => toggleBreak().catch(handleError))
