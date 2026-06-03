@@ -556,6 +556,8 @@
                   </select>
                   <select id="stockValuationLocation"><option value="">Všechna místa</option></select>
                   <button class="btn secondary" type="button" id="stockValuationRefreshBtn">Spočítat</button>
+                  <button class="btn secondary" type="button" id="stockValuationExportBtn">Export CSV</button>
+                  <button class="btn secondary" type="button" id="stockValuationPrintBtn">Tisk</button>
                 </div>
               </div>
               <div class="panel-body">
@@ -1421,6 +1423,8 @@
     const stockValuationScope = document.getElementById('stockValuationScope')
     const stockValuationLocation = document.getElementById('stockValuationLocation')
     const stockValuationRefreshBtn = document.getElementById('stockValuationRefreshBtn')
+    const stockValuationExportBtn = document.getElementById('stockValuationExportBtn')
+    const stockValuationPrintBtn = document.getElementById('stockValuationPrintBtn')
     const stockValuationStatus = document.getElementById('stockValuationStatus')
     const stockValuationSummary = document.getElementById('stockValuationSummary')
     const stockValuationBody = document.getElementById('stockValuationBody')
@@ -1598,6 +1602,8 @@
     let loadingSessionRows = []
     let vehicleLoadRows = []
     let bagetteOperatorStats = []
+    let stockValuationRows = []
+    let stockValuationAsOfDate = ''
     let vehicles = []
     let purchaseSuppliers = []
     let purchaseProductProfiles = []
@@ -2440,6 +2446,8 @@
       map.set(key, current)
     }
     function renderStockValuationRows(rows, asOfDate) {
+      stockValuationRows = rows
+      stockValuationAsOfDate = asOfDate
       const totalValue = rows.reduce((sum, row) => sum + Number(row.value || 0), 0)
       const totalQty = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0)
       const missingCostCount = rows.filter((row) => Number(row.unit_cost || 0) <= 0 && Number(row.quantity || 0) > 0).length
@@ -2464,6 +2472,106 @@
         `
       }).join('')
       stockValuationEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    function getStockValuationScopeLabel() {
+      return stockValuationScope?.options?.[stockValuationScope.selectedIndex]?.text || 'Jen sklady'
+    }
+    function getStockValuationLocationLabel() {
+      return stockValuationLocation?.options?.[stockValuationLocation.selectedIndex]?.text || 'Všechna místa'
+    }
+    function getStockValuationFileSuffix() {
+      return (stockValuationAsOfDate || stockValuationDate?.value || toDateInputValue(new Date())).replace(/[^0-9-]/g, '')
+    }
+    function exportStockValuationCsv() {
+      if (!stockValuationRows.length) {
+        setStockValuationStatus('Nejdřív spočítej hodnotu skladu, není co exportovat.', 'error')
+        return
+      }
+      const header = ['Datum', 'Rozsah', 'Filtr místa', 'Produkt', 'SKU', 'Místo', 'Typ místa', 'Množství', 'MJ', 'Nákupní cena', 'Hodnota']
+      const rows = stockValuationRows.map((row) => {
+        const unit = row.product?.base_unit || 'ks'
+        return [
+          stockValuationAsOfDate,
+          getStockValuationScopeLabel(),
+          getStockValuationLocationLabel(),
+          row.product?.name || '',
+          row.product?.sku || '',
+          row.location?.name || '',
+          getLocationTypeLabel(row.location?.location_type),
+          Number(row.quantity || 0),
+          unit,
+          Number(row.unit_cost || 0),
+          Number(row.value || 0)
+        ]
+      })
+      const csv = [header, ...rows].map((line) => line.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(';')).join('\n')
+      const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' })
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = `hodnota-skladu-${getStockValuationFileSuffix()}.csv`
+      link.click()
+      URL.revokeObjectURL(link.href)
+      setStockValuationStatus(`CSV export hodnoty skladu k ${new Date(`${stockValuationAsOfDate}T00:00:00`).toLocaleDateString('cs-CZ')} je připravený.`, 'success')
+    }
+    function buildStockValuationPrintHtml() {
+      const asOfDate = stockValuationAsOfDate || stockValuationDate?.value || toDateInputValue(new Date())
+      const totalValue = stockValuationRows.reduce((sum, row) => sum + Number(row.value || 0), 0)
+      const totalQty = stockValuationRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0)
+      const missingCostCount = stockValuationRows.filter((row) => Number(row.unit_cost || 0) <= 0 && Number(row.quantity || 0) > 0).length
+      const rowsHtml = stockValuationRows.map((row) => {
+        const unit = row.product?.base_unit || 'ks'
+        return `<tr>
+          <td><strong>${escapeHtml(row.product?.name || 'Produkt')}</strong><span>${escapeHtml(row.product?.sku ? `SKU ${row.product.sku}` : 'Bez SKU')}</span></td>
+          <td>${escapeHtml(row.location?.name || '')}<span>${escapeHtml(getLocationTypeLabel(row.location?.location_type))}</span></td>
+          <td class="num">${escapeHtml(formatQuantityValue(row.quantity, unit))}</td>
+          <td class="num">${escapeHtml(row.unit_cost > 0 ? formatStockMoney(row.unit_cost) : 'Bez ceny')}</td>
+          <td class="num">${escapeHtml(formatStockMoney(row.value))}</td>
+        </tr>`
+      }).join('')
+      return `<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <title>Hodnota skladu k ${escapeHtml(new Date(`${asOfDate}T00:00:00`).toLocaleDateString('cs-CZ'))}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111827;}
+    h1{font-size:22px;margin:0 0 6px;} .meta{color:#4b5563;margin-bottom:16px;}
+    .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0;}
+    .box{border:1px solid #d1d5db;border-radius:8px;padding:10px;} .label{font-size:11px;text-transform:uppercase;color:#6b7280;font-weight:800;} .value{font-size:18px;font-weight:900;margin-top:4px;}
+    table{width:100%;border-collapse:collapse;font-size:12px;} th,td{border-bottom:1px solid #e5e7eb;padding:7px 6px;text-align:left;vertical-align:top;} th{background:#f3f4f6;text-transform:uppercase;font-size:10px;color:#4b5563;} td span{display:block;color:#6b7280;font-size:11px;margin-top:2px;} .num{text-align:right;white-space:nowrap;}
+    @media print{body{margin:14mm;} button{display:none;}}
+  </style>
+</head>
+<body>
+  <h1>Hodnota skladu k ${escapeHtml(new Date(`${asOfDate}T00:00:00`).toLocaleDateString('cs-CZ'))}</h1>
+  <div class="meta">${escapeHtml(getStockValuationScopeLabel())} · ${escapeHtml(getStockValuationLocationLabel())} · vygenerováno ${escapeHtml(new Date().toLocaleString('cs-CZ'))}</div>
+  <div class="summary">
+    <div class="box"><div class="label">Hodnota</div><div class="value">${escapeHtml(formatStockMoney(totalValue))}</div></div>
+    <div class="box"><div class="label">Množství</div><div class="value">${escapeHtml(totalQty.toLocaleString('cs-CZ', { maximumFractionDigits: 2 }))}</div></div>
+    <div class="box"><div class="label">Řádků</div><div class="value">${escapeHtml(String(stockValuationRows.length))}</div></div>
+    <div class="box"><div class="label">Bez ceny</div><div class="value">${escapeHtml(String(missingCostCount))}</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Produkt</th><th>Místo</th><th class="num">Stav</th><th class="num">Nákup / jednotka</th><th class="num">Hodnota</th></tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))<\/script>
+</body>
+</html>`
+    }
+    function printStockValuationProtocol() {
+      if (!stockValuationRows.length) {
+        setStockValuationStatus('Nejdřív spočítej hodnotu skladu, není co tisknout.', 'error')
+        return
+      }
+      const popup = window.open('', '_blank')
+      if (!popup) {
+        setStockValuationStatus('Prohlížeč zablokoval tiskové okno.', 'error')
+        return
+      }
+      popup.document.open()
+      popup.document.write(buildStockValuationPrintHtml())
+      popup.document.close()
     }
     async function loadStockValuation() {
       if (!stockValuationDate?.value) stockValuationDate.value = toDateInputValue(new Date())
@@ -2515,6 +2623,8 @@
         setStockValuationStatus(`Hodnota skladu spočítaná k ${new Date(`${asOfDate}T00:00:00`).toLocaleDateString('cs-CZ')}.`, 'success')
       } catch (error) {
         console.error(error)
+        stockValuationRows = []
+        stockValuationAsOfDate = ''
         stockValuationSummary.innerHTML = ''
         stockValuationBody.innerHTML = ''
         stockValuationEmpty.style.display = 'block'
@@ -7866,6 +7976,12 @@
     })
     stockValuationRefreshBtn?.addEventListener('click', () => {
       void loadStockValuation()
+    })
+    stockValuationExportBtn?.addEventListener('click', () => {
+      exportStockValuationCsv()
+    })
+    stockValuationPrintBtn?.addEventListener('click', () => {
+      printStockValuationProtocol()
     })
     stockValuationDate?.addEventListener('change', () => {
       void loadStockValuation()
