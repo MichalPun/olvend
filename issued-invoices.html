@@ -163,6 +163,7 @@
               <select id="typeFilter">
                 <option value="">Všechny typy</option>
                 <option value="invoice">Faktury</option>
+                <option value="advance_invoice">Zálohové faktury</option>
                 <option value="cash_receipt">Účtenky</option>
                 <option value="credit_note">Dobropisy</option>
               </select>
@@ -210,6 +211,7 @@
               <label for="documentType">Typ dokladu</label>
               <select id="documentType" required>
                 <option value="invoice">Faktura</option>
+                <option value="advance_invoice">Zálohová faktura</option>
                 <option value="cash_receipt">Účtenka</option>
                 <option value="credit_note">Dobropis</option>
               </select>
@@ -371,7 +373,7 @@
               <textarea id="customerQuickNote" rows="3"></textarea>
             </div>
           </div>
-          <div class="status-line" id="customerQuickStatus">Ulož odběratele do lokálního adresáře pro další faktury.</div>
+          <div class="status-line" id="customerQuickStatus">Ulož odběratele do kontaktů pro další faktury.</div>
         </div>
         <div class="modal-footer">
           <button class="btn secondary" type="button" id="cancelCustomerBtn">Zrušit</button>
@@ -385,7 +387,7 @@
     <div class="modal" style="max-width:760px;height:auto;max-height:90vh;">
       <form id="emailForm">
         <div class="modal-header">
-          <h3 id="emailModalTitle">Odeslat fakturu</h3>
+          <h3 id="emailModalTitle">Odeslat doklad</h3>
           <button class="close-btn" type="button" id="closeEmailModalBtn">×</button>
         </div>
         <div class="modal-body">
@@ -397,10 +399,10 @@
             <div class="field">
               <label for="emailAttachmentInput">Další přílohy k e-mailu</label>
               <input id="emailAttachmentInput" type="file" multiple accept=".pdf,.xml,.jpg,.jpeg,.png,.webp,application/pdf,application/xml,text/xml,image/jpeg,image/png,image/webp" />
-              <span class="subtext">Faktura PDF se přiloží automaticky. Sem můžeš přidat XML, screenshoty, obrázky nebo další PDF.</span>
+              <span class="subtext">PDF dokladu se přiloží automaticky. Sem můžeš přidat XML, screenshoty, obrázky nebo další PDF.</span>
             </div>
           </div>
-          <div class="status-line" id="emailStatusLine">Vyber případné podklady k faktuře.</div>
+          <div class="status-line" id="emailStatusLine">Vyber případné podklady k dokladu.</div>
         </div>
         <div class="modal-footer">
           <button class="btn secondary" type="button" id="cancelEmailBtn">Zrušit</button>
@@ -491,12 +493,14 @@
     const SALES_SERIES_DB_KEY = 'sales_document_series'
     const COMPANY_PROFILE_DB_KEY = 'company_profile'
     const SALES_PAYMENT_DB_KEY = 'sales_payment_defaults'
+    const BUSINESS_CONTACTS_TABLE = 'business_contacts'
     const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
     const QRCODE_URL = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js'
     const PDF_FONT_REGULAR_URL = './assets/fonts/Aptos-Narrow.ttf'
     const PDF_FONT_BOLD_URL = './assets/fonts/Aptos-Narrow-Bold.ttf'
     const DEFAULT_SALES_SERIES = {
       invoice: { label:'Faktury vydané', prefix:'OVF', nextNumber:1, padding:4 },
+      advance_invoice: { label:'Zálohové faktury', prefix:'OVZ', nextNumber:1, padding:4 },
       cash_receipt: { label:'Účtenky vydané', prefix:'OVU', nextNumber:1, padding:4 },
       credit_note: { label:'Dobropisy vydané', prefix:'OVD', nextNumber:1, padding:4 }
     }
@@ -522,6 +526,9 @@
     }
     function normalizeText(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+    }
+    function contactNorm(value) {
+      return normalizeText(value).replace(/\s+/g, ' ')
     }
     function normalizeCompanyId(value) {
       return String(value || '').replace(/\D/g, '').slice(0, 8)
@@ -777,6 +784,49 @@
       localStorage.setItem(SALES_CUSTOMERS_KEY, JSON.stringify(customers))
       renderCustomerList()
     }
+    function mapBusinessContact(row = {}) {
+      return {
+        id: row.id ? `contact-${row.id}` : `customer-${Date.now()}`,
+        contactId: row.id || null,
+        name: row.name || '',
+        companyId: row.company_id || '',
+        taxId: row.tax_id || '',
+        contactName: row.contact_name || '',
+        email: row.email || '',
+        phone: row.phone || '',
+        address: row.billing_address || '',
+        billingAddress: row.billing_address || '',
+        deliveryAddress: row.delivery_address || '',
+        defaultDueDays: row.default_due_days ?? null,
+        note: row.note || ''
+      }
+    }
+    function mergeCustomerList(nextCustomers = []) {
+      const merged = new Map(customers.map((customer) => [contactNorm(customer.name), customer]))
+      nextCustomers.forEach((customer) => {
+        const key = contactNorm(customer.name)
+        if (!key) return
+        merged.set(key, { ...(merged.get(key) || {}), ...customer })
+      })
+      customers = Array.from(merged.values())
+        .filter((customer) => String(customer.name || '').trim())
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'cs', { sensitivity:'base' }))
+      saveCustomers()
+    }
+    async function loadBusinessContactCustomers() {
+      try {
+        const { data, error } = await supabase
+          .from(BUSINESS_CONTACTS_TABLE)
+          .select('id, contact_type, name, company_id, tax_id, contact_name, email, phone, billing_address, delivery_address, default_due_days, note, active')
+          .in('contact_type', ['customer', 'both'])
+          .eq('active', true)
+          .order('name', { ascending:true })
+        if (error) throw error
+        mergeCustomerList((data || []).map(mapBusinessContact))
+      } catch (error) {
+        console.warn('Business contacts unavailable for issued invoices', error)
+      }
+    }
     function ibanMod97(value) {
       return String(value).split('').reduce((remainder, digit) => (remainder * 10 + Number(digit)) % 97, 0)
     }
@@ -891,6 +941,9 @@
     function isStockImpactStatus(status) {
       return ['issued', 'paid'].includes(status)
     }
+    function isStockImpactDocumentType(type) {
+      return type !== 'advance_invoice'
+    }
     function getRecipeForProduct(productId) {
       return recipes.find((recipe) => {
         const note = String(recipe.note || '')
@@ -909,6 +962,34 @@
       else customers.push({ id:`customer-${Date.now()}`, ...customer })
       customers.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'cs', { sensitivity:'base' }))
       saveCustomers()
+      void saveCustomerContactToDb(customer)
+    }
+    async function saveCustomerContactToDb(customer) {
+      if (!customer?.name) return
+      const payload = {
+        contact_type: 'customer',
+        name: customer.name.trim(),
+        name_norm: contactNorm(customer.name),
+        company_id: normalizeCompanyId(customer.companyId || customer.company_id || ''),
+        tax_id: String(customer.taxId || customer.tax_id || '').trim() || null,
+        contact_name: String(customer.contactName || customer.contact_name || '').trim() || null,
+        email: String(customer.email || '').trim() || null,
+        phone: String(customer.phone || '').trim() || null,
+        billing_address: customerBillingAddress(customer) || null,
+        delivery_address: customerDeliveryAddress(customer) || null,
+        default_due_days: customer.defaultDueDays === '' || customer.defaultDueDays == null ? null : Number(customer.defaultDueDays),
+        note: String(customer.note || '').trim() || null,
+        active: true,
+        source: 'issued_invoice'
+      }
+      try {
+        const { error } = await supabase
+          .from(BUSINESS_CONTACTS_TABLE)
+          .upsert(payload, { onConflict: 'contact_type,name_norm' })
+        if (error) throw error
+      } catch (error) {
+        console.warn('Customer contact was saved locally only', error)
+      }
     }
     function documentSeriesNumber(row = null, typeOverride = '') {
       const type = typeOverride || row?.document_type || documentType.value || 'invoice'
@@ -926,9 +1007,18 @@
       return `${config.prefix}${year}-${String(base + before).padStart(config.padding, '0')}`
     }
     function documentTypeMeta(type) {
+      if (type === 'advance_invoice') return { label:'Zálohová faktura', prefix:'OVZ' }
       if (type === 'cash_receipt') return { label:'Účtenka', prefix:'OVU' }
       if (type === 'credit_note') return { label:'Dobropis', prefix:'OVD' }
       return { label:'Faktura', prefix:'OVF' }
+    }
+    function documentTitle(row) {
+      return `${documentTypeMeta(row?.document_type).label} ${documentNumber(row)}`
+    }
+    function advanceInvoiceNotice(row) {
+      return row?.document_type === 'advance_invoice'
+        ? 'Zálohová faktura. Skladový výdej se k tomuto dokladu neprovádí.'
+        : ''
     }
     function statusMeta(status) {
       if (status === 'paid') return { label:'Zaplaceno', badge:'good' }
@@ -1710,6 +1800,7 @@
     }
     async function applyDocumentStockImpact(documentId, lines, options) {
       if (!isStockImpactStatus(options.status)) return
+      if (!isStockImpactDocumentType(options.documentType)) return
       const stockLines = stockLinesForSalesLines(lines)
       if (!stockLines.length) return
       const stockLocationId = Number(options.stockLocationId || 0)
@@ -1835,6 +1926,7 @@
       const rounding = amounts.rounding
       const totalToPay = amounts.total
       const reverseChargeNotes = reverseChargeBaseNotes(vatRows, currency, meta.exchangeRate, vatMode)
+      const advanceNotice = advanceInvoiceNotice(row)
       const vatSummaryRows = vatRows.map((item) => `
           <tr>
             <td>${escapeHtml(`${Number(item.rate || 0).toLocaleString('cs-CZ')} %`)}</td>
@@ -1929,6 +2021,7 @@
             <div class="totals">
               <div>
                 <table style="margin-top:0;"><thead><tr><th>Sazba</th><th class="num">Základ</th><th class="num">DPH</th><th class="num">Celkem</th></tr></thead><tbody>${vatSummaryRows}</tbody></table>
+                ${advanceNotice ? `<div class="note">${escapeHtml(advanceNotice)}</div>` : ''}
                 ${vatModeInfo.invoiceText ? `<div class="note">${escapeHtml(vatModeInfo.invoiceText)}</div>` : ''}
                 ${reverseChargeNotes.length ? `<div class="note">${reverseChargeNotes.map(escapeHtml).join('<br>')}</div>` : ''}
               </div>
@@ -1941,7 +2034,7 @@
               </div>
             </div>
             ${cleanNote(row.note) ? `<div class="box"><h2>Poznámka</h2><div class="muted">${escapeHtml(cleanNote(row.note))}</div></div>` : ''}
-            <div class="system-footer">Faktura byla vystavena a vytištěna v interním systému OLVEND.</div>
+            <div class="system-footer">Doklad byl vystaven a vytištěn v interním systému OLVEND.</div>
           </div>
           <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))<\/script>
         </body>
@@ -1984,6 +2077,7 @@
       const items = invoiceItems(row)
       const vatRows = amounts.vatRows || []
       const reverseChargeNotes = reverseChargeBaseNotes(vatRows, currency, meta.exchangeRate, vatMode)
+      const advanceNotice = advanceInvoiceNotice(row)
       const qrDataUrl = await qrPaymentDataUrl(row)
       const margin = 14
       const pageWidth = 210
@@ -2196,6 +2290,11 @@
       doc.setTextColor(16, 24, 40)
       doc.setFontSize(9)
       y = Math.max(y + 8, vatEndY + 5)
+      if (advanceNotice) {
+        y += 10
+        addPageIfNeeded(12)
+        y = addPdfWrappedText(doc, advanceNotice, 14, y, 170, 5)
+      }
       if (vatModeInfo.invoiceText) {
         y += 10
         addPageIfNeeded(12)
@@ -2211,7 +2310,7 @@
       doc.setFont(pdfFont, 'normal')
       doc.setFontSize(8)
       setMuted()
-      doc.text('Faktura byla vystavena a vytištěna v interním systému OLVEND.', 105, 287, { align: 'center' })
+      doc.text('Doklad byl vystaven a vytištěn v interním systému OLVEND.', 105, 287, { align: 'center' })
       return doc
     }
     function buildInvoiceEmailHtml(row) {
@@ -2219,17 +2318,18 @@
       const customer = meta.customer || {}
       const payment = meta.payment || loadPaymentSettings()
       const amount = formatMoney(rowTotal(row), meta.currency || 'CZK')
+      const title = documentTitle(row)
       return `
         <div style="margin:0;padding:0;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;color:#101828;">
           <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
             <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
               <div style="padding:22px 24px;border-bottom:4px solid #d5101a;">
                 <div style="font-size:13px;font-weight:800;letter-spacing:.08em;color:#d5101a;text-transform:uppercase;">OLMIKA fakturace</div>
-                <h1 style="margin:10px 0 0;font-size:24px;line-height:1.25;color:#101828;">Faktura ${escapeHtml(documentNumber(row))}</h1>
+                <h1 style="margin:10px 0 0;font-size:24px;line-height:1.25;color:#101828;">${escapeHtml(title)}</h1>
               </div>
               <div style="padding:24px;">
                 <p style="margin:0 0 14px;font-size:15px;line-height:1.6;">Dobrý den,</p>
-                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">v příloze zasíláme fakturu${customer.name ? ` pro <strong>${escapeHtml(customer.name)}</strong>` : ''}.</p>
+                <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">v příloze zasíláme doklad${customer.name ? ` pro <strong>${escapeHtml(customer.name)}</strong>` : ''}.</p>
                 <table style="width:100%;border-collapse:collapse;margin:0 0 20px;">
                   <tr>
                     <td style="padding:10px 0;border-bottom:1px solid #eef2f6;color:#667085;">Částka k úhradě</td>
@@ -2286,16 +2386,16 @@
       currentEmailRowId = null
       emailForm.reset()
       sendEmailBtn.disabled = false
-      setEmailStatus('Vyber případné podklady k faktuře.')
+      setEmailStatus('Vyber případné podklady k dokladu.')
     }
     function openEmailModal(row) {
       const meta = extractMeta(row)
       const customer = meta.customer || {}
       currentEmailRowId = row.id
       emailForm.reset()
-      emailModalTitle.textContent = `Odeslat fakturu · ${documentNumber(row)}`
+      emailModalTitle.textContent = `Odeslat doklad · ${documentNumber(row)}`
       emailToInput.value = customer.email || ''
-      setEmailStatus('Faktura PDF se přiloží automaticky. Další podklady jsou volitelné.')
+      setEmailStatus('PDF dokladu se přiloží automaticky. Další podklady jsou volitelné.')
       emailModalBackdrop.classList.add('show')
       setTimeout(() => emailToInput.focus(), 0)
     }
@@ -2326,11 +2426,11 @@
       const customer = meta.customer || {}
       const to = String(options.to || '').trim()
       if (!to) return
-      setStatus(`Připravuji PDF a odesílám fakturu ${documentNumber(row)}...`)
+      setStatus(`Připravuji PDF a odesílám doklad ${documentNumber(row)}...`)
       const pdf = await createInvoicePdf(row)
       const pdfBase64 = pdf.output('datauristring').split(',')[1]
       const fileName = `${documentNumber(row)}.pdf`
-      const subject = `Faktura ${documentNumber(row)}`
+      const subject = documentTitle(row)
       const { data, error } = await supabase.functions.invoke('send-issued-invoice-email', {
         body: {
           documentId: row.id,
@@ -2358,7 +2458,7 @@
         .update({ note: noteWithMeta(row, nextMeta) })
         .eq('id', row.id)
       if (updateError) throw updateError
-      setStatus(`Faktura ${documentNumber(row)} byla odeslána na ${to}.`, 'success')
+      setStatus(`Doklad ${documentNumber(row)} byl odeslán na ${to}.`, 'success')
       await loadPage()
     }
     function moneyS3InvoiceXml(row) {
@@ -2501,6 +2601,7 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
           itemMap.get(String(item.document_id)).push(item)
         })
         documents = (documentsResult.data || []).map((row) => ({ ...row, items: itemMap.get(String(row.id)) || [] }))
+        await loadBusinessContactCustomers()
         renderRows()
         setStatus(`Načteno vystavených dokladů: ${documents.length}`, 'success')
       } catch (error) {
@@ -2517,7 +2618,7 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
       if (!customerName.value.trim()) throw new Error('Doplň odběratele.')
       if (!lines.length) throw new Error('Přidej aspoň jednu položku.')
       if (invalid) throw new Error('U skladové položky vyber kartu zásoby, u neskladové zadej název a cenu.')
-      const needsStockIssueLocation = isStockImpactStatus(documentStatus.value || 'issued') && stockLinesForSalesLines(lines).length > 0
+      const needsStockIssueLocation = isStockImpactStatus(documentStatus.value || 'issued') && isStockImpactDocumentType(documentType.value) && stockLinesForSalesLines(lines).length > 0
       if (needsStockIssueLocation && !stockIssueLocation.value) {
         throw new Error('Vyber sklad výdeje, ze kterého se má faktura odečíst.')
       }
@@ -2611,7 +2712,7 @@ ${rows.map(moneyS3InvoiceXml).join('\n')}
     }
     async function updateDocumentStatus(id, status) {
       const row = documents.find((item) => String(item.id) === String(id))
-      if (row && isStockImpactStatus(row.status) && !isStockImpactStatus(status)) {
+      if (row && isStockImpactDocumentType(row.document_type) && isStockImpactStatus(row.status) && !isStockImpactStatus(status)) {
         await reverseDocumentStockImpact(row)
       }
       const { error } = await supabase.from('sales_documents').update({ status }).eq('id', id)

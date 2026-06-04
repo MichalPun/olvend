@@ -170,7 +170,7 @@
       versionNote: ""
     },
     "suppliers.html": {
-      currentLabel: "Dodavatelé",
+      currentLabel: "Kontakty",
       activeKey: "suppliers",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -309,7 +309,7 @@
             { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
             { key: "budget", href: "budget.html", label: "Rozpočet" },
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
-            { key: "suppliers", href: "suppliers.html", label: "Dodavatelé" }
+            { key: "suppliers", href: "suppliers.html", label: "Kontakty" }
           ]
         }
       ]
