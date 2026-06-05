@@ -849,6 +849,112 @@
       color: #fff;
     }
 
+    .cost-control-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .cost-control-card {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      display: grid;
+      gap: 8px;
+    }
+
+    .cost-control-card.good {
+      border-color: rgba(46,204,113,0.24);
+      background: rgba(46,204,113,0.08);
+    }
+
+    .cost-control-card.warning {
+      border-color: rgba(255,182,72,0.28);
+      background: rgba(255,182,72,0.09);
+    }
+
+    .cost-control-card.danger {
+      border-color: rgba(255,91,102,0.32);
+      background: rgba(255,91,102,0.10);
+    }
+
+    .cost-control-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .cost-control-title {
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .cost-control-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+
+    .cost-control-card.good .cost-control-status { color: #baf3cf; }
+    .cost-control-card.warning .cost-control-status { color: #ffdba4; }
+    .cost-control-card.danger .cost-control-status { color: #ffc5ca; }
+
+    .cost-control-value {
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .cost-control-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .cost-km-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.05);
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .cost-km-badge.good {
+      color: #baf3cf;
+      border-color: rgba(46,204,113,0.24);
+      background: rgba(46,204,113,0.10);
+    }
+
+    .cost-km-badge.warning {
+      color: #ffdba4;
+      border-color: rgba(255,182,72,0.24);
+      background: rgba(255,182,72,0.10);
+    }
+
+    .cost-km-badge.danger {
+      color: #ffc5ca;
+      border-color: rgba(255,91,102,0.24);
+      background: rgba(255,91,102,0.10);
+    }
+
     .search-input,
     .filter-select {
       min-width: 0;
@@ -1706,6 +1812,7 @@
                 </article>
               </div>
 
+              <div id="costPerKmPanel"></div>
               <div class="review-panel" id="reviewPanel"></div>
 
               <section class="panel expenses-panel">
@@ -2079,6 +2186,7 @@
     const reviewVehiclesValue = document.getElementById('reviewVehiclesValue')
     const fuelCostsValue = document.getElementById('fuelCostsValue')
     const operatingCostsValue = document.getElementById('operatingCostsValue')
+    const costPerKmPanel = document.getElementById('costPerKmPanel')
     const reviewPanel = document.getElementById('reviewPanel')
     const recentExpensesList = document.getElementById('recentExpensesList')
     const expenseVehicleFilter = document.getElementById('expenseVehicleFilter')
@@ -2140,6 +2248,7 @@
     let vehicleProductPackagesMap = new Map()
     let vehicleReviewCards = []
     let vehicleReviewActionMap = new Map()
+    let vehicleCostPerKmMap = new Map()
     let recentExpenses = []
     let currentUser = null
     let isEditMode = false
@@ -2357,6 +2466,11 @@
     function formatMoney(value) {
       const amount = Number(value ?? 0)
       return `${amount.toLocaleString('cs-CZ', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} Kč`
+    }
+
+    function formatDecimal(value, decimals = 2) {
+      if (value == null || Number.isNaN(Number(value))) return 'Bez dat'
+      return Number(value).toLocaleString('cs-CZ', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
     }
 
     function formatLiters(value) {
@@ -2620,6 +2734,146 @@
       `
     }
 
+    const COST_PER_KM_LIMITS = {
+      2: { target: 3.50, limit: 3.80, label: 'Opel Vivaro limit' },
+      3: { target: 2.50, limit: 2.80, label: 'Fiat Doblo limit' },
+      4: { target: 4.00, limit: 4.50, label: 'Servisní auto limit' }
+    }
+
+    const COST_PER_KM_INVOICE_MARKER = 'DKV 26/652265207/001'
+    const COST_PER_KM_START_DATE = '2026-05-18'
+    const COST_PER_KM_END_DATE = '2026-05-31'
+
+    function getCostPerKmLimit(vehicle) {
+      return COST_PER_KM_LIMITS[Number(vehicle?.id)] || { target: 3.00, limit: 3.50, label: 'Provozní limit' }
+    }
+
+    function isWithinDateRange(dateValue, startDate, endDate) {
+      if (!dateValue) return false
+      return String(dateValue) >= startDate && String(dateValue) <= endDate
+    }
+
+    function hasDkvInvoiceMarker(value) {
+      return String(value || '').includes(COST_PER_KM_INVOICE_MARKER)
+    }
+
+    function getCostPerKmTone(costPerKm, target, limit) {
+      if (costPerKm == null) return 'idle'
+      if (costPerKm > limit) return 'danger'
+      if (costPerKm >= limit * 0.95) return 'warning'
+      return 'good'
+    }
+
+    function getCostPerKmStatusLabel(tone) {
+      if (tone === 'danger') return 'Překročeno'
+      if (tone === 'warning') return 'Pozor'
+      if (tone === 'good') return 'OK'
+      return 'Bez km'
+    }
+
+    function buildVehicleCostPerKmInsight(vehicle, vehicleLogs, vehicleExpenses) {
+      const limits = getCostPerKmLimit(vehicle)
+      const periodLogs = vehicleLogs.filter((log) => isWithinDateRange(log.log_date, COST_PER_KM_START_DATE, COST_PER_KM_END_DATE))
+      const invoiceFuelLogs = periodLogs.filter((log) => hasDkvInvoiceMarker(log.fuel_note))
+      const invoiceExpenses = vehicleExpenses.filter((expense) =>
+        isWithinDateRange(expense.expense_date, COST_PER_KM_START_DATE, COST_PER_KM_END_DATE) && hasDkvInvoiceMarker(expense.note)
+      )
+      const distanceKm = periodLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
+      const fuelAmount = invoiceFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
+      const fuelLiters = invoiceFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
+      const otherAmount = invoiceExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
+      const totalAmount = fuelAmount + otherAmount
+      const costPerKm = distanceKm > 0 && totalAmount > 0 ? totalAmount / distanceKm : null
+      const fuelCostPerKm = distanceKm > 0 && fuelAmount > 0 ? fuelAmount / distanceKm : null
+      const litersPer100Km = distanceKm > 0 && fuelLiters > 0 ? (fuelLiters / distanceKm) * 100 : null
+      const tone = getCostPerKmTone(costPerKm, limits.target, limits.limit)
+
+      return {
+        periodLabel: '18.–31. 5. 2026',
+        distanceKm,
+        distanceRows: periodLogs.filter((log) => Number(log.distance_km || 0) > 0).length,
+        fuelAmount,
+        otherAmount,
+        totalAmount,
+        fuelLiters,
+        costPerKm,
+        fuelCostPerKm,
+        litersPer100Km,
+        targetCostPerKm: limits.target,
+        limitCostPerKm: limits.limit,
+        limitLabel: limits.label,
+        tone,
+        statusLabel: getCostPerKmStatusLabel(tone),
+        invoiceRows: invoiceFuelLogs.length + invoiceExpenses.length
+      }
+    }
+
+    function renderCostPerKmCards() {
+      const insights = vehiclesData
+        .map((vehicle) => ({ vehicle, insight: vehicleCostPerKmMap.get(String(vehicle.id)) }))
+        .filter((item) => item.insight && item.insight.invoiceRows > 0)
+        .sort((a, b) => {
+          const order = { danger: 0, warning: 1, good: 2, idle: 3 }
+          return (order[a.insight.tone] ?? 4) - (order[b.insight.tone] ?? 4)
+        })
+
+      if (!insights.length) return ''
+
+      return `
+        <section class="detail-section">
+          <h4>Náklad na km podle DKV faktury</h4>
+          <div class="cost-control-grid">
+            ${insights.map(({ vehicle, insight }) => `
+              <article class="cost-control-card ${escapeHtml(insight.tone)}">
+                <div class="cost-control-top">
+                  <div class="cost-control-title">${escapeHtml([vehicle.name, vehicle.plate].filter(Boolean).join(' · ') || 'Vozidlo')}</div>
+                  <span class="cost-control-status">${escapeHtml(insight.statusLabel)}</span>
+                </div>
+                <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
+                <div class="cost-control-note">
+                  ${escapeHtml(`${insight.periodLabel} · ${formatQuantity(insight.distanceKm, 'km')} · náklad ${formatMoney(insight.totalAmount)} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}
+                </div>
+              </article>
+            `).join('')}
+          </div>
+        </section>
+      `
+    }
+
+    function renderVehicleCostPerKmDetail(insight) {
+      if (!insight || !insight.invoiceRows) return ''
+
+      return `
+        <section class="detail-section">
+          <h4>Náklad na km podle poslední DKV faktury</h4>
+          <div class="cost-control-grid">
+            <article class="cost-control-card ${escapeHtml(insight.tone)}">
+              <div class="cost-control-top">
+                <div class="cost-control-title">${escapeHtml(insight.periodLabel)}</div>
+                <span class="cost-control-status">${escapeHtml(insight.statusLabel)}</span>
+              </div>
+              <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
+              <div class="cost-control-note">${escapeHtml(`Limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km · cíl ${formatDecimal(insight.targetCostPerKm, 2)} Kč/km`)}</div>
+            </article>
+            <article class="cost-control-card">
+              <div class="cost-control-top">
+                <div class="cost-control-title">Fakturační náklad</div>
+              </div>
+              <div class="cost-control-value">${escapeHtml(formatMoney(insight.totalAmount))}</div>
+              <div class="cost-control-note">${escapeHtml(`PHM ${formatMoney(insight.fuelAmount)}${insight.otherAmount ? ` · ostatní ${formatMoney(insight.otherAmount)}` : ''}`)}</div>
+            </article>
+            <article class="cost-control-card">
+              <div class="cost-control-top">
+                <div class="cost-control-title">Km z aplikace</div>
+              </div>
+              <div class="cost-control-value">${escapeHtml(formatQuantity(insight.distanceKm, 'km'))}</div>
+              <div class="cost-control-note">${escapeHtml(`${insight.distanceRows} jízd s km · ${insight.litersPer100Km != null ? `${formatConsumption(insight.litersPer100Km)} / 100 km` : 'bez výpočtu spotřeby'}`)}</div>
+            </article>
+          </div>
+        </section>
+      `
+    }
+
     function getDaysUntil(value) {
       if (!value) return null
       const today = new Date()
@@ -2703,6 +2957,7 @@
       if (reviewVehiclesValue) reviewVehiclesValue.textContent = String(reviewCount)
       if (fuelCostsValue) fuelCostsValue.textContent = formatMoney(totalFuelCosts)
       if (operatingCostsValue) operatingCostsValue.textContent = formatMoney(totalOperatingCosts)
+      if (costPerKmPanel) costPerKmPanel.innerHTML = renderCostPerKmCards()
       renderReviewPanel()
     }
 
@@ -2795,6 +3050,7 @@
     function renderVehicleDetail(vehicle) {
       const key = String(vehicle.id)
       const consumptionInsight = vehicleConsumptionMap.get(key) || {}
+      const costPerKmInsight = vehicleCostPerKmMap.get(key) || null
       const expenseInsight = vehicleExpenseMap.get(key) || { totalAmount: 0, fuelAmount: 0, operatingAmount: 0 }
       const reviewItems = vehicleReviewMap.get(key) || []
       const logs = vehicleLogsMap.get(key) || []
@@ -2818,6 +3074,8 @@
             <div class="detail-box-note">${escapeHtml(`${formatMoney(inventorySummary.valueTotal)} · ${formatQuantity(inventorySummary.quantityTotal, 'ks')} součtem řádků`)}</div>
           </article>
         </div>
+
+        ${renderVehicleCostPerKmDetail(costPerKmInsight)}
 
         <section class="detail-section">
           <h4>Technická a provozní karta</h4>
@@ -3080,6 +3338,7 @@
           ? `${vehicle.current_odometer_km} km`
           : 'Nezadáno'
         const consumptionInsight = vehicleConsumptionMap.get(String(vehicle.id)) || null
+        const costPerKmInsight = vehicleCostPerKmMap.get(String(vehicle.id)) || null
         const expenseInsight = vehicleExpenseMap.get(String(vehicle.id)) || { totalAmount: 0, fuelAmount: 0, operatingAmount: 0 }
         const inventorySummary = getVehicleInventorySummary(vehicle.id)
         const reviewItems = vehicleReviewMap.get(String(vehicle.id)) || []
@@ -3157,6 +3416,12 @@
                 <span class="vehicle-metric-label">Celkem</span>
                 <span class="vehicle-metric-value">${escapeHtml(formatMoney(expenseInsight.totalAmount || 0))}</span>
               </div>
+              ${costPerKmInsight?.invoiceRows ? `
+                <div class="vehicle-metric-row">
+                  <span class="vehicle-metric-label">DKV Kč/km</span>
+                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.tone)}">${escapeHtml(costPerKmInsight.costPerKm != null ? `${formatDecimal(costPerKmInsight.costPerKm, 2)} · ${costPerKmInsight.statusLabel}` : 'Bez km')}</span>
+                </div>
+              ` : ''}
             </div>
           </td>
           <td data-label="Kontrola">
@@ -3330,6 +3595,7 @@
       vehicleConsumptionMap = new Map()
       vehicleExpenseMap = new Map()
       vehicleReviewMap = new Map()
+      vehicleCostPerKmMap = new Map()
       vehicleReviewActionMap = new Map()
       vehicleInventoryMap = new Map()
       vehicleProductPackagesMap = new Map()
@@ -3506,6 +3772,20 @@
         }
 
         const fuelLogsForControl = vehicleLogs.filter((log) => Number(log.fuel_liters || 0) > 0 || Number(log.fuel_cost || 0) > 0 || log.fuel_receipt_url)
+        const costPerKmInsight = buildVehicleCostPerKmInsight(vehicle, vehicleLogs, vehicleExpenses)
+        vehicleCostPerKmMap.set(key, costPerKmInsight)
+        if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'danger') {
+          reviewItems.push({
+            short: 'překročené Kč/km',
+            full: `Náklad podle DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, limit je ${formatDecimal(costPerKmInsight.limitCostPerKm, 2)} Kč/km. Tohle je moc a je potřeba to řešit s řidičem.`
+          })
+        } else if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'warning') {
+          reviewItems.push({
+            short: 'vyšší Kč/km',
+            full: `Náklad podle DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, cíl je ${formatDecimal(costPerKmInsight.targetCostPerKm, 2)} Kč/km. Je to nad cílem, hlídat další období.`
+          })
+        }
+
         const missingReceiptCount = fuelLogsForControl.filter((log) => !log.fuel_receipt_url).length
         if (missingReceiptCount) {
           reviewItems.push({
@@ -3627,7 +3907,7 @@
           const primaryItem = reviewItems[0]
           vehicleReviewCards.push({
             tone:
-              primaryItem.short.includes('propad') || primaryItem.short.includes('po termínu') || primaryItem.short.includes('vysoký')
+              primaryItem.short.includes('propad') || primaryItem.short.includes('po termínu') || primaryItem.short.includes('vysoký') || primaryItem.short.includes('překročen')
                 ? 'danger'
                 : primaryItem.short.includes('brzy') || primaryItem.short.includes('bez účtenky') || primaryItem.short.includes('konečný') || primaryItem.short.includes('start km')
                   ? 'warning'
