@@ -537,12 +537,12 @@
       '4_1_trzba_prodej_automatu': '4_2_zisk_prodej_automatu'
     }
     const DEFAULT_LINES = [
-      { category_key:'3_1_trzba_potravinove_automaty', label:'Tržby potravinové automaty', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako food/snack nebo podle názvu.' },
-      { category_key:'3_2_trzba_kavove_automaty', label:'Tržby kávové automaty', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako nápoj/káva nebo podle názvu automatu.' },
-      { category_key:'3_5_trzba_prodej_surovin', label:'Tržby prodej surovin', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Skutečné položky vydaných dokladů zařazené jako suroviny/ingredient.' },
-      { category_key:'4_1_trzba_prodej_automatu', label:'Tržby prodej automatů', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Prodej celých automatů podle produktové karty nebo názvu položky.' },
-      { category_key:'sales_documents', label:'Vydané doklady nezařazené', line_type:'income', data_source:'sales_documents', target_amount:0, note:'Jen položky vydaných dokladů, které zatím nejdou bezpečně zařadit.' },
-      { category_key:'sales_revenue', label:'Tržby ze skladových pohybů', line_type:'income', data_source:'stock_movements_v13', target_amount:0, note:'Pohyby typu sale_revenue, případně sale s cenou.' },
+      { category_key:'3_1_trzba_potravinove_automaty', label:'Tržby potravinové automaty', line_type:'revenue', data_source:'sales_document_items', target_amount:0, note:'Informativní obrat bez DPH. Do výsledku se počítá až ziskový řádek.' },
+      { category_key:'3_2_trzba_kavove_automaty', label:'Tržby kávové automaty', line_type:'revenue', data_source:'sales_document_items', target_amount:0, note:'Informativní obrat bez DPH. Do výsledku se počítá až ziskový řádek.' },
+      { category_key:'3_5_trzba_prodej_surovin', label:'Tržby prodej surovin', line_type:'revenue', data_source:'sales_document_items', target_amount:0, note:'Informativní obrat bez DPH. Do výsledku se počítá až ziskový řádek.' },
+      { category_key:'4_1_trzba_prodej_automatu', label:'Tržby prodej automatů', line_type:'revenue', data_source:'sales_document_items', target_amount:0, note:'Informativní obrat bez DPH. Do výsledku se počítá až ziskový řádek.' },
+      { category_key:'sales_documents', label:'Vydané doklady nezařazené', line_type:'revenue', data_source:'sales_documents', target_amount:0, note:'Nezařazený obrat bez DPH. Do výsledku ho nepouštíme, dokud nevíme zisk.' },
+      { category_key:'sales_revenue', label:'Tržby ze skladových pohybů', line_type:'revenue', data_source:'stock_movements_v13', target_amount:0, note:'Informativní obrat ze skladových pohybů.' },
       { category_key:'purchase_goods', label:'Nákup zboží', line_type:'cost', data_source:'purchase_orders', target_amount:0, note:'Přijaté a objednané položky podle jednotkové ceny.' },
       { category_key:'fuel', label:'PHM vozidel', line_type:'cost', data_source:'vehicle_operation_logs', target_amount:0, note:'Tankování a náklady PHM ze směn a provozních logů.' },
       { category_key:'vehicle_expenses', label:'Ostatní náklady vozidel', line_type:'cost', data_source:'vehicle_expenses', target_amount:0, note:'Servis, pneu, pojištění, STK a další provoz vozidel.' },
@@ -680,6 +680,14 @@
 
     function normalizeScenarioLines(lines = []) {
       return lines.map((line) => {
+        if (SALES_PROFIT_KEYS[line.category_key] || line.category_key === 'sales_documents' || line.category_key === 'sales_revenue') {
+          return {
+            ...line,
+            line_type: 'revenue',
+            label: line.category_key === 'sales_documents' && line.label === 'Vydané doklady' ? 'Vydané doklady nezařazené' : line.label,
+            note: line.note || 'Informativní obrat bez DPH. Do výsledku se počítá až ziskový řádek.'
+          }
+        }
         if (line.category_key !== 'sales_documents') return line
         return {
           ...line,
@@ -1139,9 +1147,11 @@
         const actual = toNumber(state.actuals[line.category_key])
         const target = toNumber(line.target_amount)
         const forecast = forecastLine(line, actual, target, elapsed, bounds.daysInMonth)
-        const variance = line.line_type === 'income' ? forecast - target : target - forecast
+        const positiveLine = line.line_type === 'income' || line.line_type === 'profit' || line.line_type === 'revenue'
+        const variance = positiveLine ? forecast - target : target - forecast
         const progress = target > 0 ? Math.abs(forecast) / target * 100 : actual > 0 ? 100 : 0
-        const risky = target > 0 && variance < -target * 0.08
+        const countsInResult = line.line_type !== 'revenue'
+        const risky = countsInResult && target > 0 && variance < -target * 0.08
         const watch = target > 0 && variance < 0 && !risky
         return { ...line, actual, forecast, variance, progress, health: risky ? 'bad' : watch ? 'warn' : 'good' }
       })
@@ -1149,12 +1159,21 @@
 
     function totals(lines) {
       return lines.reduce((acc, line) => {
-        const side = line.line_type === 'income' ? 'income' : 'cost'
-        acc[`${side}Target`] += toNumber(line.target_amount)
-        acc[`${side}Actual`] += line.actual
-        acc[`${side}Forecast`] += line.forecast
+        if (line.line_type === 'revenue') {
+          acc.revenueTarget += toNumber(line.target_amount)
+          acc.revenueActual += line.actual
+          acc.revenueForecast += line.forecast
+        } else if (line.line_type === 'income' || line.line_type === 'profit') {
+          acc.incomeTarget += toNumber(line.target_amount)
+          acc.incomeActual += line.actual
+          acc.incomeForecast += line.forecast
+        } else {
+          acc.costTarget += toNumber(line.target_amount)
+          acc.costActual += line.actual
+          acc.costForecast += line.forecast
+        }
         return acc
-      }, { incomeTarget:0, incomeActual:0, incomeForecast:0, costTarget:0, costActual:0, costForecast:0 })
+      }, { revenueTarget:0, revenueActual:0, revenueForecast:0, incomeTarget:0, incomeActual:0, incomeForecast:0, costTarget:0, costActual:0, costForecast:0 })
     }
 
     function renderSummary(lines) {
@@ -1164,8 +1183,8 @@
       const profitForecast = data.incomeForecast - data.costForecast
       const riskCount = lines.filter((line) => line.health === 'bad').length
       summaryGrid.innerHTML = [
-        ['Plán výnosů', money(data.incomeTarget), `Skutečnost ${money(data.incomeActual)}`],
-        ['Predikce výnosů', money(data.incomeForecast), `${percent(data.incomeTarget ? data.incomeForecast / data.incomeTarget * 100 : 0)} plánu`],
+        ['Skutečné tržby', money(data.revenueActual), `Obrat bez DPH, mimo výsledek`],
+        ['Zisk z prodeje', money(data.incomeActual), `Plán ${money(data.incomeTarget)}`],
         ['Plán nákladů', money(data.costTarget), `Skutečnost ${money(data.costActual)}`],
         ['Predikce nákladů', money(data.costForecast), `${percent(data.costTarget ? data.costForecast / data.costTarget * 100 : 0)} plánu`],
         ['Predikce výsledku', money(profitForecast), `Plán ${money(profitTarget)}, dnes ${money(profitActual)}`],
@@ -1199,7 +1218,7 @@
       const profitTarget = data.incomeTarget - data.costTarget
       const profitActual = data.incomeActual - data.costActual
       const items = [
-        { key:'income', label:'Výnosy k dnešku', type:'income', planned:data.incomeTarget, actual:data.incomeActual, paced:data.incomeTarget * ratio },
+        { key:'income', label:'Zisk z prodeje k dnešku', type:'income', planned:data.incomeTarget, actual:data.incomeActual, paced:data.incomeTarget * ratio },
         { key:'cost', label:'Čerpání nákladů', type:'cost', planned:data.costTarget, actual:data.costActual, paced:data.costTarget * ratio },
         { key:'profit', label:'Zisk k dnešku', type:'profit', planned:profitTarget, actual:profitActual, paced:profitTarget * ratio }
       ]
@@ -1277,9 +1296,14 @@
             <div class="development-metric-note">Hodnocení podle predikované odchylky výsledku od plánu.</div>
           </div>
           <div class="development-metric">
-            <div class="development-metric-label">Tempo tržeb</div>
+            <div class="development-metric-label">Skutečné tržby</div>
+            <p class="development-metric-value">${escapeHtml(money(data.revenueActual))}</p>
+            <div class="development-metric-note">Informativní obrat bez DPH. Do výsledku jde hrubý zisk, ne celá tržba.</div>
+          </div>
+          <div class="development-metric">
+            <div class="development-metric-label">Tempo zisku</div>
             <p class="development-metric-value">${escapeHtml(percent(incomePace))}</p>
-            <div class="development-metric-note">Denně teď cca ${escapeHtml(money(dailyIncome))}, predikce ${escapeHtml(money(data.incomeForecast))}.</div>
+            <div class="development-metric-note">Denně teď cca ${escapeHtml(money(dailyIncome))}, predikce zisku ${escapeHtml(money(data.incomeForecast))}.</div>
           </div>
           <div class="development-metric">
             <div class="development-metric-label">Tempo nákladů</div>
@@ -1506,7 +1530,7 @@
         signals.push({ level:'bad', title:`${riskLines.length} rozpočtové riziko`, text:`Největší odchylka: ${riskLines[0].label} (${money(riskLines[0].variance)}).` })
       }
       if (incomeCoverage < 92 && data.incomeTarget > 0) {
-        signals.push({ level:'warn', title:'Výnosy jsou pod plánem', text:`Predikce výnosů je ${percent(incomeCoverage)} plánu. Má smysl zkontrolovat fakturaci a tržby z provozu.` })
+        signals.push({ level:'warn', title:'Zisk z prodeje je pod plánem', text:`Predikce hrubého zisku je ${percent(incomeCoverage)} plánu. Má smysl zkontrolovat nákupní ceny u dokladů a marže.` })
       }
       if (costCoverage > 108 && data.costTarget > 0) {
         signals.push({ level:'bad', title:'Náklady rostou rychleji', text:`Predikce nákladů je ${percent(costCoverage)} plánu. První kontrola: nákupy, PHM a servisní zásahy.` })
@@ -1525,12 +1549,13 @@
 
     function renderBudgetTable(lines) {
       budgetBody.innerHTML = lines.map((line, index) => {
-        const typeLabel = line.line_type === 'income' ? 'Výnos' : 'Náklad'
+        const typeLabel = line.line_type === 'revenue' ? 'Tržba' : line.line_type === 'income' || line.line_type === 'profit' ? 'Zisk' : 'Náklad'
+        const typeClass = line.line_type === 'revenue' ? 'info' : line.line_type === 'income' || line.line_type === 'profit' ? 'good' : 'info'
         const varianceClass = line.health === 'bad' ? 'bad' : line.health === 'warn' ? 'warn' : 'good'
         return `
           <tr>
             <td data-label="Kategorie"><strong>${escapeHtml(line.label)}</strong><span class="muted" style="display:block;margin-top:3px;">${escapeHtml(line.category_key)}</span></td>
-            <td data-label="Typ"><span class="badge ${line.line_type === 'income' ? 'good' : 'info'}">${escapeHtml(typeLabel)}</span></td>
+            <td data-label="Typ"><span class="badge ${typeClass}">${escapeHtml(typeLabel)}</span></td>
             <td data-label="Zdroj dat">${escapeHtml(line.data_source)}</td>
             <td data-label="Plán"><input class="plan-input" type="number" min="0" step="100" value="${escapeHtml(String(Math.round(toNumber(line.target_amount))))}" data-line-index="${index}" /></td>
             <td data-label="Skutečnost" class="money-cell">${escapeHtml(money(line.actual))}</td>
