@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v18-mobile-work-summary-toggle';
+const CACHE_NAME = 'olvend-v19-budget-forecast-refresh';
 const APP_SHELL = [
   './',
   './index.html',
