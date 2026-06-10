@@ -2731,7 +2731,7 @@
       const riskyCount = rows.filter((row) => Number(row.quantity_on_hand || 0) <= 0).length
       vehicleLoadSummary.innerHTML = [
         { label:'Vozidla se zásobou', value: vehicleCount, note:'Kolik aut teď něco opravdu veze.' },
-        { label:'Řádky zásoby', value: productCount, note:'Jednotlivé kombinace vozidlo + položka.' },
+        { label:'Položky', value: productCount, note:'Sečtené kombinace vozidlo + položka.' },
         { label:'Celkem na autech', value: totalOnVehicle.toFixed(0), note:'Součet kusů právě na vozidlech.' },
         { label:'Ke kontrole', value: riskyCount, note:'Řádky, kde je potřeba zásah nebo korekce.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
@@ -2739,10 +2739,11 @@
     function renderVehicleLoadRows(rows) {
       vehicleLoadBody.innerHTML = rows.map((row) => {
         const quantityMeta = formatVehicleQuantity(row.product_id, row.quantity_on_hand, row.base_unit || 'ks')
+        const sourceNote = Number(row.source_row_count || 0) > 1 ? ` · sečteno z ${row.source_row_count} záznamů` : ''
         return `
           <tr data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">
             <td data-label="Vozidlo"><strong>${escapeHtml(row.vehicle_name || 'Vozidlo')}</strong><span class="subtext">${escapeHtml(row.vehicle_plate || 'Bez SPZ')}</span></td>
-            <td data-label="Položka"><strong>${escapeHtml(row.product_name || 'Položka')}</strong><span class="subtext">${escapeHtml(row.base_unit || 'ks')}</span></td>
+            <td data-label="Položka"><strong>${escapeHtml(row.product_name || 'Položka')}</strong><span class="subtext">${escapeHtml(`${row.base_unit || 'ks'}${sourceNote}`)}</span></td>
             <td data-label="Na vozidle"><strong>${escapeHtml(quantityMeta.primary)}</strong><span class="subtext">${escapeHtml(quantityMeta.secondary)}</span></td>
             <td data-label="Poslední pohyb"><strong>${escapeHtml(row.last_movement_type || 'Bez pohybu')}</strong><span class="subtext">${row.last_movement_at ? escapeHtml(new Date(row.last_movement_at).toLocaleString('cs-CZ')) : 'Zatím nic'}</span></td>
             <td data-label="Akce"><details class="stock-action-menu"><summary aria-label="Akce pro naložení">...</summary><div class="stock-action-list"><button class="btn secondary" type="button" data-vehicle-load-action="load" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Dopsat naložení</button><button class="btn secondary" type="button" data-vehicle-load-action="return" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Vrátit</button><button class="btn secondary" type="button" data-vehicle-load-action="waste" data-vehicle-id="${escapeHtml(String(row.vehicle_id))}" data-product-id="${escapeHtml(String(row.product_id))}">Odpad</button></div></details></td>
@@ -2750,6 +2751,33 @@
         `
       }).join('')
       vehicleLoadEmpty.style.display = rows.length ? 'none' : 'block'
+    }
+    function aggregateVehicleLoadRows(rows) {
+      const groupedRows = new Map()
+      rows.forEach((row) => {
+        const key = `${row.vehicle_id}:${row.product_id}`
+        const existing = groupedRows.get(key)
+        if (!existing) {
+          groupedRows.set(key, {
+            ...row,
+            stock_location_ids: [row.stock_location_id].filter(Boolean),
+            source_row_count: 1
+          })
+          return
+        }
+        existing.quantity_on_hand += Number(row.quantity_on_hand || 0)
+        existing.source_row_count += 1
+        if (row.stock_location_id && !existing.stock_location_ids.includes(row.stock_location_id)) {
+          existing.stock_location_ids.push(row.stock_location_id)
+        }
+        const existingMovementTime = existing.last_movement_at ? new Date(existing.last_movement_at).getTime() : 0
+        const rowMovementTime = row.last_movement_at ? new Date(row.last_movement_at).getTime() : 0
+        if (rowMovementTime > existingMovementTime) {
+          existing.last_movement_type = row.last_movement_type || ''
+          existing.last_movement_at = row.last_movement_at || null
+        }
+      })
+      return Array.from(groupedRows.values())
     }
     function populateVehicleLoadVehicleFilter() {
       if (!vehicleLoadVehicleFilter) return
@@ -2810,11 +2838,14 @@
         const lastMovementMap = new Map()
         stockMovementsV13.forEach((movement) => {
           const key = `${movement.to_stock_location_id || movement.from_stock_location_id}:${movement.product_id}`
-          if (lastMovementMap.has(key)) return
+          const current = lastMovementMap.get(key)
+          const currentTime = current?.created_at ? new Date(current.created_at).getTime() : 0
+          const movementTime = movement.created_at ? new Date(movement.created_at).getTime() : 0
+          if (current && currentTime >= movementTime) return
           lastMovementMap.set(key, movement)
         })
 
-        vehicleLoadRows = stockBalancesV13
+        const rawVehicleLoadRows = stockBalancesV13
           .filter((balance) => Number(balance.quantity_on_hand || 0) > 0)
           .map((balance) => {
             const location = vehicleLocationMap.get(String(balance.stock_location_id))
@@ -2836,6 +2867,8 @@
             }
           })
           .filter(Boolean)
+
+        vehicleLoadRows = aggregateVehicleLoadRows(rawVehicleLoadRows)
           .sort((a, b) => normalizeText(a.vehicle_name).localeCompare(normalizeText(b.vehicle_name), 'cs') || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
 
         populateVehicleLoadVehicleFilter()
