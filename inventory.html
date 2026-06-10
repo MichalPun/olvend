@@ -62,6 +62,8 @@
     .stock-excel-summary .summary-box-value { font-size:20px; }
     .summary-box-note { display:none; }
     .stock-excel-summary .summary-box-note { display:none; }
+    .compact-filter-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,320px)); gap:6px; margin:0 0 8px; align-items:end; }
+    .compact-filter-row label { display:block; margin:0 0 4px; color:var(--soft); font-size:10px; font-weight:800; letter-spacing:0.05em; text-transform:uppercase; }
     .toolbar { display:grid; grid-template-columns:minmax(260px,1.4fr) repeat(5, minmax(150px, 1fr)); gap:6px; margin-bottom:8px; }
     input, select, textarea { width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:white; padding:8px 10px; min-height:34px; border-radius:6px; outline:none; font-size:13px; font-family:inherit; }
     input:focus, select:focus, textarea:focus { border-color:rgba(213,16,26,0.5); box-shadow:0 0 0 3px rgba(213,16,26,0.12); }
@@ -469,6 +471,14 @@
           </div>
           <div class="panel-body">
             <div class="status-line" id="vehicleLoadStatus">Načítám stav vozidel...</div>
+            <div class="compact-filter-row">
+              <div>
+                <label for="vehicleLoadVehicleFilter">Vozidlo</label>
+                <select id="vehicleLoadVehicleFilter">
+                  <option value="">Všechna vozidla</option>
+                </select>
+              </div>
+            </div>
             <div class="summary-grid" id="vehicleLoadSummary"></div>
             <div class="table-wrap">
               <table>
@@ -1409,6 +1419,7 @@
     const loadingSessionBody = document.getElementById('loadingSessionBody')
     const loadingSessionEmpty = document.getElementById('loadingSessionEmpty')
     const vehicleLoadStatus = document.getElementById('vehicleLoadStatus')
+    const vehicleLoadVehicleFilter = document.getElementById('vehicleLoadVehicleFilter')
     const vehicleLoadSummary = document.getElementById('vehicleLoadSummary')
     const vehicleLoadBody = document.getElementById('vehicleLoadBody')
     const vehicleLoadEmpty = document.getElementById('vehicleLoadEmpty')
@@ -2740,6 +2751,45 @@
       }).join('')
       vehicleLoadEmpty.style.display = rows.length ? 'none' : 'block'
     }
+    function populateVehicleLoadVehicleFilter() {
+      if (!vehicleLoadVehicleFilter) return
+      const currentValue = vehicleLoadVehicleFilter.value || ''
+      const vehicleIdsWithStock = new Set(vehicleLoadRows.map((row) => String(row.vehicle_id || '')).filter(Boolean))
+      const vehicleOptions = vehicles
+        .filter((vehicle) => vehicle.active !== false)
+        .sort((a, b) => normalizeText(a.name || a.plate || '').localeCompare(normalizeText(b.name || b.plate || ''), 'cs'))
+        .map((vehicle) => {
+          const hasStock = vehicleIdsWithStock.has(String(vehicle.id))
+          const label = vehicle.name || vehicle.plate || 'Vozidlo'
+          return `<option value="${escapeHtml(String(vehicle.id))}" ${hasStock ? '' : 'data-empty="true"'}>${escapeHtml(label)}${hasStock ? '' : ' · bez zásoby'}</option>`
+        })
+      vehicleLoadVehicleFilter.innerHTML = ['<option value="">Všechna vozidla</option>', ...vehicleOptions].join('')
+      if (Array.from(vehicleLoadVehicleFilter.options).some((option) => option.value === currentValue)) {
+        vehicleLoadVehicleFilter.value = currentValue
+      }
+    }
+    function getFilteredVehicleLoadRows() {
+      const vehicleId = vehicleLoadVehicleFilter?.value || ''
+      if (!vehicleId) return vehicleLoadRows
+      return vehicleLoadRows.filter((row) => String(row.vehicle_id) === String(vehicleId))
+    }
+    function renderVehicleLoadOverview() {
+      const rows = getFilteredVehicleLoadRows()
+      const vehicleId = vehicleLoadVehicleFilter?.value || ''
+      const vehicleLabel = vehicleId ? getVehicleLabel(vehicleId) : ''
+      renderVehicleLoadSummary(rows)
+      renderVehicleLoadRows(rows)
+      if (vehicleLoadEmpty) {
+        vehicleLoadEmpty.textContent = vehicleId
+          ? 'Vybrané vozidlo teď nemá evidovanou žádnou zásobu.'
+          : 'Na vozidlech teď není evidovaná žádná zásoba.'
+      }
+      if (vehicleLoadRows.length && vehicleId) {
+        setVehicleLoadStatus(rows.length ? `Načteno řádků zásoby pro ${vehicleLabel}: ${rows.length}` : `${vehicleLabel} teď nemá evidovanou žádnou zásobu.`, rows.length ? 'success' : '')
+      } else {
+        setVehicleLoadStatus(vehicleLoadRows.length ? `Načteno řádků zásoby na vozidlech: ${vehicleLoadRows.length}` : 'Na vozidlech teď není evidovaná žádná zásoba.', vehicleLoadRows.length ? 'success' : '')
+      }
+    }
     function openVehicleLoadCorrection(mode = 'load', productId = '', vehicleId = '') {
       openBagettePilotModal(mode)
       if (productId) document.getElementById('bagetteProductId').value = String(productId)
@@ -2788,12 +2838,12 @@
           .filter(Boolean)
           .sort((a, b) => normalizeText(a.vehicle_name).localeCompare(normalizeText(b.vehicle_name), 'cs') || normalizeText(a.product_name).localeCompare(normalizeText(b.product_name), 'cs'))
 
-        renderVehicleLoadSummary(vehicleLoadRows)
-        renderVehicleLoadRows(vehicleLoadRows)
-        setVehicleLoadStatus(vehicleLoadRows.length ? `Načteno řádků zásoby na vozidlech: ${vehicleLoadRows.length}` : 'Na vozidlech teď není evidovaná žádná zásoba.', vehicleLoadRows.length ? 'success' : '')
+        populateVehicleLoadVehicleFilter()
+        renderVehicleLoadOverview()
       } catch (error) {
         console.error(error)
         vehicleLoadRows = []
+        populateVehicleLoadVehicleFilter()
         vehicleLoadSummary.innerHTML = ''
         vehicleLoadBody.innerHTML = ''
         vehicleLoadEmpty.style.display = 'block'
@@ -7761,6 +7811,7 @@
         button.dataset.vehicleId || ''
       )
     })
+    vehicleLoadVehicleFilter?.addEventListener('change', renderVehicleLoadOverview)
     openVehicleLoadCorrectionBtn.addEventListener('click', () => openVehicleLoadCorrection('load'))
     manualTransferDocsBody.addEventListener('click', (event) => {
       const button = event.target.closest('[data-transfer-doc-action]')
