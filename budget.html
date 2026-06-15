@@ -1038,9 +1038,56 @@
       return 'sales_documents'
     }
 
-    async function loadSalesDocumentItemActuals(salesDocuments) {
-      const ids = salesDocuments.map((row) => row.id).filter(Boolean)
-      const actuals = {
+    function classifyStockSaleMovement(row) {
+      const product = row.products || {}
+      const category = product.product_category || ''
+      const usage = product.usage_type || ''
+      const text = normalizeText([
+        row.note,
+        product.name,
+        product.note,
+        category,
+        usage,
+        row.movement_type
+      ].filter(Boolean).join(' '))
+
+      if (
+        text.includes('prodej automatu') ||
+        text.includes('prodej automat') ||
+        text.includes('prodej zarizeni')
+      ) return '4_1_trzba_prodej_automatu'
+
+      if (
+        category === 'ingredient' ||
+        usage === 'recipe_consumption' ||
+        text.includes('surovin')
+      ) return '3_5_trzba_prodej_surovin'
+
+      if (
+        row.movement_type === 'sale_revenue' ||
+        category === 'beverage_ready' ||
+        text.includes('kavov') ||
+        text.includes('kava') ||
+        text.includes('coffee') ||
+        text.includes('luce') ||
+        text.includes('lei 600')
+      ) return '3_2_trzba_kavove_automaty'
+
+      if (
+        category === 'food_ready' ||
+        category === 'snack_ready' ||
+        category === 'water_product' ||
+        text.includes('baget') ||
+        text.includes('potravin') ||
+        text.includes('snack') ||
+        text.includes('vody')
+      ) return '3_1_trzba_potravinove_automaty'
+
+      return 'sales_revenue'
+    }
+
+    function emptySalesActuals() {
+      return {
         '3_1_trzba_potravinove_automaty': 0,
         '3_2_trzba_kavove_automaty': 0,
         '3_5_trzba_prodej_surovin': 0,
@@ -1048,7 +1095,45 @@
         '3_3_zisk_potravinove_automaty': 0,
         '3_4_zisk_kavove_automaty': 0,
         '3_6_zisk_z_prodeje_surovin': 0,
-        '4_2_zisk_prodej_automatu': 0,
+        '4_2_zisk_prodej_automatu': 0
+      }
+    }
+
+    function mergeActualMaps(base, extra) {
+      const merged = { ...base }
+      Object.entries(extra || {}).forEach(([key, value]) => {
+        merged[key] = toNumber(merged[key]) + toNumber(value)
+      })
+      return merged
+    }
+
+    function stockSaleActuals(rows) {
+      const actuals = {
+        ...emptySalesActuals(),
+        sales_revenue: 0,
+        sales_stock_profit: 0
+      }
+
+      rows.forEach((row) => {
+        const key = classifyStockSaleMovement(row)
+        const revenue = stockSaleRevenueAmount(row)
+        const profit = stockSaleProfitAmount(row)
+        actuals[key] = toNumber(actuals[key]) + revenue
+        const profitKey = SALES_PROFIT_KEYS[key]
+        if (profitKey) {
+          actuals[profitKey] = toNumber(actuals[profitKey]) + profit
+        } else {
+          actuals.sales_stock_profit = toNumber(actuals.sales_stock_profit) + profit
+        }
+      })
+
+      return actuals
+    }
+
+    async function loadSalesDocumentItemActuals(salesDocuments) {
+      const ids = salesDocuments.map((row) => row.id).filter(Boolean)
+      const actuals = {
+        ...emptySalesActuals(),
         sales_documents_profit: 0,
         sales_documents: 0,
         sales_documents_total: sumRows(salesDocuments, (row) => row.total_amount)
@@ -1114,10 +1199,11 @@
 
       const stockRevenue = await safeQuery(() => supabase
         .from('stock_movements_v13')
-        .select('movement_type, quantity_base_units, unit_price, note, created_at')
+        .select('movement_type, product_id, quantity_base_units, unit_price, note, created_at, products(name, product_category, usage_type, note)')
         .in('movement_type', ['sale', 'sale_revenue'])
         .gte('created_at', bounds.startIso)
         .lt('created_at', bounds.endIso), [])
+      const salesActuals = mergeActualMaps(salesDocumentActuals, stockSaleActuals(stockRevenue))
 
       const purchaseOrders = await safeQuery(() => supabase
         .from('purchase_orders')
@@ -1147,9 +1233,7 @@
       const manualExpenses = await loadExpenseEntriesForMonth(key)
 
       return addManualExpensesToActuals({
-        ...salesDocumentActuals,
-        sales_revenue: sumRows(stockRevenue, stockSaleRevenueAmount),
-        sales_stock_profit: sumRows(stockRevenue, stockSaleProfitAmount),
+        ...salesActuals,
         purchase_goods: sumRows(purchaseOrders, (order) => sumRows(order.purchase_order_items || [], (item) => (toNumber(item.received_quantity) || toNumber(item.ordered_quantity)) * toNumber(item.unit_cost))),
         fuel: sumRows(fuelLogs, (row) => row.fuel_cost),
         vehicle_expenses: sumRows(vehicleExpenses, (row) => row.amount),
