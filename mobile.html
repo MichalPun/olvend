@@ -1506,6 +1506,7 @@
       selectedStockType: 'vehicle_load',
       manualVehicleLoad: false,
       stockDraftItems: [],
+      stockRequestSubmitting: false,
       fuelReceiptUploading: false,
       endingShift: false,
       creatingServiceRequest: false,
@@ -3343,6 +3344,7 @@
     }
 
     async function createStockRequest() {
+      if (state.stockRequestSubmitting) return
       if (els.stockProductInput.value.trim() && !addStockDraftItem({ silent: true })) {
         return
       }
@@ -3363,7 +3365,10 @@
         showMessage('Vyber vozidlo, pro které se doklad připravuje.', 'error')
         return
       }
+      state.stockRequestSubmitting = true
+      const originalButtonText = els.createStockRequestButton.textContent
       els.createStockRequestButton.disabled = true
+      els.createStockRequestButton.textContent = appliesImmediately ? 'Zapisuji sklad...' : 'Odesílám...'
       try {
         const { data: request, error } = await supabase
           .from('mobile_stock_requests')
@@ -3406,7 +3411,17 @@
 
         const storedItems = savedItems?.length ? savedItems : itemRows
         if (appliesImmediately) {
-          await applyStockRequestToInventory(request, storedItems)
+          try {
+            await applyStockRequestToInventory(request, storedItems)
+          } catch (applyError) {
+            const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
+            const alreadyApplied = await stockReferenceAlreadyApplied(referenceId).catch(() => false)
+            if (!alreadyApplied) {
+              await supabase.from('mobile_stock_request_items').delete().eq('request_id', request.id)
+              await supabase.from('mobile_stock_requests').delete().eq('id', request.id)
+            }
+            throw applyError
+          }
         }
 
         state.stockDraftItems = []
@@ -3435,6 +3450,8 @@
           ? 'Objednávku se nepodařilo odeslat kvůli spojení se Supabase. Zkus prosím znovu na produkční adrese olvend.onrender.com/mobile.html.'
           : error.message, 'error')
       } finally {
+        state.stockRequestSubmitting = false
+        els.createStockRequestButton.textContent = originalButtonText
         renderStockDraft()
       }
     }
