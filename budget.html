@@ -546,6 +546,7 @@
       { category_key:'sales_documents', label:'Vydané/nepoložkové doklady nezařazené', line_type:'revenue', data_source:'sales_documents', target_amount:0, note:'Kontrolní obrat bez DPH pro nezařazené nebo nepoložkové doklady. Do výsledku ho nepouštíme, dokud nevíme zisk.' },
       { category_key:'sales_documents_profit', label:'Zisk nezařazených dokladů', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Hrubý zisk z položek, které nejdou bezpečně zařadit do kávy, potravin, surovin nebo prodeje automatů.' },
       { category_key:'sales_revenue', label:'Tržby ze skladových pohybů', line_type:'revenue', data_source:'stock_movements_v13', target_amount:0, note:'Informativní obrat ze skladových pohybů.' },
+      { category_key:'sales_stock_profit', label:'Zisk ze skladových prodejek', line_type:'income', data_source:'stock_movements_v13', target_amount:0, note:'Hrubý zisk z prodejek podle rozpisu v pohybech zásob.' },
       { category_key:'purchase_goods', label:'Nákup zboží', line_type:'cost', data_source:'purchase_orders', target_amount:0, note:'Přijaté a objednané položky podle jednotkové ceny.' },
       { category_key:'fuel', label:'PHM vozidel', line_type:'cost', data_source:'vehicle_operation_logs', target_amount:0, note:'Tankování a náklady PHM ze směn a provozních logů.' },
       { category_key:'vehicle_expenses', label:'Ostatní náklady vozidel', line_type:'cost', data_source:'vehicle_expenses', target_amount:0, note:'Servis, pneu, pojištění, STK a další provoz vozidel.' },
@@ -975,6 +976,24 @@
       return gross > 0 ? gross / 1.21 : 0
     }
 
+    function stockMovementMetaAmount(row, key) {
+      const match = String(row.note || '').match(new RegExp(`\\[${key}:([^\\]]+)\\]`))
+      if (!match) return null
+      const parsed = Number(String(match[1]).replace(',', '.'))
+      return Number.isFinite(parsed) ? parsed : null
+    }
+
+    function stockSaleRevenueAmount(row) {
+      const net = stockMovementMetaAmount(row, 'zaklad-dph')
+      if (net !== null) return net
+      return toNumber(row.unit_price) * toNumber(row.quantity_base_units)
+    }
+
+    function stockSaleProfitAmount(row) {
+      const profit = stockMovementMetaAmount(row, 'zisk')
+      return profit !== null ? profit : 0
+    }
+
     function classifySalesLine(row) {
       const product = row.products || {}
       const category = product.product_category || ''
@@ -1095,7 +1114,7 @@
 
       const stockRevenue = await safeQuery(() => supabase
         .from('stock_movements_v13')
-        .select('movement_type, quantity_base_units, unit_price, created_at')
+        .select('movement_type, quantity_base_units, unit_price, note, created_at')
         .in('movement_type', ['sale', 'sale_revenue'])
         .gte('created_at', bounds.startIso)
         .lt('created_at', bounds.endIso), [])
@@ -1129,7 +1148,8 @@
 
       return addManualExpensesToActuals({
         ...salesDocumentActuals,
-        sales_revenue: sumRows(stockRevenue, (row) => toNumber(row.unit_price) * toNumber(row.quantity_base_units)),
+        sales_revenue: sumRows(stockRevenue, stockSaleRevenueAmount),
+        sales_stock_profit: sumRows(stockRevenue, stockSaleProfitAmount),
         purchase_goods: sumRows(purchaseOrders, (order) => sumRows(order.purchase_order_items || [], (item) => (toNumber(item.received_quantity) || toNumber(item.ordered_quantity)) * toNumber(item.unit_cost))),
         fuel: sumRows(fuelLogs, (row) => row.fuel_cost),
         vehicle_expenses: sumRows(vehicleExpenses, (row) => row.amount),
@@ -1636,12 +1656,12 @@
 
     function renderTrend() {
       const rows = state.history.map((item) => {
-        const income = toNumber(item.actuals['3_1_trzba_potravinove_automaty'])
-          + toNumber(item.actuals['3_2_trzba_kavove_automaty'])
-          + toNumber(item.actuals['3_5_trzba_prodej_surovin'])
-          + toNumber(item.actuals['4_1_trzba_prodej_automatu'])
-          + toNumber(item.actuals.sales_documents)
-          + toNumber(item.actuals.sales_revenue)
+        const income = toNumber(item.actuals['3_3_zisk_potravinove_automaty'])
+          + toNumber(item.actuals['3_4_zisk_kavove_automaty'])
+          + toNumber(item.actuals['3_6_zisk_z_prodeje_surovin'])
+          + toNumber(item.actuals['4_2_zisk_prodej_automatu'])
+          + toNumber(item.actuals.sales_documents_profit)
+          + toNumber(item.actuals.sales_stock_profit)
         const cost = toNumber(item.actuals.purchase_goods) + toNumber(item.actuals.fuel) + toNumber(item.actuals.vehicle_expenses) + toNumber(item.actuals.service_capacity)
         return { key:item.key, income, cost, profit:income - cost }
       })
@@ -1649,7 +1669,7 @@
       trendGrid.innerHTML = rows.map((row) => `
         <div class="trend-month">
           <div class="trend-stack">
-            <div class="trend-income" style="height:${Math.max(4, row.income / max * 92)}px" title="Výnosy ${escapeHtml(money(row.income))}"></div>
+            <div class="trend-income" style="height:${Math.max(4, row.income / max * 92)}px" title="Zisk z prodeje ${escapeHtml(money(row.income))}"></div>
             <div class="trend-cost" style="height:${Math.max(4, row.cost / max * 92)}px" title="Náklady ${escapeHtml(money(row.cost))}"></div>
             <div class="trend-profit" style="height:${Math.max(4, Math.abs(row.profit) / max * 92)}px" title="Výsledek ${escapeHtml(money(row.profit))}"></div>
           </div>
