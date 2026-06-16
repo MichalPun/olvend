@@ -245,6 +245,10 @@
     .audit-start-card span { display:block; margin-top:2px; color:var(--muted); font-size:12px; line-height:1.35; }
     .audit-workbench { display:none; margin-bottom:10px; }
     .audit-workbench.show { display:block; }
+    .audit-category-picker { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.025); }
+    .audit-category-picker label { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid rgba(255,255,255,0.08); border-radius:999px; background:rgba(255,255,255,0.035); color:var(--text); font-size:12px; font-weight:800; cursor:pointer; }
+    .audit-category-picker input { width:14px; height:14px; margin:0; }
+    .audit-category-picker label:has(input:checked) { border-color:rgba(147,197,253,0.85); background:rgba(59,130,246,0.18); color:#dbeafe; }
     .audit-result-panel { display:none; margin-top:10px; border:1px solid rgba(46,204,113,0.22); border-radius:8px; background:rgba(46,204,113,0.055); overflow:hidden; }
     .audit-result-panel.show { display:block; }
     .audit-result-head { min-height:44px; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; gap:10px; }
@@ -702,10 +706,8 @@
                     <select id="vehicleAuditVehicle"><option value="">Vyber vozidlo</option></select>
                     <select id="vehicleAuditWarehouse" style="display:none;"><option value="">Vyber sklad</option></select>
                     <select id="vehicleAuditEmployee"><option value="">Vyber operátorku</option></select>
-                    <select id="vehicleAuditGroup">
-                      <option value="">Všechny skupiny</option>
-                    </select>
                     <input id="vehicleAuditSearch" type="text" placeholder="Hledat produkt / SKU..." />
+                    <div class="audit-category-picker" id="vehicleAuditGroupPicker"></div>
                   </div>
                   <div class="action-row" style="margin:10px 0 12px;">
                     <button class="btn secondary" type="button" id="vehicleAuditSelectVisibleBtn">Vybrat zobrazené</button>
@@ -1578,7 +1580,7 @@
     const vehicleAuditVehicle = document.getElementById('vehicleAuditVehicle')
     const vehicleAuditWarehouse = document.getElementById('vehicleAuditWarehouse')
     const vehicleAuditEmployee = document.getElementById('vehicleAuditEmployee')
-    const vehicleAuditGroup = document.getElementById('vehicleAuditGroup')
+    const vehicleAuditGroupPicker = document.getElementById('vehicleAuditGroupPicker')
     const vehicleAuditSearch = document.getElementById('vehicleAuditSearch')
     const vehicleAuditProductBody = document.getElementById('vehicleAuditProductBody')
     const vehicleAuditProductEmpty = document.getElementById('vehicleAuditProductEmpty')
@@ -1636,6 +1638,16 @@
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v2'
     const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
     const AUDIT_DRAFT_STORAGE_KEY = 'olvend.inventoryAuditDraft.v1'
+    const VEHICLE_AUDIT_GROUPS = [
+      { key: 'food', label: 'Bagety / jídlo', matches: (product) => product.product_category === 'food_ready' },
+      { key: 'snacks', label: 'Snacky / cukrovinky', matches: (product) => product.product_category === 'snack_ready' },
+      { key: 'drinks', label: 'Nápoje / vody', matches: (product) => product.product_category === 'water_product' || getProductKind(product) === 'water_product' },
+      { key: 'coffee', label: 'Káva / teplé nápoje', matches: (product) => product.product_category === 'beverage_ready' || getProductKind(product) === 'hot_drink' },
+      { key: 'ingredients', label: 'Suroviny', matches: (product) => product.product_category === 'ingredient' || product.usage_type === 'recipe_consumption' },
+      { key: 'cups', label: 'Kelímky / spotřebák', matches: (product) => product.product_category === 'consumable' || product.product_category === 'service_material' },
+      { key: 'parts', label: 'Náhradní díly', matches: (product) => product.product_category === 'spare_part' },
+      { key: 'other', label: 'Ostatní', matches: (product) => !VEHICLE_AUDIT_GROUPS.some((group) => group.key !== 'other' && group.matches(product)) }
+    ]
     const STOCK_V13_COLUMNS = [
       { key: 'product', label: 'Produkt' },
       { key: 'type', label: 'Typ / kód' },
@@ -3680,16 +3692,34 @@
       }
       return getVehicleAuditVehicleLabel(audit.vehicle_id)
     }
+    function getVehicleAuditSelectedGroups() {
+      return [...(vehicleAuditGroupPicker?.querySelectorAll('[data-vehicle-audit-group]:checked') || [])].map((input) => input.value)
+    }
+    function getVehicleAuditProductGroupKeys(product) {
+      return VEHICLE_AUDIT_GROUPS
+        .filter((group) => group.matches(product))
+        .map((group) => group.key)
+    }
+    function getVehicleAuditProductGroupLabel(product) {
+      const keys = getVehicleAuditProductGroupKeys(product)
+      return keys.length
+        ? keys.map((key) => VEHICLE_AUDIT_GROUPS.find((group) => group.key === key)?.label || key).join(' / ')
+        : 'Ostatní'
+    }
     function getVehicleAuditProductRows() {
       const query = normalizeText(vehicleAuditSearch?.value || '')
-      const group = vehicleAuditGroup?.value || ''
+      const selectedGroups = getVehicleAuditSelectedGroups()
       return productsV13
         .filter((product) => product.active !== false)
         .map((product) => ({
           product,
           quantity: getAuditTargetQuantity(product.id)
         }))
-        .filter((row) => !group || String(row.product.product_category || row.product.usage_type || '') === group)
+        .filter((row) => {
+          if (!selectedGroups.length) return true
+          const productGroups = getVehicleAuditProductGroupKeys(row.product)
+          return selectedGroups.some((group) => productGroups.includes(group))
+        })
         .filter((row) => {
           if (!query) return true
           return normalizeText([row.product.name, row.product.sku, row.product.ean].filter(Boolean).join(' ')).includes(query)
@@ -3718,11 +3748,14 @@
         vehicleAuditEmployee.innerHTML = '<option value="">Vyber operátorku</option>' + employeesDirectory.map((employee) => `<option value="${escapeHtml(String(employee.id))}">${escapeHtml(getVehicleAuditEmployeeLabel(employee.id))}${employee.role ? ` · ${escapeHtml(employee.role)}` : ''}</option>`).join('')
         if (current) vehicleAuditEmployee.value = current
       }
-      if (vehicleAuditGroup) {
-        const current = vehicleAuditGroup.value
-        const groups = [...new Set(productsV13.map((product) => product.product_category || product.usage_type).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'cs'))
-        vehicleAuditGroup.innerHTML = '<option value="">Všechny skupiny</option>' + groups.map((group) => `<option value="${escapeHtml(String(group))}">${escapeHtml(String(group))}</option>`).join('')
-        if (current) vehicleAuditGroup.value = current
+      if (vehicleAuditGroupPicker) {
+        const selected = new Set(getVehicleAuditSelectedGroups())
+        vehicleAuditGroupPicker.innerHTML = [
+          '<label><input type="checkbox" data-vehicle-audit-group-all value="" /> Vše</label>',
+          ...VEHICLE_AUDIT_GROUPS.map((group) => `
+            <label><input type="checkbox" data-vehicle-audit-group value="${escapeHtml(group.key)}" ${selected.has(group.key) ? 'checked' : ''} /> ${escapeHtml(group.label)}</label>
+          `)
+        ].join('')
       }
       updateVehicleAuditScopeControls()
     }
@@ -3742,8 +3775,8 @@
           <tr data-vehicle-audit-product-row data-product-id="${escapeHtml(String(row.product.id))}" data-on-vehicle="${escapeHtml(String(row.quantity))}">
             <td data-label="Vybrat"><input type="checkbox" data-vehicle-audit-product-check /></td>
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">SKU ${escapeHtml(row.product.sku || '-')}</span></td>
-            <td data-label="Skupina">${escapeHtml(row.product.product_category || row.product.usage_type || '-')}</td>
-            <td data-label="Evidence na autě"><strong>${escapeHtml(formatQuantityValue(row.quantity, unit))}</strong></td>
+            <td data-label="Skupina">${escapeHtml(getVehicleAuditProductGroupLabel(row.product))}</td>
+            <td data-label="Evidence na místě"><strong>${escapeHtml(formatQuantityValue(row.quantity, unit))}</strong></td>
             <td data-label="Jednotka">${escapeHtml(unit)}</td>
           </tr>
         `
@@ -7553,7 +7586,16 @@
     })
     vehicleAuditVehicle?.addEventListener('change', renderVehicleAuditProducts)
     vehicleAuditWarehouse?.addEventListener('change', renderVehicleAuditProducts)
-    vehicleAuditGroup?.addEventListener('change', renderVehicleAuditProducts)
+    vehicleAuditGroupPicker?.addEventListener('change', (event) => {
+      const allInput = event.target.closest('[data-vehicle-audit-group-all]')
+      if (allInput) {
+        vehicleAuditGroupPicker.querySelectorAll('[data-vehicle-audit-group]').forEach((input) => { input.checked = false })
+      } else {
+        const all = vehicleAuditGroupPicker.querySelector('[data-vehicle-audit-group-all]')
+        if (all) all.checked = false
+      }
+      renderVehicleAuditProducts()
+    })
     vehicleAuditSearch?.addEventListener('input', renderVehicleAuditProducts)
     refreshVehicleAuditBtn?.addEventListener('click', () => loadInventoryV13Overview())
     vehicleAuditSelectVisibleBtn?.addEventListener('click', () => {
