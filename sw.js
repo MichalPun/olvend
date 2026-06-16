@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v20-mobile-service-keyboard';
+const CACHE_NAME = 'olvend-v21-budget-fixed-cost-forecast';
 const APP_SHELL = [
   './',
   './index.html',

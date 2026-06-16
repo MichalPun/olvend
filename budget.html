@@ -201,8 +201,8 @@
                 <option value="locked">Uzamčeno</option>
               </select>
               <select id="forecastMethodInput">
-                <option value="run_rate">Predikce podle tempa měsíce</option>
-                <option value="actual_plus_plan">Skutečnost + zbytek plánu</option>
+                <option value="run_rate">Chytrá predikce podle typu řádku</option>
+                <option value="actual_plus_plan">Bez tempa: plán nebo skutečnost</option>
               </select>
               <button class="btn secondary" id="resetPlanBtn" type="button">Výchozí plán</button>
             </div>
@@ -328,7 +328,7 @@
           <div class="panel-header">
             <div>
               <h2>Predikce vývoje měsíce</h2>
-              <p>Bezpečná predikce: skutečnost k dnešku plus zbývající část měsíčního plánu.</p>
+              <p>Fixní měsíční rozpočet se nenásobí podle dnů. Tempo používáme jen u průběžných provozních dat.</p>
             </div>
           </div>
           <div class="panel-body">
@@ -1248,8 +1248,34 @@
       state.history = actuals
     }
 
+    const PACED_FORECAST_SOURCES = new Set([
+      'sales_document_items',
+      'sales_documents',
+      'stock_movements_v13',
+      'vehicle_operation_logs',
+      'vehicle_expenses',
+      'service_requests'
+    ])
+
+    function isPacedOperationalLine(line) {
+      if (!PACED_FORECAST_SOURCES.has(line.data_source)) return false
+      return line.line_type === 'revenue' || line.line_type === 'income' || line.line_type === 'profit'
+        || line.category_key === 'fuel'
+        || line.category_key === 'vehicle_expenses'
+        || line.category_key === 'service_capacity'
+    }
+
+    function shouldUsePacedForecast(line) {
+      if (state.scenario.forecast_method === 'actual_plus_plan') return false
+      return isPacedOperationalLine(line)
+    }
+
+    function plannedToDate(line, target, ratio) {
+      return isPacedOperationalLine(line) ? target * ratio : target
+    }
+
     function forecastLine(line, actual, target, elapsed, daysInMonth) {
-      if (state.scenario.forecast_method === 'actual_plus_plan') return Math.max(actual, target)
+      if (!shouldUsePacedForecast(line)) return Math.max(actual, target)
       const elapsedRatio = daysInMonth ? Math.min(1, Math.max(0, elapsed / daysInMonth)) : 0
       if (target > 0) return actual + Math.max(0, target - (target * elapsedRatio))
       return actual
@@ -1332,10 +1358,22 @@
       const ratio = bounds.daysInMonth ? Math.min(1, Math.max(0, elapsed / bounds.daysInMonth)) : 0
       const profitTarget = data.incomeTarget - data.costTarget
       const profitActual = data.incomeActual - data.costActual
+      const paced = lines.reduce((acc, line) => {
+        const target = toNumber(line.target_amount)
+        const planned = plannedToDate(line, target, ratio)
+        if (line.line_type === 'revenue') {
+          acc.revenue += planned
+        } else if (line.line_type === 'income' || line.line_type === 'profit') {
+          acc.income += planned
+        } else {
+          acc.cost += planned
+        }
+        return acc
+      }, { revenue:0, income:0, cost:0 })
       const items = [
-        { key:'income', label:'Zisk z prodeje k dnešku', type:'income', planned:data.incomeTarget, actual:data.incomeActual, paced:data.incomeTarget * ratio },
-        { key:'cost', label:'Čerpání nákladů', type:'cost', planned:data.costTarget, actual:data.costActual, paced:data.costTarget * ratio },
-        { key:'profit', label:'Výsledek po nákladech', type:'profit', planned:profitTarget, actual:profitActual, paced:profitTarget * ratio }
+        { key:'income', label:'Zisk z prodeje k dnešku', type:'income', planned:data.incomeTarget, actual:data.incomeActual, paced:paced.income },
+        { key:'cost', label:'Čerpání nákladů', type:'cost', planned:data.costTarget, actual:data.costActual, paced:paced.cost },
+        { key:'profit', label:'Výsledek po nákladech', type:'profit', planned:profitTarget, actual:profitActual, paced:paced.income - paced.cost }
       ]
 
       paceGrid.innerHTML = items.map((item) => {
@@ -1621,7 +1659,8 @@
           <div class="forecast-row">
             <div>
               <div class="forecast-name">${escapeHtml(line.label)}</div>
-              <div class="forecast-meta">${escapeHtml(line.data_source)} · ${escapeHtml(line.note || '')}</div>
+              <div class="forecast-meta">${escapeHtml(line.data_source)} · Skutečnost ${escapeHtml(money(line.actual))} · Plán ${escapeHtml(money(line.target_amount))}</div>
+              <div class="forecast-meta">${escapeHtml(line.note || '')}</div>
             </div>
             <div class="bar-track" aria-label="Plnění ${escapeHtml(line.label)}">
               <div class="bar-fill ${line.health}" style="width:${width}%"></div>
