@@ -745,7 +745,7 @@
         <div class="panel-header">
           <div>
             <h2>Docházka podle filtru</h2>
-            <p>Vyber období, zaměstnance, stav, místo nebo vozidlo a systém ti ukáže přesně ten výstup, který potřebuješ.</p>
+            <p>Vyber období, zaměstnance, stav, místo nebo vozidlo. Schválená dovolená se do placeného času počítá jako 8 hodin za den a v exportu je uvedená včetně období od-do.</p>
           </div>
         </div>
 
@@ -773,6 +773,7 @@
               <option value="needs_review">Čeká na kontrolu</option>
               <option value="auto_closed">Auto-uzavřeno</option>
               <option value="pending_approval">Čeká na schválení</option>
+              <option value="approved_vacation">Dovolená</option>
             </select>
           </div>
 
@@ -793,6 +794,7 @@
                       <tr>
                         <th>Zaměstnanec</th>
                         <th>Směny</th>
+                        <th>Dovolená</th>
                         <th>Započitatelně</th>
                         <th>Pauzy</th>
                         <th>Výjimky</th>
@@ -837,6 +839,7 @@
                       <th>Započitatelně</th>
                       <th>Výjimky</th>
                       <th>Stav</th>
+                      <th>Podklad</th>
                     </tr>
                   </thead>
                   <tbody id="dailyRowsBody"></tbody>
@@ -879,6 +882,7 @@
 
     let currentUser = null;
     let attendanceRows = [];
+    const PAID_VACATION_MINUTES_PER_DAY = 8 * 60;
 
     function setStatus(message, type = '') {
       statusLine.textContent = message;
@@ -974,6 +978,10 @@
     }
 
     function getStatusMeta(row) {
+      if (row.row_type === 'vacation') {
+        return { label: 'Dovolená', cls: 'blue' };
+      }
+
       if (row.requires_approval && row.approval_status === 'pending') {
         return { label: 'Čeká na schválení', cls: 'orange' };
       }
@@ -991,6 +999,8 @@
     }
 
     function getExceptionLabels(row) {
+      if (row.row_type === 'vacation') return ['Dovolená'];
+
       const labels = [];
 
       if (row.start_location_type === 'home') labels.push('Start doma');
@@ -1012,11 +1022,87 @@
         row.vehicle_label,
         row.note,
         row.adjustment_reason,
+        row.vacation_from,
+        row.vacation_to,
+        row.vacation_reason,
         getExceptionLabels(row).join(' ')
       ].join(' '));
     }
 
-    function enrichRows(days, employees, warehouses, vehicles) {
+    function addDays(dateValue, days) {
+      const date = new Date(`${dateValue}T00:00:00`);
+      date.setDate(date.getDate() + days);
+      return date.toLocaleDateString('en-CA');
+    }
+
+    function clampDate(value, min, max) {
+      if (!value) return min;
+      if (value < min) return min;
+      if (value > max) return max;
+      return value;
+    }
+
+    function getVacationRangeLabel(row) {
+      if (!row.vacation_from) return '-';
+      const from = formatDate(row.vacation_from);
+      const to = row.vacation_to && row.vacation_to !== row.vacation_from ? formatDate(row.vacation_to) : null;
+      return to ? `${from} → ${to}` : from;
+    }
+
+    function expandVacationRows(vacations, employeeMap, monthFrom, monthTo, attendanceDayIndex) {
+      const rows = [];
+
+      (vacations ?? []).forEach((request) => {
+        const from = clampDate(String(request.date_from || ''), monthFrom, monthTo);
+        const to = clampDate(String(request.date_to || request.date_from || ''), monthFrom, monthTo);
+        if (!from || !to || from > to) return;
+
+        for (let date = from; date <= to; date = addDays(date, 1)) {
+          const employeeKey = String(request.employee_id);
+          const dayKey = `${employeeKey}|${date}`;
+          if (attendanceDayIndex.has(dayKey)) continue;
+
+          const employee = employeeMap.get(employeeKey);
+          const employeeName = employee
+            ? [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Neznámý zaměstnanec'
+            : 'Neznámý zaměstnanec';
+
+          rows.push({
+            id: `vacation-${request.id}-${date}`,
+            row_type: 'vacation',
+            employee_id: request.employee_id,
+            employee_name: employeeName,
+            role: employee?.role || 'Neuvedeno',
+            attendance_date: date,
+            status: 'approved_vacation',
+            start_location_type: 'vacation',
+            start_warehouse_id: null,
+            vehicle_id: null,
+            actual_start: null,
+            actual_end: null,
+            payable_start: null,
+            payable_end: null,
+            payable_minutes: PAID_VACATION_MINUTES_PER_DAY,
+            break_minutes: 0,
+            adjustment_minutes: 0,
+            adjustment_reason: '',
+            requires_approval: false,
+            approval_status: 'approved',
+            note: request.reason || '',
+            location_label: 'Dovolená',
+            vehicle_label: 'Bez vozidla',
+            vacation_request_id: request.id,
+            vacation_from: request.date_from,
+            vacation_to: request.date_to || request.date_from,
+            vacation_reason: request.reason || ''
+          });
+        }
+      });
+
+      return rows;
+    }
+
+    function enrichRows(days, employees, warehouses, vehicles, vacations, monthFrom, monthTo) {
       const employeeMap = new Map((employees ?? []).map((employee) => [String(employee.id), employee]));
       const warehouseMap = new Map((warehouses ?? []).map((warehouse) => [String(warehouse.id), warehouse.name]));
       const vehicleMap = new Map((vehicles ?? []).map((vehicle) => {
@@ -1024,8 +1110,9 @@
         const label = brandModel ? `${vehicle.plate} · ${brandModel}` : `${vehicle.plate} · ${vehicle.name}`;
         return [String(vehicle.id), label];
       }));
+      const attendanceDayIndex = new Set((days ?? []).map((day) => `${String(day.employee_id)}|${String(day.attendance_date)}`));
 
-      return (days ?? []).map((day) => {
+      const attendanceDayRows = (days ?? []).map((day) => {
         const employee = employeeMap.get(String(day.employee_id));
         const employeeName = employee
           ? [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email || 'Neznámý zaměstnanec'
@@ -1039,12 +1126,22 @@
 
         return {
           ...day,
+          row_type: 'attendance',
+          vacation_request_id: null,
+          vacation_from: null,
+          vacation_to: null,
+          vacation_reason: '',
           employee_name: employeeName,
           role: employee?.role || 'Neuvedeno',
           location_label: locationLabel,
           vehicle_label: vehicleLabel
         };
       });
+
+      return [
+        ...attendanceDayRows,
+        ...expandVacationRows(vacations, employeeMap, monthFrom, monthTo, attendanceDayIndex)
+      ];
     }
 
     function populateFilters(rows) {
@@ -1082,6 +1179,10 @@
           return row.requires_approval && row.approval_status === 'pending';
         }
 
+        if (selectedStatus === 'approved_vacation') {
+          return row.row_type === 'vacation';
+        }
+
         if (selectedStatus && row.status !== selectedStatus) return false;
         return true;
       });
@@ -1092,10 +1193,12 @@
       const totalBreakMinutes = rows.reduce((sum, row) => sum + Number(row.break_minutes || 0), 0);
       const activeEmployees = new Set(rows.map((row) => row.employee_id)).size;
       const exceptionCount = rows.reduce((sum, row) => sum + (getExceptionLabels(row).length ? 1 : 0), 0);
+      const vacationDays = rows.filter((row) => row.row_type === 'vacation').length;
 
       const cards = [
         { cls: 'info', label: 'Zaměstnanci v reportu', value: String(activeEmployees), note: 'Počet unikátních lidí ve vybraném období a filtru.' },
-        { cls: 'success', label: 'Započitatelný čas', value: formatHours(totalPayableMinutes), note: 'Součet payable_minutes za aktuální výběr.' },
+        { cls: 'success', label: 'Započitatelný čas', value: formatHours(totalPayableMinutes), note: 'Docházka plus schválené dovolené po 8 h/den.' },
+        { cls: 'info', label: 'Dovolené', value: String(vacationDays), note: 'Schválené dny dovolené zahrnuté do placeného času.' },
         { cls: 'warning', label: 'Pauzy celkem', value: formatMinutes(totalBreakMinutes), note: 'Součet break_minutes za vyfiltrované dny.' },
         { cls: 'danger', label: 'Dny s výjimkou', value: String(exceptionCount), note: 'Domácí starty, ruční zásahy, kontroly nebo auto-uzávěrky.' }
       ];
@@ -1119,6 +1222,7 @@
             employee_name: row.employee_name,
             role: row.role,
             shifts: 0,
+            vacation_days: 0,
             payable_minutes: 0,
             break_minutes: 0,
             exceptions: 0
@@ -1126,7 +1230,11 @@
         }
 
         const item = grouped.get(key);
-        item.shifts += 1;
+        if (row.row_type === 'vacation') {
+          item.vacation_days += 1;
+        } else {
+          item.shifts += 1;
+        }
         item.payable_minutes += Number(row.payable_minutes || 0);
         item.break_minutes += Number(row.break_minutes || 0);
         item.exceptions += getExceptionLabels(row).length ? 1 : 0;
@@ -1148,6 +1256,7 @@
             <span class="subtext">${escapeHtml(row.role)}</span>
           </td>
           <td>${escapeHtml(String(row.shifts))}</td>
+          <td>${escapeHtml(String(row.vacation_days))}</td>
           <td>${escapeHtml(formatHours(row.payable_minutes))}</td>
           <td>${escapeHtml(formatMinutes(row.break_minutes))}</td>
           <td>${escapeHtml(String(row.exceptions))}</td>
@@ -1203,11 +1312,19 @@
       dailyRowsBody.innerHTML = sortedRows.map((row) => {
         const status = getStatusMeta(row);
         const exceptions = getExceptionLabels(row);
-        const payrollRange = getPayrollTimeRangeLabel(row);
+        const isVacation = row.row_type === 'vacation';
+        const payrollRange = isVacation ? 'Dovolená celý den' : getPayrollTimeRangeLabel(row);
         const actualRange = getInternalTimeRangeLabel(row);
-        const timeSubtext = hasInternalTimeDifference(row)
+        const timeSubtext = isVacation
+          ? `Schváleno ${getVacationRangeLabel(row)}`
+          : hasInternalTimeDifference(row)
           ? `Skutečně ${actualRange} · ${row.vehicle_label}`
           : row.vehicle_label;
+        const payableSubtext = isVacation ? 'Placená dovolená 8 h/den' : `Pauza ${formatMinutes(row.break_minutes)}`;
+        const noteSubtext = isVacation
+          ? (row.vacation_reason || 'Schválená dovolená')
+          : (row.adjustment_reason || row.note || '');
+        const sourceLabel = isVacation ? getVacationRangeLabel(row) : 'Docházka';
         return `
           <tr>
             <td>
@@ -1224,13 +1341,17 @@
             </td>
             <td>
               <span class="name-strong">${escapeHtml(formatHours(row.payable_minutes))}</span>
-              <span class="subtext">Pauza ${escapeHtml(formatMinutes(row.break_minutes))}</span>
+              <span class="subtext">${escapeHtml(payableSubtext)}</span>
             </td>
             <td>
               <span class="name-strong">${escapeHtml(exceptions.length ? exceptions.join(', ') : 'Bez výjimky')}</span>
-              <span class="subtext">${escapeHtml(row.adjustment_reason || row.note || '')}</span>
+              <span class="subtext">${escapeHtml(noteSubtext)}</span>
             </td>
             <td><span class="badge ${escapeHtml(status.cls)}">${escapeHtml(status.label)}</span></td>
+            <td>
+              <span class="name-strong">${escapeHtml(isVacation ? 'HR žádost' : 'Docházka')}</span>
+              <span class="subtext">${escapeHtml(sourceLabel)}</span>
+            </td>
           </tr>
         `;
       }).join('');
@@ -1238,46 +1359,64 @@
 
     function renderReports() {
       const rows = filterRows();
+      const vacationDays = rows.filter((row) => row.row_type === 'vacation').length;
       renderKpis(rows);
       renderEmployeeSummary(rows);
       renderExceptions(rows);
       renderDailyRows(rows);
-      setStatus(`V reportu docházky je ${rows.length} řádků za zvolené období.`, 'success');
+      setStatus(`V reportu docházky je ${rows.length} řádků za zvolené období, z toho ${vacationDays} dnů schválené dovolené po 8 hodinách.`, 'success');
     }
 
     async function loadReports() {
       setStatus('Načítám report docházky...');
 
       const { from, to } = getMonthRange(monthFilter.value);
-      const { data: days, error: daysError } = await supabase
-        .from('attendance_days')
-        .select(`
-          id,
-          employee_id,
-          attendance_date,
-          status,
-          start_location_type,
-          start_warehouse_id,
-          vehicle_id,
-          actual_start,
-          actual_end,
-          payable_start,
-          payable_end,
-          payable_minutes,
-          break_minutes,
-          adjustment_minutes,
-          adjustment_reason,
-          requires_approval,
-          approval_status,
-          note
-        `)
-        .gte('attendance_date', from)
-        .lte('attendance_date', to)
-        .order('attendance_date', { ascending: false });
+      const [
+        { data: days, error: daysError },
+        { data: vacationRequests, error: vacationError }
+      ] = await Promise.all([
+        supabase
+          .from('attendance_days')
+          .select(`
+            id,
+            employee_id,
+            attendance_date,
+            status,
+            start_location_type,
+            start_warehouse_id,
+            vehicle_id,
+            actual_start,
+            actual_end,
+            payable_start,
+            payable_end,
+            payable_minutes,
+            break_minutes,
+            adjustment_minutes,
+            adjustment_reason,
+            requires_approval,
+            approval_status,
+            note
+          `)
+          .gte('attendance_date', from)
+          .lte('attendance_date', to)
+          .order('attendance_date', { ascending: false }),
+        supabase
+          .from('hr_requests')
+          .select('id, employee_id, request_type, status, date_from, date_to, reason')
+          .eq('status', 'approved')
+          .eq('request_type', 'vacation')
+          .lte('date_from', to)
+          .gte('date_to', from)
+          .order('date_from', { ascending: true })
+      ]);
 
       if (daysError) throw daysError;
+      if (vacationError) throw vacationError;
 
-      const employeeIds = [...new Set((days ?? []).map((day) => day.employee_id).filter(Boolean))];
+      const employeeIds = [...new Set([
+        ...(days ?? []).map((day) => day.employee_id),
+        ...(vacationRequests ?? []).map((request) => request.employee_id)
+      ].filter(Boolean))];
       const warehouseIds = [...new Set((days ?? []).map((day) => day.start_warehouse_id).filter(Boolean))];
       const vehicleIds = [...new Set((days ?? []).map((day) => day.vehicle_id).filter(Boolean))];
 
@@ -1297,7 +1436,7 @@
       if (warehousesError) throw warehousesError;
       if (vehiclesError) throw vehiclesError;
 
-      attendanceRows = enrichRows(days, employees, warehouses, vehicles);
+      attendanceRows = enrichRows(days, employees, warehouses, vehicles, vacationRequests, from, to);
       populateFilters(attendanceRows);
       renderReports();
     }
@@ -1311,6 +1450,7 @@
       }
 
       const header = [
+        'typ_radku',
         'datum',
         'zamestnanec',
         'role',
@@ -1322,11 +1462,14 @@
         'misto',
         'vozidlo',
         'vyjimky',
+        'dovolena_od',
+        'dovolena_do',
         'duvod_upravy',
         'poznamka'
       ];
 
       const lines = rows.map((row) => [
+        row.row_type === 'vacation' ? 'dovolena' : 'dochazka',
         row.attendance_date,
         row.employee_name,
         row.role,
@@ -1338,8 +1481,10 @@
         row.location_label,
         row.vehicle_label,
         getExceptionLabels(row).join(' | '),
+        row.vacation_from || '',
+        row.vacation_to || '',
         row.adjustment_reason || '',
-        row.note || ''
+        row.vacation_reason || row.note || ''
       ]);
 
       const csv = [header, ...lines]
