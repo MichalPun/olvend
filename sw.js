@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v24-budget-forecast-result-lines';
+const CACHE_NAME = 'olvend-v25-budget-category-forecast-audit';
 const APP_SHELL = [
   './',
   './index.html',
