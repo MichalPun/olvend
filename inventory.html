@@ -4356,6 +4356,34 @@
           .map((product) => `<option value="${escapeHtml(String(product.id))}">${escapeHtml([product.sku, product.name].filter(Boolean).join(' · '))}</option>`)
       ].join('')
     }
+    function getMobilePickProductSearchOptions() {
+      return productsV13
+        .filter((product) => product.active !== false)
+        .map((product) => `<option value="${escapeHtml(productSearchLabel(product))}"></option>`)
+        .join('')
+    }
+    function findMobilePickProductBySearchValue(value) {
+      const normalized = normalizeLookupValue(value)
+      if (!normalized) return null
+      const activeProducts = productsV13.filter((product) => product.active !== false)
+      const exact = activeProducts.find((product) => {
+        const candidates = [product.id, product.sku, product.ean, productSearchLabel(product), product.name]
+          .map((candidate) => normalizeLookupValue(candidate))
+        return candidates.includes(normalized)
+      })
+      if (exact) return exact
+      const matches = activeProducts.filter((product) => {
+        return normalizeLookupValue(productSearchLabel(product)).includes(normalized)
+      })
+      return matches.length === 1 ? matches[0] : null
+    }
+    function syncMobilePickAddProduct(requestId) {
+      const searchInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product-search][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const productInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const product = findMobilePickProductBySearchValue(searchInput?.value || '')
+      if (productInput) productInput.value = product?.id ? String(product.id) : ''
+      return product || null
+    }
     function getMobileRequestItems(requestId) {
       return mobileStockRequestItems.filter((item) => String(item.request_id) === String(requestId))
     }
@@ -4402,10 +4430,10 @@
       return available === null ? '-' : formatQuantityValue(available, product?.base_unit || 'ks')
     }
     function updateMobilePickAddStockLabel(requestId) {
-      const select = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product][data-request-id="${CSS.escape(String(requestId))}"]`)
       const label = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-stock][data-request-id="${CSS.escape(String(requestId))}"]`)
       if (!label) return
-      label.innerHTML = `<span>Skladem</span>${escapeHtml(getMobilePickAddStockLabel(requestId, select?.value || ''))}`
+      const product = syncMobilePickAddProduct(requestId)
+      label.innerHTML = `<span>Skladem</span>${escapeHtml(getMobilePickAddStockLabel(requestId, product?.id || ''))}`
     }
     function getMobilePickRequestRows() {
       const employeeIds = new Set()
@@ -4569,7 +4597,9 @@
                 ` : `<div class="empty-state">${escapeHtml(flow.emptyText)}</div>`}
                 ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `
                   <div class="mobile-pick-add-line">
-                    <select data-mobile-pick-add-product data-request-id="${escapeHtml(String(row.id))}">${getMobilePickProductOptions()}</select>
+                    <input data-mobile-pick-add-product-search data-request-id="${escapeHtml(String(row.id))}" list="mobile-pick-products-${escapeHtml(String(row.id))}" type="text" placeholder="Napiš SKU nebo název položky" autocomplete="off" />
+                    <input data-mobile-pick-add-product data-request-id="${escapeHtml(String(row.id))}" type="hidden" />
+                    <datalist id="mobile-pick-products-${escapeHtml(String(row.id))}">${getMobilePickProductSearchOptions()}</datalist>
                     <input data-mobile-pick-add-qty data-request-id="${escapeHtml(String(row.id))}" type="number" step="0.001" min="0" value="1" />
                     <div class="mobile-pick-add-stock" data-mobile-pick-add-stock data-request-id="${escapeHtml(String(row.id))}"><span>Skladem</span>-</div>
                     <input data-mobile-pick-add-note data-request-id="${escapeHtml(String(row.id))}" type="text" placeholder="Poznámka k řádku" />
@@ -4671,19 +4701,24 @@
     }
     async function addMobilePickRequestItem(requestId) {
       const productSelect = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product][data-request-id="${CSS.escape(String(requestId))}"]`)
+      const productSearch = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product-search][data-request-id="${CSS.escape(String(requestId))}"]`)
       const qtyInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-qty][data-request-id="${CSS.escape(String(requestId))}"]`)
       const noteInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-note][data-request-id="${CSS.escape(String(requestId))}"]`)
-      const productId = productSelect?.value || ''
-      const product = productsV13.find((item) => String(item.id) === String(productId))
+      const product = syncMobilePickAddProduct(requestId)
+      const productId = productSelect?.value || product?.id || ''
+      const selectedProduct = product || productsV13.find((item) => String(item.id) === String(productId))
       const quantity = Number(qtyInput?.value || 0)
-      if (!product) throw new Error('Vyber položku, kterou chceš do objednávky přidat.')
+      if (!selectedProduct) {
+        productSearch?.focus({ preventScroll: true })
+        throw new Error('Vyber konkrétní položku z našeptávače.')
+      }
       if (!quantity || quantity <= 0) throw new Error('Zadej množství větší než nula.')
       const { error } = await supabase.from('mobile_stock_request_items').insert({
         request_id: requestId,
-        product_id: product.id,
-        product_name: product.name,
-        sku: product.sku || null,
-        unit: product.base_unit || 'ks',
+        product_id: selectedProduct.id,
+        product_name: selectedProduct.name,
+        sku: selectedProduct.sku || null,
+        unit: selectedProduct.base_unit || 'ks',
         requested_quantity: quantity,
         prepared_quantity: quantity,
         note: noteInput?.value.trim() || null
@@ -7899,9 +7934,9 @@
       }
     }, true)
     mobilePickRequestsBody.addEventListener('change', async (event) => {
-      const select = event.target.closest('[data-mobile-pick-add-product]')
-      if (select) {
-        updateMobilePickAddStockLabel(select.dataset.requestId || '')
+      const productSearch = event.target.closest('[data-mobile-pick-add-product-search]')
+      if (productSearch) {
+        updateMobilePickAddStockLabel(productSearch.dataset.requestId || '')
         return
       }
       const qtyInput = event.target.closest('[data-mobile-pick-qty]')
@@ -7919,6 +7954,11 @@
         console.error(error)
         setStockV13Status(`Množství se nepodařilo uložit: ${error.message}`, 'error')
       }
+    })
+    mobilePickRequestsBody.addEventListener('input', (event) => {
+      const productSearch = event.target.closest('[data-mobile-pick-add-product-search]')
+      if (!productSearch) return
+      updateMobilePickAddStockLabel(productSearch.dataset.requestId || '')
     })
     mobilePickRequestsBody.addEventListener('input', (event) => {
       const qtyInput = event.target.closest('[data-mobile-pick-qty]')
