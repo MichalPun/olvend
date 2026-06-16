@@ -435,10 +435,8 @@
                 <option value="manual">Ručně definovaný řádek</option>
                 <option value="sales_documents">Vydané doklady</option>
                 <option value="stock_movements_v13">Skladové tržby</option>
-                <option value="purchase_orders">Nákupní doklady</option>
                 <option value="vehicle_operation_logs">PHM vozidel</option>
                 <option value="vehicle_expenses">Náklady vozidel</option>
-                <option value="service_requests">Servisní kapacita</option>
               </select>
             </div>
             <div class="field">
@@ -547,10 +545,8 @@
       { category_key:'sales_documents_profit', label:'Zisk nezařazených dokladů', line_type:'income', data_source:'sales_document_items', target_amount:0, note:'Hrubý zisk z položek, které nejdou bezpečně zařadit do kávy, potravin, surovin nebo prodeje automatů.' },
       { category_key:'sales_revenue', label:'Tržby ze skladových pohybů', line_type:'revenue', data_source:'stock_movements_v13', target_amount:0, note:'Informativní obrat ze skladových pohybů.' },
       { category_key:'sales_stock_profit', label:'Zisk ze skladových prodejek', line_type:'income', data_source:'stock_movements_v13', target_amount:0, note:'Hrubý zisk z prodejek podle rozpisu v pohybech zásob.' },
-      { category_key:'purchase_goods', label:'Nákup zboží', line_type:'cost', data_source:'purchase_orders', target_amount:0, note:'Přijaté a objednané položky podle jednotkové ceny.' },
       { category_key:'fuel', label:'PHM vozidel', line_type:'cost', data_source:'vehicle_operation_logs', target_amount:0, note:'Tankování a náklady PHM ze směn a provozních logů.' },
       { category_key:'vehicle_expenses', label:'Ostatní náklady vozidel', line_type:'cost', data_source:'vehicle_expenses', target_amount:0, note:'Servis, pneu, pojištění, STK a další provoz vozidel.' },
-      { category_key:'service_capacity', label:'Servisní kapacita', line_type:'cost', data_source:'service_requests', target_amount:0, note:'Predikční náklad podle servisních minut. Výchozí sazba 450 Kč/h.' }
     ]
 
     const statusLine = document.getElementById('statusLine')
@@ -683,7 +679,7 @@
     }
 
     function normalizeScenarioLines(lines = []) {
-      return lines.map((line) => {
+      return lines.filter((line) => !['purchase_goods', 'service_capacity'].includes(line.category_key)).map((line) => {
         if (SALES_PROFIT_KEYS[line.category_key] || line.category_key === 'sales_documents' || line.category_key === 'sales_revenue') {
           return {
             ...line,
@@ -1205,13 +1201,6 @@
         .lt('created_at', bounds.endIso), [])
       const salesActuals = mergeActualMaps(salesDocumentActuals, stockSaleActuals(stockRevenue))
 
-      const purchaseOrders = await safeQuery(() => supabase
-        .from('purchase_orders')
-        .select('id, status, order_date, purchase_order_items(ordered_quantity, received_quantity, unit_cost)')
-        .in('status', ['ordered', 'received'])
-        .gte('order_date', bounds.startDate)
-        .lt('order_date', bounds.endDate), [])
-
       const fuelLogs = await safeQuery(() => supabase
         .from('vehicle_operation_logs')
         .select('log_date, fuel_cost')
@@ -1224,20 +1213,12 @@
         .gte('expense_date', bounds.startDate)
         .lt('expense_date', bounds.endDate), [])
 
-      const serviceRequests = await safeQuery(() => supabase
-        .from('service_requests')
-        .select('status, resolved_at, service_finished_at, actual_duration_minutes, estimated_duration_minutes')
-        .in('status', ['done'])
-        .gte('resolved_at', bounds.startIso)
-        .lt('resolved_at', bounds.endIso), [])
       const manualExpenses = await loadExpenseEntriesForMonth(key)
 
       return addManualExpensesToActuals({
         ...salesActuals,
-        purchase_goods: sumRows(purchaseOrders, (order) => sumRows(order.purchase_order_items || [], (item) => (toNumber(item.received_quantity) || toNumber(item.ordered_quantity)) * toNumber(item.unit_cost))),
         fuel: sumRows(fuelLogs, (row) => row.fuel_cost),
-        vehicle_expenses: sumRows(vehicleExpenses, (row) => row.amount),
-        service_capacity: sumRows(serviceRequests, (row) => (toNumber(row.actual_duration_minutes) || toNumber(row.estimated_duration_minutes)) / 60 * 450)
+        vehicle_expenses: sumRows(vehicleExpenses, (row) => row.amount)
       }, manualExpenses)
     }
 
@@ -1269,7 +1250,6 @@
       return line.line_type === 'revenue' || line.line_type === 'income' || line.line_type === 'profit'
         || line.category_key === 'fuel'
         || line.category_key === 'vehicle_expenses'
-        || line.category_key === 'service_capacity'
     }
 
     function shouldUsePacedForecast(line) {
@@ -1333,8 +1313,8 @@
       summaryGrid.innerHTML = [
         ['Skutečné tržby', money(data.revenueActual), `Obrat bez DPH, mimo výsledek`],
         ['Zisk z prodeje', money(data.incomeActual), `Plán ${money(data.incomeTarget)}`],
-        ['Plán nákladů', money(data.costTarget), `Skutečnost ${money(data.costActual)}`],
-        ['Predikce nákladů', money(data.costForecast), `${percent(data.costTarget ? data.costForecast / data.costTarget * 100 : 0)} plánu`],
+        ['Plán provozních nákladů', money(data.costTarget), `Skutečnost ${money(data.costActual)}`],
+        ['Predikce provozních nákladů', money(data.costForecast), `${percent(data.costTarget ? data.costForecast / data.costTarget * 100 : 0)} plánu`],
         ['Provozní výsledek', money(profitActual), `Zisk ${money(data.incomeActual)} minus náklady ${money(data.costActual)}`],
         ['Rizikové řádky', String(riskCount), riskCount ? 'Vyžaduje kontrolu' : 'Bez velké odchylky']
       ].map(([label, value, note]) => `
@@ -1365,6 +1345,12 @@
       const ratio = bounds.daysInMonth ? Math.min(1, Math.max(0, elapsed / bounds.daysInMonth)) : 0
       const profitTarget = data.incomeTarget - data.costTarget
       const profitActual = data.incomeActual - data.costActual
+      const costActualBreakdown = lines.reduce((acc, line) => {
+        if (line.line_type === 'revenue' || line.line_type === 'income' || line.line_type === 'profit') return acc
+        const bucket = line.data_source === 'manual' ? 'manual' : 'automatic'
+        acc[bucket] += toNumber(line.actual)
+        return acc
+      }, { manual:0, automatic:0 })
       const paced = lines.reduce((acc, line) => {
         const target = toNumber(line.target_amount)
         const planned = plannedToDate(line, target, ratio)
@@ -1379,7 +1365,7 @@
       }, { revenue:0, income:0, cost:0 })
       const items = [
         { key:'income', label:'Zisk z prodeje k dnešku', type:'income', planned:data.incomeTarget, actual:data.incomeActual, paced:paced.income },
-        { key:'cost', label:'Čerpání nákladů', type:'cost', planned:data.costTarget, actual:data.costActual, paced:paced.cost },
+        { key:'cost', label:'Čerpání provozních nákladů', type:'cost', planned:data.costTarget, actual:data.costActual, paced:paced.cost, breakdown: `Ručně zapsáno ${money(costActualBreakdown.manual)}, automaticky napojeno ${money(costActualBreakdown.automatic)}. Nákup prodaného zboží už je v hrubém zisku.` },
         { key:'profit', label:'Výsledek po nákladech', type:'profit', planned:profitTarget, actual:profitActual, paced:paced.income - paced.cost }
       ]
 
@@ -1403,7 +1389,7 @@
             <div class="pace-track" aria-label="${escapeHtml(item.label)}">
               <div class="pace-fill ${health}" style="width:${fill}%"></div>
             </div>
-            <div class="pace-note">${escapeHtml(`${elapsed}/${bounds.daysInMonth} dní měsíce. Jsme ${money(Math.abs(delta))} ${verb}.`)}</div>
+            <div class="pace-note">${escapeHtml(`${elapsed}/${bounds.daysInMonth} dní měsíce. Jsme ${money(Math.abs(delta))} ${verb}. ${item.breakdown || ''}`.trim())}</div>
             <div class="pace-details">
               <div class="pace-detail"><strong>${escapeHtml(money(item.paced))}</strong><span>Plán k dnešku</span></div>
               <div class="pace-detail"><strong>${escapeHtml(money(item.planned))}</strong><span>Měsíční plán</span></div>
@@ -1439,7 +1425,7 @@
               <span class="badge ${level}">${escapeHtml(verdict)}</span>
             </div>
             <div class="development-title">${escapeHtml(money(profitForecast))}</div>
-            <div class="development-subtitle">Predikovaný provozní výsledek po nákladech. Hrubý zisk z prodeje ${escapeHtml(money(data.incomeActual))} minus náklady ${escapeHtml(money(data.costActual))} = dnes ${escapeHtml(money(profitActual))}.</div>
+            <div class="development-subtitle">Predikovaný provozní výsledek po režii. Hrubý zisk z prodeje ${escapeHtml(money(data.incomeActual))} minus provozní náklady ${escapeHtml(money(data.costActual))} = dnes ${escapeHtml(money(profitActual))}.</div>
           </div>
           <div class="development-scale">
             <div class="development-scale-labels">
@@ -1464,14 +1450,14 @@
             <div class="development-metric-note">Tempo ${escapeHtml(percent(incomePace))} plánu, denně cca ${escapeHtml(money(dailyIncome))}, predikce ${escapeHtml(money(data.incomeForecast))}.</div>
           </div>
           <div class="development-metric">
-            <div class="development-metric-label">Tempo nákladů</div>
+            <div class="development-metric-label">Tempo provozních nákladů</div>
             <p class="development-metric-value">${escapeHtml(percent(costPace))}</p>
             <div class="development-metric-note">Denně teď cca ${escapeHtml(money(dailyCost))}, predikce ${escapeHtml(money(data.costForecast))}.</div>
           </div>
           <div class="development-metric">
             <div class="development-metric-label">Plánovaný provozní výsledek</div>
             <p class="development-metric-value">${escapeHtml(money(profitTarget))}</p>
-            <div class="development-metric-note">Není to zisk z prodejek. Je to hrubý zisk po odečtení zapsaných nákladů.</div>
+            <div class="development-metric-note">Je to hrubý zisk po odečtení režie. Nákup prodaného zboží už je v hrubém zisku.</div>
           </div>
         </div>
       `
@@ -1692,7 +1678,7 @@
         signals.push({ level:'warn', title:'Zisk z prodeje je pod plánem', text:`Predikce hrubého zisku je ${percent(incomeCoverage)} plánu. Má smysl zkontrolovat nákupní ceny u dokladů a marže.` })
       }
       if (costCoverage > 108 && data.costTarget > 0) {
-        signals.push({ level:'bad', title:'Náklady rostou rychleji', text:`Predikce nákladů je ${percent(costCoverage)} plánu. První kontrola: nákupy, PHM a servisní zásahy.` })
+        signals.push({ level:'bad', title:'Provozní náklady rostou rychleji', text:`Predikce provozních nákladů je ${percent(costCoverage)} plánu. První kontrola: ruční výdaje, PHM a náklady vozidel.` })
       }
       if (!signals.length) {
         signals.push({ level:'good', title:'Rozpočet drží rytmus', text:'Aktuální predikce neukazuje velkou odchylku. Modul bude přesnější po naplnění měsíčních plánů.' })
@@ -1792,7 +1778,7 @@
           + toNumber(item.actuals['4_2_zisk_prodej_automatu'])
           + toNumber(item.actuals.sales_documents_profit)
           + toNumber(item.actuals.sales_stock_profit)
-        const cost = toNumber(item.actuals.purchase_goods) + toNumber(item.actuals.fuel) + toNumber(item.actuals.vehicle_expenses) + toNumber(item.actuals.service_capacity)
+        const cost = toNumber(item.actuals.fuel) + toNumber(item.actuals.vehicle_expenses)
         return { key:item.key, income, cost, profit:income - cost }
       })
       const max = Math.max(1, ...rows.flatMap((row) => [row.income, row.cost, Math.abs(row.profit)]))

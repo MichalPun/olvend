@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v22-budget-sales-pace';
+const CACHE_NAME = 'olvend-v23-budget-operating-costs';
 const APP_SHELL = [
   './',
   './index.html',
