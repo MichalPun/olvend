@@ -4544,17 +4544,18 @@
       mobilePickRequestsBody.innerHTML = rows.map((row) => {
         const flow = getMobileStockFlowMeta(row.request_type)
         const detailOpen = mobilePickOpenDetailIds.has(String(row.id))
+        const hasNoItems = !row.items.length
         const needsStockApply = row.status === 'confirmed' && isMobileStockApprovalFlow(row.request_type) && !row.stock_applied_at
         const readyAction = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type) ? 'confirm' : 'ready'
-        const statusBadge = needsStockApply ? 'warn' : getMobileStockStatusBadge(row.status)
-        const statusLabel = needsStockApply ? 'Bez skladu' : getMobileStockStatusLabel(row.status)
+        const statusBadge = hasNoItems ? 'bad' : needsStockApply ? 'warn' : getMobileStockStatusBadge(row.status)
+        const statusLabel = hasNoItems ? 'Bez položek' : needsStockApply ? 'Bez skladu' : getMobileStockStatusLabel(row.status)
         const actionLabel = needsStockApply
           ? 'Propsat sklad'
           : readyAction === 'confirm' && !['vehicle_return', 'vehicle_writeoff'].includes(row.request_type)
             ? 'Potvrdit doklad'
           : flow.readyAction
         const shortages = getMobilePickShortages(row)
-        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && shortages.length > 0
+        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && (hasNoItems || shortages.length > 0)
         const itemsLabel = row.items.slice(0, 3).map((item) => {
           const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
           return `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)} ${product?.base_unit || item.unit || 'ks'}`
@@ -4604,7 +4605,7 @@
                 ${needsStockApply ? `<button class="btn" type="button" data-mobile-pick-action="confirm" data-request-id="${escapeHtml(String(row.id))}">Propsat sklad</button>` : ''}
                 ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}" ${blocksReady ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>` : ''}
                 ${row.status !== 'cancelled' && (row.status !== 'confirmed' || needsStockApply) ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
-                ${blocksReady ? `<span class="mobile-pick-action-blocked">Nejdřív uprav množství nebo odeber položky bez zásoby.</span>` : ''}
+                ${blocksReady ? `<span class="mobile-pick-action-blocked">${escapeHtml(hasNoItems ? 'Doklad nemá žádné položky. Přidej řádek nebo doklad zruš.' : 'Nejdřív uprav množství nebo odeber položky bez zásoby.')}</span>` : ''}
               </div>
             </td>
           </tr>
@@ -4926,6 +4927,10 @@
       if (error) throw error
     }
     async function handleMobilePickAction(action, requestId, itemId = '') {
+      const requestItems = getMobileRequestItems(requestId)
+      if (['start', 'ready', 'confirm'].includes(action) && !requestItems.length) {
+        throw new Error('Doklad nemá žádné položky. Přidej řádek, nebo ho zruš a vytvoř znovu.')
+      }
       if (action === 'save-vehicle') {
         const select = mobilePickRequestsBody.querySelector(`[data-mobile-pick-vehicle][data-request-id="${CSS.escape(String(requestId))}"]`)
         const vehicleId = select?.value || null
