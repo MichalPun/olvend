@@ -955,6 +955,26 @@
       }
     }
 
+    async function safePagedQuery(factory, fallback = [], pageSize = 1000, maxPages = 25) {
+      const rows = []
+      try {
+        for (let page = 0; page < maxPages; page += 1) {
+          const from = page * pageSize
+          const to = from + pageSize - 1
+          const { data, error } = await factory().range(from, to)
+          if (error) throw error
+          const pageRows = data || []
+          rows.push(...pageRows)
+          if (pageRows.length < pageSize) return rows
+        }
+        console.warn('Budget data source reached page limit', { pageSize, maxPages })
+        return rows
+      } catch (error) {
+        if (!isMissingTableError(error)) console.warn('Budget data source skipped', error)
+        return fallback
+      }
+    }
+
     function sumRows(rows, mapper) {
       return rows.reduce((sum, row) => sum + toNumber(mapper(row)), 0)
     }
@@ -1165,7 +1185,7 @@
       }
       if (!ids.length) return actuals
 
-      const items = await safeQuery(() => supabase
+      const items = await safePagedQuery(() => supabase
         .from('sales_document_items')
         .select('document_id, product_id, product_name, quantity, unit_price, unit_cost, source_type, products(name, product_category, usage_type, note)')
         .in('document_id', ids), [])
@@ -1223,12 +1243,14 @@
         .lt('issued_at', bounds.endIso), [])
       const salesDocumentActuals = await loadSalesDocumentItemActuals(salesDocuments)
 
-      const stockRevenue = await safeQuery(() => supabase
+      const stockRevenue = await safePagedQuery(() => supabase
         .from('stock_movements_v13')
         .select('movement_type, product_id, quantity_base_units, unit_price, note, created_at, products(name, product_category, usage_type, note)')
         .in('movement_type', ['sale', 'sale_revenue'])
         .gte('created_at', bounds.startIso)
-        .lt('created_at', bounds.endIso), [])
+        .lt('created_at', bounds.endIso)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true }), [])
       const salesActuals = mergeActualMaps(salesDocumentActuals, stockSaleActuals(stockRevenue))
 
       const fuelLogs = await safeQuery(() => supabase
