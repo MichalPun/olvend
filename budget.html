@@ -959,17 +959,45 @@
       return rows.reduce((sum, row) => sum + toNumber(mapper(row)), 0)
     }
 
-    function salesLineAmount(row) {
-      return toNumber(row.quantity) * toNumber(row.unit_price)
+    function decodeSalesDocumentMeta(note) {
+      const match = String(note || '').match(/\[meta:([^\]]+)\]/)
+      if (!match?.[1]) return {}
+      try {
+        return JSON.parse(decodeURIComponent(escape(atob(match[1]))))
+      } catch {
+        return {}
+      }
     }
 
-    function salesLineProfit(row) {
-      return toNumber(row.quantity) * (toNumber(row.unit_price) - toNumber(row.unit_cost))
+    function salesDocumentCurrency(document) {
+      return String(decodeSalesDocumentMeta(document?.note).currency || 'CZK').toUpperCase()
+    }
+
+    function salesDocumentCurrencyRate(document) {
+      const currency = salesDocumentCurrency(document)
+      if (currency === 'CZK') return 1
+      return toNumber(decodeSalesDocumentMeta(document?.note).exchangeRate)
+    }
+
+    function salesDocumentAmountToCzk(amount, document) {
+      const rate = salesDocumentCurrencyRate(document)
+      if (!rate) return 0
+      return toNumber(amount) * rate
+    }
+
+    function salesLineAmount(row, document = null) {
+      return salesDocumentAmountToCzk(toNumber(row.quantity) * toNumber(row.unit_price), document)
+    }
+
+    function salesLineProfit(row, document = null) {
+      const revenueCzk = salesLineAmount(row, document)
+      const costCzk = toNumber(row.quantity) * toNumber(row.unit_cost)
+      return revenueCzk - costCzk
     }
 
     function documentFallbackNetAmount(row) {
       const gross = toNumber(row.total_amount)
-      return gross > 0 ? gross / 1.21 : 0
+      return gross > 0 ? salesDocumentAmountToCzk(gross / 1.21, row) : 0
     }
 
     function stockMovementMetaAmount(row, key) {
@@ -1128,11 +1156,12 @@
 
     async function loadSalesDocumentItemActuals(salesDocuments) {
       const ids = salesDocuments.map((row) => row.id).filter(Boolean)
+      const documentById = new Map(salesDocuments.map((row) => [String(row.id), row]))
       const actuals = {
         ...emptySalesActuals(),
         sales_documents_profit: 0,
         sales_documents: 0,
-        sales_documents_total: sumRows(salesDocuments, (row) => row.total_amount)
+        sales_documents_total: sumRows(salesDocuments, (row) => salesDocumentAmountToCzk(row.total_amount, row))
       }
       if (!ids.length) return actuals
 
@@ -1142,10 +1171,11 @@
         .in('document_id', ids), [])
 
       items.forEach((item) => {
+        const document = documentById.get(String(item.document_id)) || null
         const key = classifySalesLine(item)
-        actuals[key] = toNumber(actuals[key]) + salesLineAmount(item)
+        actuals[key] = toNumber(actuals[key]) + salesLineAmount(item, document)
         const profitKey = SALES_PROFIT_KEYS[key]
-        if (profitKey) actuals[profitKey] = toNumber(actuals[profitKey]) + salesLineProfit(item)
+        if (profitKey) actuals[profitKey] = toNumber(actuals[profitKey]) + salesLineProfit(item, document)
       })
 
       const documentsWithItems = new Set(items.map((item) => String(item.document_id)))
@@ -1187,7 +1217,7 @@
       const bounds = monthBounds(key)
       const salesDocuments = await safeQuery(() => supabase
         .from('sales_documents')
-        .select('id, document_type, status, issued_at, total_amount')
+        .select('id, document_type, status, issued_at, total_amount, note')
         .in('status', ['issued', 'paid'])
         .gte('issued_at', bounds.startIso)
         .lt('issued_at', bounds.endIso), [])
