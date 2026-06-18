@@ -584,8 +584,22 @@
       const hex = (hash >>> 0).toString(16).padStart(8, '0').toUpperCase()
       return `{${hex}-${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(0, 4)}-${hex}${hex.slice(0, 4)}}`
     }
-    function moneyS3VatSummary(vatRows = [], rounding = 0) {
-      const summary = vatRows.reduce((state, item) => {
+    function moneyS3VatSummary(vatRows = [], rounding = 0, mode = 'domestic') {
+      const rows = vatRows.map((item) => ({ ...item }))
+      const roundingAmount = roundMoney(rounding)
+      if (roundingAmount && rows.length) {
+        const targetIndex = rows.reduce((bestIndex, item, index) => {
+          const best = rows[bestIndex]
+          return Number(item.gross || item.net || 0) > Number(best.gross || best.net || 0) ? index : bestIndex
+        }, 0)
+        const target = rows[targetIndex]
+        const nextGross = roundMoney(Number(target.gross || target.net || 0) + roundingAmount)
+        const rate = taxVatRate(target.rate || 0, mode)
+        target.gross = nextGross
+        target.net = rate > 0 ? roundMoney(nextGross / (1 + rate / 100)) : nextGross
+        target.vat = roundMoney(nextGross - target.net)
+      }
+      const summary = rows.reduce((state, item) => {
         const rate = Number(item.rate || 0)
         if (rate <= 0) {
           state.base0 += Number(item.net || 0)
@@ -598,7 +612,7 @@
         }
         return state
       }, { base0:0, baseReduced:0, vatReduced:0, baseStandard:0, vatStandard:0 })
-      summary.base0 = roundMoney(summary.base0 + Number(rounding || 0))
+      if (roundingAmount && !rows.length) summary.base0 = roundMoney(summary.base0 + roundingAmount)
       return summary
     }
     function moneyS3AddressParts(customer = {}) {
@@ -2571,7 +2585,7 @@
       const date = String(row.issued_at || '').slice(0, 10)
       const due = meta.dueDate || ''
       const taxableDate = meta.taxableSupplyDate || date
-      const vatSummary = moneyS3VatSummary(amounts.vatRows || [], amounts.rounding)
+      const vatSummary = moneyS3VatSummary(amounts.vatRows || [], amounts.rounding, vatMode)
       const noteParts = [
         meta.customerOrderNumber ? `Objednavka ${meta.customerOrderNumber}` : '',
         vatMode !== 'domestic' ? vatModeMeta(vatMode).invoiceText : ''
