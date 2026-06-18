@@ -557,11 +557,61 @@
         .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
         .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     }
-    function sanitizeMoneyS3Xml(value) {
-      return sanitizeXmlText(value).replace(/[\u0000-\u001F]/g, '')
-    }
     function xmlEscape(value) {
       return sanitizeXmlText(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+    }
+    function moneyS3Escape(value) {
+      return xmlEscape(value)
+    }
+    function moneyS3DocumentNumber(row) {
+      return documentNumber(row).replace(/[^0-9A-Za-z]/g, '')
+    }
+    function moneyS3Series(row) {
+      const match = moneyS3DocumentNumber(row).match(/^([A-Za-z]+)/)
+      return `${match ? match[1] : 'FV'}rr`
+    }
+    function moneyS3SeriesNumber(row) {
+      const match = moneyS3DocumentNumber(row).match(/(\d+)$/)
+      return match ? String(Number(match[1])) : ''
+    }
+    function moneyS3Guid(seed) {
+      const source = String(seed || 'OLVEND')
+      let hash = 2166136261
+      for (let index = 0; index < source.length; index += 1) {
+        hash ^= source.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+      }
+      const hex = (hash >>> 0).toString(16).padStart(8, '0').toUpperCase()
+      return `{${hex}-${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(0, 4)}-${hex}${hex.slice(0, 4)}}`
+    }
+    function moneyS3VatSummary(vatRows = []) {
+      return vatRows.reduce((summary, item) => {
+        const rate = Number(item.rate || 0)
+        if (rate <= 0) {
+          summary.base0 += Number(item.net || 0)
+        } else if (rate <= 15) {
+          summary.baseReduced += Number(item.net || 0)
+          summary.vatReduced += Number(item.vat || 0)
+        } else {
+          summary.baseStandard += Number(item.net || 0)
+          summary.vatStandard += Number(item.vat || 0)
+        }
+        return summary
+      }, { base0:0, baseReduced:0, vatReduced:0, baseStandard:0, vatStandard:0 })
+    }
+    function moneyS3AddressXml(customer = {}) {
+      const address = customerBillingAddress(customer)
+      return `<Ulice>${moneyS3Escape(address)}</Ulice><Misto></Misto><PSC></PSC><Stat>Česká republika</Stat><KodStatu>CZ</KodStatu>`
+    }
+    function moneyS3CustomerXml(customer = {}, row = {}) {
+      const name = customer.name || row.customer_name || ''
+      const email = customer.email || ''
+      const companyId = customer.companyId || customer.company_id || ''
+      const taxId = customer.taxId || customer.tax_id || ''
+      return `<ObchNazev>${moneyS3Escape(name)}</ObchNazev><ObchAdresa>${moneyS3AddressXml(customer)}</ObchAdresa><FaktNazev>${moneyS3Escape(name)}</FaktNazev><ICO>${moneyS3Escape(companyId)}</ICO><DIC>${moneyS3Escape(taxId)}</DIC><FaktAdresa>${moneyS3AddressXml(customer)}</FaktAdresa><Nazev>${moneyS3Escape(name)}</Nazev><Adresa>${moneyS3AddressXml(customer)}</Adresa><EMail>${moneyS3Escape(email)}</EMail><PlatceDPH>${taxId ? '1' : '0'}</PlatceDPH><FyzOsoba>0</FyzOsoba>`
+    }
+    function moneyS3CompanyXml() {
+      return `<Nazev>OLMIKA s.r.o.</Nazev><Adresa><Ulice>Lidická 700/19</Ulice><Misto>Brno</Misto><PSC>60200</PSC><Stat>Česká republika</Stat><KodStatu>CZ</KodStatu></Adresa><ObchNazev>OLMIKA s.r.o.</ObchNazev><ObchAdresa><Ulice>Lidická 700/19</Ulice><Misto>Brno</Misto><PSC>60200</PSC><Stat>Česká republika</Stat><KodStatu>CZ</KodStatu></ObchAdresa><FaktNazev>OLMIKA s.r.o.</FaktNazev><FaktAdresa><Ulice>Lidická 700/19</Ulice><Misto>Brno</Misto><PSC>60200</PSC><Stat>Česká republika</Stat><KodStatu>CZ</KodStatu></FaktAdresa><Mobil><Pred>+420</Pred><Cislo>774954766</Cislo></Mobil><EMail>fakturace@olmika.cz</EMail><ICO>04579968</ICO><DIC>CZ04579968</DIC><Banka>Raiffeisenbank a.s.</Banka><Ucet>6544188002</Ucet><KodBanky>5500</KodBanky><FyzOsoba>0</FyzOsoba><MenaSymb>Kč</MenaSymb><MenaKod>CZK</MenaKod>`
     }
     function formatDate(value) {
       if (!value) return 'Bez data'
@@ -2475,48 +2525,22 @@
       const amounts = rowAmounts(row)
       const currency = meta.currency || 'CZK'
       const vatMode = currentVatMode(row)
-      const vatModeInfo = vatModeMeta(vatMode)
-      return `    <FakturaVydana>
-      <Cislo>${xmlEscape(documentNumber(row))}</Cislo>
-      <Typ>${xmlEscape(documentTypeMeta(row.document_type).label)}</Typ>
-      <DatumVystaveni>${xmlEscape(String(row.issued_at || '').slice(0, 10))}</DatumVystaveni>
-      <DUZP>${xmlEscape(meta.taxableSupplyDate || String(row.issued_at || '').slice(0, 10))}</DUZP>
-      <DatumSplatnosti>${xmlEscape(meta.dueDate || '')}</DatumSplatnosti>
-      <Mena>${xmlEscape(currency)}</Mena>
-      <RezimDPH>${xmlEscape(vatModeInfo.moneyCode)}</RezimDPH>
-      <RezimDPHText>${xmlEscape(vatModeInfo.invoiceText)}</RezimDPHText>
-      <VariabilniSymbol>${xmlEscape(meta.variableSymbol || '')}</VariabilniSymbol>
-      <Objednavka>${xmlEscape(meta.customerOrderNumber || '')}</Objednavka>
-      <Odberatel>
-        <Nazev>${xmlEscape(customer.name || row.customer_name || '')}</Nazev>
-        <ICO>${xmlEscape(customer.companyId || '')}</ICO>
-        <DIC>${xmlEscape(customer.taxId || '')}</DIC>
-        <Email>${xmlEscape(customer.email || '')}</Email>
-        <Adresa>${xmlEscape(customerBillingAddress(customer))}</Adresa>
-      </Odberatel>
-      <Soucty>
-        <Zaklad>${moneyS3Number(amounts.net)}</Zaklad>
-        <DPH>${moneyS3Number(amounts.vat)}</DPH>
-        <Zaokrouhleni>${moneyS3Number(amounts.rounding)}</Zaokrouhleni>
-        <Celkem>${moneyS3Number(amounts.total)}</Celkem>
-      </Soucty>
-    </FakturaVydana>`
+      const date = String(row.issued_at || '').slice(0, 10)
+      const due = meta.dueDate || ''
+      const taxableDate = meta.taxableSupplyDate || date
+      const vatSummary = moneyS3VatSummary(amounts.vatRows || [])
+      const noteParts = [
+        meta.customerOrderNumber ? `Objednavka ${meta.customerOrderNumber}` : '',
+        vatMode !== 'domestic' ? vatModeMeta(vatMode).invoiceText : ''
+      ].filter(Boolean)
+      return `<FaktVyd><Doklad>${moneyS3Escape(moneyS3DocumentNumber(row))}</Doklad><GUID>${moneyS3Guid(moneyS3DocumentNumber(row))}</GUID><Rada>${moneyS3Escape(moneyS3Series(row))}</Rada><CisRada>${moneyS3Escape(moneyS3SeriesNumber(row))}</CisRada><Popis>${moneyS3Escape(noteParts.join(' | ') || documentTypeMeta(row.document_type).label)}</Popis><Vystaveno>${moneyS3Escape(date)}</Vystaveno><DatUcPr>${moneyS3Escape(date)}</DatUcPr><PlnenoDPH>${moneyS3Escape(taxableDate)}</PlnenoDPH><Splatno>${moneyS3Escape(due)}</Splatno><DatSkPoh>${moneyS3Escape(date)}</DatSkPoh><KodDPH>19Ř01,02</KodDPH><ZjednD>0</ZjednD><VarSymbol>${moneyS3Escape(meta.variableSymbol || moneyS3SeriesNumber(row))}</VarSymbol><Ucet>BÚRB</Ucet><Druh>N</Druh><Dobropis>0</Dobropis><Uhrada>převodem</Uhrada><PredKontac>FV001</PredKontac><ZpVypDPH>1</ZpVypDPH><SazbaDPH1>12</SazbaDPH1><SazbaDPH2>21</SazbaDPH2><Proplatit>${moneyS3Number(row.status === 'paid' ? 0 : amounts.total)}</Proplatit><Vyuctovano>0</Vyuctovano><SouhrnDPH><Zaklad0>${moneyS3Number(vatSummary.base0)}</Zaklad0><Zaklad5>${moneyS3Number(vatSummary.baseReduced)}</Zaklad5><Zaklad22>${moneyS3Number(vatSummary.baseStandard)}</Zaklad22><DPH5>${moneyS3Number(vatSummary.vatReduced)}</DPH5><DPH22>${moneyS3Number(vatSummary.vatStandard)}</DPH22></SouhrnDPH><Celkem>${moneyS3Number(amounts.total)}</Celkem><Typ>${moneyS3Escape(currency)}</Typ><Vystavil>Michal Punčochář</Vystavil><PriUhrZbyv>0</PriUhrZbyv><ValutyProp>0</ValutyProp><SumZaloha>0</SumZaloha><SumZalohaC>0</SumZalohaC><DodOdb>${moneyS3CustomerXml(customer, row)}</DodOdb><KonecPrij>${moneyS3CustomerXml(customer, row)}</KonecPrij><DopravTuz>0</DopravTuz><DopravZahr>0</DopravZahr><Sleva>0</Sleva><MojeFirma>${moneyS3CompanyXml()}</MojeFirma></FaktVyd>`
     }
     function moneyS3Xml(row) {
-      return sanitizeMoneyS3Xml(`<?xml version="1.0" encoding="utf-8"?>
-<MoneyS3Import source="OLVEND" version="1.0">
-  <FakturyVydane>
-${moneyS3InvoiceXml(row)}
-  </FakturyVydane>
-</MoneyS3Import>`)
+      return moneyS3BatchXml([row])
     }
     function moneyS3BatchXml(rows) {
-      return sanitizeMoneyS3Xml(`<?xml version="1.0" encoding="utf-8"?>
-<MoneyS3Import source="OLVEND" version="1.0">
-  <FakturyVydane>
-${rows.map(moneyS3InvoiceXml).join('\n')}
-  </FakturyVydane>
-</MoneyS3Import>`)
+      const today = todayIso()
+      return sanitizeXmlText(`\ufeff<?xml version="1.0" encoding="UTF-8"?>\r\n<MoneyData ICAgendy="04579968" KodAgendy="" HospRokOd="${today.slice(0, 4)}-01-01" HospRokDo="${today.slice(0, 4)}-12-31" description="faktury vydané" ExpZkratka="_FV" ExpDate="${today}" ExpTime="" JazykVerze="CZ" VyberZaznamu="0"><SeznamFaktVyd>${rows.map(moneyS3InvoiceXml).join('')}</SeznamFaktVyd><SeznamFaktVyd_DPP/></MoneyData>`)
     }
     function exportMoneyS3(row) {
       downloadTextFile(`${documentNumber(row)}-money-s3.xml`, moneyS3Xml(row))
