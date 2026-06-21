@@ -66,6 +66,7 @@
     .compact-filter-row label { display:block; margin:0 0 4px; color:var(--soft); font-size:10px; font-weight:800; letter-spacing:0.05em; text-transform:uppercase; }
     .toolbar { display:grid; grid-template-columns:minmax(260px,1.4fr) repeat(5, minmax(150px, 1fr)); gap:6px; margin-bottom:8px; }
     input, select, textarea { width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:white; padding:8px 10px; min-height:34px; border-radius:6px; outline:none; font-size:13px; font-family:inherit; }
+    select option { background:#181a21; color:#fff; }
     input:focus, select:focus, textarea:focus { border-color:rgba(213,16,26,0.5); box-shadow:0 0 0 3px rgba(213,16,26,0.12); }
     .table-wrap { overflow-x:auto; }
     .table-scroll-top { overflow-x:auto; overflow-y:hidden; height:16px; margin:0 0 6px; border:1px solid rgba(255,255,255,0.06); border-radius:999px; background:rgba(255,255,255,0.025); }
@@ -305,6 +306,7 @@
     :root[data-olvend-theme="light"] input,
     :root[data-olvend-theme="light"] select,
     :root[data-olvend-theme="light"] textarea { background:#fff; border-color:rgba(15,23,42,0.12); color:#17212b; }
+    :root[data-olvend-theme="light"] select option { background:#fff; color:#17212b; }
     :root[data-olvend-theme="light"] input::placeholder,
     :root[data-olvend-theme="light"] textarea::placeholder { color:#98a2b3; }
     :root[data-olvend-theme="light"] .table-scroll-top { background:#f2f4f7; border-color:rgba(15,23,42,0.08); }
@@ -1254,6 +1256,7 @@
               <span></span>
             </div>
             <div id="simpleTransferLines" class="transfer-lines"></div>
+            <datalist id="simpleTransferProductOptions"></datalist>
             <div class="action-row">
               <button class="btn secondary" id="addSimpleTransferLineBtn" type="button">+ Přidat řádek</button>
             </div>
@@ -3136,10 +3139,7 @@
       document.getElementById('bagetteProductId').innerHTML = '<option value="">Vyber bagetu</option>' + bagetteProducts.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('')
       document.getElementById('simpleTransferWarehouseId').innerHTML = '<option value="">Vyber sklad</option>' + warehouses.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('')
       document.getElementById('simpleTransferVehicleId').innerHTML = '<option value="">Vyber vozidlo</option>' + vehicles.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('')
-      simpleTransferLines.querySelectorAll('[data-transfer-product]').forEach((select) => {
-        const currentValue = select.value
-        select.innerHTML = simpleTransferProductOptionsHtml(currentValue)
-      })
+      renderSimpleTransferProductDatalist()
       syncSlotOptions('item')
       syncSlotOptions('movement')
     }
@@ -4390,25 +4390,10 @@
       ].join('')
     }
     function getMobilePickProductSearchOptions() {
-      return productsV13
-        .filter((product) => product.active !== false)
-        .map((product) => `<option value="${escapeHtml(productSearchLabel(product))}"></option>`)
-        .join('')
+      return productSearchOptionsHtml(productsV13.filter((product) => product.active !== false))
     }
     function findMobilePickProductBySearchValue(value) {
-      const normalized = normalizeLookupValue(value)
-      if (!normalized) return null
-      const activeProducts = productsV13.filter((product) => product.active !== false)
-      const exact = activeProducts.find((product) => {
-        const candidates = [product.id, product.sku, product.ean, productSearchLabel(product), product.name]
-          .map((candidate) => normalizeLookupValue(candidate))
-        return candidates.includes(normalized)
-      })
-      if (exact) return exact
-      const matches = activeProducts.filter((product) => {
-        return normalizeLookupValue(productSearchLabel(product)).includes(normalized)
-      })
-      return matches.length === 1 ? matches[0] : null
+      return findProductBySearchValue(value, productsV13.filter((product) => product.active !== false))
     }
     function syncMobilePickAddProduct(requestId) {
       const searchInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-add-product-search][data-request-id="${CSS.escape(String(requestId))}"]`)
@@ -5436,20 +5421,49 @@
         .filter(Boolean)
         .join(' · ')
     }
+    function getProductSearchOptionValues(product) {
+      return [
+        productSearchLabel(product),
+        product.name,
+        product.sku,
+        product.ean,
+        product.id ? `ID ${product.id}` : '',
+        product.id ? String(product.id) : ''
+      ].filter(Boolean)
+    }
+    function productSearchOptionsHtml(rows = productsV13) {
+      const seen = new Set()
+      return rows
+        .flatMap((product) => getProductSearchOptionValues(product).map((value) => ({ product, value })))
+        .map(({ product, value }) => {
+          const key = normalizeLookupValue(value)
+          if (!key || seen.has(key)) return ''
+          seen.add(key)
+          const label = [product.sku, product.name].filter(Boolean).join(' · ')
+          return `<option value="${escapeHtml(value)}" label="${escapeHtml(label)}"></option>`
+        })
+        .join('')
+    }
     function renderInitialStockProductDatalist() {
       const datalist = document.getElementById('initialStockProductOptions')
       if (!datalist) return
-      datalist.innerHTML = productsV13
-        .map((product) => `<option value="${escapeHtml(productSearchLabel(product))}"></option>`)
-        .join('')
+      datalist.innerHTML = productSearchOptionsHtml(productsV13)
     }
-    function findProductBySearchValue(value) {
+    function renderSimpleTransferProductDatalist() {
+      const datalist = document.getElementById('simpleTransferProductOptions')
+      if (!datalist) return
+      datalist.innerHTML = productSearchOptionsHtml(productsV13.filter((product) => product.active !== false))
+    }
+    function findProductBySearchValue(value, rows = productsV13) {
       const normalized = normalizeLookupValue(value)
       if (!normalized) return null
-      const exact = productsV13.find((product) => normalizeLookupValue(productSearchLabel(product)) === normalized)
+      const exact = rows.find((product) => {
+        const candidates = getProductSearchOptionValues(product).map((item) => normalizeLookupValue(item))
+        return candidates.includes(normalized)
+      })
       if (exact) return exact
-      const compactMatches = productsV13.filter((product) => {
-        const candidates = [product.name, product.sku, product.ean, productSearchLabel(product)].map((item) => normalizeLookupValue(item))
+      const compactMatches = rows.filter((product) => {
+        const candidates = getProductSearchOptionValues(product).map((item) => normalizeLookupValue(item))
         return candidates.some((candidate) => candidate && (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)))
       })
       return compactMatches.length === 1 ? compactMatches[0] : null
@@ -5464,6 +5478,18 @@
       if (product?.purchase_price != null && purchasePriceInput && !String(purchasePriceInput.value || '').trim()) {
         purchasePriceInput.value = Number(product.purchase_price || 0).toFixed(4)
       }
+      return product
+    }
+    function syncSimpleTransferProductSearchInput(input) {
+      const row = input.closest('.transfer-line-row')
+      const hidden = row?.querySelector('[data-transfer-product]')
+      if (!hidden) return null
+      const product = findProductBySearchValue(input.value, productsV13.filter((item) => item.active !== false))
+      hidden.value = product?.id ? String(product.id) : ''
+      const kindSelect = row?.querySelector('[data-transfer-kind]')
+      if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
       return product
     }
     function getSimpleTransferSourceLocationId() {
@@ -5609,9 +5635,11 @@
       const isSaleLine = ['machines_sale', 'vehicle_sale'].includes(document.getElementById('simpleTransferDirection')?.value || '')
       const totalIncome = row.totalIncome != null ? Number(row.totalIncome || 0).toFixed(2) : ''
       const selectedProduct = row.productId ? productsV13.find((product) => String(product.id) === String(row.productId)) : null
+      const searchValue = selectedProduct ? productSearchLabel(selectedProduct) : (row.productName || '')
       const defaultKind = row.kind || (shouldUsePackageByDefault(selectedProduct) ? 'package' : 'product')
       wrapper.innerHTML = `
-        <select data-transfer-product required>${simpleTransferProductOptionsHtml(row.productId || '')}</select>
+        <input data-transfer-product-search list="simpleTransferProductOptions" type="search" autocomplete="off" placeholder="Piš název, SKU nebo EAN..." value="${escapeHtml(searchValue)}" />
+        <input data-transfer-product type="hidden" value="${escapeHtml(row.productId || '')}" />
         <input data-transfer-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
         <select data-transfer-kind>
           <option value="product" ${defaultKind !== 'package' ? 'selected' : ''}>ks / základ</option>
@@ -5631,7 +5659,13 @@
       return [...simpleTransferLines.querySelectorAll('.transfer-line-row')]
         .map((row, index) => {
           const kind = row.querySelector('[data-transfer-kind]')?.value || 'product'
-          const productId = Number(row.querySelector('[data-transfer-product]')?.value || 0)
+          const searchInput = row.querySelector('[data-transfer-product-search]')
+          const hiddenProductInput = row.querySelector('[data-transfer-product]')
+          if (searchInput && hiddenProductInput) {
+            const product = findProductBySearchValue(searchInput.value, productsV13.filter((item) => item.active !== false))
+            hiddenProductInput.value = product?.id ? String(product.id) : ''
+          }
+          const productId = Number(hiddenProductInput?.value || 0)
           const product = productsV13.find((item) => String(item.id) === String(productId))
           const enteredQuantity = Number(row.querySelector('[data-transfer-quantity]')?.value || 0)
           const pack = kind === 'package' ? getEffectiveDefaultPackage(productId) : null
@@ -6025,6 +6059,7 @@
       editingTransferDoc = correctionDoc
       simpleTransferForm.reset()
       simpleTransferLines.innerHTML = ''
+      renderSimpleTransferProductDatalist()
       updateSimpleTransferSalesSummary()
       simpleTransferImportStatus.textContent = 'CheckOut načítá naložení auta. CheckIn vrací nepoužité zboží z vozidla na sklad. XML/CSV slouží pro prodejku.'
       simpleTransferImportStatus.className = 'helper-line'
@@ -7764,17 +7799,20 @@
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
     })
-    simpleTransferLines.addEventListener('input', () => {
+    simpleTransferLines.addEventListener('input', (event) => {
+      const productSearch = event.target.closest('[data-transfer-product-search]')
+      if (productSearch) {
+        syncSimpleTransferProductSearchInput(productSearch)
+        return
+      }
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
     })
     simpleTransferLines.addEventListener('change', (event) => {
-      const productSelect = event.target.closest('[data-transfer-product]')
-      if (productSelect) {
-        const row = productSelect.closest('.transfer-line-row')
-        const product = productsV13.find((item) => String(item.id) === String(productSelect.value || ''))
-        const kindSelect = row?.querySelector('[data-transfer-kind]')
-        if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      const productSearch = event.target.closest('[data-transfer-product-search]')
+      if (productSearch) {
+        syncSimpleTransferProductSearchInput(productSearch)
+        return
       }
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
@@ -8104,6 +8142,7 @@
         closeProductModal()
         await loadInventoryV13Overview()
         renderInitialStockProductDatalist()
+        renderSimpleTransferProductDatalist()
         if (pendingRow && savedProductId) {
           const product = productsV13.find((item) => String(item.id) === String(savedProductId))
           const hiddenInput = pendingRow.querySelector('[data-initial-product]')
