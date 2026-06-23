@@ -506,6 +506,25 @@
               <label for="invoiceImportDueDate">Splatnost faktury</label>
               <input id="invoiceImportDueDate" type="date" />
             </div>
+            <div class="field" id="invoiceImportCurrencyField">
+              <label for="invoiceImportCurrency">Měna</label>
+              <select id="invoiceImportCurrency">
+                <option value="CZK">CZK</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+            <div class="field" id="invoiceImportExchangeRateField">
+              <label for="invoiceImportExchangeRate">Kurz vůči CZK</label>
+              <input id="invoiceImportExchangeRate" type="number" min="0" step="0.001" placeholder="Jen pro cizí měnu" />
+            </div>
+            <div class="field" id="invoiceImportVatModeField">
+              <label for="invoiceImportVatMode">Režim DPH</label>
+              <select id="invoiceImportVatMode">
+                <option value="domestic">Tuzemsko s DPH</option>
+                <option value="eu_reverse_charge">EU reverse charge</option>
+                <option value="import_no_vat">Dovoz / mimo EU bez DPH</option>
+              </select>
+            </div>
             <div class="field">
               <label for="invoiceImportDeliveryDate">Datum příjmu</label>
               <input id="invoiceImportDeliveryDate" type="date" />
@@ -980,6 +999,11 @@
     const invoiceImportDateLabel = document.getElementById('invoiceImportDateLabel')
     const invoiceImportDueDate = document.getElementById('invoiceImportDueDate')
     const invoiceImportDueDateField = document.getElementById('invoiceImportDueDateField')
+    const invoiceImportCurrency = document.getElementById('invoiceImportCurrency')
+    const invoiceImportExchangeRate = document.getElementById('invoiceImportExchangeRate')
+    const invoiceImportExchangeRateField = document.getElementById('invoiceImportExchangeRateField')
+    const invoiceImportVatMode = document.getElementById('invoiceImportVatMode')
+    const invoiceImportVatModeField = document.getElementById('invoiceImportVatModeField')
     const invoiceImportDeliveryDate = document.getElementById('invoiceImportDeliveryDate')
     const invoiceImportStatus = document.getElementById('invoiceImportStatus')
     const invoiceImportLines = document.getElementById('invoiceImportLines')
@@ -1147,6 +1171,11 @@
       const amount = Number(value || 0)
       return `${amount.toLocaleString('cs-CZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kč`
     }
+    function formatMoney(value, currency = 'CZK') {
+      const amount = Number(value || 0)
+      const suffix = currency === 'EUR' ? 'EUR' : 'Kč'
+      return `${amount.toLocaleString('cs-CZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${suffix}`
+    }
     function parseMoneyNumber(value) {
       const normalized = String(value ?? '').trim().replace(/\s/g, '').replace(',', '.')
       if (!normalized) return 0
@@ -1224,7 +1253,46 @@
         .replace(/\[rada:[^\]]+\]/g, '')
         .replace(/\[typ:[^\]]+\]/g, '')
         .replace(/\[splatnost:[^\]]+\]/g, '')
+        .replace(/\[mena:[^\]]+\]/g, '')
+        .replace(/\[kurz:[^\]]+\]/g, '')
+        .replace(/\[dph-rezim:[^\]]+\]/g, '')
         .trim()
+    }
+    function purchaseCurrency(row = {}) {
+      const match = String(row.note || '').match(/\[mena:([A-Z]{3})\]/)
+      return row.currency || match?.[1] || 'CZK'
+    }
+    function purchaseExchangeRate(row = {}) {
+      const match = String(row.note || '').match(/\[kurz:([0-9]+(?:[.,][0-9]+)?)\]/)
+      const value = row.exchange_rate ?? row.exchangeRate ?? match?.[1]
+      return value ? Number(String(value).replace(',', '.')) : 1
+    }
+    function purchaseVatMode(row = {}) {
+      const match = String(row.note || '').match(/\[dph-rezim:([a-z_]+)\]/)
+      return row.vat_mode || row.vatMode || match?.[1] || 'domestic'
+    }
+    function purchaseVatModeMeta(mode = 'domestic') {
+      if (mode === 'eu_reverse_charge') return { label: 'EU reverse charge', grossUsesVat: false, note: 'DPH se na faktuře neplatí, základ se eviduje pro reverse charge.' }
+      if (mode === 'import_no_vat') return { label: 'Dovoz / mimo EU bez DPH', grossUsesVat: false, note: 'Dodavatelský doklad je bez DPH.' }
+      return { label: 'Tuzemsko s DPH', grossUsesVat: true, note: 'Standardní přijatý doklad s DPH.' }
+    }
+    function currentPurchaseCurrency() {
+      return invoiceImportCurrency?.value || 'CZK'
+    }
+    function currentPurchaseExchangeRate() {
+      const currency = currentPurchaseCurrency()
+      if (currency === 'CZK') return 1
+      return Number(invoiceImportExchangeRate?.value || 0)
+    }
+    function purchaseAmountToCzk(amount, currency = currentPurchaseCurrency(), rate = currentPurchaseExchangeRate()) {
+      const value = Number(amount || 0)
+      if (currency === 'CZK') return value
+      return Number((value * Number(rate || 0)).toFixed(2))
+    }
+    function purchaseCzkToDocumentAmount(amount, currency = currentPurchaseCurrency(), rate = currentPurchaseExchangeRate()) {
+      const value = Number(amount || 0)
+      if (currency === 'CZK') return value
+      return rate > 0 ? Number((value / Number(rate)).toFixed(2)) : 0
     }
     function sameSeriesYear(row, type, year) {
       return getDocumentType(row) === type && documentSeriesYear(row) === year
@@ -1268,13 +1336,23 @@
         setFieldVisible(invoiceImportNumberField, isInvoice || isCashReceipt)
         setFieldVisible(invoiceImportDeliveryNoteField, isInvoice || isDeliveryNote)
         setFieldVisible(invoiceImportDueDateField, isInvoice)
+        setFieldVisible(invoiceImportCurrencyField, isInvoice || isCashReceipt)
+        setFieldVisible(invoiceImportExchangeRateField, (isInvoice || isCashReceipt) && invoiceImportCurrency.value !== 'CZK')
+        setFieldVisible(invoiceImportVatModeField, isInvoice || isCashReceipt)
         invoiceImportNumber.required = isInvoice
         invoiceImportDeliveryNote.required = isDeliveryNote
         invoiceImportDueDate.required = false
+        invoiceImportExchangeRate.required = (isInvoice || isCashReceipt) && invoiceImportCurrency.value !== 'CZK'
         invoiceImportNumberLabel.textContent = isCashReceipt ? 'Číslo účtenky' : 'Číslo faktury'
         invoiceImportDeliveryNoteLabel.textContent = isDeliveryNote ? 'Číslo dodacího listu' : 'Navázaný dodací list'
         invoiceImportDateLabel.textContent = isDeliveryNote ? 'Datum dodacího listu' : isCashReceipt ? 'Datum účtenky' : isInvoice ? 'Datum faktury' : 'Datum příjemky'
         if (!isInvoice) invoiceImportDueDate.value = ''
+        if (!(isInvoice || isCashReceipt)) {
+          invoiceImportCurrency.value = 'CZK'
+          invoiceImportExchangeRate.value = ''
+          invoiceImportVatMode.value = 'domestic'
+        }
+        if (invoiceImportCurrency.value === 'CZK') invoiceImportExchangeRate.value = ''
         if (!isInvoice && !isCashReceipt) invoiceImportNumber.value = ''
         if (!isInvoice && !isDeliveryNote) invoiceImportDeliveryNote.value = ''
         return
@@ -1475,6 +1553,9 @@
         issueDate: xmlText(invoice, 'IssueDate'),
         taxPointDate: xmlText(invoice, 'TaxPointDate'),
         dueDate: xmlText(invoice, 'DueDate'),
+        currency: xmlText(invoice, 'ForeignCurrencyCode') || xmlText(invoice, 'DocumentCurrencyCode') || xmlText(invoice, 'CurrencyCode') || xmlText(invoice, 'LocalCurrencyCode') || 'CZK',
+        exchangeRate: xmlNumber(xmlText(invoice, 'CurrRate') || xmlText(invoice, 'ExchangeRate')),
+        vatMode: 'domestic',
         supplierName: xmlText(supplierPartyNode, 'PartyName') || xmlText(supplierPartyNode, 'Name'),
         supplierCompanyId: xmlText(supplierPartyNode, 'CompanyID'),
         orderNumber: xmlText(orderRef, 'SalesOrderID') || xmlText(orderRef, 'ID'),
@@ -1691,13 +1772,22 @@
       const quantity = parseMoneyNumber(row.querySelector('[data-import-quantity]')?.value || 0)
       const unitCost = parseMoneyNumber(row.querySelector('[data-import-unit-cost]')?.value || 0)
       const vatRate = parseMoneyNumber(row.querySelector('[data-import-vat-rate]')?.value || 0)
+      const currency = currentPurchaseCurrency()
+      const exchangeRate = currentPurchaseExchangeRate()
+      const vatMode = invoiceImportVatMode?.value || 'domestic'
+      const vatMeta = purchaseVatModeMeta(vatMode)
       const net = roundMoney(quantity * unitCost)
+      const gross = vatMeta.grossUsesVat ? roundMoney(net * (1 + (vatRate / 100))) : net
+      const unitCostCzk = currency === 'CZK' ? unitCost : purchaseAmountToCzk(unitCost, currency, exchangeRate)
       return {
         quantity,
         unitCost,
+        unitCostCzk,
         vatRate,
         net,
-        gross: roundMoney(net * (1 + (vatRate / 100)))
+        gross,
+        netCzk: purchaseAmountToCzk(net, currency, exchangeRate),
+        grossCzk: purchaseAmountToCzk(gross, currency, exchangeRate)
       }
     }
     function getLastPurchasePrice(productId) {
@@ -1788,7 +1878,7 @@
       if (targetLine) {
         targetLine.productId = result.data.id
         targetLine.productSearch = productLabel(result.data)
-        if (!targetLine.unitPriceNet && Number(payload.purchase_price || 0) > 0) targetLine.unitPriceNet = Number(payload.purchase_price)
+        if (!targetLine.unitPriceNet && Number(payload.purchase_price || 0) > 0) targetLine.unitPriceNet = purchaseCzkToDocumentAmount(Number(payload.purchase_price))
       }
       renderInvoiceImport()
       return result.data
@@ -1814,7 +1904,8 @@
     }
     function updateImportLinePriceWatch(row) {
       const productId = row.querySelector('[data-import-product]')?.value || ''
-      const unitCost = Number(row.querySelector('[data-import-unit-cost]')?.value || 0)
+      const amounts = importLineAmounts(row)
+      const unitCost = amounts.unitCostCzk
       const target = row.querySelector('[data-import-price-watch]')
       if (!target) return
       const message = priceWatchMessage(productId, unitCost)
@@ -1860,7 +1951,7 @@
       const unitCostInput = row.querySelector('[data-import-unit-cost]')
       const lastPrice = getLastPurchasePrice(product.id)
       if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
-        unitCostInput.value = String(lastPrice)
+        unitCostInput.value = String(purchaseCzkToDocumentAmount(lastPrice))
       }
       syncInvoiceImportLineFromRow(row)
       updateInvoiceImportTotals()
@@ -1891,23 +1982,30 @@
     function updateInvoiceImportTotals() {
       let totalNet = 0
       let totalGross = 0
+      let totalNetCzk = 0
+      let totalGrossCzk = 0
       let priceWarningCount = 0
+      const currency = currentPurchaseCurrency()
       invoiceImportLines.querySelectorAll('[data-import-line]').forEach((row) => {
         const amounts = importLineAmounts(row)
         totalNet += amounts.net
         totalGross += amounts.gross
+        totalNetCzk += amounts.netCzk
+        totalGrossCzk += amounts.grossCzk
         const netTarget = row.querySelector('[data-import-total-net]')
         const grossTarget = row.querySelector('[data-import-total-gross]')
-        if (netTarget) netTarget.textContent = formatCurrency(amounts.net)
-        if (grossTarget) grossTarget.textContent = formatCurrency(amounts.gross)
+        if (netTarget) netTarget.textContent = formatMoney(amounts.net, currency)
+        if (grossTarget) grossTarget.textContent = formatMoney(amounts.gross, currency)
         const priceWatch = updateImportLinePriceWatch(row)
         if (priceWatch?.type === 'warn') priceWarningCount += 1
       })
       const netSummary = document.getElementById('invoiceImportTotalNet')
       const grossSummary = document.getElementById('invoiceImportTotalGross')
+      const czkSummary = document.getElementById('invoiceImportTotalCzk')
       const priceWatchSummary = document.getElementById('invoiceImportPriceWatch')
-      if (netSummary) netSummary.textContent = formatCurrency(totalNet)
-      if (grossSummary) grossSummary.textContent = formatCurrency(totalGross)
+      if (netSummary) netSummary.textContent = formatMoney(totalNet, currency)
+      if (grossSummary) grossSummary.textContent = formatMoney(totalGross, currency)
+      if (czkSummary) czkSummary.textContent = currency === 'CZK' ? formatCurrency(totalGross) : formatCurrency(totalGrossCzk)
       if (priceWatchSummary) priceWatchSummary.textContent = priceWarningCount ? `${priceWarningCount} položek` : 'Bez rizika'
     }
     function updateInvoiceImportMatchStatus() {
@@ -1920,6 +2018,10 @@
       const supplierId = invoiceImportSupplierId.value
       const documentMeta = documentTypeMeta(invoiceImportDocumentType.value)
       const previewInternalNumber = internalDocumentNumber(null, invoiceImportDocumentType.value)
+      const currency = currentPurchaseCurrency()
+      const exchangeRate = currentPurchaseExchangeRate()
+      const vatMode = invoiceImportVatMode?.value || 'domestic'
+      const vatMeta = purchaseVatModeMeta(vatMode)
       invoiceImportInternalNumber.textContent = previewInternalNumber
       invoiceImportSummary.innerHTML = [
         { label: 'Interní číslo', value: previewInternalNumber, note: `${documentMeta.label} · číselná řada ${documentMeta.prefix}` },
@@ -1927,9 +2029,11 @@
         { label: 'Dodavatel', value: currentInvoiceImport.supplierName || suppliers.find((supplier) => String(supplier.id) === String(supplierId))?.name || 'Neuvedeno', note: currentInvoiceImport.supplierCompanyId ? `IČO ${currentInvoiceImport.supplierCompanyId}` : 'Ruční nebo XML doklad' },
         { label: documentMeta.short, value: invoiceImportNumber.value || currentInvoiceImport.invoiceNumber || 'Bez čísla', note: invoiceImportDate.value ? new Date(invoiceImportDate.value).toLocaleDateString('cs-CZ') : 'Bez data' },
         { label: 'Dodací list', value: currentInvoiceImport.deliveryNoteNumber || 'Neuvedeno', note: currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}` : 'Bez objednávky' },
+        { label: 'Měna / DPH', value: currency, note: `${currency === 'CZK' ? 'Bez kurzového přepočtu' : `Kurz ${exchangeRate || 'chybí'}`} · ${vatMeta.label}` },
         { label: 'Položky', value: String(currentInvoiceImport.lines.length), note: 'Řádky připravené k párování.' },
-        { label: 'Celkem bez DPH', value: '0,00 Kč', note: 'Součet nákupních cen.', id: 'invoiceImportTotalNet' },
-        { label: 'Celkem s DPH', value: '0,00 Kč', note: 'Kontrola proti dokladu.', id: 'invoiceImportTotalGross' },
+        { label: 'Celkem bez DPH', value: formatMoney(0, currency), note: 'Součet v měně dokladu.', id: 'invoiceImportTotalNet' },
+        { label: 'Celkem k úhradě', value: formatMoney(0, currency), note: vatMeta.note, id: 'invoiceImportTotalGross' },
+        { label: 'Interně v Kč', value: '0,00 Kč', note: 'Přepočet pro sklad a nákupní ceny.', id: 'invoiceImportTotalCzk' },
         { label: 'Cenová kontrola', value: 'Bez rizika', note: 'Zdražení proti poslední nákupní ceně.', id: 'invoiceImportPriceWatch' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value"${card.id ? ` id="${escapeHtml(card.id)}"` : ''}>${escapeHtml(card.value)}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       if (!currentInvoiceImport.lines.length) {
@@ -1947,12 +2051,12 @@
         const selectedProduct = getProductById(selectedProductId)
         const productSearchValue = line.productSearch || productLabel(selectedProduct)
         const lastPrice = getLastPurchasePrice(selectedProductId)
-        if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = lastPrice
+        if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = purchaseCzkToDocumentAmount(lastPrice, currency, exchangeRate)
         const quantity = Number(line.quantity || 0)
         const unitCost = Number(line.unitPriceNet || 0)
         const vatRate = Number(line.vatRate || 0)
         const totalNet = quantity * unitCost
-        const totalGross = totalNet * (1 + (vatRate / 100))
+        const totalGross = purchaseVatModeMeta(invoiceImportVatMode?.value || 'domestic').grossUsesVat ? totalNet * (1 + (vatRate / 100)) : totalNet
         const sourceBlock = hasSource ? `
             <div>
               <input type="hidden" data-import-description value="${escapeHtml(line.description || '')}" />
@@ -1980,7 +2084,7 @@
               <input data-import-quantity type="number" min="0" step="0.001" value="${escapeHtml(String(quantity || 1))}" />
             </div>
             <div class="field">
-              <label>Cena bez DPH / ks</label>
+              <label>Cena bez DPH / ks (${escapeHtml(currency)})</label>
               <input data-import-unit-cost type="number" min="0" step="0.01" value="${escapeHtml(String(unitCost || 0))}" />
               <div class="price-watch" data-import-price-watch></div>
             </div>
@@ -1990,11 +2094,11 @@
             </div>
             <div class="field">
               <label>Celkem bez DPH</label>
-              <div class="import-line-total" data-import-total-net>${escapeHtml(formatCurrency(totalNet))}</div>
+              <div class="import-line-total" data-import-total-net>${escapeHtml(formatMoney(totalNet, currency))}</div>
             </div>
             <div class="field">
-              <label>Celkem s DPH</label>
-              <div class="import-line-total" data-import-total-gross>${escapeHtml(formatCurrency(totalGross))}</div>
+              <label>Celkem k úhradě</label>
+              <div class="import-line-total" data-import-total-gross>${escapeHtml(formatMoney(totalGross, currency))}</div>
             </div>
             <div class="field">
               <label>&nbsp;</label>
@@ -2027,6 +2131,9 @@
         supplierCompanyId: '',
         orderNumber: '',
         deliveryNoteNumber: '',
+        currency: 'CZK',
+        exchangeRate: '',
+        vatMode: 'domestic',
         lines: []
       }
       invoiceImportSupplierId.innerHTML = supplierOptionsHtml()
@@ -2037,6 +2144,9 @@
       invoiceImportDeliveryNote.value = ''
       invoiceImportDate.value = new Date().toISOString().slice(0, 10)
       invoiceImportDueDate.value = ''
+      invoiceImportCurrency.value = 'CZK'
+      invoiceImportExchangeRate.value = ''
+      invoiceImportVatMode.value = 'domestic'
       invoiceImportDeliveryDate.value = new Date().toISOString().slice(0, 10)
       renderInvoiceImport()
       invoiceImportModalBackdrop.classList.add('show')
@@ -2078,6 +2188,9 @@
       invoiceImportDeliveryNote.value = currentInvoiceImport.deliveryNoteNumber || ''
       invoiceImportDate.value = currentInvoiceImport.issueDate || new Date().toISOString().slice(0, 10)
       invoiceImportDueDate.value = currentInvoiceImport.dueDate || ''
+      invoiceImportCurrency.value = currentInvoiceImport.currency && currentInvoiceImport.currency !== 'CZK' ? currentInvoiceImport.currency : 'CZK'
+      invoiceImportExchangeRate.value = invoiceImportCurrency.value === 'CZK' ? '' : (currentInvoiceImport.exchangeRate || '')
+      invoiceImportVatMode.value = invoiceImportCurrency.value === 'EUR' ? (currentInvoiceImport.vatMode || 'eu_reverse_charge') : (currentInvoiceImport.vatMode || 'domestic')
       invoiceImportDeliveryDate.value = currentInvoiceImport.taxPointDate || currentInvoiceImport.issueDate || new Date().toISOString().slice(0, 10)
       renderInvoiceImport()
       invoiceImportModalBackdrop.classList.add('show')
@@ -2138,6 +2251,10 @@
       const warehouseId = parseRequiredEntityId(invoiceImportWarehouseId.value, 'Sklad')
       const documentType = invoiceImportDocumentType.value || 'invoice'
       const documentNumber = invoiceImportNumber.value.trim()
+      const currency = currentPurchaseCurrency()
+      const exchangeRate = currentPurchaseExchangeRate()
+      const vatMode = invoiceImportVatMode?.value || 'domestic'
+      if (currency !== 'CZK' && (!exchangeRate || exchangeRate <= 0)) throw new Error('Doplň kurz vůči CZK pro přepočet nákupních cen.')
       if (documentType === 'invoice' && !documentNumber) throw new Error('Doplň číslo faktury.')
       if (documentType === 'delivery_note' && !invoiceImportDeliveryNote.value.trim()) throw new Error('Doplň číslo dodacího listu.')
       if (documentNumber && documentType === 'invoice') {
@@ -2161,16 +2278,19 @@
         const amounts = importLineAmounts(row)
         const productId = parseRequiredEntityId(productInput.value, 'Karta zásoby')
         const lastUnitCost = getLastPurchasePrice(productId)
-        const priceCheck = priceWatchMessage(productId, amounts.unitCost)
+        const priceCheck = priceWatchMessage(productId, amounts.unitCostCzk)
         return {
           ...source,
           description: row.querySelector('[data-import-description]')?.value.trim() || source.description || productName || `Položka ${index + 1}`,
           productId,
           receivedQuantity: amounts.quantity,
-          unitCost: amounts.unitCost,
+          unitCost: amounts.unitCostCzk,
+          documentUnitCost: amounts.unitCost,
           vatRate: amounts.vatRate,
-          totalNet: amounts.net,
-          totalGross: amounts.gross,
+          totalNet: amounts.netCzk,
+          totalGross: amounts.grossCzk,
+          documentTotalNet: amounts.net,
+          documentTotalGross: amounts.gross,
           lastUnitCost,
           priceCheck: priceCheck.text
         }
@@ -2185,18 +2305,22 @@
             productId: line.productId,
             receivedQuantity: line.receivedQuantity,
             costTotal: line.receivedQuantity * Number(line.unitCost || 0),
+            documentCostTotal: Number(line.documentTotalNet || 0),
             vatRate: Number(line.vatRate || 0),
             grossTotal: Number(line.totalGross || 0),
+            documentGrossTotal: Number(line.documentTotalGross || 0),
             priceChecks: line.priceCheck ? [line.priceCheck] : [],
-            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
+            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
           })
           return
         }
         existing.receivedQuantity += line.receivedQuantity
         existing.costTotal += line.receivedQuantity * Number(line.unitCost || 0)
+        existing.documentCostTotal += Number(line.documentTotalNet || 0)
         existing.grossTotal += Number(line.totalGross || 0)
+        existing.documentGrossTotal += Number(line.documentTotalGross || 0)
         if (line.priceCheck) existing.priceChecks.push(line.priceCheck)
-        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
+        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
       })
       const groupedLines = Array.from(groupedLineMap.values()).map((line) => ({
         ...line,
@@ -2207,7 +2331,7 @@
         return productNeedsExpiry(product) || productNeedsBatch(product)
       })
       const shouldReceiveNow = autoReceive && !requiresReceiptDetails
-      const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''} ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
+      const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''}[mena:${currency}][kurz:${currency === 'CZK' ? '1' : exchangeRate}][dph-rezim:${vatMode}] ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
       const { data: order, error: orderError } = await insertPurchaseOrder({
           supplier_id: supplierId,
           order_scope: 'general',
@@ -2236,7 +2360,7 @@
         ordered_quantity: line.receivedQuantity,
         received_quantity: 0,
         unit_cost: line.unitCost || null,
-        note: [`[dph:${Number(line.vatRate || 0)}][celkem-bez-dph:${Number(line.costTotal || 0).toFixed(2)}][celkem-s-dph:${Number(line.grossTotal || 0).toFixed(2)}]`, line.priceChecks?.length ? `[kontrola-ceny] ${line.priceChecks.slice(0, 3).join(' | ')}` : '', line.notes.slice(0, 4).join('\n')].filter(Boolean).join('\n')
+        note: [`[dph:${Number(line.vatRate || 0)}][celkem-bez-dph:${Number(line.costTotal || 0).toFixed(2)}][celkem-s-dph:${Number(line.grossTotal || 0).toFixed(2)}][mena:${currency}][kurz:${currency === 'CZK' ? '1' : exchangeRate}][doklad-bez-dph:${Number(line.documentCostTotal || line.costTotal || 0).toFixed(2)}][doklad-celkem:${Number(line.documentGrossTotal || line.grossTotal || 0).toFixed(2)}]`, line.priceChecks?.length ? `[kontrola-ceny] ${line.priceChecks.slice(0, 3).join(' | ')}` : '', line.notes.slice(0, 4).join('\n')].filter(Boolean).join('\n')
       }))).select('id, product_id, ordered_quantity, unit_cost')
       if (itemsError) throw itemsError
       await saveSupplierMappingsFromImport(supplierId, importLines.map((line) => ({
@@ -3039,6 +3163,14 @@
       const match = String(item.note || '').match(/\[celkem-s-dph:([0-9]+(?:[.,][0-9]+)?)\]/)
       return match ? Number(match[1].replace(',', '.')) : null
     }
+    function orderItemDocumentNet(item) {
+      const match = String(item.note || '').match(/\[doklad-bez-dph:([0-9]+(?:[.,][0-9]+)?)\]/)
+      return match ? Number(match[1].replace(',', '.')) : null
+    }
+    function orderItemDocumentGross(item) {
+      const match = String(item.note || '').match(/\[doklad-celkem:([0-9]+(?:[.,][0-9]+)?)\]/)
+      return match ? Number(match[1].replace(',', '.')) : null
+    }
     function orderTotalGross(row) {
       return (row.items || []).reduce((sum, item) => {
         const storedGross = orderItemStoredGross(item)
@@ -3048,6 +3180,17 @@
         const net = qty * Number(item.unit_cost || 0)
         return sum + roundMoney(net * (1 + (orderItemVatRate(item) / 100)))
       }, 0)
+    }
+    function orderDocumentTotal(row, gross = true) {
+      const currency = purchaseCurrency(row)
+      if (currency === 'CZK') return gross ? orderTotalGross(row) : orderTotal(row)
+      const rate = purchaseExchangeRate(row)
+      const total = (row.items || []).reduce((sum, item) => {
+        const stored = gross ? orderItemDocumentGross(item) : orderItemDocumentNet(item)
+        if (stored !== null) return sum + stored
+        return sum + (rate > 0 ? ((gross ? orderTotalGross({ ...row, items: [item] }) : orderTotal({ ...row, items: [item] })) / rate) : 0)
+      }, 0)
+      return roundMoney(total)
     }
     function orderItemPreview(row) {
       const items = row.items || []
@@ -3127,6 +3270,12 @@
         const statusMeta = orderStatusMeta(row.status)
         const total = orderTotal(row)
         const totalGross = orderTotalGross(row)
+        const currency = purchaseCurrency(row)
+        const displayTotal = orderDocumentTotal(row, true)
+        const displayNet = orderDocumentTotal(row, false)
+        const currencySubtext = currency === 'CZK'
+          ? `s DPH · bez DPH ${total > 0 ? formatCurrency(total) : '—'}`
+          : `≈ ${formatCurrency(totalGross)} · bez DPH ${formatMoney(displayNet, currency)}`
         const documentMeta = documentTypeMeta(getDocumentType(row))
         const dueDate = getDueDate(row)
         const internalNumber = internalDocumentNumber(row)
@@ -3139,7 +3288,7 @@
             <td data-label="Datum"><strong>${escapeHtml(formatDate(orderDateForLedger(row)))}</strong><span class="subtext">Obj. ${escapeHtml(formatDate(row.order_date))} · Splat. ${escapeHtml(formatDate(dueDate))}</span></td>
             <td data-label="Položky"><strong>${escapeHtml(String((row.items || []).length))} položek</strong><span class="subtext doc-items">${escapeHtml(orderItemPreview(row))}</span></td>
             <td data-label="Sklad"><strong>${escapeHtml(row.received_stock_location_id ? 'Přijato na sklad' : row.status === 'ordered' ? 'Čeká na sklad' : 'Neurčeno')}</strong><span class="subtext">DL ${escapeHtml(row.delivery_note_number || '—')}</span></td>
-            <td data-label="Částka"><span class="money-cell">${escapeHtml(totalGross > 0 ? formatCurrency(totalGross) : 'Bez částky')}</span><span class="subtext">s DPH · bez DPH ${escapeHtml(total > 0 ? formatCurrency(total) : '—')}</span></td>
+            <td data-label="Částka"><span class="money-cell">${escapeHtml(displayTotal > 0 ? formatMoney(displayTotal, currency) : 'Bez částky')}</span><span class="subtext">${escapeHtml(currencySubtext)}</span></td>
             <td data-label="Akce">${ledgerActions(row)}</td>
           </tr>
         `
@@ -3612,6 +3761,14 @@
     invoiceImportDueDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     invoiceImportDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     invoiceImportDeliveryDate.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
+    invoiceImportCurrency.addEventListener('change', () => {
+      if (invoiceImportCurrency.value !== 'CZK' && invoiceImportVatMode.value === 'domestic') invoiceImportVatMode.value = 'eu_reverse_charge'
+      if (invoiceImportCurrency.value === 'CZK') invoiceImportVatMode.value = 'domestic'
+      syncInvoiceImportLinesFromDom()
+      renderInvoiceImport()
+    })
+    invoiceImportExchangeRate.addEventListener('input', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
+    invoiceImportVatMode.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     receiptDocumentType.addEventListener('change', () => applyDocumentTypeRules('receipt'))
     invoiceImportLines.addEventListener('input', (event) => {
       const row = event.target.closest('[data-import-line]')
