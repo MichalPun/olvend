@@ -204,6 +204,7 @@
             <button class="btn secondary" id="generateBtn" type="button" hidden>Připravit návrhy</button>
             <a class="btn secondary" href="suppliers.html">Dodavatelé</a>
             <input class="file-input-hidden" id="invoiceXmlInput" type="file" accept=".isdoc,.xml,application/xml,text/xml" />
+            <input class="file-input-hidden" id="invoicePdfInput" type="file" accept=".pdf,application/pdf" />
           </div>
         </div>
 
@@ -532,9 +533,10 @@
           </div>
           <div class="action-row" style="margin-top:16px;">
             <button class="btn secondary small" id="loadInvoiceXmlBtn" type="button">Načíst ISDOC</button>
+            <button class="btn secondary small" id="loadInvoicePdfBtn" type="button">Načíst PDF</button>
             <button class="btn secondary small" id="addManualInvoiceLineBtn" type="button">+ Položka ručně</button>
           </div>
-          <div class="status-line" id="invoiceImportStatus" style="margin-top:16px;">Doklad můžeš zadat ručně, nebo si položky načíst z ISDOC/XML.</div>
+          <div class="status-line" id="invoiceImportStatus" style="margin-top:16px;">Doklad můžeš zadat ručně, nebo si položky načíst z ISDOC/XML/PDF.</div>
           <div class="line-items" id="invoiceImportLines"></div>
         </div>
         <div class="modal-footer split">
@@ -961,6 +963,7 @@
     const refreshBtn = document.getElementById('refreshBtn')
     const importInvoiceBtn = document.getElementById('importInvoiceBtn')
     const invoiceXmlInput = document.getElementById('invoiceXmlInput')
+    const invoicePdfInput = document.getElementById('invoicePdfInput')
     const quickJipOrderBtn = document.getElementById('quickJipOrderBtn')
     const generateBtn = document.getElementById('generateBtn')
     const openProfileBtn = document.getElementById('openProfileBtn')
@@ -1009,6 +1012,7 @@
     const invoiceImportLines = document.getElementById('invoiceImportLines')
     const saveInvoiceImportBtn = document.getElementById('saveInvoiceImportBtn')
     const loadInvoiceXmlBtn = document.getElementById('loadInvoiceXmlBtn')
+    const loadInvoicePdfBtn = document.getElementById('loadInvoicePdfBtn')
     const addManualInvoiceLineBtn = document.getElementById('addManualInvoiceLineBtn')
     const addManualInvoiceLineFooterBtn = document.getElementById('addManualInvoiceLineFooterBtn')
 
@@ -1125,6 +1129,9 @@
     let currentRecurringOrder = null
     let documentSort = { key: 'date', direction: 'desc' }
     let supplierPublishedAccounts = []
+    let pdfJsLoadPromise = null
+    const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs'
+    const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs'
     const DOCUMENT_SERIES_STORAGE_KEY = 'olvend.purchaseDocumentSeries.v1'
     const DOCUMENT_SERIES_DB_KEY = 'purchase_document_series'
     const DEFAULT_DOCUMENT_SERIES = {
@@ -1513,6 +1520,121 @@
       const encoding = encodingMatch ? encodingMatch[1].toLowerCase() : 'utf-8'
       const decoder = new TextDecoder(encoding.includes('1250') ? 'windows-1250' : 'utf-8')
       return decoder.decode(buffer)
+    }
+    async function loadPdfJs() {
+      if (!pdfJsLoadPromise) {
+        pdfJsLoadPromise = import(PDFJS_URL).then((pdfjs) => {
+          pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL
+          return pdfjs
+        })
+      }
+      return pdfJsLoadPromise
+    }
+    async function extractPdfLines(file) {
+      const pdfjs = await loadPdfJs()
+      const data = new Uint8Array(await file.arrayBuffer())
+      const pdf = await pdfjs.getDocument({ data }).promise
+      const allLines = []
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber)
+        const content = await page.getTextContent()
+        const rows = []
+        content.items.forEach((item) => {
+          const text = String(item.str || '').trim()
+          if (!text) return
+          const x = Number(item.transform?.[4] || 0)
+          const y = Number(item.transform?.[5] || 0)
+          let row = rows.find((candidate) => Math.abs(candidate.y - y) < 3)
+          if (!row) {
+            row = { y, items: [] }
+            rows.push(row)
+          }
+          row.items.push({ x, text })
+        })
+        rows
+          .sort((a, b) => b.y - a.y)
+          .forEach((row) => {
+            const line = row.items
+              .sort((a, b) => a.x - b.x)
+              .map((item) => item.text)
+              .join(' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+            if (line) allLines.push(line)
+          })
+      }
+      return allLines
+    }
+    function parsePdfDate(value) {
+      const match = String(value || '').match(/(\d{1,2})[./-](\d{1,2})[./-](\d{4})/)
+      if (!match) return ''
+      return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`
+    }
+    function parsePdfAmount(value) {
+      const normalized = String(value || '')
+        .replace(/[€\s]/g, '')
+        .replace(/,/g, '')
+      const parsed = Number(normalized)
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+    function parseBarberaPdfInvoice(lines) {
+      const text = lines.join('\n')
+      const invoiceNumber = text.match(/Invoice\s+([A-Z0-9/_-]+)/i)?.[1] || ''
+      const dateLineIndex = lines.findIndex((line) => /Invoice Date/i.test(line) && /Due Date/i.test(line))
+      const dateLine = dateLineIndex >= 0 ? lines[dateLineIndex + 1] || '' : ''
+      const dateMatches = Array.from(dateLine.matchAll(/\d{1,2}[./-]\d{1,2}[./-]\d{4}/g)).map((match) => parsePdfDate(match[0]))
+      const supplierName = lines.find((line) => /Barbera\s+Caff/i.test(line)) || 'Barbera Caffe SpA'
+      const orderNumber = text.match(/Sale order\s+"([^"]+)"/i)?.[1] || ''
+      const lotLinesByCode = new Map()
+      lines.forEach((line) => {
+        const lotMatch = line.match(/^\[([^\]]+)\]\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+(kg|ks|g|pcs?)\s+([A-Z0-9/-]+)\s+(\d{1,2}[./-]\d{1,2}[./-]\d{4})$/i)
+        if (!lotMatch) return
+        const code = lotMatch[1].trim()
+        const lots = lotLinesByCode.get(code) || []
+        lots.push(`${lotMatch[3]} ${lotMatch[4]} · šarže ${lotMatch[5]} · expirace ${parsePdfDate(lotMatch[6])}`)
+        lotLinesByCode.set(code, lots)
+      })
+      const invoiceLines = []
+      lines.forEach((line, index) => {
+        const match = line.match(/^\[([^\]]+)\]\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+(kg|ks|g|pcs?)\s+(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)\s+(.+?)\s+([\d,.]+)\s*€$/i)
+        if (!match) return
+        const supplierCode = match[1].trim()
+        const eanLine = lines.slice(index + 1, index + 5).find((candidate) => /EAN Code:/i.test(candidate))
+        const ean = eanLine?.match(/EAN Code:\s*([0-9]+)/i)?.[1] || ''
+        const quantity = parseMoneyNumber(match[3])
+        const amount = parsePdfAmount(match[9])
+        invoiceLines.push({
+          index: invoiceLines.length,
+          lineId: String(invoiceLines.length + 1),
+          supplierCode,
+          ean,
+          description: match[2].trim(),
+          quantity,
+          unitCode: match[4],
+          unitPriceNet: quantity > 0 ? Number((amount / quantity).toFixed(4)) : parseMoneyNumber(match[7]),
+          unitPriceGross: 0,
+          vatRate: 0,
+          sourceNote: lotLinesByCode.get(supplierCode)?.join(' | ') || ''
+        })
+      })
+      if (!invoiceNumber || !invoiceLines.length) {
+        throw new Error('PDF se nepodařilo rozpoznat jako podporovanou zahraniční fakturu. Zkus ISDOC/XML nebo ruční zadání.')
+      }
+      return {
+        invoiceNumber,
+        issueDate: dateMatches[0] || '',
+        taxPointDate: dateMatches[0] || '',
+        dueDate: dateMatches[1] || dateMatches[0] || '',
+        currency: 'EUR',
+        exchangeRate: '',
+        vatMode: 'eu_reverse_charge',
+        supplierName,
+        supplierCompanyId: '',
+        orderNumber,
+        deliveryNoteNumber: '',
+        sourceType: 'PDF',
+        lines: invoiceLines
+      }
     }
     function parseIsdocInvoice(xmlString) {
       const doc = new DOMParser().parseFromString(xmlString, 'application/xml')
@@ -2179,6 +2301,15 @@
     async function openInvoiceImportFromFile(file) {
       const xml = await readXmlFile(file)
       currentInvoiceImport = parseIsdocInvoice(xml)
+      currentInvoiceImport.sourceType = currentInvoiceImport.sourceType || 'ISDOC XML'
+      openInvoiceImportFromParsed()
+    }
+    async function openInvoiceImportFromPdf(file) {
+      const lines = await extractPdfLines(file)
+      currentInvoiceImport = parseBarberaPdfInvoice(lines)
+      openInvoiceImportFromParsed()
+    }
+    function openInvoiceImportFromParsed() {
       const matchedSupplier = findSupplierForInvoice(currentInvoiceImport)
       invoiceImportSupplierId.innerHTML = supplierOptionsHtml()
       invoiceImportWarehouseId.innerHTML = warehouseOptionsHtml()
@@ -2310,7 +2441,7 @@
             grossTotal: Number(line.totalGross || 0),
             documentGrossTotal: Number(line.documentTotalGross || 0),
             priceChecks: line.priceCheck ? [line.priceCheck] : [],
-            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
+            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
           })
           return
         }
@@ -2320,7 +2451,7 @@
         existing.grossTotal += Number(line.totalGross || 0)
         existing.documentGrossTotal += Number(line.documentTotalGross || 0)
         if (line.priceCheck) existing.priceChecks.push(line.priceCheck)
-        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
+        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
       })
       const groupedLines = Array.from(groupedLineMap.values()).map((line) => ({
         ...line,
@@ -2331,7 +2462,9 @@
         return productNeedsExpiry(product) || productNeedsBatch(product)
       })
       const shouldReceiveNow = autoReceive && !requiresReceiptDetails
-      const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''}[mena:${currency}][kurz:${currency === 'CZK' ? '1' : exchangeRate}][dph-rezim:${vatMode}] ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'Importováno z ISDOC XML.' : 'Ručně zadaný doklad.'}`.trim()
+      const importSource = currentInvoiceImport.sourceType || (currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'ISDOC XML' : '')
+      const sourceNote = importSource ? `Importováno z ${importSource}.` : 'Ručně zadaný doklad.'
+      const baseNote = `[typ:${documentType}]${documentType === 'invoice' && invoiceImportDueDate.value ? `[splatnost:${invoiceImportDueDate.value}]` : ''}[mena:${currency}][kurz:${currency === 'CZK' ? '1' : exchangeRate}][dph-rezim:${vatMode}] ${currentInvoiceImport.orderNumber ? `Objednávka ${currentInvoiceImport.orderNumber}. ` : ''}${sourceNote}`.trim()
       const { data: order, error: orderError } = await insertPurchaseOrder({
           supplier_id: supplierId,
           order_scope: 'general',
@@ -3683,6 +3816,7 @@
     refreshBtn.addEventListener('click', loadPage)
     importInvoiceBtn.addEventListener('click', openManualDocumentModal)
     loadInvoiceXmlBtn.addEventListener('click', () => invoiceXmlInput.click())
+    loadInvoicePdfBtn.addEventListener('click', () => invoicePdfInput.click())
     addManualInvoiceLineBtn.addEventListener('click', addManualInvoiceLine)
     addManualInvoiceLineFooterBtn.addEventListener('click', addManualInvoiceLine)
     openSupplierQuickAddBtn.addEventListener('click', openSupplierQuickModal)
@@ -3820,6 +3954,19 @@
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se načíst fakturu: ${error.message}`, 'error')
+      }
+    })
+    invoicePdfInput.addEventListener('change', async () => {
+      const file = invoicePdfInput.files?.[0]
+      invoicePdfInput.value = ''
+      if (!file) return
+      try {
+        setStatus('Načítám PDF fakturu...')
+        await openInvoiceImportFromPdf(file)
+        setStatus('PDF faktura byla načtená do náhledu importu.', 'success')
+      } catch (error) {
+        console.error(error)
+        setStatus(`Nepodařilo se načíst PDF fakturu: ${error.message}`, 'error')
       }
     })
     invoiceImportSupplierId.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
