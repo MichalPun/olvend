@@ -99,6 +99,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "controlling.html": {
+      currentLabel: "Kontrolní trasy",
+      activeKey: "controlling",
+      versionLabel: "Návrh verze",
+      versionValue: "OLVEND 1.7",
+      versionNote: "PC část kontrolingu"
+    },
     "service-requests.html": {
       currentLabel: "Servisní požadavky",
       activeKey: "service-requests",
@@ -297,6 +304,7 @@
             { key: "routes", href: "routes.html", label: "Trasy" },
             { key: "routes-create", href: "routes-create.html", label: "Vytvořit trasu" },
             { key: "routes-history", href: "routes-history.html", label: "Historie tras" },
+            { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
             { key: "fleet", href: "vehicles.html", label: "Vozový park" }
           ]
         },
