@@ -1584,6 +1584,7 @@
       const dateLine = dateLineIndex >= 0 ? lines[dateLineIndex + 1] || '' : ''
       const dateMatches = Array.from(dateLine.matchAll(/\d{1,2}[./-]\d{1,2}[./-]\d{4}/g)).map((match) => parsePdfDate(match[0]))
       const supplierName = lines.find((line) => /Barbera\s+Caff/i.test(line)) || 'Barbera Caffe SpA'
+      const supplierTaxId = text.match(/Vat Number\s+(IT\s*[A-Z0-9]+)/i)?.[1]?.replace(/\s/g, '').toUpperCase() || ''
       const orderNumber = text.match(/Sale order\s+"([^"]+)"/i)?.[1] || ''
       const lotLinesByCode = new Map()
       lines.forEach((line) => {
@@ -1630,6 +1631,7 @@
         vatMode: 'eu_reverse_charge',
         supplierName,
         supplierCompanyId: '',
+        supplierTaxId,
         orderNumber,
         deliveryNoteNumber: '',
         sourceType: 'PDF',
@@ -1687,10 +1689,51 @@
     }
     function findSupplierForInvoice(invoice) {
       const supplierName = normalizeText(invoice.supplierName)
+      if (!supplierName) return null
+      const supplierTaxId = String(invoice.supplierTaxId || '').trim().toUpperCase().replace(/\s/g, '')
+      if (supplierTaxId) {
+        const byTaxId = suppliers.find((supplier) => String(supplier.tax_id || '').trim().toUpperCase().replace(/\s/g, '') === supplierTaxId)
+        if (byTaxId) return byTaxId
+      }
+      const supplierCompanyId = normalizeCompanyId(invoice.supplierCompanyId)
+      if (supplierCompanyId) {
+        const byCompanyId = suppliers.find((supplier) => normalizeCompanyId(supplier.company_id || supplier.tax_id) === supplierCompanyId)
+        if (byCompanyId) return byCompanyId
+      }
       return suppliers.find((supplier) => {
         const name = normalizeText(supplier.name)
         return name && (supplierName.includes(name) || name.includes(supplierName) || (supplierName.includes('jip') && name.includes('jip')))
-      }) || suppliers.find((supplier) => supplier.active !== false) || null
+      }) || null
+    }
+    function supplierPayloadFromInvoice(invoice) {
+      const name = String(invoice?.supplierName || '').trim()
+      const companyId = normalizeCompanyId(invoice?.supplierCompanyId)
+      const noteLines = [
+        `Dodavatel založený automaticky z přijatého dokladu${invoice?.sourceType ? ` (${invoice.sourceType})` : ''}.`,
+        invoice?.invoiceNumber ? `První doklad: ${invoice.invoiceNumber}` : '',
+        companyId ? `IČO: ${companyId}` : ''
+      ].filter(Boolean)
+      return {
+        name,
+        company_id: companyId || null,
+        tax_id: invoice?.supplierTaxId || null,
+        note: noteLines.join('\n'),
+        active: true
+      }
+    }
+    async function ensureSupplierForInvoice(invoice) {
+      const existing = findSupplierForInvoice(invoice)
+      if (existing) return existing
+      const payload = supplierPayloadFromInvoice(invoice)
+      if (!payload.name) return null
+      let result = await supabase.from('purchase_suppliers').insert([payload]).select('*').single()
+      if (result.error && /company_id|tax_id|address|bank_account|bank_code|iban|default_due_days/i.test(result.error.message || '')) {
+        result = await supabase.from('purchase_suppliers').insert([stripOptionalSupplierColumns(payload)]).select('*').single()
+      }
+      if (result.error) throw result.error
+      suppliers = [...suppliers, result.data].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'cs', { sensitivity: 'base' }))
+      supplierFilter.innerHTML = '<option value="">Všichni dodavatelé</option>' + suppliers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('')
+      return result.data
     }
     function findProductMatch(line, supplierId) {
       const bySupplierCode = supplierProductMappings.find((mapping) => (
@@ -2302,15 +2345,15 @@
       const xml = await readXmlFile(file)
       currentInvoiceImport = parseIsdocInvoice(xml)
       currentInvoiceImport.sourceType = currentInvoiceImport.sourceType || 'ISDOC XML'
-      openInvoiceImportFromParsed()
+      await openInvoiceImportFromParsed()
     }
     async function openInvoiceImportFromPdf(file) {
       const lines = await extractPdfLines(file)
       currentInvoiceImport = parseBarberaPdfInvoice(lines)
-      openInvoiceImportFromParsed()
+      await openInvoiceImportFromParsed()
     }
-    function openInvoiceImportFromParsed() {
-      const matchedSupplier = findSupplierForInvoice(currentInvoiceImport)
+    async function openInvoiceImportFromParsed() {
+      const matchedSupplier = await ensureSupplierForInvoice(currentInvoiceImport)
       invoiceImportSupplierId.innerHTML = supplierOptionsHtml()
       invoiceImportWarehouseId.innerHTML = warehouseOptionsHtml()
       invoiceImportSupplierId.value = matchedSupplier?.id ? String(matchedSupplier.id) : ''
