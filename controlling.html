@@ -239,6 +239,10 @@
     .stop-title span { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
     .campaign-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    .preplan-table { min-width:1180px; }
+    .preplan-row-main { display:grid; gap:2px; }
+    .preplan-row-main strong { font-size:13px; }
+    .preplan-row-main span { color:var(--muted); font-size:11px; }
     .mini-card {
       padding:10px;
       border:1px solid var(--border);
@@ -294,6 +298,7 @@
           </div>
           <div class="actions">
             <button class="btn secondary" type="button" id="reloadBtn">Obnovit</button>
+            <button class="btn secondary" type="button" id="autofillBtn">Doplnit regiony a priority</button>
             <button class="btn" type="button" id="buildRouteBtn">Navrhnout kontrolní den</button>
           </div>
         </section>
@@ -407,6 +412,40 @@
                 </table>
               </div>
               <div class="status-line" id="locationsStatus"></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Předplán kontrol po týdnech</h2>
+                <p>Kontroling počítá s jedním výjezdem týdně. Každý týden se vybere jeden smysluplný region a z něj provozovny s nejvyšším skóre.</p>
+              </div>
+              <div class="actions">
+                <label>Počet týdnů
+                  <input id="preplanWeeks" type="number" min="4" max="26" value="12" />
+                </label>
+                <button class="btn secondary" type="button" id="buildPreplanBtn">Přepočítat předplán</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="table-wrap">
+                <table class="preplan-table">
+                  <thead>
+                    <tr>
+                      <th>Týden</th>
+                      <th>Region</th>
+                      <th>Zastávky</th>
+                      <th>Čas</th>
+                      <th>Priorita</th>
+                      <th>Hlavní kandidáti</th>
+                      <th>Důvod</th>
+                    </tr>
+                  </thead>
+                  <tbody id="preplanBody"></tbody>
+                </table>
+              </div>
+              <div class="status-line" id="preplanStatus"></div>
             </div>
           </section>
 
@@ -528,6 +567,47 @@
 
     const TIER_INTERVALS = { A: 30, B: 60, C: 90 }
     const TIER_MINUTES = { A: 35, B: 25, C: 20 }
+    const WEEKLY_CONTROL_DAYS = 7
+    const DEFAULT_WEEKLY_STOPS = 8
+    const DEFAULT_WEEKLY_MINUTES = 240
+    const PLANNING_REGIONS = [
+      {
+        name: 'Praha a střední Čechy',
+        terms: ['praha', 'kladno', 'beroun', 'kolin', 'kutna hora', 'pribram', 'melnik', 'mlada boleslav', 'benesov', 'nymburk', 'rakovnik']
+      },
+      {
+        name: 'Vysočina',
+        terms: ['jihlava', 'trebic', 'havlickuv brod', 'zdar nad sazavou', 'pelhrimov', 'humpolec', 'velke mezirici']
+      },
+      {
+        name: 'Jižní Morava',
+        terms: ['brno', 'blansko', 'breclav', 'hodonin', 'vyskov', 'znojmo', 'boskovice', 'kurim']
+      },
+      {
+        name: 'Ostravsko',
+        terms: ['ostrava', 'opava', 'karvina', 'havirov', 'frydek', 'mistek', 'novy jicin', 'trinec', 'koprivnice']
+      },
+      {
+        name: 'Olomoucko',
+        terms: ['olomouc', 'prostejov', 'prerov', 'sumperk', 'jesenik', 'hranice']
+      },
+      {
+        name: 'Zlínsko',
+        terms: ['zlin', 'uherske hradiste', 'kromeriz', 'vsetin', 'valasske mezirici']
+      },
+      {
+        name: 'Jižní Čechy',
+        terms: ['ceske budejovice', 'tabor', 'pisek', 'strakonice', 'jindrichuv hradec', 'prachatice']
+      },
+      {
+        name: 'Plzeňsko a západ',
+        terms: ['plzen', 'karlovy vary', 'cheb', 'sokolov', 'tachov', 'domazlice', 'klatovy']
+      },
+      {
+        name: 'Sever a východ Čech',
+        terms: ['liberec', 'jablonec', 'usti nad labem', 'teplice', 'decin', 'hradec kralove', 'pardubice', 'chrudim', 'nachod', 'trutnov']
+      }
+    ]
     const today = new Date()
     today.setHours(0, 0, 0, 0)
 
@@ -538,14 +618,18 @@
       employees: [],
       filtered: [],
       routeStops: [],
+      weeklyPlan: [],
       controlSchemaReady: false,
       locationPriorityReady: false
     }
 
     const els = {
       reloadBtn: document.getElementById('reloadBtn'),
+      autofillBtn: document.getElementById('autofillBtn'),
       buildRouteBtn: document.getElementById('buildRouteBtn'),
+      buildPreplanBtn: document.getElementById('buildPreplanBtn'),
       saveDraftBtn: document.getElementById('saveDraftBtn'),
+      preplanWeeks: document.getElementById('preplanWeeks'),
       searchInput: document.getElementById('searchInput'),
       tierFilter: document.getElementById('tierFilter'),
       recommendedFilter: document.getElementById('recommendedFilter'),
@@ -559,8 +643,10 @@
       controllerSelect: document.getElementById('controllerSelect'),
       locationsBody: document.getElementById('locationsBody'),
       routePreview: document.getElementById('routePreview'),
+      preplanBody: document.getElementById('preplanBody'),
       locationsStatus: document.getElementById('locationsStatus'),
       plannerStatus: document.getElementById('plannerStatus'),
+      preplanStatus: document.getElementById('preplanStatus'),
       dataModeChip: document.getElementById('dataModeChip'),
       campaignGrid: document.getElementById('campaignGrid'),
       campaignName: document.getElementById('campaignName'),
@@ -611,7 +697,7 @@
     function tierFor(location) {
       if (['A', 'B', 'C'].includes(location.location_priority)) return location.location_priority
       if (['A', 'B', 'C'].includes(location.control_tier)) return location.control_tier
-      return 'B'
+      return inferPriority(location)
     }
 
     function recommendedFor(location) {
@@ -634,8 +720,21 @@
       return Number(location.control_interval_days || TIER_INTERVALS[tierFor(location)] || 60)
     }
 
+    function textForRegion(location) {
+      return normalize([location.city, location.address, location.name, location.customer_name, accountName(location)].join(' '))
+    }
+
+    function inferPlanningRegion(location) {
+      const haystack = textForRegion(location)
+      const region = PLANNING_REGIONS.find((item) => item.terms.some((term) => haystack.includes(normalize(term))))
+      if (region) return region.name
+      if (location.city) return `Ostatní - ${location.city}`
+      return 'Bez regionu'
+    }
+
     function regionFor(location) {
-      return location.control_region || location.city || 'Bez regionu'
+      if (location.control_region && normalize(location.control_region) !== normalize(location.city)) return location.control_region
+      return inferPlanningRegion(location)
     }
 
     function accountName(location) {
@@ -643,9 +742,27 @@
       return location.customer_name || 'Bez accountu'
     }
 
+    function inferPriority(location) {
+      const recommended = recommendedFor(location)
+      if (['A', 'B', 'C'].includes(recommended)) return recommended
+      if (location.customer_accounts?.strategic_tier && ['A', 'B', 'C'].includes(location.customer_accounts.strategic_tier)) return location.customer_accounts.strategic_tier
+      const haystack = normalize([location.customer_name, location.name, accountName(location)].join(' '))
+      if (['billa', 'lidl', 'kaufland', 'tesco', 'albert', 'penny', 'globus', 'makro'].some((term) => haystack.includes(term))) return 'A'
+      if (['nemocnice', 'skola', 'urad', 'univerzita', 'vyroba', 'factory', 'logistika'].some((term) => haystack.includes(term))) return 'B'
+      return 'B'
+    }
+
+    function effectiveDueDate(location) {
+      const explicit = readDate(location.next_control_due_at)
+      if (explicit) return explicit
+      const last = readDate(location.last_control_visit_at)
+      if (last) return addDays(last, intervalFor(location))
+      return addDays(today, -intervalFor(location))
+    }
+
     function statusText(location) {
-      const dueDays = daysUntil(location.next_control_due_at)
-      if (dueDays === null) return 'Bez termínu'
+      const dueDate = effectiveDueDate(location)
+      const dueDays = Math.round((dueDate.getTime() - today.getTime()) / 86400000)
       if (dueDays < 0) return `${Math.abs(dueDays)} dní po termínu`
       if (dueDays === 0) return 'Dnes'
       return `Za ${dueDays} dní`
@@ -653,8 +770,9 @@
 
     function scoreLocation(location) {
       const tierScore = { A: 90, B: 60, C: 35 }[tierFor(location)] || 50
-      const dueDays = daysUntil(location.next_control_due_at)
-      const dueScore = dueDays === null ? 20 : Math.max(-20, Math.min(80, 45 - dueDays))
+      const dueDate = effectiveDueDate(location)
+      const dueDays = Math.round((dueDate.getTime() - today.getTime()) / 86400000)
+      const dueScore = Math.max(-20, Math.min(100, 45 - dueDays))
       return tierScore + dueScore
     }
 
@@ -676,13 +794,19 @@
     function hydrateDefaults(row) {
       const tier = ['A', 'B', 'C'].includes(row.location_priority)
         ? row.location_priority
-        : (['A', 'B', 'C'].includes(row.control_tier) ? row.control_tier : 'B')
+        : (['A', 'B', 'C'].includes(row.control_tier) ? row.control_tier : inferPriority(row))
+      const controlRegion = row.control_region && normalize(row.control_region) !== normalize(row.city)
+        ? row.control_region
+        : inferPlanningRegion(row)
+      const lastDate = readDate(row.last_control_visit_at)
+      const nextDate = row.next_control_due_at || (lastDate ? isoDate(addDays(lastDate, Number(row.control_interval_days || TIER_INTERVALS[tier]))) : isoDate(addDays(today, -Number(row.control_interval_days || TIER_INTERVALS[tier]))))
       return {
         ...row,
         location_priority: tier,
         control_tier: tier,
         control_interval_days: Number(row.control_interval_days || TIER_INTERVALS[tier]),
-        control_region: row.control_region || row.city || 'Bez regionu'
+        control_region: controlRegion,
+        next_control_due_at: nextDate
       }
     }
 
@@ -717,10 +841,11 @@
         if (recommended && recommendedFor(location) !== recommended) return false
         if (region && regionFor(location) !== region) return false
         if (account && accountName(location) !== account) return false
-        const dueDays = daysUntil(location.next_control_due_at)
+        const dueDate = effectiveDueDate(location)
+        const dueDays = Math.round((dueDate.getTime() - today.getTime()) / 86400000)
         if (due === 'overdue' && !(dueDays !== null && dueDays < 0)) return false
         if (due === 'month' && !(dueDays !== null && dueDays <= 30)) return false
-        if (due === 'missing' && dueDays !== null) return false
+        if (due === 'missing' && location.next_control_due_at) return false
         return true
       }).sort((a, b) => scoreLocation(b) - scoreLocation(a))
 
@@ -736,7 +861,8 @@
 
       els.locationsBody.innerHTML = state.filtered.map((location) => {
         const tier = tierFor(location)
-        const dueDays = daysUntil(location.next_control_due_at)
+        const dueDate = effectiveDueDate(location)
+        const dueDays = Math.round((dueDate.getTime() - today.getTime()) / 86400000)
         const dueClass = dueDays !== null && dueDays < 0 ? 'warn' : tier.toLowerCase()
         return `
           <tr>
@@ -768,7 +894,7 @@
               </select>
             </td>
             <td><input class="cell-input cell-number" type="number" min="7" max="365" data-control-field="control_interval_days" data-location-id="${location.id}" value="${intervalFor(location)}" /></td>
-            <td><input class="cell-input date" type="date" data-control-field="next_control_due_at" data-location-id="${location.id}" value="${escapeHtml(location.next_control_due_at || '')}" /></td>
+            <td><input class="cell-input date" type="date" data-control-field="next_control_due_at" data-location-id="${location.id}" value="${escapeHtml(isoDate(dueDate))}" /></td>
             <td>${location.last_control_visit_at ? escapeHtml(isoDate(new Date(location.last_control_visit_at))) : 'Nikdy'}</td>
             <td><span class="chip ${dueClass}">${escapeHtml(statusText(location))}</span></td>
             <td><input class="cell-input note" data-control-field="priority_note" data-location-id="${location.id}" value="${escapeHtml(location.priority_note || location.control_priority_note || '')}" /></td>
@@ -779,8 +905,9 @@
 
     function renderSummary() {
       const overdue = state.locations.filter((item) => {
-        const due = daysUntil(item.next_control_due_at)
-        return due !== null && due < 0
+        const dueDate = effectiveDueDate(item)
+        const due = Math.round((dueDate.getTime() - today.getTime()) / 86400000)
+        return due < 0
       }).length
       setText('summaryLocations', state.locations.length)
       setText('summaryTierA', state.locations.filter((item) => tierFor(item) === 'A').length)
@@ -789,6 +916,114 @@
       setText('summaryCampaigns', state.campaigns.filter((item) => ['draft', 'active'].includes(item.status)).length || '0')
       setText('summaryStops', state.routeStops.length || '-')
       setText('summaryMinutes', state.routeStops.length ? `${state.routeStops.reduce((sum, item) => sum + (item.estimatedMinutes || 0), 0)} min` : '-')
+    }
+
+    function stopSummary(stops) {
+      if (!stops.length) return 'Bez kandidátů'
+      return stops.slice(0, 4).map((stop) => `${stop.name} (${tierFor(stop)})`).join(', ') + (stops.length > 4 ? ` +${stops.length - 4}` : '')
+    }
+
+    function buildStopsForRegion(region, options = {}) {
+      const maxStops = Math.max(1, Number(options.maxStops || DEFAULT_WEEKLY_STOPS))
+      const maxMinutes = Math.max(30, Number(options.maxMinutes || DEFAULT_WEEKLY_MINUTES))
+      const usedIds = options.usedIds || new Set()
+      let minutes = 0
+      const stops = []
+      const candidates = state.locations
+        .filter((location) => regionFor(location) === region && !usedIds.has(String(location.id)))
+        .sort((a, b) => scoreLocation(b) - scoreLocation(a))
+
+      candidates.forEach((location) => {
+        if (stops.length >= maxStops) return
+        const estimatedMinutes = TIER_MINUTES[tierFor(location)] || 25
+        if (minutes + estimatedMinutes > maxMinutes) return
+        stops.push({ ...location, estimatedMinutes })
+        minutes += estimatedMinutes
+      })
+
+      return { stops, minutes }
+    }
+
+    function buildWeeklyPreplan() {
+      const weeks = Math.max(4, Math.min(26, Number(els.preplanWeeks.value || 12)))
+      const regions = Array.from(new Set(state.locations.map(regionFor))).sort((a, b) => {
+        const scoreA = state.locations.filter((item) => regionFor(item) === a).reduce((sum, item) => sum + scoreLocation(item), 0)
+        const scoreB = state.locations.filter((item) => regionFor(item) === b).reduce((sum, item) => sum + scoreLocation(item), 0)
+        return scoreB - scoreA
+      })
+      const usedIds = new Set()
+      const plan = []
+
+      for (let index = 0; index < weeks; index += 1) {
+        const weekStart = addDays(today, index * WEEKLY_CONTROL_DAYS)
+        const rankedRegions = regions
+          .map((region) => {
+            const regionLocations = state.locations.filter((item) => regionFor(item) === region && !usedIds.has(String(item.id)))
+            const dueBoost = regionLocations.filter((item) => effectiveDueDate(item) <= addDays(weekStart, 7)).length * 70
+            const score = regionLocations.reduce((sum, item) => sum + scoreLocation(item), 0) + dueBoost - plan.filter((week) => week.region === region).length * 120
+            return { region, score, count: regionLocations.length }
+          })
+          .filter((item) => item.count > 0)
+          .sort((a, b) => b.score - a.score)
+
+        const selected = rankedRegions[0]
+        if (!selected) break
+        const { stops, minutes } = buildStopsForRegion(selected.region, {
+          maxStops: Number(els.maxStops.value || DEFAULT_WEEKLY_STOPS),
+          maxMinutes: Number(els.maxMinutes.value || DEFAULT_WEEKLY_MINUTES),
+          usedIds
+        })
+        stops.forEach((stop) => usedIds.add(String(stop.id)))
+        const aCount = stops.filter((stop) => tierFor(stop) === 'A').length
+        const overdueCount = stops.filter((stop) => effectiveDueDate(stop) < weekStart).length
+        plan.push({
+          weekIndex: index,
+          date: isoDate(weekStart),
+          region: selected.region,
+          stops,
+          minutes,
+          aCount,
+          overdueCount,
+          reason: overdueCount ? `${overdueCount} po termínu` : (aCount ? `${aCount} A priorit` : 'rotace regionů')
+        })
+      }
+
+      state.weeklyPlan = plan
+      renderWeeklyPreplan()
+    }
+
+    function renderWeeklyPreplan() {
+      if (!state.weeklyPlan.length) {
+        els.preplanBody.innerHTML = '<tr><td colspan="7"><div class="empty">Předplán zatím nemá žádné týdny. Zkontroluj regiony a aktivní lokace.</div></td></tr>'
+        setStatus(els.preplanStatus, 'Kontroling je nastavený jako jeden kontrolní výjezd týdně.', '')
+        return
+      }
+
+      els.preplanBody.innerHTML = state.weeklyPlan.map((week) => {
+        const topTier = week.aCount ? 'A' : (week.stops.some((stop) => tierFor(stop) === 'B') ? 'B' : 'C')
+        return `
+          <tr>
+            <td>
+              <div class="preplan-row-main">
+                <strong>${escapeHtml(week.date)}</strong>
+                <span>Týden ${week.weekIndex + 1}</span>
+              </div>
+            </td>
+            <td class="region-cell">${escapeHtml(week.region)}</td>
+            <td class="cell-number">${week.stops.length}</td>
+            <td class="cell-number">${week.minutes} min</td>
+            <td><span class="chip ${topTier.toLowerCase()}">${topTier}</span></td>
+            <td>${escapeHtml(stopSummary(week.stops))}</td>
+            <td>
+              <div class="actions" style="justify-content:space-between;">
+                <span>${escapeHtml(week.reason)}</span>
+                <button class="btn secondary" type="button" data-use-week="${week.weekIndex}">Použít týden</button>
+              </div>
+            </td>
+          </tr>
+        `
+      }).join('')
+      setStatus(els.preplanStatus, `Předplán počítá s ${state.weeklyPlan.length} kontrolními výjezdy, tedy 1x týdně.`, 'success')
     }
 
     function buildRoute() {
@@ -812,6 +1047,17 @@
 
       renderRoutePreview()
       renderSummary()
+    }
+
+    function usePreplanWeek(weekIndex) {
+      const week = state.weeklyPlan.find((item) => Number(item.weekIndex) === Number(weekIndex))
+      if (!week) return
+      els.planDate.value = week.date
+      els.planRegion.value = week.region
+      state.routeStops = week.stops
+      renderRoutePreview()
+      renderSummary()
+      setStatus(els.plannerStatus, `Do návrhu trasy byl převzat týden ${week.weekIndex + 1}: ${week.region}.`, 'success')
     }
 
     function renderRoutePreview() {
@@ -958,6 +1204,68 @@
       }
     }
 
+    async function autofillRegionsAndPriorities() {
+      els.autofillBtn.disabled = true
+      try {
+        state.locations = state.locations.map((location) => {
+          const tier = ['A', 'B', 'C'].includes(location.location_priority) ? location.location_priority : inferPriority(location)
+          const interval = Number(location.control_interval_days || TIER_INTERVALS[tier])
+          const region = inferPlanningRegion(location)
+          const dueDate = location.next_control_due_at || isoDate(effectiveDueDate({ ...location, location_priority: tier, control_interval_days: interval }))
+          return {
+            ...location,
+            location_priority: tier,
+            control_tier: tier,
+            control_interval_days: interval,
+            control_region: region,
+            next_control_due_at: dueDate,
+            control_tier_source: location.location_priority ? location.control_tier_source : 'auto_seed',
+            priority_note: location.priority_note || (tier === 'A' ? 'Automaticky předvyplněno jako klíčová kontrola.' : 'Automaticky předvyplněno pro týdenní kontrolní plán.')
+          }
+        })
+
+        renderFilters()
+        applyFilters()
+        buildWeeklyPreplan()
+        buildRoute()
+
+        if (!state.locationPriorityReady && !state.controlSchemaReady) {
+          setStatus(els.locationsStatus, 'Regiony a priority jsou předvyplněné jen v náhledu. Pro uložení spusť migraci priorit/kontrolingu.', 'error')
+          return
+        }
+
+        const rows = state.locations.map((location) => {
+          const payload = {
+            id: location.id,
+            location_priority: tierFor(location),
+            priority_note: location.priority_note || null
+          }
+          if (state.controlSchemaReady) {
+            payload.control_tier = tierFor(location)
+            payload.control_interval_days = intervalFor(location)
+            payload.control_region = regionFor(location)
+            payload.next_control_due_at = isoDate(effectiveDueDate(location))
+            payload.control_tier_source = location.control_tier_source || 'auto_seed'
+            payload.control_priority_note = location.priority_note || null
+          }
+          return payload
+        })
+
+        for (const row of rows) {
+          const { id, ...payload } = row
+          const { error } = await supabase.from('locations').update(payload).eq('id', id)
+          if (error) throw error
+        }
+
+        setStatus(els.locationsStatus, `Doplnil jsem regiony a priority pro ${rows.length} provozoven.`, 'success')
+      } catch (error) {
+        console.error(error)
+        setStatus(els.locationsStatus, `Nepodařilo se doplnit regiony a priority: ${error.message}`, 'error')
+      } finally {
+        els.autofillBtn.disabled = false
+      }
+    }
+
     async function saveDraftRoute() {
       if (!state.routeStops.length) {
         buildRoute()
@@ -1099,6 +1407,7 @@
       renderFilters()
       applyFilters()
       buildRoute()
+      buildWeeklyPreplan()
       renderCampaigns()
       els.dataModeChip.textContent = state.controlSchemaReady
         ? 'DB v1.7 připravena'
@@ -1139,11 +1448,17 @@
     })
 
     els.reloadBtn.addEventListener('click', loadData)
+    els.autofillBtn.addEventListener('click', autofillRegionsAndPriorities)
     els.buildRouteBtn.addEventListener('click', buildRoute)
+    els.buildPreplanBtn.addEventListener('click', buildWeeklyPreplan)
     els.saveDraftBtn.addEventListener('click', saveDraftRoute)
     els.createCampaignBtn.addEventListener('click', createCampaign)
     ;[els.searchInput, els.tierFilter, els.recommendedFilter, els.regionFilter, els.dueFilter, els.accountFilter].forEach((node) => node.addEventListener('input', applyFilters))
-    ;[els.planRegion, els.maxStops, els.maxMinutes].forEach((node) => node.addEventListener('input', buildRoute))
+    ;[els.planRegion, els.maxStops, els.maxMinutes].forEach((node) => node.addEventListener('input', () => {
+      buildRoute()
+      buildWeeklyPreplan()
+    }))
+    els.preplanWeeks.addEventListener('input', buildWeeklyPreplan)
     els.locationsBody.addEventListener('change', (event) => {
       const locationId = event.target?.dataset?.tierLocation
       const fieldLocationId = event.target?.dataset?.locationId
@@ -1155,6 +1470,12 @@
       if (fieldLocationId && field) {
         updateLocationField(fieldLocationId, field, event.target.value)
       }
+    })
+
+    els.preplanBody.addEventListener('click', (event) => {
+      const weekIndex = event.target?.dataset?.useWeek
+      if (weekIndex === undefined) return
+      usePreplanWeek(weekIndex)
     })
 
     els.locationsBody.addEventListener('keydown', (event) => {
