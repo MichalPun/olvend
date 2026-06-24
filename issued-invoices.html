@@ -917,12 +917,42 @@
         note: row.note || ''
       }
     }
+    function hasCustomerDetails(customer = {}) {
+      return Boolean(
+        normalizeCompanyId(customer.companyId || customer.company_id || '')
+        || String(customer.taxId || customer.tax_id || '').trim()
+        || String(customer.email || '').trim()
+        || String(customer.phone || '').trim()
+        || String(customer.contactName || customer.contact_name || '').trim()
+        || customerBillingAddress(customer)
+        || customerDeliveryAddress(customer)
+        || customer.defaultDueDays != null
+      )
+    }
+    function mergeCustomerDetails(base = {}, next = {}) {
+      const merged = { ...base, ...next }
+      ;[
+        'companyId',
+        'taxId',
+        'contactName',
+        'email',
+        'phone',
+        'address',
+        'billingAddress',
+        'deliveryAddress',
+        'note'
+      ].forEach((key) => {
+        if (!String(next[key] || '').trim() && String(base[key] || '').trim()) merged[key] = base[key]
+      })
+      if ((next.defaultDueDays === '' || next.defaultDueDays == null) && base.defaultDueDays != null) merged.defaultDueDays = base.defaultDueDays
+      return merged
+    }
     function mergeCustomerList(nextCustomers = []) {
       const merged = new Map(customers.map((customer) => [contactNorm(customer.name), customer]))
       nextCustomers.forEach((customer) => {
         const key = contactNorm(customer.name)
         if (!key) return
-        merged.set(key, { ...(merged.get(key) || {}), ...customer })
+        merged.set(key, mergeCustomerDetails(merged.get(key) || {}, customer))
       })
       customers = Array.from(merged.values())
         .filter((customer) => String(customer.name || '').trim())
@@ -1002,6 +1032,22 @@
       const normalized = normalizeText(name)
       return customers.find((customer) => normalizeText(customer.name) === normalized) || null
     }
+    function historicalCustomerByName(name) {
+      const normalized = normalizeText(name)
+      if (!normalized) return null
+      for (const document of documents) {
+        if (normalizeText(document.customer_name) !== normalized) continue
+        const metaCustomer = extractMeta(document).customer
+        if (metaCustomer?.name && hasCustomerDetails(metaCustomer)) return metaCustomer
+      }
+      return null
+    }
+    function bestKnownCustomerByName(name) {
+      const bookCustomer = customerByName(name)
+      const historicalCustomer = historicalCustomerByName(name)
+      if (!bookCustomer && !historicalCustomer) return null
+      return mergeCustomerDetails(historicalCustomer || {}, bookCustomer || {})
+    }
     function renderCustomerList() {
       customerList.innerHTML = customers.map((customer) => `<option value="${escapeHtml(customer.name)}"></option>`).join('')
     }
@@ -1040,8 +1086,26 @@
         customer.email || ''
       ].filter(Boolean)
     }
+    function documentCustomer(row = {}) {
+      const metaCustomer = extractMeta(row).customer || {}
+      const knownCustomer = bestKnownCustomerByName(metaCustomer.name || row.customer_name || '')
+      const customer = mergeCustomerDetails(metaCustomer, knownCustomer || {})
+      return {
+        name: customer.name || row.customer_name || '',
+        address: customerBillingAddress(customer),
+        billingAddress: customerBillingAddress(customer),
+        deliveryAddress: customerDeliveryAddress(customer),
+        companyId: customer.companyId || customer.company_id || '',
+        taxId: customer.taxId || customer.tax_id || '',
+        email: customer.email || '',
+        phone: customer.phone || '',
+        contactName: customer.contactName || customer.contact_name || '',
+        defaultDueDays: customer.defaultDueDays ?? null,
+        note: customer.note || ''
+      }
+    }
     function currentCustomerDetail() {
-      const customer = customerByName(customerName.value.trim())
+      const customer = bestKnownCustomerByName(customerName.value.trim())
       if (customer) return { ...customer, address: customerBillingAddress(customer), billingAddress: customerBillingAddress(customer), deliveryAddress: customerDeliveryAddress(customer) }
       return { name: customerName.value.trim(), address:'', billingAddress:'', deliveryAddress:'', companyId:'', taxId:'', email:'', phone:'', contactName:'', defaultDueDays:null, note:'' }
     }
@@ -1077,27 +1141,28 @@
     function upsertCustomer(customer) {
       if (!customer?.name) return
       const index = customers.findIndex((item) => normalizeText(item.name) === normalizeText(customer.name))
-      if (index >= 0) customers[index] = { ...customers[index], ...customer }
+      if (index >= 0) customers[index] = mergeCustomerDetails(customers[index], customer)
       else customers.push({ id:`customer-${Date.now()}`, ...customer })
       customers.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'cs', { sensitivity:'base' }))
       saveCustomers()
-      void saveCustomerContactToDb(customer)
+      void saveCustomerContactToDb(index >= 0 ? customers[index] : customer)
     }
     async function saveCustomerContactToDb(customer) {
       if (!customer?.name) return
+      const enrichedCustomer = mergeCustomerDetails(bestKnownCustomerByName(customer.name) || {}, customer)
       const payload = {
         contact_type: 'customer',
-        name: customer.name.trim(),
-        name_norm: contactNorm(customer.name),
-        company_id: normalizeCompanyId(customer.companyId || customer.company_id || ''),
-        tax_id: String(customer.taxId || customer.tax_id || '').trim() || null,
-        contact_name: String(customer.contactName || customer.contact_name || '').trim() || null,
-        email: String(customer.email || '').trim() || null,
-        phone: String(customer.phone || '').trim() || null,
-        billing_address: customerBillingAddress(customer) || null,
-        delivery_address: customerDeliveryAddress(customer) || null,
-        default_due_days: customer.defaultDueDays === '' || customer.defaultDueDays == null ? null : Number(customer.defaultDueDays),
-        note: String(customer.note || '').trim() || null,
+        name: enrichedCustomer.name.trim(),
+        name_norm: contactNorm(enrichedCustomer.name),
+        company_id: normalizeCompanyId(enrichedCustomer.companyId || enrichedCustomer.company_id || ''),
+        tax_id: String(enrichedCustomer.taxId || enrichedCustomer.tax_id || '').trim() || null,
+        contact_name: String(enrichedCustomer.contactName || enrichedCustomer.contact_name || '').trim() || null,
+        email: String(enrichedCustomer.email || '').trim() || null,
+        phone: String(enrichedCustomer.phone || '').trim() || null,
+        billing_address: customerBillingAddress(enrichedCustomer) || null,
+        delivery_address: customerDeliveryAddress(enrichedCustomer) || null,
+        default_due_days: enrichedCustomer.defaultDueDays === '' || enrichedCustomer.defaultDueDays == null ? null : Number(enrichedCustomer.defaultDueDays),
+        note: String(enrichedCustomer.note || '').trim() || null,
         active: true,
         source: 'issued_invoice'
       }
@@ -2053,7 +2118,7 @@
     }
     function printDocument(row) {
       const meta = extractMeta(row)
-      const customer = meta.customer || { name: row.customer_name || '', address:'', billingAddress:'', deliveryAddress:'', companyId:'', taxId:'', email:'', phone:'', contactName:'', note:'' }
+      const customer = documentCustomer(row)
       const customerInvoiceHtml = customerInvoiceLines(customer, row).map((line) => escapeHtml(line).replace(/\n/g, '<br>')).join('<br>')
       const payment = meta.payment || loadPaymentSettings()
       const seller = loadPaymentSettings()
@@ -2212,7 +2277,7 @@
       await addPdfFonts(doc)
       const pdfFont = doc.__olvendPdfFontLoaded ? 'AptosNarrow' : 'helvetica'
       const meta = extractMeta(row)
-      const customer = meta.customer || { name: row.customer_name || '', address:'', billingAddress:'', deliveryAddress:'', companyId:'', taxId:'', email:'', phone:'', contactName:'', note:'' }
+      const customer = documentCustomer(row)
       const payment = meta.payment || loadPaymentSettings()
       const seller = loadPaymentSettings()
       const number = documentNumber(row)
@@ -2461,7 +2526,7 @@
     }
     function buildInvoiceEmailHtml(row) {
       const meta = extractMeta(row)
-      const customer = meta.customer || {}
+      const customer = documentCustomer(row)
       const payment = meta.payment || loadPaymentSettings()
       const amount = formatMoney(rowTotal(row), meta.currency || 'CZK')
       const title = documentTitle(row)
@@ -2536,7 +2601,7 @@
     }
     function openEmailModal(row) {
       const meta = extractMeta(row)
-      const customer = meta.customer || {}
+      const customer = documentCustomer(row)
       currentEmailRowId = row.id
       emailForm.reset()
       emailModalTitle.textContent = `Odeslat doklad · ${documentNumber(row)}`
@@ -2569,7 +2634,7 @@
     }
     async function sendDocumentEmail(row, options = {}) {
       const meta = extractMeta(row)
-      const customer = meta.customer || {}
+      const customer = documentCustomer(row)
       const to = String(options.to || '').trim()
       if (!to) return
       setStatus(`Připravuji PDF a odesílám doklad ${documentNumber(row)}...`)
@@ -2609,7 +2674,7 @@
     }
     function moneyS3InvoiceXml(row) {
       const meta = extractMeta(row)
-      const customer = meta.customer || {}
+      const customer = documentCustomer(row)
       const amounts = rowAmounts(row)
       const vatMode = currentVatMode(row)
       const date = String(row.issued_at || '').slice(0, 10)
