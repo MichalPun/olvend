@@ -1019,6 +1019,9 @@
     function cleanNote(note) {
       return String(note || '').replace(/\[meta:[^\]]+\]/g, '').replace(/\[rada:[^\]]+\]/g, '').trim()
     }
+    function extractSeriesNumber(note) {
+      return String(note || '').match(/\[rada:([^\]]+)\]/)?.[1] || ''
+    }
     function noteWithMeta(row, meta) {
       const series = documentNumber(row)
       return [`[rada:${series}]`, `[meta:${encodeMeta(meta)}]`, cleanNote(row?.note)].filter(Boolean).join(' ')
@@ -1109,7 +1112,7 @@
     }
     function documentSeriesNumber(row = null, typeOverride = '') {
       const type = typeOverride || row?.document_type || documentType.value || 'invoice'
-      const saved = String(row?.note || '').match(/\[rada:([^\]]+)\]/)?.[1]
+      const saved = extractSeriesNumber(row?.note)
       if (saved) return saved
       const config = loadSalesSeries()[type] || DEFAULT_SALES_SERIES.invoice
       const issuedValue = row?.issued_at || (issuedDate?.value ? `${issuedDate.value}T00:00:00` : new Date().toISOString())
@@ -1121,6 +1124,33 @@
       }
       const before = documents.filter((item) => item.document_type === type && item.status !== 'cancelled' && Number(item.id || 0) < Number(row.id || 0) && new Date(item.issued_at || item.created_at || Date.now()).getFullYear().toString().slice(-2) === year).length
       return `${config.prefix}${year}-${String(base + before).padStart(config.padding, '0')}`
+    }
+    function parseSeriesSequence(series, config, year) {
+      const prefix = `${config.prefix}${year}-`
+      const value = String(series || '')
+      if (!value.startsWith(prefix)) return null
+      const sequence = Number(value.slice(prefix.length))
+      return Number.isFinite(sequence) ? sequence : null
+    }
+    async function nextDocumentSeriesNumber(type, issuedValue) {
+      const config = loadSalesSeries()[type] || DEFAULT_SALES_SERIES.invoice
+      const issuedDateValue = new Date(issuedValue || new Date())
+      const fullYear = issuedDateValue.getFullYear()
+      const year = String(fullYear).slice(-2)
+      const base = Number(config.nextNumber || 1)
+      const { data, error } = await supabase
+        .from('sales_documents')
+        .select('id, note')
+        .eq('document_type', type)
+        .neq('status', 'cancelled')
+        .gte('issued_at', `${fullYear}-01-01T00:00:00`)
+        .lt('issued_at', `${fullYear + 1}-01-01T00:00:00`)
+      if (error) throw error
+      const lastSequence = (data || []).reduce((max, row) => {
+        const sequence = parseSeriesSequence(extractSeriesNumber(row.note), config, year)
+        return sequence == null ? max : Math.max(max, sequence)
+      }, base - 1)
+      return `${config.prefix}${year}-${String(lastSequence + 1).padStart(config.padding, '0')}`
     }
     function documentTypeMeta(type) {
       if (type === 'advance_invoice') return { label:'Zálohová faktura', prefix:'OVZ' }
@@ -2708,9 +2738,10 @@
       }
       const totals = documentTotals(lines, vatMode)
       const total = totals.total
+      const issuedAtValue = `${issuedDate.value || todayIso()}T00:00:00`
       const seriesNumber = currentDocumentId
         ? documentNumber(documents.find((item) => String(item.id) === String(currentDocumentId)) || {})
-        : documentSeriesNumber(null, documentType.value)
+        : await nextDocumentSeriesNumber(documentType.value, issuedAtValue)
       const existingDocument = currentDocumentId ? documents.find((item) => String(item.id) === String(currentDocumentId)) : null
       const movementReference = `sales-document:${seriesNumber}:${Date.now()}`
       const customer = currentCustomerDetail()
@@ -2742,7 +2773,7 @@
       const payload = {
         document_type: documentType.value,
         customer_name: customerName.value.trim(),
-        issued_at: `${issuedDate.value || todayIso()}T00:00:00`,
+        issued_at: issuedAtValue,
         total_amount: total,
         status: documentStatus.value || 'issued',
         note: [`[rada:${seriesNumber}]`, `[meta:${encodeMeta(meta)}]`, userNote].filter(Boolean).join(' ')
