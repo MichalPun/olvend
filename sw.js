@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v27-mobile-stock-write-verify';
+const CACHE_NAME = 'olvend-v28-budget-sales-breakdown';
 const APP_SHELL = [
   './',
   './index.html',
