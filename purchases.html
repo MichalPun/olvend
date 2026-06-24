@@ -1116,6 +1116,7 @@
     let suppliers = []
     let orders = []
     let warehouses = []
+    let stockLocations = []
     let products = []
     let supplierProductMappings = []
     let currentInvoiceImport = null
@@ -1505,6 +1506,18 @@
       return '<option value="">Vyber sklad</option>' + warehouses
         .map((item) => `<option value="${escapeHtml(String(item.id))}" ${String(item.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(item.name || `Sklad ${item.id}`)}</option>`)
         .join('')
+    }
+    function getDefaultReceiptWarehouseId() {
+      const blucina = warehouses.find((item) => {
+        const code = normalizeText(item.code || '')
+        const name = normalizeText(item.name || '')
+        return code === 'blucina' || name.includes('blucina')
+      })
+      return blucina?.id || warehouses[0]?.id || ''
+    }
+    function getWarehouseIdForStockLocation(stockLocationId) {
+      const location = stockLocations.find((item) => String(item.id) === String(stockLocationId))
+      return location?.warehouse_id || ''
     }
     function xmlText(node, localName) {
       return node?.getElementsByTagNameNS?.('*', localName)?.[0]?.textContent?.trim() || ''
@@ -2303,7 +2316,7 @@
       }
       invoiceImportSupplierId.innerHTML = supplierOptionsHtml()
       invoiceImportWarehouseId.innerHTML = warehouseOptionsHtml()
-      invoiceImportWarehouseId.value = warehouses[0]?.id ? String(warehouses[0].id) : ''
+      invoiceImportWarehouseId.value = getDefaultReceiptWarehouseId() ? String(getDefaultReceiptWarehouseId()) : ''
       invoiceImportDocumentType.value = 'invoice'
       invoiceImportNumber.value = ''
       invoiceImportDeliveryNote.value = ''
@@ -2357,7 +2370,7 @@
       invoiceImportSupplierId.innerHTML = supplierOptionsHtml()
       invoiceImportWarehouseId.innerHTML = warehouseOptionsHtml()
       invoiceImportSupplierId.value = matchedSupplier?.id ? String(matchedSupplier.id) : ''
-      invoiceImportWarehouseId.value = warehouses[0]?.id ? String(warehouses[0].id) : ''
+      invoiceImportWarehouseId.value = getDefaultReceiptWarehouseId() ? String(getDefaultReceiptWarehouseId()) : ''
       invoiceImportNumber.value = currentInvoiceImport.invoiceNumber || ''
       invoiceImportDeliveryNote.value = currentInvoiceImport.deliveryNoteNumber || ''
       invoiceImportDate.value = currentInvoiceImport.issueDate || new Date().toISOString().slice(0, 10)
@@ -2780,13 +2793,15 @@
       receiptDueDate.value = getDueDate(order) || ''
       receiptNote.value = order.note || ''
       receiptDocumentType.disabled = readOnly
-      receiptWarehouseId.disabled = readOnly || editOnly
+      receiptWarehouseId.disabled = readOnly
       receiptDeliveryDate.disabled = readOnly
       receiptDeliveryNote.disabled = readOnly
       receiptInvoiceNumber.disabled = readOnly
       receiptDueDate.disabled = readOnly
       receiptNote.disabled = readOnly
-      receiptWarehouseId.innerHTML = warehouseOptionsHtml()
+      const receiptWarehouse = getWarehouseIdForStockLocation(order.received_stock_location_id) || getDefaultReceiptWarehouseId()
+      receiptWarehouseId.innerHTML = warehouseOptionsHtml(receiptWarehouse)
+      receiptWarehouseId.value = receiptWarehouse ? String(receiptWarehouse) : ''
       receiptLineItems.innerHTML = order.items.map((item, index) => {
         const product = productForReceiptItem(item)
         const needsExpiry = productNeedsExpiry(product)
@@ -3242,6 +3257,11 @@
       const documentType = receiptDocumentType.value || getDocumentType(currentReceiptOrder)
       if (documentType === 'invoice' && !receiptInvoiceNumber.value.trim()) throw new Error('Doplň číslo faktury.')
       if (documentType === 'delivery_note' && !receiptDeliveryNote.value.trim()) throw new Error('Doplň číslo dodacího listu.')
+      const warehouseId = Number(receiptWarehouseId.value || 0)
+      if (!warehouseId) throw new Error('Vyber sklad pro příjem.')
+      const stockLocationId = await moveReceiptToWarehouse(currentReceiptOrder, warehouseId)
+      currentReceiptOrder = { ...currentReceiptOrder, received_stock_location_id: stockLocationId }
+      currentReceiptMovementMap = new Map()
       const notePrefix = `[typ:${documentType}]${documentType === 'invoice' && receiptDueDate.value ? `[splatnost:${receiptDueDate.value}]` : ''}`
       const noteBody = receiptNote.value.trim()
       const { error } = await updatePurchaseOrder(currentReceiptOrder.id, {
@@ -3250,10 +3270,45 @@
         delivery_date: receiptDeliveryDate.value || null,
         delivery_note_number: ['invoice', 'delivery_note'].includes(documentType) ? (receiptDeliveryNote.value.trim() || null) : null,
         invoice_number: ['invoice', 'cash_receipt'].includes(documentType) ? (receiptInvoiceNumber.value.trim() || null) : null,
+        received_stock_location_id: stockLocationId,
         note: `${notePrefix} ${noteBody}`.trim() || null
       })
       if (error) throw error
       await updateReceiptBatchMetadata()
+    }
+    async function moveReceiptToWarehouse(order, warehouseId) {
+      const targetStockLocationId = await ensureWarehouseLocation(warehouseId)
+      const { data: movements, error: movementError } = await supabase
+        .from('stock_movements_v13')
+        .select('id, product_id, batch_id, to_stock_location_id, quantity_base_units, unit_price, note')
+        .eq('reference_type', 'purchase_order')
+        .eq('reference_id', String(order.id))
+        .eq('movement_type', 'receipt')
+      if (movementError) throw movementError
+      for (const movement of movements || []) {
+        const originalStockLocationId = movement.to_stock_location_id
+        if (!originalStockLocationId || String(originalStockLocationId) === String(targetStockLocationId)) continue
+        const quantity = Number(movement.quantity_base_units || 0)
+        if (quantity <= 0) continue
+        await upsertBalance(originalStockLocationId, movement.product_id, -quantity, movement.batch_id || null)
+        await upsertBalance(targetStockLocationId, movement.product_id, quantity, movement.batch_id || null)
+        const { error: correctionMovementError } = await supabase
+          .from('stock_movements_v13')
+          .insert([{
+            product_id: movement.product_id,
+            batch_id: movement.batch_id || null,
+            from_stock_location_id: originalStockLocationId,
+            to_stock_location_id: targetStockLocationId,
+            movement_type: 'transfer',
+            quantity_base_units: quantity,
+            unit_price: movement.unit_price || null,
+            reference_type: 'purchase_order_correction',
+            reference_id: String(order.id),
+            note: `Oprava skladu příjmu dokladu ${order.invoice_number || order.delivery_note_number || order.id}: přesunuto do ${warehouses.find((item) => String(item.id) === String(warehouseId))?.name || 'vybraného skladu'}`
+          }])
+        if (correctionMovementError) throw correctionMovementError
+      }
+      return targetStockLocationId
     }
     async function updateReceiptBatchMetadata() {
       if (!currentReceiptOrder) return
@@ -3306,9 +3361,10 @@
           .eq('id', movement.id)
         if (movementUpdateError) throw movementUpdateError
         const quantity = Number(movement.quantity_base_units || line.received || 0)
-        if (movement.to_stock_location_id && quantity > 0) {
-          await upsertBalance(movement.to_stock_location_id, item.product_id, -quantity, null)
-          await upsertBalance(movement.to_stock_location_id, item.product_id, quantity, batchId)
+        const balanceStockLocationId = currentReceiptOrder.received_stock_location_id || movement.to_stock_location_id
+        if (balanceStockLocationId && quantity > 0) {
+          await upsertBalance(balanceStockLocationId, item.product_id, -quantity, null)
+          await upsertBalance(balanceStockLocationId, item.product_id, quantity, batchId)
         }
       }
     }
@@ -3735,7 +3791,7 @@
         setStatus('Načítám doklady...')
         const params = new URLSearchParams(window.location.search)
         const preselectedSupplier = params.get('supplier') || ''
-        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, productsResult] = await Promise.all([
+        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, stockLocationsResult, productsResult] = await Promise.all([
           supabase.from('purchase_product_recommendations_v13').select('*'),
           supabase.from('purchase_recurring_orders').select('*').order('id', { ascending: true }),
           supabase.from('purchase_recurring_order_items').select('id, recurring_order_id, product_id, active, base_order_quantity, order_quantity_by_weekday, note').order('id', { ascending: true }),
@@ -3743,23 +3799,25 @@
           supabase.from('purchase_suppliers').select('*').order('name', { ascending: true }),
           supabase.from('purchase_orders').select('*').order('order_date', { ascending: false }),
           supabase.from('purchase_order_items').select('id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_cost, note, recurring_order_item_id, products(name)').order('id', { ascending: true }),
-          supabase.from('warehouses').select('id, name, active').eq('active', true).order('name', { ascending: true }),
+          supabase.from('warehouses').select('id, name, code, active').eq('active', true).order('name', { ascending: true }),
+          supabase.from('stock_locations').select('id, warehouse_id, location_type, name, active').eq('location_type', 'warehouse'),
           supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true })
         ])
-        if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error) {
-          throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || productsResult.error
+        if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error) {
+          throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error
         }
         suppliers = suppliersResult.data || []
         warehouses = warehousesResult.data || []
         if (!warehouses.length) {
           const fallbackWarehouses = await supabase
             .from('warehouses')
-            .select('id, name, active')
+            .select('id, name, code, active')
             .order('name', { ascending: true })
           if (!fallbackWarehouses.error) {
             warehouses = fallbackWarehouses.data || []
           }
         }
+        stockLocations = stockLocationsResult.data || []
         products = productsResult.data || []
         const mappingsResult = await supabase
           .from('supplier_product_mappings')
