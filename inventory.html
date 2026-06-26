@@ -261,7 +261,7 @@
     .transfer-lines { display:grid; gap:10px; margin-top:16px; }
     .transfer-line-head, .transfer-line-row { display:grid; grid-template-columns:minmax(320px,1.7fr) minmax(88px,0.32fr) minmax(108px,0.34fr) minmax(128px,0.45fr) minmax(190px,0.8fr) 44px; gap:8px; align-items:center; }
     .initial-stock-head, .initial-stock-row { grid-template-columns:minmax(280px,1.5fr) minmax(120px,0.45fr) minmax(160px,0.55fr) minmax(180px,0.8fr) 44px; }
-    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(260px,1.45fr) minmax(78px,0.26fr) minmax(96px,0.3fr) minmax(112px,0.36fr) minmax(104px,0.32fr) minmax(150px,0.62fr) 40px; }
+    .simple-transfer-head, .simple-transfer-row { grid-template-columns:minmax(240px,1.25fr) minmax(78px,0.24fr) minmax(150px,0.48fr) minmax(112px,0.36fr) minmax(104px,0.32fr) minmax(140px,0.54fr) 40px; }
     .transfer-line-head { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; }
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .transfer-line-row.has-shortage { border-color:rgba(239,68,68,0.75); background:rgba(239,68,68,0.08); }
@@ -1379,7 +1379,7 @@
             <div class="transfer-line-head simple-transfer-head">
               <span>Produkt</span>
               <span>Množství</span>
-              <span>Jednotka</span>
+              <span>Jednotka / balení</span>
               <span>Na zdroji</span>
               <span>Tržba s DPH</span>
               <span>Poznámka řádku</span>
@@ -6146,8 +6146,10 @@
       if (!hidden) return null
       const product = findProductBySearchValue(input.value, productsV13)
       hidden.value = product?.id ? String(product.id) : ''
-      const kindSelect = row?.querySelector('[data-transfer-kind]')
-      if (kindSelect && shouldUsePackageByDefault(product)) kindSelect.value = 'package'
+      if (row) {
+        row.dataset.defaultTransferKind = shouldUsePackageByDefault(product) ? 'package' : 'product'
+        syncTransferUnitSelect(row, product)
+      }
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
       return product
@@ -6232,18 +6234,109 @@
       const decimals = Math.abs(value % 1) > 0.001 ? 2 : 0
       return value.toLocaleString('cs-CZ', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
     }
+    function getTransferBaseUnit(product) {
+      return product?.base_unit || 'ks'
+    }
+    function getTransferUnitOptions(product) {
+      if (!product) return [{ value: 'base', label: 'základ' }]
+      const baseUnit = getTransferBaseUnit(product)
+      const normalizedBase = normalizeText(baseUnit)
+      const options = [{ value: 'base', label: `${baseUnit} / základ` }]
+      if (normalizedBase === 'g') options.push({ value: 'unit:kg', label: 'kg' })
+      if (normalizedBase === 'kg') options.push({ value: 'unit:g', label: 'g' })
+      if (normalizedBase === 'ml') options.push({ value: 'unit:l', label: 'l' })
+      if (normalizedBase === 'l') options.push({ value: 'unit:ml', label: 'ml' })
+      const added = new Set(options.map((option) => option.value))
+      getProductPackages(product.id)
+        .filter((pack) => Number(pack.units_per_package || 0) > 0)
+        .forEach((pack) => {
+          const value = pack.id ? `package:${pack.id}` : 'package:default'
+          if (added.has(value)) return
+          added.add(value)
+          options.push({
+            value,
+            label: `${pack.package_name || 'Balení'} (${formatQuantityValue(Number(pack.units_per_package || 0), getPackageQuantityUnit(baseUnit))})`
+          })
+        })
+      const effectivePack = getEffectiveDefaultPackage(product.id)
+      if (effectivePack && Number(effectivePack.units_per_package || 0) > 0 && !effectivePack.id && !added.has('package:default')) {
+        options.push({
+          value: 'package:default',
+          label: `${effectivePack.package_name || 'Balení'} (${formatQuantityValue(Number(effectivePack.units_per_package || 0), getPackageQuantityUnit(baseUnit))})`
+        })
+      }
+      return options
+    }
+    function getDefaultTransferUnitMode(product, preferredKind = '') {
+      if (!product) return 'base'
+      if (preferredKind === 'product') return 'base'
+      if (preferredKind === 'package' || shouldUsePackageByDefault(product)) {
+        const pack = getEffectiveDefaultPackage(product.id)
+        if (Number(pack?.units_per_package || 0) > 0) return pack.id ? `package:${pack.id}` : 'package:default'
+      }
+      return 'base'
+    }
+    function getTransferPackByMode(product, unitMode) {
+      if (!product || !String(unitMode || '').startsWith('package:')) return null
+      const id = String(unitMode).replace('package:', '')
+      if (id && id !== 'default') {
+        return getProductPackages(product.id).find((pack) => String(pack.id) === id) || getEffectiveDefaultPackage(product.id)
+      }
+      return getEffectiveDefaultPackage(product.id)
+    }
+    function convertTransferQuantityToBase(product, enteredQuantity, unitMode) {
+      const amount = Number(enteredQuantity || 0)
+      if (!product || !amount) return amount
+      const mode = String(unitMode || 'base')
+      if (mode.startsWith('package:')) {
+        const pack = getTransferPackByMode(product, mode)
+        return pack ? convertPackageQuantityToBase(product, amount, pack) : amount
+      }
+      if (mode.startsWith('unit:')) {
+        return Number(convertRecipeQuantityToBase(amount, mode.replace('unit:', ''), getTransferBaseUnit(product)).toFixed(3))
+      }
+      return amount
+    }
+    function describeTransferEntry(product, enteredQuantity, unitMode, quantity) {
+      if (!product) return ''
+      const amount = Number(enteredQuantity || 0)
+      const mode = String(unitMode || 'base')
+      if (!amount || mode === 'base') return ''
+      if (mode.startsWith('package:')) {
+        const pack = getTransferPackByMode(product, mode)
+        return pack ? `${formatPackageCount(amount)} × ${pack.package_name || 'balení'} = ${formatQuantityValue(quantity, getTransferBaseUnit(product))}` : ''
+      }
+      if (mode.startsWith('unit:')) {
+        return `${formatQuantityValue(amount, mode.replace('unit:', ''))} = ${formatQuantityValue(quantity, getTransferBaseUnit(product))}`
+      }
+      return ''
+    }
+    function syncTransferUnitSelect(row, product, preferredMode = '') {
+      const select = row?.querySelector('[data-transfer-unit]')
+      if (!select) return
+      const current = preferredMode || select.value || ''
+      const fallback = getDefaultTransferUnitMode(product, row?.dataset.defaultTransferKind || '')
+      const options = getTransferUnitOptions(product)
+      const selected = options.some((option) => option.value === current) ? current : fallback
+      select.innerHTML = options
+        .map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? 'selected' : ''}>${escapeHtml(option.label)}</option>`)
+        .join('')
+    }
     function formatTransferLineQuantity(line, quantity, unit) {
       const amount = Number(quantity || 0)
       const product = productsV13.find((item) => String(item.id) === String(line?.productId))
-      const pack = line?.kind === 'package'
-        ? (line.pack || getEffectiveDefaultPackage(line.productId))
-        : null
+      const pack = getTransferPackByMode(product, line?.unitMode) || (line?.kind === 'package' ? (line.pack || getEffectiveDefaultPackage(line.productId)) : null)
       if (product && pack && Number(pack.units_per_package || 0) > 1) {
         const packageBaseQuantity = convertPackageQuantityToBase(product, 1, pack)
         if (packageBaseQuantity > 0) {
           const packageCount = amount / packageBaseQuantity
           return `${formatPackageCount(packageCount)} × ${pack.package_name || 'balení'} (${formatQuantityValue(amount, unit || product.base_unit || 'ks')})`
         }
+      }
+      if (product && String(line?.unitMode || '').startsWith('unit:')) {
+        const displayUnit = String(line.unitMode).replace('unit:', '')
+        const displayAmount = convertRecipeQuantityToBase(amount, getTransferBaseUnit(product), displayUnit)
+        return `${formatQuantityValue(displayAmount, displayUnit)} (${formatQuantityValue(amount, unit || product.base_unit || 'ks')})`
       }
       return formatQuantityValue(amount, unit || product?.base_unit || 'ks')
     }
@@ -6297,6 +6390,8 @@
       const selectedProduct = row.productId ? productsV13.find((product) => String(product.id) === String(row.productId)) : null
       const searchValue = selectedProduct ? productSearchLabel(selectedProduct) : (row.productName || '')
       const defaultKind = row.kind || (shouldUsePackageByDefault(selectedProduct) ? 'package' : 'product')
+      const unitMode = row.unitMode || getDefaultTransferUnitMode(selectedProduct, defaultKind)
+      wrapper.dataset.defaultTransferKind = defaultKind
       wrapper.innerHTML = `
         <div class="transfer-product-cell">
           <input data-transfer-product-search list="simpleTransferProductOptions" type="search" autocomplete="off" placeholder="Piš název, SKU nebo EAN..." value="${escapeHtml(searchValue)}" />
@@ -6304,10 +6399,7 @@
           <button class="icon-btn transfer-product-clear" type="button" data-transfer-line-action="clear-product" title="Vybrat jinou položku">×</button>
         </div>
         <input data-transfer-quantity type="number" min="0" step="0.001" required value="${escapeHtml(row.quantity ?? '')}" />
-        <select data-transfer-kind>
-          <option value="product" ${defaultKind !== 'package' ? 'selected' : ''}>ks / základ</option>
-          <option value="package" ${defaultKind === 'package' ? 'selected' : ''}>balení</option>
-        </select>
+        <select data-transfer-unit></select>
         <div class="transfer-line-availability muted" data-transfer-availability>-<span>Na zdroji</span></div>
         <input data-transfer-income type="number" min="0" step="0.01" placeholder="Kč s DPH" value="${escapeHtml(totalIncome)}" ${isSaleLine ? '' : 'disabled'} />
         <input data-transfer-note placeholder="Poznámka" value="${escapeHtml(row.note || '')}" />
@@ -6315,13 +6407,13 @@
         ${importSource}
       `
       simpleTransferLines.appendChild(wrapper)
+      syncTransferUnitSelect(wrapper, selectedProduct, unitMode)
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
     }
     function collectSimpleTransferLines() {
       return [...simpleTransferLines.querySelectorAll('.transfer-line-row')]
         .map((row, index) => {
-          const kind = row.querySelector('[data-transfer-kind]')?.value || 'product'
           const searchInput = row.querySelector('[data-transfer-product-search]')
           const hiddenProductInput = row.querySelector('[data-transfer-product]')
           if (searchInput && hiddenProductInput) {
@@ -6331,13 +6423,15 @@
           const productId = Number(hiddenProductInput?.value || 0)
           const product = productsV13.find((item) => String(item.id) === String(productId))
           const enteredQuantity = Number(row.querySelector('[data-transfer-quantity]')?.value || 0)
-          const pack = kind === 'package' ? getEffectiveDefaultPackage(productId) : null
-          const quantity = pack ? convertPackageQuantityToBase(product, enteredQuantity, pack) : enteredQuantity
+          const unitMode = row.querySelector('[data-transfer-unit]')?.value || getDefaultTransferUnitMode(product, row.dataset.defaultTransferKind || '')
+          const pack = getTransferPackByMode(product, unitMode)
+          const quantity = convertTransferQuantityToBase(product, enteredQuantity, unitMode)
           const totalIncomeRaw = String(row.querySelector('[data-transfer-income]')?.value || '').trim()
           const totalIncome = totalIncomeRaw ? Number(totalIncomeRaw.replace(',', '.')) : null
-          const packageNote = pack ? `${enteredQuantity} × ${pack.package_name}` : ''
-          const note = [row.querySelector('[data-transfer-note]')?.value.trim() || '', packageNote].filter(Boolean).join(' · ')
-          return { index, kind, productId, quantity, enteredQuantity, pack, totalIncome: totalIncome != null && Number.isFinite(totalIncome) ? totalIncome : null, note }
+          const entryNote = describeTransferEntry(product, enteredQuantity, unitMode, quantity)
+          const note = [row.querySelector('[data-transfer-note]')?.value.trim() || '', entryNote].filter(Boolean).join(' · ')
+          const kind = unitMode.startsWith('package:') ? 'package' : 'product'
+          return { index, kind, unitMode, productId, quantity, enteredQuantity, pack, totalIncome: totalIncome != null && Number.isFinite(totalIncome) ? totalIncome : null, note }
         })
         .filter((row) => row.productId || row.quantity > 0 || row.note)
     }
@@ -8532,6 +8626,10 @@
         const hiddenInput = row?.querySelector('[data-transfer-product]')
         if (searchInput) searchInput.value = ''
         if (hiddenInput) hiddenInput.value = ''
+        if (row) {
+          row.dataset.defaultTransferKind = 'product'
+          syncTransferUnitSelect(row, null, 'base')
+        }
         searchInput?.focus({ preventScroll: true })
         updateSimpleTransferSalesSummary()
         syncSimpleTransferAvailability()
