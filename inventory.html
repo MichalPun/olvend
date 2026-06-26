@@ -258,6 +258,10 @@
     .audit-result-head { min-height:44px; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .audit-result-head h3 { margin:0; font-size:16px; }
     .audit-result-body { padding:10px 12px; display:grid; gap:8px; }
+    .auto-load-reason { display:block; max-width:360px; color:var(--muted); font-size:12px; line-height:1.35; }
+    .auto-load-risk { color:#fbbf24; font-weight:900; }
+    .auto-load-ok { color:#86efac; font-weight:900; }
+    .auto-load-block { color:#fca5a5; font-weight:900; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
     .switch-row { display:flex; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .switch-row input { width:auto; }
@@ -370,6 +374,7 @@
         <nav class="module-tabs" aria-label="Přepnutí inventáře">
           <button class="module-tab" type="button" data-inventory-tab="catalog">Katalog zásob</button>
           <button class="module-tab active" type="button" data-inventory-tab="stock">Stavy zásob</button>
+          <button class="module-tab" type="button" data-inventory-tab="auto-load">Auto nakládka</button>
           <button class="module-tab" type="button" data-inventory-tab="movements">Skladové pohyby</button>
           <button class="module-tab" type="button" data-inventory-tab="audits">Inventury</button>
           <button class="module-tab" type="button" data-inventory-tab="vehicles">Vozidla</button>
@@ -662,6 +667,50 @@
               </table>
             </div>
             <div class="empty-state" id="stockV13Empty" style="display:none;">Žádné zásoby neodpovídají filtrům.</div>
+          </div>
+        </section>
+
+        <section class="panel inventory-panel" data-inventory-panel="auto-load" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Automatická nakládka</h2>
+              <p>Návrh pro skladníka podle historie vyskladnění z vozidla, aktuálního stavu auta, celých balení a rizikových zbytků.</p>
+            </div>
+            <div class="action-row">
+              <button class="btn secondary" type="button" id="autoLoadRefreshBtn">Obnovit data</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="status-line" id="autoLoadStatus">Vyber den, sklad, vozidlo a operátorku.</div>
+            <div class="toolbar">
+              <input id="autoLoadDate" type="date" />
+              <select id="autoLoadWarehouse"><option value="">Vyber sklad</option></select>
+              <select id="autoLoadVehicle"><option value="">Vyber vozidlo</option></select>
+              <select id="autoLoadEmployee"><option value="">Vyber operátorku</option></select>
+              <button class="btn" type="button" id="autoLoadGenerateBtn">Spočítat návrh</button>
+            </div>
+            <div class="summary-grid" id="autoLoadSummary"></div>
+            <div class="action-row" style="margin:10px 0 12px;">
+              <button class="btn" type="button" id="autoLoadCreateRequestBtn">Vytvořit nakládku</button>
+              <button class="btn secondary" type="button" id="autoLoadCreateAuditsBtn">Vytvořit inventury pro rizika</button>
+            </div>
+            <div class="table-wrap">
+              <table class="stock-excel-table">
+                <thead>
+                  <tr>
+                    <th>Produkt</th>
+                    <th>Auto teď</th>
+                    <th>Odhad jízdy</th>
+                    <th>Balení</th>
+                    <th>Návrh</th>
+                    <th>Využití nového</th>
+                    <th>Riziko / důvod</th>
+                  </tr>
+                </thead>
+                <tbody id="autoLoadRowsBody"></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="autoLoadEmpty" style="display:none;">Zatím není spočítaný žádný návrh.</div>
           </div>
         </section>
 
@@ -1602,6 +1651,18 @@
     const vehicleAuditSelectOnVehicleBtn = document.getElementById('vehicleAuditSelectOnVehicleBtn')
     const vehicleAuditClearSelectionBtn = document.getElementById('vehicleAuditClearSelectionBtn')
     const createVehicleAuditBtn = document.getElementById('createVehicleAuditBtn')
+    const autoLoadDate = document.getElementById('autoLoadDate')
+    const autoLoadWarehouse = document.getElementById('autoLoadWarehouse')
+    const autoLoadVehicle = document.getElementById('autoLoadVehicle')
+    const autoLoadEmployee = document.getElementById('autoLoadEmployee')
+    const autoLoadGenerateBtn = document.getElementById('autoLoadGenerateBtn')
+    const autoLoadRefreshBtn = document.getElementById('autoLoadRefreshBtn')
+    const autoLoadCreateRequestBtn = document.getElementById('autoLoadCreateRequestBtn')
+    const autoLoadCreateAuditsBtn = document.getElementById('autoLoadCreateAuditsBtn')
+    const autoLoadStatus = document.getElementById('autoLoadStatus')
+    const autoLoadSummary = document.getElementById('autoLoadSummary')
+    const autoLoadRowsBody = document.getElementById('autoLoadRowsBody')
+    const autoLoadEmpty = document.getElementById('autoLoadEmpty')
 
     let items = []
     let movements = []
@@ -1644,6 +1705,8 @@
     let employeesDirectory = []
     let vehicleInventoryAudits = []
     let vehicleInventoryAuditItems = []
+    let vehicleAutoLoadProfiles = []
+    let autoLoadRows = []
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v2'
     const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
     const AUDIT_DRAFT_STORAGE_KEY = 'olvend.inventoryAuditDraft.v1'
@@ -3712,6 +3775,352 @@
         ? keys.map((key) => VEHICLE_AUDIT_GROUPS.find((group) => group.key === key)?.label || key).join(' / ')
         : 'Ostatní'
     }
+    function getAutoLoadProfile(productId) {
+      return vehicleAutoLoadProfiles.find((profile) => String(profile.product_id) === String(productId)) || null
+    }
+    function getAutoLoadDefaultProfile(product) {
+      const profile = getAutoLoadProfile(product.id)
+      return profile || {
+        product_id: product.id,
+        active: product.product_category === 'food_ready',
+        min_trip_usage_ratio: 0.667,
+        stale_vehicle_days: normalizeText(product.name || '').includes('baget') ? 1 : 2,
+        safety_stock_quantity: 0,
+        history_days: 45,
+        note: 'Výchozí pravidlo pro food_ready položky.'
+      }
+    }
+    function getDefaultProductPackage(productId) {
+      const packages = getProductPackages(productId)
+      return packages.find((pack) => pack.is_default && pack.active !== false)
+        || packages.find((pack) => pack.active !== false)
+        || null
+    }
+    function getLocationQuantity(stockLocationId, productId) {
+      return stockBalancesV13
+        .filter((balance) => String(balance.stock_location_id) === String(stockLocationId) && String(balance.product_id) === String(productId))
+        .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+    }
+    function getVehicleStockLocationByVehicleId(vehicleId) {
+      return stockLocationsV13.find((location) => location.location_type === 'vehicle' && String(location.vehicle_id) === String(vehicleId)) || null
+    }
+    function getWarehouseStockLocationByWarehouseId(warehouseId) {
+      return stockLocationsV13.find((location) => location.location_type === 'warehouse' && String(location.warehouse_id) === String(warehouseId)) || null
+    }
+    function movementLocalDate(value) {
+      return value ? new Date(value).toISOString().slice(0, 10) : ''
+    }
+    function daysBetweenDates(fromDate, toDate) {
+      const from = new Date(`${fromDate}T00:00:00`)
+      const to = new Date(`${toDate}T00:00:00`)
+      return Math.max(0, Math.round((to - from) / 86400000))
+    }
+    function getAutoLoadHistoryRows(vehicleLocationId, productId, historyDays, targetDate) {
+      const cutoff = new Date(`${targetDate}T00:00:00`)
+      cutoff.setDate(cutoff.getDate() - Number(historyDays || 45))
+      const cutoffDate = cutoff.toISOString().slice(0, 10)
+      return stockMovementsV13.filter((movement) => {
+        const date = movementLocalDate(movement.created_at)
+        return String(movement.from_stock_location_id || '') === String(vehicleLocationId)
+          && String(movement.product_id || '') === String(productId)
+          && movement.movement_type === 'fill_machine'
+          && date >= cutoffDate
+          && date < targetDate
+      })
+    }
+    function estimateAutoLoadTripDemand(vehicleLocationId, productId, historyDays, targetDate) {
+      const rows = getAutoLoadHistoryRows(vehicleLocationId, productId, historyDays, targetDate)
+      if (!rows.length) return { expected: 0, samples: 0, source: 'bez historie' }
+      const targetDay = new Date(`${targetDate}T00:00:00`).getDay()
+      const byDate = new Map()
+      rows.forEach((movement) => {
+        const date = movementLocalDate(movement.created_at)
+        const current = byDate.get(date) || 0
+        byDate.set(date, Number((current + Number(movement.quantity_base_units || 0)).toFixed(3)))
+      })
+      const daily = [...byDate.entries()].map(([date, quantity]) => ({ date, quantity, day: new Date(`${date}T00:00:00`).getDay() }))
+      const sameDay = daily.filter((row) => row.day === targetDay)
+      const sourceRows = sameDay.length >= 2 ? sameDay : daily
+      const weighted = sourceRows.reduce((sum, row, index) => {
+        const weight = index + 1
+        return { qty: sum.qty + row.quantity * weight, weight: sum.weight + weight }
+      }, { qty: 0, weight: 0 })
+      const expected = weighted.weight ? Number((weighted.qty / weighted.weight).toFixed(3)) : 0
+      return {
+        expected,
+        samples: sourceRows.length,
+        source: sameDay.length >= 2 ? 'stejný den v týdnu' : 'poslední jízdy'
+      }
+    }
+    function getLastVehicleProductMovement(vehicleLocationId, productId) {
+      return stockMovementsV13
+        .filter((movement) => String(movement.product_id || '') === String(productId)
+          && (String(movement.from_stock_location_id || '') === String(vehicleLocationId) || String(movement.to_stock_location_id || '') === String(vehicleLocationId)))
+        .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0] || null
+    }
+    function shouldIncludeAutoLoadProduct(product) {
+      const profile = getAutoLoadProfile(product.id)
+      if (profile) return profile.active !== false
+      return product.active !== false && product.product_category === 'food_ready'
+    }
+    function populateAutoLoadControls() {
+      if (!autoLoadDate?.value) autoLoadDate.value = new Date().toISOString().slice(0, 10)
+      if (autoLoadWarehouse) {
+        const current = autoLoadWarehouse.value
+        autoLoadWarehouse.innerHTML = '<option value="">Vyber sklad</option>' + warehouses
+          .filter((warehouse) => warehouse.active !== false)
+          .map((warehouse) => `<option value="${escapeHtml(String(warehouse.id))}">${escapeHtml(warehouse.name || `Sklad ${warehouse.id}`)}</option>`)
+          .join('')
+        if (current) autoLoadWarehouse.value = current
+      }
+      if (autoLoadVehicle) {
+        const current = autoLoadVehicle.value
+        autoLoadVehicle.innerHTML = '<option value="">Vyber vozidlo</option>' + vehicles
+          .filter((vehicle) => vehicle.active !== false)
+          .map((vehicle) => `<option value="${escapeHtml(String(vehicle.id))}">${escapeHtml(getVehicleLabel(vehicle.id))}</option>`)
+          .join('')
+        if (current) autoLoadVehicle.value = current
+      }
+      if (autoLoadEmployee) {
+        const current = autoLoadEmployee.value
+        autoLoadEmployee.innerHTML = '<option value="">Vyber operátorku</option>' + employeesDirectory
+          .map((employee) => `<option value="${escapeHtml(String(employee.id))}">${escapeHtml(getVehicleAuditEmployeeLabel(employee.id))}</option>`)
+          .join('')
+        if (current) autoLoadEmployee.value = current
+      }
+    }
+    function syncAutoLoadWarehouseFromVehicle() {
+      const vehicle = vehicles.find((item) => String(item.id) === String(autoLoadVehicle?.value || ''))
+      if (vehicle?.warehouse_id && autoLoadWarehouse && !autoLoadWarehouse.value) {
+        autoLoadWarehouse.value = String(vehicle.warehouse_id)
+      }
+    }
+    function buildAutoLoadRows() {
+      const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const warehouseId = Number(autoLoadWarehouse?.value || 0)
+      if (!vehicleId) throw new Error('Vyber vozidlo.')
+      if (!warehouseId) throw new Error('Vyber sklad.')
+      const vehicleLocation = getVehicleStockLocationByVehicleId(vehicleId)
+      const warehouseLocation = getWarehouseStockLocationByWarehouseId(warehouseId)
+      if (!vehicleLocation) throw new Error('Vozidlo nemá skladovou lokaci.')
+      if (!warehouseLocation) throw new Error('Sklad nemá skladovou lokaci.')
+      return productsV13
+        .filter(shouldIncludeAutoLoadProduct)
+        .map((product) => {
+          const profile = getAutoLoadDefaultProfile(product)
+          const pack = getDefaultProductPackage(product.id)
+          const packageQty = Number(pack?.units_per_package || 0)
+          const currentVehicleQty = getLocationQuantity(vehicleLocation.id, product.id)
+          const warehouseQty = getLocationQuantity(warehouseLocation.id, product.id)
+          const estimate = estimateAutoLoadTripDemand(vehicleLocation.id, product.id, profile.history_days, targetDate)
+          const safetyQty = Number(profile.safety_stock_quantity || 0)
+          const requiredFromNew = Math.max(0, Number((estimate.expected + safetyQty - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const packageCount = packageQty > 0 ? Math.ceil(requiredFromNew / packageQty) : 0
+          const suggestedQty = packageQty > 0 ? Number((packageCount * packageQty).toFixed(3)) : 0
+          const expectedUseFromNew = Math.max(0, Number((estimate.expected - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const usageRatio = suggestedQty > 0 ? Number((Math.min(expectedUseFromNew, suggestedQty) / suggestedQty).toFixed(3)) : 0
+          const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
+          const lastMovement = getLastVehicleProductMovement(vehicleLocation.id, product.id)
+          const lastMovementDate = movementLocalDate(lastMovement?.created_at)
+          const staleDays = lastMovementDate ? daysBetweenDates(lastMovementDate, targetDate) : null
+          const staleLimit = Number(profile.stale_vehicle_days ?? 1)
+          const staleRisk = currentVehicleQty > 0.0001 && staleLimit >= 0 && staleDays !== null && staleDays >= staleLimit
+          const allowedByRatio = suggestedQty > 0 && usageRatio + 0.0001 >= minRatio
+          const approvedPackageCount = allowedByRatio ? packageCount : 0
+          const approvedQty = allowedByRatio ? suggestedQty : 0
+          const reasons = []
+          if (!pack) reasons.push('chybí balení v kartě zásoby')
+          if (estimate.samples <= 0) reasons.push('bez historického vyskladnění')
+          if (suggestedQty > 0 && !allowedByRatio) reasons.push(`nové balení by se využilo jen ${(usageRatio * 100).toFixed(0)} %`)
+          if (warehouseQty < approvedQty - 0.0001) reasons.push('na skladě není dost kusů')
+          if (staleRisk) reasons.push(`zůstatek na autě bez pohybu ${staleDays} dní`)
+          if (!reasons.length && approvedQty > 0) reasons.push('doporučeno podle historie')
+          if (!reasons.length) reasons.push('není potřeba donaložit')
+          return {
+            product,
+            profile,
+            package: pack,
+            packageQty,
+            currentVehicleQty,
+            warehouseQty,
+            expectedDemand: estimate.expected,
+            samples: estimate.samples,
+            estimateSource: estimate.source,
+            requiredFromNew,
+            packageCount,
+            suggestedQty,
+            usageRatio,
+            minRatio,
+            approvedPackageCount,
+            approvedQty,
+            staleRisk,
+            staleDays,
+            reasons,
+            status: approvedQty > 0 ? 'recommended' : staleRisk ? 'audit' : suggestedQty > 0 ? 'blocked' : 'idle'
+          }
+        })
+        .filter((row) => row.approvedQty > 0 || row.staleRisk || row.expectedDemand > 0 || row.currentVehicleQty > 0)
+        .sort((a, b) => {
+          const statusOrder = { recommended: 0, audit: 1, blocked: 2, idle: 3 }
+          const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
+          if (statusDiff) return statusDiff
+          return normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs')
+        })
+    }
+    function renderAutoLoadRows() {
+      if (!autoLoadRowsBody) return
+      const rows = autoLoadRows || []
+      autoLoadRowsBody.innerHTML = rows.map((row) => {
+        const unit = row.product.base_unit || 'ks'
+        const statusClass = row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.staleRisk ? 'auto-load-risk' : ''
+        const suggestedLabel = row.approvedQty > 0
+          ? `${row.approvedPackageCount} bal. / ${formatQuantityValue(row.approvedQty, unit)}`
+          : row.suggestedQty > 0
+            ? '0 bal. kvůli pravidlům'
+            : '0 bal.'
+        return `
+          <tr>
+            <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
+            <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong></td>
+            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">donaložit potřeba ${escapeHtml(formatQuantityValue(row.requiredFromNew, unit))}</span></td>
+            <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
+            <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
+            <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
+            <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
+          </tr>
+        `
+      }).join('')
+      autoLoadEmpty.style.display = rows.length ? 'none' : 'block'
+      const recommended = rows.filter((row) => row.approvedQty > 0)
+      const risks = rows.filter((row) => row.staleRisk)
+      const blocked = rows.filter((row) => row.status === 'blocked')
+      autoLoadSummary.innerHTML = [
+        { label: 'Doporučeno', value: recommended.length, note: `${recommended.reduce((sum, row) => sum + row.approvedQty, 0).toFixed(0)} ks v celých baleních.` },
+        { label: 'Rizika inventury', value: risks.length, note: 'Zůstatky na autě bez pohybu.' },
+        { label: 'Nenakládat', value: blocked.length, note: 'Nové balení by se na jízdě nevyužilo dost.' },
+        { label: 'Řádků celkem', value: rows.length, note: 'Aktivní sortiment s historií nebo stavem.' }
+      ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
+      if (autoLoadStatus) {
+        autoLoadStatus.className = 'status-line'
+        autoLoadStatus.textContent = rows.length ? `Návrh spočítaný pro ${autoLoadDate?.value || ''}.` : 'Pro vybrané vozidlo není co navrhnout.'
+      }
+    }
+    async function generateAutoLoadRecommendation() {
+      syncAutoLoadWarehouseFromVehicle()
+      autoLoadRows = buildAutoLoadRows()
+      renderAutoLoadRows()
+    }
+    async function createAutoLoadMobileRequest() {
+      const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
+      if (!rows.length) throw new Error('Není tu žádná doporučená položka k nakládce.')
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const warehouseId = Number(autoLoadWarehouse?.value || 0)
+      const employeeId = autoLoadEmployee?.value || ''
+      const requestedDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
+      if (!vehicleId || !warehouseId) throw new Error('Vyber sklad i vozidlo.')
+      const vehicle = vehicles.find((item) => String(item.id) === String(vehicleId))
+      const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
+      const sourceLocation = getWarehouseStockLocationByWarehouseId(warehouseId) || { id: await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`) }
+      const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, vehicle?.name || `Vozidlo ${vehicleId}`) }
+      const { data: request, error: requestError } = await supabase
+        .from('mobile_stock_requests')
+        .insert([{
+          request_type: 'vehicle_load',
+          status: 'requested',
+          employee_id: employeeId || null,
+          vehicle_id: vehicleId,
+          warehouse_id: warehouseId,
+          source_stock_location_id: sourceLocation.id,
+          target_stock_location_id: targetLocation.id,
+          requested_for_date: requestedDate,
+          note: `Automatická nakládka ${requestedDate} · ${getVehicleLabel(vehicleId)} · celé balení, min. využití nově naloženého zboží`
+        }])
+        .select('id')
+        .single()
+      if (requestError) throw requestError
+      const itemRows = rows.map((row) => ({
+        request_id: request.id,
+        product_id: row.product.id,
+        product_name: row.product.name,
+        sku: row.product.sku || null,
+        unit: row.product.base_unit || 'ks',
+        requested_quantity: row.approvedQty,
+        prepared_quantity: row.approvedQty,
+        note: [
+          `auto návrh: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
+          `odhad jízdy ${row.expectedDemand}`,
+          `auto teď ${row.currentVehicleQty}`,
+          `využití ${(row.usageRatio * 100).toFixed(0)} %`
+        ].join(' · ')
+      }))
+      const { error: itemsError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
+      if (itemsError) throw itemsError
+      mobilePickRequestsCollapsed = false
+      await loadMobilePickRequests()
+      autoLoadStatus.className = 'status-line success'
+      autoLoadStatus.textContent = `Automatická nakládka #${request.id} byla založená a čeká ve skladových pohybech.`
+    }
+    async function createAutoLoadRiskAudits() {
+      const rows = autoLoadRows.filter((row) => row.staleRisk)
+      if (!rows.length) throw new Error('Není tu žádný rizikový zůstatek k inventuře.')
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const employeeId = autoLoadEmployee?.value || ''
+      const auditDateValue = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
+      if (!vehicleId) throw new Error('Vyber vozidlo.')
+      if (!employeeId) throw new Error('Vyber operátorku pro cílenou inventuru.')
+      const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId)) }
+      const { data: audit, error: auditError } = await supabase
+        .from('inventory_audits')
+        .insert([{
+          audit_date: auditDateValue,
+          scope_type: 'vehicle',
+          stock_location_id: targetLocation.id,
+          vehicle_id: vehicleId,
+          assigned_employee_id: employeeId,
+          responsible_name: getVehicleAuditEmployeeLabel(employeeId),
+          note: 'Automatická cílená inventura: dlouho neodečtený zůstatek na vozidle',
+          status: 'assigned',
+          created_by: null
+        }])
+        .select('id')
+        .single()
+      if (auditError) throw auditError
+      const itemRows = rows.map((row) => ({
+        audit_id: audit.id,
+        stock_location_id: targetLocation.id,
+        product_id: row.product.id,
+        book_quantity: row.currentVehicleQty,
+        counted_quantity: 0,
+        difference_quantity: 0,
+        unit_cost: getStockUnitCost(row.product) || null,
+        difference_value: 0,
+        note: `Automaticky vybráno: zůstatek na autě bez pohybu ${row.staleDays} dní`
+      }))
+      const { error: itemError } = await supabase.from('inventory_audit_items').insert(itemRows)
+      if (itemError) throw itemError
+      const { data: instruction, error: instructionError } = await supabase
+        .from('daily_instructions')
+        .insert([{
+          title: `Kontrola zůstatků na vozidle ${getVehicleLabel(vehicleId)}`,
+          message: `Ověř fyzicky vybrané položky, které podle evidence zůstávají na autě dlouho bez pohybu. Inventura #${audit.id}.`,
+          target_type: 'employee',
+          target_employee_id: employeeId,
+          valid_from: auditDateValue,
+          valid_to: auditDateValue,
+          priority: 'important',
+          requires_acknowledgement: true,
+          is_active: true
+        }])
+        .select('id')
+        .single()
+      if (!instructionError && instruction?.id) {
+        await supabase.from('inventory_audits').update({ instruction_id: instruction.id }).eq('id', audit.id)
+      }
+      await loadInventoryV13Overview()
+      autoLoadStatus.className = 'status-line success'
+      autoLoadStatus.textContent = `Cílená inventura #${audit.id} byla založená pro ${rows.length} rizikových položek.`
+    }
     function getVehicleAuditProductRows() {
       const query = normalizeText(vehicleAuditSearch?.value || '')
       const selectedGroups = getVehicleAuditSelectedGroups()
@@ -5002,11 +5411,13 @@
           balancesResult,
           profilesResult,
           movementsResult,
+          autoLoadMovementsResult,
           manualTransferMovementsResult,
           manualSaleMovementsResult,
           manualCorrectionMovementsResult,
           employeesResult,
-          auditsResult
+          auditsResult,
+          autoLoadProfilesResult
         ] = await Promise.all([
           supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, vat_rate, purchase_price, sale_price, shelf_life_days, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, can_be_sold_directly, can_be_used_in_recipe, can_be_consumed_internally, can_be_used_in_service, active, note').order('name', { ascending: true }),
           supabase.from('product_packages').select('id, product_id, package_name, units_per_package, package_barcode, is_default, active').order('is_default', { ascending: false }),
@@ -5016,15 +5427,17 @@
           supabase.from('stock_location_balances').select('id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)').order('updated_at', { ascending: false }),
           supabase.from('replenishment_profiles').select('id, stock_location_id, product_id, min_quantity, target_quantity, active').eq('active', true),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').order('created_at', { ascending: false }).limit(5000),
+          supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('movement_type', 'fill_machine').order('created_at', { ascending: false }).limit(10000),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_transfer').order('created_at', { ascending: false }).limit(10000),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_sale').order('created_at', { ascending: false }).limit(5000),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_correction').order('created_at', { ascending: false }).limit(1000),
           supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true }),
-          supabase.from('inventory_audits').select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, instruction_id, responsible_name, note, status, book_quantity_total, counted_quantity_total, difference_quantity_total, difference_value_total, counted_at, transfer_confirmed_at, evaluated_at, closed_at, created_at').in('scope_type', ['vehicle', 'warehouse']).order('created_at', { ascending: false }).limit(30)
+          supabase.from('inventory_audits').select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, instruction_id, responsible_name, note, status, book_quantity_total, counted_quantity_total, difference_quantity_total, difference_value_total, counted_at, transfer_confirmed_at, evaluated_at, closed_at, created_at').in('scope_type', ['vehicle', 'warehouse']).order('created_at', { ascending: false }).limit(30),
+          supabase.from('vehicle_auto_load_profiles').select('id, product_id, active, min_trip_usage_ratio, stale_vehicle_days, safety_stock_quantity, history_days, note').eq('active', true)
         ])
 
-        if (productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error || manualTransferMovementsResult.error || manualSaleMovementsResult.error || manualCorrectionMovementsResult.error) {
-          throw productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error || manualTransferMovementsResult.error || manualSaleMovementsResult.error || manualCorrectionMovementsResult.error
+        if (productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error || autoLoadMovementsResult.error || manualTransferMovementsResult.error || manualSaleMovementsResult.error || manualCorrectionMovementsResult.error) {
+          throw productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error || autoLoadMovementsResult.error || manualTransferMovementsResult.error || manualSaleMovementsResult.error || manualCorrectionMovementsResult.error
         }
 
         productsV13 = productsResult.data ?? []
@@ -5035,7 +5448,10 @@
         stockLocationsV13 = locationsResult.data ?? []
         stockBalancesV13 = balancesResult.data ?? []
         replenishmentProfilesV13 = profilesResult.data ?? []
-        stockMovementsV13 = movementsResult.data ?? []
+        stockMovementsV13 = [
+          ...(movementsResult.data ?? []),
+          ...(autoLoadMovementsResult.data ?? [])
+        ].filter((movement, index, rows) => rows.findIndex((item) => String(item.id) === String(movement.id)) === index)
         manualTransferMovementsV13 = [
           ...(manualTransferMovementsResult.data ?? []),
           ...(manualSaleMovementsResult.data ?? []),
@@ -5043,14 +5459,17 @@
         ]
         employeesDirectory = employeesResult.error ? [] : (employeesResult.data ?? [])
         vehicleInventoryAudits = auditsResult.error ? [] : (auditsResult.data ?? [])
+        vehicleAutoLoadProfiles = autoLoadProfilesResult.error ? [] : (autoLoadProfilesResult.data ?? [])
         await loadVehicleInventoryAuditItems()
 
         stockV13LocationFilter.innerHTML = '<option value="">Všechna konkrétní místa</option>' + stockLocationsV13.map((location) => `<option value="${escapeHtml(String(location.id))}">${escapeHtml(`${getLocationTypeLabel(location.location_type)} · ${location.name || 'Bez názvu'}`)}</option>`).join('')
         updateAuditLocationOptions()
         updateStockValuationLocationOptions()
         populateVehicleAuditControls()
+        populateAutoLoadControls()
         renderVehicleAuditProducts()
         renderVehicleAuditList()
+        renderAutoLoadRows()
         const rows = getStockExcelRows()
         renderStockV13Summary(rows)
         renderStockV13Rows()
@@ -7769,6 +8188,53 @@
     })
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'stock'))
+    })
+    autoLoadVehicle?.addEventListener('change', () => {
+      if (autoLoadWarehouse) autoLoadWarehouse.value = ''
+      syncAutoLoadWarehouseFromVehicle()
+    })
+    autoLoadGenerateBtn?.addEventListener('click', async () => {
+      try {
+        autoLoadGenerateBtn.disabled = true
+        autoLoadGenerateBtn.textContent = 'Počítám...'
+        await generateAutoLoadRecommendation()
+      } catch (error) {
+        console.error(error)
+        autoLoadStatus.textContent = error.message || 'Návrh nakládky se nepodařilo spočítat.'
+        autoLoadStatus.className = 'status-line error'
+      } finally {
+        autoLoadGenerateBtn.disabled = false
+        autoLoadGenerateBtn.textContent = 'Spočítat návrh'
+      }
+    })
+    autoLoadRefreshBtn?.addEventListener('click', () => loadInventoryV13Overview())
+    autoLoadCreateRequestBtn?.addEventListener('click', async () => {
+      try {
+        autoLoadCreateRequestBtn.disabled = true
+        autoLoadCreateRequestBtn.textContent = 'Zakládám...'
+        await createAutoLoadMobileRequest()
+      } catch (error) {
+        console.error(error)
+        autoLoadStatus.textContent = error.message || 'Automatickou nakládku se nepodařilo založit.'
+        autoLoadStatus.className = 'status-line error'
+      } finally {
+        autoLoadCreateRequestBtn.disabled = false
+        autoLoadCreateRequestBtn.textContent = 'Vytvořit nakládku'
+      }
+    })
+    autoLoadCreateAuditsBtn?.addEventListener('click', async () => {
+      try {
+        autoLoadCreateAuditsBtn.disabled = true
+        autoLoadCreateAuditsBtn.textContent = 'Zakládám...'
+        await createAutoLoadRiskAudits()
+      } catch (error) {
+        console.error(error)
+        autoLoadStatus.textContent = error.message || 'Cílenou inventuru se nepodařilo založit.'
+        autoLoadStatus.className = 'status-line error'
+      } finally {
+        autoLoadCreateAuditsBtn.disabled = false
+        autoLoadCreateAuditsBtn.textContent = 'Vytvořit inventury pro rizika'
+      }
     })
     document.getElementById('closeItemModalBtn').addEventListener('click', closeItemModal)
     document.getElementById('cancelItemBtn').addEventListener('click', closeItemModal)
