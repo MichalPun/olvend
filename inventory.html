@@ -262,6 +262,7 @@
     .auto-load-risk { color:#fbbf24; font-weight:900; }
     .auto-load-ok { color:#86efac; font-weight:900; }
     .auto-load-block { color:#fca5a5; font-weight:900; }
+    .auto-load-warn { color:#fdba74; font-weight:900; }
     .icon-btn { width:38px; height:38px; border-radius:10px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); cursor:pointer; font-weight:900; }
     .switch-row { display:flex; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .switch-row input { width:auto; }
@@ -3778,16 +3779,39 @@
     function getAutoLoadProfile(productId) {
       return vehicleAutoLoadProfiles.find((profile) => String(profile.product_id) === String(productId)) || null
     }
+    function isAutoLoadProductCandidate(product) {
+      const category = product?.product_category || ''
+      const kind = getProductKind(product)
+      return product?.active !== false && ([
+        'food_ready',
+        'snack_ready',
+        'beverage_ready',
+        'ingredient',
+        'consumable',
+        'service_material',
+        'water_product',
+        'hot_drink'
+      ].includes(category) || ['water_product', 'hot_drink'].includes(kind))
+    }
+    function getAutoLoadDefaultStaleDays(product) {
+      const category = product?.product_category || ''
+      const kind = getProductKind(product)
+      if (category === 'food_ready' || normalizeText(product?.name || '').includes('baget')) return 1
+      if (category === 'snack_ready' || kind === 'water_product') return 7
+      if (category === 'beverage_ready' || kind === 'hot_drink') return 14
+      if (category === 'ingredient' || category === 'consumable' || category === 'service_material') return 21
+      return 14
+    }
     function getAutoLoadDefaultProfile(product) {
       const profile = getAutoLoadProfile(product.id)
       return profile || {
         product_id: product.id,
-        active: product.product_category === 'food_ready',
+        active: isAutoLoadProductCandidate(product),
         min_trip_usage_ratio: 0.667,
-        stale_vehicle_days: normalizeText(product.name || '').includes('baget') ? 1 : 2,
+        stale_vehicle_days: getAutoLoadDefaultStaleDays(product),
         safety_stock_quantity: 0,
         history_days: 45,
-        note: 'Výchozí pravidlo pro food_ready položky.'
+        note: 'Výchozí pravidlo pro automatickou nakládku.'
       }
     }
     function getDefaultProductPackage(productId) {
@@ -3861,7 +3885,7 @@
     function shouldIncludeAutoLoadProduct(product) {
       const profile = getAutoLoadProfile(product.id)
       if (profile) return profile.active !== false
-      return product.active !== false && product.product_category === 'food_ready'
+      return isAutoLoadProductCandidate(product)
     }
     function populateAutoLoadControls() {
       if (!autoLoadDate?.value) autoLoadDate.value = new Date().toISOString().slice(0, 10)
@@ -3926,17 +3950,35 @@
           const staleDays = lastMovementDate ? daysBetweenDates(lastMovementDate, targetDate) : null
           const staleLimit = Number(profile.stale_vehicle_days ?? 1)
           const staleRisk = currentVehicleQty > 0.0001 && staleLimit >= 0 && staleDays !== null && staleDays >= staleLimit
+          const missingPackage = requiredFromNew > 0.0001 && packageQty <= 0
           const allowedByRatio = suggestedQty > 0 && usageRatio + 0.0001 >= minRatio
           const approvedPackageCount = allowedByRatio ? packageCount : 0
           const approvedQty = allowedByRatio ? suggestedQty : 0
+          const projectedVehicleAfterTrip = Number((currentVehicleQty + approvedQty - estimate.expected).toFixed(3))
           const reasons = []
-          if (!pack) reasons.push('chybí balení v kartě zásoby')
+          if (requiredFromNew <= 0.0001 && currentVehicleQty > 0) {
+            reasons.push(`nenakládat, stav na autě pokryje odhad jízdy`)
+          }
+          if (missingPackage) {
+            reasons.push(`chybí ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, ale v kartě zásoby není velikost balení`)
+          }
           if (estimate.samples <= 0) reasons.push('bez historického vyskladnění')
-          if (suggestedQty > 0 && !allowedByRatio) reasons.push(`nové balení by se využilo jen ${(usageRatio * 100).toFixed(0)} %`)
+          if (suggestedQty > 0 && !allowedByRatio) {
+            reasons.push(`chybí ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, ale ${packageCount} bal. po ${formatQuantityValue(packageQty, product.base_unit || 'ks')} by se využilo jen ${(usageRatio * 100).toFixed(0)} %`)
+          }
           if (warehouseQty < approvedQty - 0.0001) reasons.push('na skladě není dost kusů')
-          if (staleRisk) reasons.push(`zůstatek na autě bez pohybu ${staleDays} dní`)
+          if (staleRisk) reasons.push(`ověřit inventurou, zůstatek na autě je bez pohybu ${staleDays} dní`)
           if (!reasons.length && approvedQty > 0) reasons.push('doporučeno podle historie')
           if (!reasons.length) reasons.push('není potřeba donaložit')
+          const status = approvedQty > 0
+            ? 'recommended'
+            : missingPackage
+              ? 'missing_package'
+              : staleRisk
+                ? 'audit'
+                : suggestedQty > 0
+                  ? 'blocked'
+                  : 'idle'
           return {
             product,
             profile,
@@ -3954,15 +3996,17 @@
             minRatio,
             approvedPackageCount,
             approvedQty,
+            missingPackage,
+            projectedVehicleAfterTrip,
             staleRisk,
             staleDays,
             reasons,
-            status: approvedQty > 0 ? 'recommended' : staleRisk ? 'audit' : suggestedQty > 0 ? 'blocked' : 'idle'
+            status
           }
         })
         .filter((row) => row.approvedQty > 0 || row.staleRisk || row.expectedDemand > 0 || row.currentVehicleQty > 0)
         .sort((a, b) => {
-          const statusOrder = { recommended: 0, audit: 1, blocked: 2, idle: 3 }
+          const statusOrder = { recommended: 0, missing_package: 1, audit: 2, blocked: 3, idle: 4 }
           const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
           if (statusDiff) return statusDiff
           return normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs')
@@ -3973,19 +4017,26 @@
       const rows = autoLoadRows || []
       autoLoadRowsBody.innerHTML = rows.map((row) => {
         const unit = row.product.base_unit || 'ks'
-        const statusClass = row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.staleRisk ? 'auto-load-risk' : ''
+        const statusClass = row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
         const suggestedLabel = row.approvedQty > 0
           ? `${row.approvedPackageCount} bal. / ${formatQuantityValue(row.approvedQty, unit)}`
-          : row.suggestedQty > 0
-            ? '0 bal. kvůli pravidlům'
-            : '0 bal.'
+          : row.missingPackage
+            ? 'chybí balení'
+            : row.suggestedQty > 0
+              ? 'nenakládat'
+              : 'nenakládat'
+        const suggestedNote = row.approvedQty > 0
+          ? `po jízdě cca ${formatQuantityValue(row.projectedVehicleAfterTrip, unit)}`
+          : row.requiredFromNew > 0
+            ? `chybí cca ${formatQuantityValue(row.requiredFromNew, unit)}`
+            : `auto stačí, po jízdě cca ${formatQuantityValue(row.projectedVehicleAfterTrip, unit)}`
         return `
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong></td>
             <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">donaložit potřeba ${escapeHtml(formatQuantityValue(row.requiredFromNew, unit))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
-            <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
+            <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
@@ -3994,16 +4045,20 @@
       autoLoadEmpty.style.display = rows.length ? 'none' : 'block'
       const recommended = rows.filter((row) => row.approvedQty > 0)
       const risks = rows.filter((row) => row.staleRisk)
+      const missingPackages = rows.filter((row) => row.missingPackage)
       const blocked = rows.filter((row) => row.status === 'blocked')
       autoLoadSummary.innerHTML = [
         { label: 'Doporučeno', value: recommended.length, note: `${recommended.reduce((sum, row) => sum + row.approvedQty, 0).toFixed(0)} ks v celých baleních.` },
+        { label: 'Chybí balení', value: missingPackages.length, note: 'Doplň počet ks v balení v kartě zásoby.' },
         { label: 'Rizika inventury', value: risks.length, note: 'Zůstatky na autě bez pohybu.' },
-        { label: 'Nenakládat', value: blocked.length, note: 'Nové balení by se na jízdě nevyužilo dost.' },
+        { label: 'Nenakládat', value: blocked.length, note: 'Nové celé balení by se na jízdě nevyužilo dost.' },
         { label: 'Řádků celkem', value: rows.length, note: 'Aktivní sortiment s historií nebo stavem.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       if (autoLoadStatus) {
         autoLoadStatus.className = 'status-line'
-        autoLoadStatus.textContent = rows.length ? `Návrh spočítaný pro ${autoLoadDate?.value || ''}.` : 'Pro vybrané vozidlo není co navrhnout.'
+        autoLoadStatus.textContent = rows.length
+          ? `Návrh spočítaný pro ${autoLoadDate?.value || ''}. Doporučení vznikne jen tam, kde je celé balení a nové zboží se na jízdě využije alespoň podle nastaveného minima.`
+          : 'Pro vybrané vozidlo není co navrhnout.'
       }
     }
     async function generateAutoLoadRecommendation() {
