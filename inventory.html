@@ -311,7 +311,7 @@
     .auto-load-panel .panel-header h2 { font-size:22px; }
     .auto-load-panel .panel-header p { max-width:780px; font-size:13px; }
     .auto-load-panel .panel-body { padding:14px 16px 16px; }
-    .auto-load-controls { display:grid; grid-template-columns:minmax(145px,0.72fr) minmax(150px,0.8fr) minmax(170px,1fr) minmax(170px,1fr) minmax(150px,0.72fr) auto; gap:8px; align-items:center; margin:10px 0 12px; }
+    .auto-load-controls { display:grid; grid-template-columns:minmax(135px,0.65fr) minmax(145px,0.72fr) minmax(165px,0.9fr) minmax(170px,0.95fr) minmax(165px,0.9fr) minmax(140px,0.65fr) auto; gap:8px; align-items:center; margin:10px 0 12px; }
     .auto-load-controls input,
     .auto-load-controls select { min-height:42px; padding:8px 11px; border-radius:9px; font-size:13px; }
     .auto-load-controls .btn { min-height:42px; padding:9px 14px; border-radius:9px; white-space:nowrap; }
@@ -754,6 +754,12 @@
               <input id="autoLoadDate" type="date" />
               <select id="autoLoadWarehouse"><option value="">Vyber sklad</option></select>
               <select id="autoLoadVehicle"><option value="">Vyber vozidlo</option></select>
+              <select id="autoLoadScope">
+                <option value="vehicle_default">Standard vozidla</option>
+                <option value="coffee">Jen kávové automaty</option>
+                <option value="retail">Jen prodejní sortiment</option>
+                <option value="all">Všechno pro automaty</option>
+              </select>
               <select id="autoLoadEmployee"><option value="">Vyber operátorku</option></select>
               <button class="btn" type="button" id="autoLoadGenerateBtn">Spočítat návrh</button>
               <label class="switch-row auto-load-toggle"><input id="autoLoadOnlyActionable" type="checkbox" checked /><span>Jen k řešení</span></label>
@@ -1727,6 +1733,7 @@
     const autoLoadDate = document.getElementById('autoLoadDate')
     const autoLoadWarehouse = document.getElementById('autoLoadWarehouse')
     const autoLoadVehicle = document.getElementById('autoLoadVehicle')
+    const autoLoadScope = document.getElementById('autoLoadScope')
     const autoLoadEmployee = document.getElementById('autoLoadEmployee')
     const autoLoadGenerateBtn = document.getElementById('autoLoadGenerateBtn')
     const autoLoadRefreshBtn = document.getElementById('autoLoadRefreshBtn')
@@ -4005,6 +4012,21 @@
       if (profile) return profile.active !== false
       return isAutoLoadProductCandidate(product)
     }
+    function getAutoLoadScopeLabel() {
+      return autoLoadScope?.options?.[autoLoadScope.selectedIndex]?.text || 'Standard vozidla'
+    }
+    function matchesAutoLoadScope(product) {
+      const scope = autoLoadScope?.value || 'vehicle_default'
+      if (scope === 'vehicle_default' || scope === 'all') return true
+      const groups = new Set(getVehicleAuditProductGroupKeys(product))
+      if (scope === 'coffee') {
+        return groups.has('coffee') || groups.has('ingredients') || groups.has('cups')
+      }
+      if (scope === 'retail') {
+        return groups.has('snacks') || groups.has('drinks') || groups.has('food')
+      }
+      return true
+    }
     function populateAutoLoadControls() {
       if (!autoLoadDate?.value) autoLoadDate.value = new Date().toISOString().slice(0, 10)
       if (autoLoadWarehouse) {
@@ -4049,6 +4071,7 @@
       if (!warehouseLocation) throw new Error('Sklad nemá skladovou lokaci.')
       return productsV13
         .filter(shouldIncludeAutoLoadProduct)
+        .filter(matchesAutoLoadScope)
         .map((product) => {
           const profile = getAutoLoadDefaultProfile(product)
           const pack = getDefaultProductPackage(product.id)
@@ -4182,7 +4205,7 @@
       if (autoLoadStatus) {
         autoLoadStatus.className = 'status-line'
         autoLoadStatus.textContent = rows.length
-          ? `Návrh spočítaný pro ${autoLoadDate?.value || ''}. ${autoLoadOnlyActionable?.checked ? 'Zobrazuji jen položky k naložení nebo kontrole.' : 'Zobrazuji celý výpočet včetně položek bez akce.'}`
+          ? `Návrh spočítaný pro ${autoLoadDate?.value || ''} · ${getAutoLoadScopeLabel()}. ${autoLoadOnlyActionable?.checked ? 'Zobrazuji jen položky k naložení nebo kontrole.' : 'Zobrazuji celý výpočet včetně položek bez akce.'}`
           : 'Pro vybrané vozidlo není co navrhnout.'
       }
     }
@@ -4214,7 +4237,7 @@
           source_stock_location_id: sourceLocation.id,
           target_stock_location_id: targetLocation.id,
           requested_for_date: requestedDate,
-          note: `Automatická nakládka ${requestedDate} · ${getVehicleLabel(vehicleId)} · celé balení, min. využití nově naloženého zboží`
+          note: `Automatická nakládka ${requestedDate} · ${getVehicleLabel(vehicleId)} · ${getAutoLoadScopeLabel()} · celé balení, min. využití nově naloženého zboží`
         }])
         .select('id')
         .single()
@@ -8376,6 +8399,24 @@
     autoLoadVehicle?.addEventListener('change', () => {
       if (autoLoadWarehouse) autoLoadWarehouse.value = ''
       syncAutoLoadWarehouseFromVehicle()
+    })
+    autoLoadScope?.addEventListener('change', async () => {
+      if (!autoLoadVehicle?.value || !autoLoadWarehouse?.value) {
+        autoLoadRows = []
+        renderAutoLoadRows()
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line'
+          autoLoadStatus.textContent = 'Vyber sklad a vozidlo, potom spočítej návrh pro zvolený rozsah.'
+        }
+        return
+      }
+      try {
+        await generateAutoLoadRecommendation()
+      } catch (error) {
+        console.error(error)
+        autoLoadStatus.textContent = error.message || 'Návrh nakládky se nepodařilo přepočítat.'
+        autoLoadStatus.className = 'status-line error'
+      }
     })
     autoLoadGenerateBtn?.addEventListener('click', async () => {
       try {
