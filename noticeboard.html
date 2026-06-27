@@ -197,7 +197,17 @@
       margin-bottom: 10px;
     }
     .notice-title { font-size: 17px; font-weight: 800; line-height: 1.3; }
-    .notice-text { color: #d8dbe2; font-size: 14px; line-height: 1.65; }
+    .notice-text { color: #d8dbe2; font-size: 15px; line-height: 1.72; max-width: 760px; }
+    .notice-text p { margin: 0 0 12px; }
+    .notice-text p:last-child { margin-bottom: 0; }
+    .notice-text ul,
+    .notice-text ol {
+      margin: 8px 0 14px 18px;
+      padding: 0;
+      display: grid;
+      gap: 7px;
+    }
+    .notice-text li { padding-left: 4px; }
     .notice-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
     .notice-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
     .mini-link {
@@ -366,6 +376,75 @@
         .replace(/'/g, '&#039;')
     }
 
+    function normalizeInstructionText(value) {
+      return String(value || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/[ \t]+\*[ \t]+/g, '\n* ')
+        .trim()
+    }
+
+    function splitInstructionParagraphs(text) {
+      return text
+        .split(/\n{2,}/)
+        .flatMap((block) => {
+          const cleanBlock = block.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+          if (!cleanBlock) return []
+          if (cleanBlock.length <= 360) return [cleanBlock]
+          const sentences = cleanBlock.split(/(?<=[.!?])\s+(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])/)
+          const groups = []
+          let current = ''
+          sentences.forEach((sentence) => {
+            const next = current ? `${current} ${sentence}` : sentence
+            if (next.length > 320 && current) {
+              groups.push(current)
+              current = sentence
+            } else {
+              current = next
+            }
+          })
+          if (current) groups.push(current)
+          return groups
+        })
+    }
+
+    function formatInstructionMessageHtml(value) {
+      const text = normalizeInstructionText(value)
+      if (!text) return '<p>Bez textu.</p>'
+      const blocks = text.split(/\n{2,}/)
+      const html = blocks.map((block) => {
+        const lines = block.split('\n').map((line) => line.trim()).filter(Boolean)
+        const output = []
+        let paragraphLines = []
+        let listLines = []
+        const flushParagraph = () => {
+          if (!paragraphLines.length) return
+          const paragraphText = paragraphLines.join(' ')
+          output.push(splitInstructionParagraphs(paragraphText).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(''))
+          paragraphLines = []
+        }
+        const flushList = () => {
+          if (!listLines.length) return
+          const ordered = listLines.every((line) => /^\d+[.)]\s+/.test(line))
+          const tag = ordered ? 'ol' : 'ul'
+          output.push(`<${tag}>${listLines.map((line) => `<li>${escapeHtml(line.replace(/^([-*•]|\d+[.)])\s+/, ''))}</li>`).join('')}</${tag}>`)
+          listLines = []
+        }
+        lines.forEach((line) => {
+          if (/^([-*•]|\d+[.)])\s+/.test(line)) {
+            flushParagraph()
+            listLines.push(line)
+          } else {
+            flushList()
+            paragraphLines.push(line)
+          }
+        })
+        flushParagraph()
+        flushList()
+        return output.join('')
+      }).join('')
+      return html || '<p>Bez textu.</p>'
+    }
+
     function getTodayDateString() {
       return new Date().toLocaleDateString('en-CA')
     }
@@ -483,7 +562,7 @@
               </div>
               <span class="badge ${escapeHtml(priorityMeta.cls)}">${escapeHtml(priorityMeta.label)}</span>
             </div>
-            <div class="notice-text">${escapeHtml(instruction.message || '')}</div>
+            <div class="notice-text">${formatInstructionMessageHtml(instruction.message)}</div>
             <div class="notice-meta">
               <span class="badge">${escapeHtml(instruction.is_persistent ? 'Trvale' : `Platí ${formatDate(instruction.valid_from)}${instruction.valid_to ? ` -> ${formatDate(instruction.valid_to)}` : ''}`)}</span>
               ${instruction.requires_acknowledgement ? `<span class="badge ${acknowledged ? 'success' : 'warning'}">${acknowledged ? 'Potvrzeno' : 'Čeká na potvrzení'}</span>` : '<span class="badge info">Jen informační</span>'}
