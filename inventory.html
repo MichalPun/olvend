@@ -4445,14 +4445,33 @@
     function getVehicleAuditProductRows() {
       const query = normalizeText(vehicleAuditSearch?.value || '')
       const selectedGroups = getVehicleAuditSelectedGroups()
+      const targetLocation = getAuditTargetLocation()
+      const targetBalanceMap = new Map()
+      if (targetLocation?.id) {
+        stockBalancesV13
+          .filter((balance) => String(balance.stock_location_id) === String(targetLocation.id))
+          .forEach((balance) => {
+            const key = String(balance.product_id)
+            const current = targetBalanceMap.get(key) || { quantity: 0, hasRecord: false }
+            current.quantity = Number((current.quantity + Number(balance.quantity_on_hand || 0)).toFixed(3))
+            current.hasRecord = true
+            targetBalanceMap.set(key, current)
+          })
+      }
       return productsV13
-        .map((product) => ({
-          product,
-          quantity: getAuditTargetQuantity(product.id)
-        }))
-        .filter((row) => row.product?.active !== false || Math.abs(Number(row.quantity || 0)) > 0.0001)
+        .map((product) => {
+          const balanceMeta = targetBalanceMap.get(String(product.id)) || { quantity: 0, hasRecord: false }
+          return {
+            product,
+            quantity: balanceMeta.quantity,
+            hasTargetBalanceRecord: balanceMeta.hasRecord,
+            isTargetStocked: Math.abs(Number(balanceMeta.quantity || 0)) > 0.0001
+          }
+        })
+        .filter((row) => row.product?.active !== false || row.hasTargetBalanceRecord)
         .filter((row) => {
           if (!selectedGroups.length) return true
+          if (row.product?.active === false && row.hasTargetBalanceRecord) return true
           const productGroups = getVehicleAuditProductGroupKeys(row.product)
           return selectedGroups.some((group) => productGroups.includes(group))
         })
@@ -4461,6 +4480,8 @@
           return normalizeText([row.product.name, row.product.sku, row.product.ean].filter(Boolean).join(' ')).includes(query)
         })
         .sort((a, b) => {
+          const inactiveStockDiff = Number(b.product?.active === false && b.isTargetStocked) - Number(a.product?.active === false && a.isTargetStocked)
+          if (inactiveStockDiff) return inactiveStockDiff
           const qtyDiff = Number(b.quantity || 0) - Number(a.quantity || 0)
           if (qtyDiff !== 0) return qtyDiff
           return normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs')
