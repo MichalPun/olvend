@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v29-release-17-auto-load';
+const CACHE_NAME = 'olvend-v30-instruction-ack-fix';
 const APP_SHELL = [
   './',
   './index.html',
