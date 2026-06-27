@@ -5772,6 +5772,32 @@
         }))
         .filter((row) => row.package_name || row.units_per_package > 0 || row.package_barcode)
     }
+    function mergeDuplicateProductPackageRows(packageRows) {
+      const merged = []
+      const byName = new Map()
+      packageRows.forEach((row) => {
+        const key = normalizeText(row.package_name)
+        if (!key) {
+          merged.push(row)
+          return
+        }
+        const existingIndex = byName.get(key)
+        if (existingIndex == null) {
+          byName.set(key, merged.length)
+          merged.push({ ...row })
+          return
+        }
+        const existing = merged[existingIndex]
+        merged[existingIndex] = {
+          ...existing,
+          id: existing.id || row.id,
+          package_barcode: row.package_barcode || existing.package_barcode,
+          units_per_package: row.units_per_package > 0 ? row.units_per_package : existing.units_per_package,
+          is_default: existing.is_default || row.is_default
+        }
+      })
+      return merged
+    }
     function resetProductForm() {
       productForm.reset()
       productIdInput.value = ''
@@ -5884,7 +5910,7 @@
     async function saveProductCard() {
       const selectedType = document.getElementById('productCategory').value
       const usesPackageConversions = ['ingredient', 'consumable', 'water_product', 'snack_ready', 'food_ready'].includes(selectedType)
-      const packageRows = usesPackageConversions ? getProductPackageFormRows() : []
+      const packageRows = usesPackageConversions ? mergeDuplicateProductPackageRows(getProductPackageFormRows()) : []
       const recipeCost = selectedType === 'hot_drink' ? updateProductRecipeCostSummary() : null
       const storagePosition = productTypeUsesStoragePosition(selectedType) ? document.getElementById('productStoragePosition').value : ''
       if (packageRows.some((row) => !row.package_name || row.units_per_package <= 0)) {
@@ -5929,9 +5955,15 @@
         if (error) throw error
         productId = data.id
       }
-      const existingIds = new Set(getProductPackages(productId).map((pack) => String(pack.id)))
+      const existingPackages = productPackagesV13.filter((pack) => String(pack.product_id) === String(productId))
+      const existingByName = new Map(existingPackages.map((pack) => [normalizeText(pack.package_name), pack]))
+      const existingIds = new Set(existingPackages.map((pack) => String(pack.id)))
       const keptIds = new Set()
       for (const [index, row] of packageRows.entries()) {
+        const existingPackage = row.id
+          ? existingPackages.find((pack) => String(pack.id) === String(row.id))
+          : existingByName.get(normalizeText(row.package_name))
+        const packageId = existingPackage?.id || row.id
         const packagePayload = {
           product_id: Number(productId),
           package_name: row.package_name,
@@ -5940,9 +5972,9 @@
           is_default: row.is_default || (!packageRows.some((item) => item.is_default) && index === 0),
           active: true
         }
-        if (row.id) {
-          keptIds.add(String(row.id))
-          const { error } = await supabase.from('product_packages').update(packagePayload).eq('id', row.id)
+        if (packageId) {
+          keptIds.add(String(packageId))
+          const { error } = await supabase.from('product_packages').update(packagePayload).eq('id', packageId)
           if (error) throw error
         } else {
           const { error } = await supabase.from('product_packages').insert([packagePayload])
