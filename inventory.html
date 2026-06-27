@@ -2045,6 +2045,12 @@
       if ('can_be_sold_directly' in product) return product.can_be_sold_directly === true
       return product.usage_type === 'direct_sale' || ['beverage_ready', 'snack_ready', 'food_ready'].includes(product.product_category)
     }
+    function canProductAppearOnSalesDocument(product) {
+      if (!product) return false
+      const kind = getProductKind(product)
+      if (kind === 'ingredient' || product.usage_type === 'recipe_consumption') return false
+      return canProductBeSoldDirectly(product) || Boolean(getRecipeForProduct(product.id))
+    }
     function canProductBeUsedInRecipe(product) {
       if (!product) return false
       if ('can_be_used_in_recipe' in product) return product.can_be_used_in_recipe === true
@@ -6237,7 +6243,18 @@
     function renderSimpleTransferProductDatalist() {
       const datalist = document.getElementById('simpleTransferProductOptions')
       if (!datalist) return
-      datalist.innerHTML = productSearchOptionsHtml(productsV13)
+      const direction = document.getElementById('simpleTransferDirection')?.value || ''
+      const rows = ['machines_sale', 'vehicle_sale'].includes(direction)
+        ? productsV13.filter(canProductAppearOnSalesDocument)
+        : productsV13
+      datalist.innerHTML = productSearchOptionsHtml(rows)
+    }
+    function getSimpleTransferSearchProducts() {
+      const direction = document.getElementById('simpleTransferDirection')?.value || ''
+      if (['machines_sale', 'vehicle_sale'].includes(direction)) {
+        return productsV13.filter(canProductAppearOnSalesDocument)
+      }
+      return productsV13
     }
     function findProductBySearchValue(value, rows = productsV13) {
       const normalized = normalizeLookupValue(value)
@@ -6269,7 +6286,7 @@
       const row = input.closest('.transfer-line-row')
       const hidden = row?.querySelector('[data-transfer-product]')
       if (!hidden) return null
-      const product = findProductBySearchValue(input.value, productsV13)
+      const product = findProductBySearchValue(input.value, getSimpleTransferSearchProducts())
       hidden.value = product?.id ? String(product.id) : ''
       if (row) {
         row.dataset.defaultTransferKind = shouldUsePackageByDefault(product) ? 'package' : 'product'
@@ -6543,7 +6560,7 @@
           const searchInput = row.querySelector('[data-transfer-product-search]')
           const hiddenProductInput = row.querySelector('[data-transfer-product]')
           if (searchInput && hiddenProductInput) {
-            const product = findProductBySearchValue(searchInput.value, productsV13)
+            const product = findProductBySearchValue(searchInput.value, getSimpleTransferSearchProducts())
             hiddenProductInput.value = product?.id ? String(product.id) : ''
           }
           const productId = Number(hiddenProductInput?.value || 0)
@@ -6618,15 +6635,15 @@
     function normalizeLookupValue(value) {
       return normalizeText(value).replace(/[^a-z0-9]+/g, '')
     }
-    function findProductForImportName(name) {
+    function findProductForImportName(name, rows = productsV13) {
       const normalized = normalizeText(name)
       const compact = normalizeLookupValue(name)
       if (!normalized) return null
-      return productsV13.find((product) => {
+      return rows.find((product) => {
         const candidates = [product.name, product.sku, product.ean].map((value) => normalizeText(value))
         const compactCandidates = [product.name, product.sku, product.ean].map((value) => normalizeLookupValue(value))
         return candidates.includes(normalized) || compactCandidates.includes(compact)
-      }) || findProductByImportTokenScore(normalized)
+      }) || findProductByImportTokenScore(normalized, rows)
     }
     function getImportTokens(value) {
       const ignored = new Set(['a', 's', 'se', 'bez', 'ruzne', 'druhy', 'ks', 'g', 'kg', 'ml', 'l'])
@@ -6635,10 +6652,10 @@
         .map((token) => token.trim())
         .filter((token) => token.length >= 2 && !ignored.has(token))
     }
-    function findProductByImportTokenScore(normalizedName) {
+    function findProductByImportTokenScore(normalizedName, rows = productsV13) {
       const sourceTokens = new Set(getImportTokens(normalizedName))
       if (!sourceTokens.size) return null
-      const scored = productsV13
+      const scored = rows
         .map((product) => {
           const productTokens = new Set(getImportTokens(product.name))
           const overlap = [...sourceTokens].filter((token) => productTokens.has(token)).length
@@ -6654,7 +6671,10 @@
       return scored[0].product
     }
     function findProductForImportRow(row) {
-      if (['telemetry_sales_by_product', 'filled_products'].includes(row?.sourceFormat)) {
+      if (row?.sourceFormat === 'telemetry_sales_by_product') {
+        return findProductForImportName(row?.productName || row?.name || '', productsV13.filter(canProductAppearOnSalesDocument))
+      }
+      if (row?.sourceFormat === 'filled_products') {
         return findProductForImportName(row?.productName || row?.name || '')
       }
       const code = normalizeLookupValue(row?.code || row?.productCode || '')
@@ -6892,6 +6912,7 @@
       }
       if (rows.importMeta?.sourceFormat === 'telemetry_sales_by_product') {
         document.getElementById('simpleTransferDirection').value = 'machines_sale'
+        renderSimpleTransferProductDatalist()
         document.getElementById('simpleTransferNote').value = 'Telemetry Sales By Product'
         document.getElementById('simpleTransferWarehouseId').closest('.field').style.display = 'none'
         document.getElementById('simpleTransferWarehouseId').required = false
@@ -6942,11 +6963,11 @@
       editingTransferDoc = correctionDoc
       simpleTransferForm.reset()
       simpleTransferLines.innerHTML = ''
-      renderSimpleTransferProductDatalist()
       updateSimpleTransferSalesSummary()
       simpleTransferImportStatus.textContent = 'CheckOut načítá naložení auta. CheckIn vrací nepoužité zboží z vozidla na sklad. XML/CSV slouží pro prodejku.'
       simpleTransferImportStatus.className = 'helper-line'
       document.getElementById('simpleTransferDirection').value = direction
+      renderSimpleTransferProductDatalist()
       document.getElementById('simpleTransferDate').value = new Date().toISOString().slice(0, 10)
       const isReturn = direction === 'vehicle_to_warehouse'
       const isVehicleToMachines = direction === 'vehicle_to_machines'
