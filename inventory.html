@@ -1788,6 +1788,7 @@
     let vehicleInventoryAudits = []
     let vehicleInventoryAuditItems = []
     let vehicleAutoLoadProfiles = []
+    let vehicleAutoLoadDeferredNeeds = []
     let autoLoadRows = []
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v2'
     const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
@@ -4059,6 +4060,75 @@
         autoLoadWarehouse.value = String(vehicle.warehouse_id)
       }
     }
+    function getAutoLoadDeferredNeed(vehicleId, productId) {
+      return vehicleAutoLoadDeferredNeeds.find((item) => String(item.vehicle_id) === String(vehicleId) && String(item.product_id) === String(productId) && item.status === 'open') || null
+    }
+    async function upsertAutoLoadDeferredNeed(row, vehicleId, targetDate) {
+      const existing = getAutoLoadDeferredNeed(vehicleId, row.product.id)
+      const payload = {
+        vehicle_id: vehicleId,
+        product_id: row.product.id,
+        quantity_base_units: Number(row.requiredFromNew || 0),
+        unit: row.product.base_unit || 'ks',
+        status: 'open',
+        first_deferred_for_date: existing?.first_deferred_for_date || targetDate,
+        last_deferred_for_date: targetDate,
+        last_reason: row.reasons.join(' · '),
+        last_scope: getAutoLoadScopeLabel(),
+        last_min_trip_usage_ratio: row.minRatio,
+        last_usage_ratio: row.usageRatio,
+        note: `Odloženo automatickou nakládkou: celé balení by se na jízdě nevyužilo dost.`
+      }
+      if (existing?.id) {
+        const { error } = await supabase.from('vehicle_auto_load_deferred_needs').update(payload).eq('id', existing.id)
+        if (error) throw error
+        Object.assign(existing, payload)
+        return
+      }
+      const { data, error } = await supabase.from('vehicle_auto_load_deferred_needs').insert([payload]).select('*').single()
+      if (error) throw error
+      vehicleAutoLoadDeferredNeeds.push(data)
+    }
+    async function closeAutoLoadDeferredNeed(existing, note = '') {
+      if (!existing?.id) return
+      const { error } = await supabase
+        .from('vehicle_auto_load_deferred_needs')
+        .update({ status: 'closed', quantity_base_units: 0, closed_at: new Date().toISOString(), note: note || existing.note || null })
+        .eq('id', existing.id)
+      if (error) throw error
+      vehicleAutoLoadDeferredNeeds = vehicleAutoLoadDeferredNeeds.filter((item) => String(item.id) !== String(existing.id))
+    }
+    async function syncAutoLoadDeferredNeeds(rows, vehicleId, targetDate) {
+      const deferredRows = rows.filter((row) => row.requiredFromNew > 0.0001 && row.approvedQty <= 0.0001 && ['blocked', 'missing_package'].includes(row.status))
+      const resolvedRows = rows.filter((row) => row.requiredFromNew <= 0.0001 && row.deferredNeed?.id)
+      for (const row of deferredRows) {
+        await upsertAutoLoadDeferredNeed(row, vehicleId, targetDate)
+      }
+      for (const row of resolvedRows) {
+        await closeAutoLoadDeferredNeed(row.deferredNeed, `Uzavřeno automaticky: stav auta už pokrývá odloženou potřebu k ${targetDate}.`)
+      }
+    }
+    async function fulfillAutoLoadDeferredNeeds(rows, vehicleId, targetDate) {
+      const fulfilledRows = rows.filter((row) => row.approvedQty > 0 && row.deferredNeed?.id)
+      for (const row of fulfilledRows) {
+        const deferredQty = Number(row.deferredNeed.quantity_base_units || 0)
+        if (row.approvedQty + 0.0001 >= deferredQty) {
+          await closeAutoLoadDeferredNeed(row.deferredNeed, `Uzavřeno nakládkou ${targetDate}: doporučeno ${formatQuantityValue(row.approvedQty, row.product.base_unit || 'ks')}.`)
+        } else {
+          const remaining = Number((deferredQty - row.approvedQty).toFixed(3))
+          const { error } = await supabase
+            .from('vehicle_auto_load_deferred_needs')
+            .update({
+              quantity_base_units: remaining,
+              last_deferred_for_date: targetDate,
+              last_reason: `Částečně pokryto nakládkou, zbývá ${formatQuantityValue(remaining, row.product.base_unit || 'ks')}.`
+            })
+            .eq('id', row.deferredNeed.id)
+          if (error) throw error
+          row.deferredNeed.quantity_base_units = remaining
+        }
+      }
+    }
     function buildAutoLoadRows() {
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
       const vehicleId = Number(autoLoadVehicle?.value || 0)
@@ -4080,10 +4150,13 @@
           const warehouseQty = getLocationQuantity(warehouseLocation.id, product.id)
           const estimate = estimateAutoLoadTripDemand(vehicleLocation.id, product.id, profile.history_days, targetDate)
           const safetyQty = Number(profile.safety_stock_quantity || 0)
-          const requiredFromNew = Math.max(0, Number((estimate.expected + safetyQty - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const deferredNeed = getAutoLoadDeferredNeed(vehicleId, product.id)
+          const deferredQty = Number(deferredNeed?.quantity_base_units || 0)
+          const tripDemandQty = Number((estimate.expected + deferredQty).toFixed(3))
+          const requiredFromNew = Math.max(0, Number((tripDemandQty + safetyQty - Math.max(0, currentVehicleQty)).toFixed(3)))
           const packageCount = packageQty > 0 ? Math.ceil(requiredFromNew / packageQty) : 0
           const suggestedQty = packageQty > 0 ? Number((packageCount * packageQty).toFixed(3)) : 0
-          const expectedUseFromNew = Math.max(0, Number((estimate.expected - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const expectedUseFromNew = Math.max(0, Number((tripDemandQty - Math.max(0, currentVehicleQty)).toFixed(3)))
           const usageRatio = suggestedQty > 0 ? Number((Math.min(expectedUseFromNew, suggestedQty) / suggestedQty).toFixed(3)) : 0
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
           const lastMovement = getLastVehicleProductMovement(vehicleLocation.id, product.id)
@@ -4095,8 +4168,11 @@
           const allowedByRatio = suggestedQty > 0 && usageRatio + 0.0001 >= minRatio
           const approvedPackageCount = allowedByRatio ? packageCount : 0
           const approvedQty = allowedByRatio ? suggestedQty : 0
-          const projectedVehicleAfterTrip = Number((currentVehicleQty + approvedQty - estimate.expected).toFixed(3))
+          const projectedVehicleAfterTrip = Number((currentVehicleQty + approvedQty - tripDemandQty).toFixed(3))
           const reasons = []
+          if (deferredQty > 0.0001) {
+            reasons.push(`z minula odloženo ${formatQuantityValue(deferredQty, product.base_unit || 'ks')}`)
+          }
           if (requiredFromNew <= 0.0001 && currentVehicleQty > 0) {
             reasons.push(`nenakládat, stav na autě pokryje odhad jízdy`)
           }
@@ -4128,6 +4204,9 @@
             currentVehicleQty,
             warehouseQty,
             expectedDemand: estimate.expected,
+            tripDemandQty,
+            deferredNeed,
+            deferredQty,
             samples: estimate.samples,
             estimateSource: estimate.source,
             requiredFromNew,
@@ -4178,7 +4257,7 @@
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong></td>
-            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">donaložit potřeba ${escapeHtml(formatQuantityValue(row.requiredFromNew, unit))}</span></td>
+            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml(row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)} · ` : '')}donaložit potřeba ${escapeHtml(formatQuantityValue(row.requiredFromNew, unit))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
@@ -4211,6 +4290,10 @@
     }
     async function generateAutoLoadRecommendation() {
       syncAutoLoadWarehouseFromVehicle()
+      autoLoadRows = buildAutoLoadRows()
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
+      await syncAutoLoadDeferredNeeds(autoLoadRows, vehicleId, targetDate)
       autoLoadRows = buildAutoLoadRows()
       renderAutoLoadRows()
     }
@@ -4259,6 +4342,7 @@
       }))
       const { error: itemsError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
       if (itemsError) throw itemsError
+      await fulfillAutoLoadDeferredNeeds(rows, vehicleId, requestedDate)
       mobilePickRequestsCollapsed = false
       await loadMobilePickRequests()
       autoLoadStatus.className = 'status-line success'
@@ -5621,7 +5705,8 @@
           manualCorrectionMovementsResult,
           employeesResult,
           auditsResult,
-          autoLoadProfilesResult
+          autoLoadProfilesResult,
+          autoLoadDeferredNeedsResult
         ] = await Promise.all([
           supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, vat_rate, purchase_price, sale_price, shelf_life_days, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, can_be_sold_directly, can_be_used_in_recipe, can_be_consumed_internally, can_be_used_in_service, active, note').order('name', { ascending: true }),
           supabase.from('product_packages').select('id, product_id, package_name, units_per_package, package_barcode, is_default, active').order('is_default', { ascending: false }),
@@ -5637,7 +5722,8 @@
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_correction').order('created_at', { ascending: false }).limit(1000),
           supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true }),
           supabase.from('inventory_audits').select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, instruction_id, responsible_name, note, status, book_quantity_total, counted_quantity_total, difference_quantity_total, difference_value_total, counted_at, transfer_confirmed_at, evaluated_at, closed_at, created_at').in('scope_type', ['vehicle', 'warehouse']).order('created_at', { ascending: false }).limit(30),
-          supabase.from('vehicle_auto_load_profiles').select('id, product_id, active, min_trip_usage_ratio, stale_vehicle_days, safety_stock_quantity, history_days, note').eq('active', true)
+          supabase.from('vehicle_auto_load_profiles').select('id, product_id, active, min_trip_usage_ratio, stale_vehicle_days, safety_stock_quantity, history_days, note').eq('active', true),
+          supabase.from('vehicle_auto_load_deferred_needs').select('id, vehicle_id, product_id, quantity_base_units, unit, status, first_deferred_for_date, last_deferred_for_date, last_reason, last_scope, last_min_trip_usage_ratio, last_usage_ratio, note, updated_at').eq('status', 'open')
         ])
 
         if (productsResult.error || packagesResult.error || locationsResult.error || balancesResult.error || profilesResult.error || movementsResult.error || autoLoadMovementsResult.error || manualTransferMovementsResult.error || manualSaleMovementsResult.error || manualCorrectionMovementsResult.error) {
@@ -5664,6 +5750,7 @@
         employeesDirectory = employeesResult.error ? [] : (employeesResult.data ?? [])
         vehicleInventoryAudits = auditsResult.error ? [] : (auditsResult.data ?? [])
         vehicleAutoLoadProfiles = autoLoadProfilesResult.error ? [] : (autoLoadProfilesResult.data ?? [])
+        vehicleAutoLoadDeferredNeeds = autoLoadDeferredNeedsResult.error ? [] : (autoLoadDeferredNeedsResult.data ?? [])
         await loadVehicleInventoryAuditItems()
 
         stockV13LocationFilter.innerHTML = '<option value="">Všechna konkrétní místa</option>' + stockLocationsV13.map((location) => `<option value="${escapeHtml(String(location.id))}">${escapeHtml(`${getLocationTypeLabel(location.location_type)} · ${location.name || 'Bez názvu'}`)}</option>`).join('')
