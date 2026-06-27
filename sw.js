@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v28-budget-sales-breakdown';
+const CACHE_NAME = 'olvend-v29-release-17-auto-load';
 const APP_SHELL = [
   './',
   './index.html',

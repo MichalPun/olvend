@@ -14,7 +14,7 @@ if ('serviceWorker' in navigator) {
           );
         }
 
-        await navigator.serviceWorker.register('./sw.js?v=20260624budget1');
+        await navigator.serviceWorker.register('./sw.js?v=20260627v17');
       } catch (error) {
         console.error('PWA registrace service workeru selhala:', error);
       }

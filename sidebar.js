@@ -1,22 +1,22 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
-  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV16";
+  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV17";
   const APP_THEME_KEY = "olvendThemePreference";
   const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
-  const APP_VERSION = "OLVEND 1.6";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.6";
+  const APP_VERSION = "OLVEND 1.7";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.7";
   const RELEASE_NOTES = {
-    "1.6": {
-      title: "Nová verze 1.6",
-      subtitle: "Pouštíme první pořádnou mobilní verzi pro směny, servis a jednoduché skladové pohyby v terénu.",
+    "1.7": {
+      title: "Nová verze 1.7",
+      subtitle: "Skladové hospodářství dostává automatickou nakládku, balení v kartách zásob a paměť odložených potřeb.",
       items: [
-        "Operátor a technik po přihlášení přejdou rovnou do mobilního prostředí místo staré docházky.",
-        "Směna má potvrzení pokynů dne, výběr vozidla, kontrolu kilometrů, pauzu, tankování s účtenkou a ukončení směny.",
-        "Servisní část umí zapisovat výsledek zásahu, rozpracované stavy, čekání na díl a požadavek na manažerské rozhodnutí.",
-        "Sklad v mobilu připravuje objednávku, nakládku, vykládku, prodej z vozidla a vratky do doby, než poběží telemetrie.",
-        "Na PC je připravené vychystání mobilních objednávek pro skladníka.",
-        "Starou docházku zatím necháváme jako zálohu pro rychlý návrat, kdyby se v ostrém provozu ukázal problém."
+        "Automatická nakládka navrhuje celé balení podle historie konkrétního vozidla, aktuálního stavu na autě a zvoleného typu jízdy.",
+        "Systém si pamatuje položky, které se minule nenaložily kvůli nízkému využití balení, a přičte je do dalšího návrhu.",
+        "Karty zásob mají balení a přepočty, takže sklad zůstává v kusech, gramech nebo mililitrech, ale převodka umí karton, balení, kg i l.",
+        "Přibyly cílené inventury rizikových zůstatků na vozidle, když se zboží dlouho nehýbe a reálně už na autě být nemusí.",
+        "Operátorka už běžně nemusí psát objednávku nakládky. Skladník může návrh připravit dopředu a operátorka řeší hlavně výjimky.",
+        "Bagety zůstávají v opatrnějším režimu: systém je umí navrhovat, ale kvůli čerstvosti a lokálním rozdílům doporučujeme ponechat možnost ruční korekce před nakládkou."
       ]
     }
   };
