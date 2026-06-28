@@ -363,6 +363,71 @@
       line-height: 1.35;
     }
 
+    .instruction-row {
+      align-items: flex-start;
+      gap: 14px;
+    }
+
+    .instruction-row.pending {
+      border-color: rgba(255, 191, 87, 0.22);
+      background: rgba(255, 191, 87, 0.07);
+    }
+
+    .instruction-row.info {
+      border-color: rgba(88, 166, 255, 0.18);
+      background: rgba(88, 166, 255, 0.06);
+    }
+
+    .instruction-row.acknowledged {
+      padding: 12px 13px;
+      opacity: 0.72;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .instruction-copy {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .instruction-row .instruction-message {
+      display: block;
+      max-height: 45vh;
+      overflow: auto;
+      padding: 13px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(255, 255, 255, 0.035);
+      color: #d9dee8;
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.58;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .instruction-row.acknowledged .instruction-message {
+      display: none;
+    }
+
+    .instruction-ack-details {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .instruction-ack-details summary {
+      min-height: 54px;
+      padding: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .instruction-ack-details .details-body {
+      padding-top: 0;
+    }
+
     .badge {
       flex: 0 0 auto;
       max-width: 112px;
@@ -1678,6 +1743,15 @@
         .replace(/'/g, '&#039;')
     }
 
+    function formatInstructionMessage(value) {
+      const normalized = String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\s+\*\s+/g, '\n• ')
+        .replace(/:\s*\n•/g, ':\n•')
+        .trim()
+      return escapeHtml(normalized)
+    }
+
     function parseNumber(value) {
       const normalized = String(value ?? '').replace(',', '.').trim()
       if (!normalized) return null
@@ -2056,23 +2130,53 @@
 
     function renderInstructions() {
       els.instructionSection.hidden = !state.instructions.length
-      els.instructionCount.textContent = `${state.instructions.length}`
       if (!state.instructions.length) {
+        els.instructionCount.textContent = '0'
         els.instructionList.innerHTML = '<div class="empty">Na dnešek nejsou žádné pokyny k potvrzení.</div>'
         return
       }
 
-      els.instructionList.innerHTML = state.instructions.map((instruction) => `
-        <div class="row">
-          <div>
-            <strong>${escapeHtml(instruction.title || 'Pokyn dne')}</strong>
-            <span>${escapeHtml(instruction.message)}</span>
+      const acknowledgedIds = new Set(state.acknowledgements.map((ack) => String(ack.instruction_id)))
+      const pendingInstructions = state.instructions.filter((instruction) => !acknowledgedIds.has(String(instruction.id)))
+      const acknowledgedInstructions = state.instructions.filter((instruction) => acknowledgedIds.has(String(instruction.id)))
+      const pendingRequiredCount = pendingInstructions.filter((instruction) => instruction.requires_acknowledgement).length
+      els.instructionCount.textContent = pendingRequiredCount ? `${pendingRequiredCount} čeká` : 'Hotovo'
+
+      const renderInstructionRow = (instruction, { acknowledged = false } = {}) => {
+        const priorityClass = instruction.priority === 'critical' ? 'red' : instruction.priority === 'important' ? 'yellow' : ''
+        const rowClass = acknowledged
+          ? 'acknowledged'
+          : instruction.requires_acknowledgement ? 'pending' : 'info'
+        const badgeText = acknowledged ? 'Potvrzeno' : instruction.requires_acknowledgement ? 'Potvrdit' : 'Info'
+        return `
+          <div class="row instruction-row ${rowClass}">
+            <div class="instruction-copy">
+              <strong>${escapeHtml(instruction.title || 'Pokyn dne')}</strong>
+              <span class="instruction-message">${formatInstructionMessage(instruction.message || '')}</span>
+            </div>
+            <span class="badge ${priorityClass}">${badgeText}</span>
           </div>
-          <span class="badge ${instruction.priority === 'critical' ? 'red' : instruction.priority === 'important' ? 'yellow' : ''}">
-            ${state.acknowledgements.some((ack) => String(ack.instruction_id) === String(instruction.id)) ? 'Potvrzeno' : instruction.requires_acknowledgement ? 'Potvrdit' : 'Info'}
-          </span>
-        </div>
-      `).join('')
+        `
+      }
+
+      const pendingMarkup = pendingInstructions.length
+        ? pendingInstructions.map((instruction) => renderInstructionRow(instruction)).join('')
+        : '<div class="empty">Všechny povinné pokyny jsou potvrzené.</div>'
+      const acknowledgedMarkup = acknowledgedInstructions.length
+        ? `
+          <details class="instruction-ack-details">
+            <summary>
+              <span>Už potvrzené pokyny</span>
+              <span>${acknowledgedInstructions.length}</span>
+            </summary>
+            <div class="details-body">
+              ${acknowledgedInstructions.map((instruction) => renderInstructionRow(instruction, { acknowledged: true })).join('')}
+            </div>
+          </details>
+        `
+        : ''
+
+      els.instructionList.innerHTML = `${pendingMarkup}${acknowledgedMarkup}`
     }
 
     function renderVehicles() {
