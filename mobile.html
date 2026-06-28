@@ -1589,6 +1589,7 @@
     const monthStartIso = `${todayIso.slice(0, 7)}-01`
     const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV17'
+    const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
 
@@ -3839,6 +3840,21 @@
       if (error) throw error
       return created.id
     }
+    function isAggregateMachinesWarehouse(warehouse) {
+      return normalizeText(warehouse?.code) === normalizeText(aggregateMachinesWarehouseCode)
+        || normalizeText(warehouse?.name) === 'automaty'
+    }
+    async function ensureAggregateMachinesStockLocation() {
+      const { data, error } = await supabase
+        .from('warehouses')
+        .select('id, name, code, active')
+        .or(`code.eq.${aggregateMachinesWarehouseCode},name.ilike.Automaty`)
+        .limit(5)
+      if (error) throw error
+      const warehouse = (data || []).find(isAggregateMachinesWarehouse)
+      if (!warehouse?.id) throw new Error('Souhrnný sklad Automaty není připravený. Vratky/odpisy nejde propsat.')
+      return ensureStockLocation('warehouse', warehouse.id, warehouse.name || 'Automaty')
+    }
 
     function getRequestQuantity(item) {
       return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
@@ -3957,11 +3973,15 @@
 
       let warehouseLocationId = null
       let vehicleLocationId = null
+      let aggregateMachinesLocationId = null
       if (warehouseId && ['vehicle_load', 'vehicle_order', 'vehicle_unload'].includes(request.request_type)) {
         warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, `Sklad ${warehouseId}`)
       }
       if (vehicleId) {
         vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : `Vozidlo ${vehicleId}`)
+      }
+      if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
+        aggregateMachinesLocationId = await ensureAggregateMachinesStockLocation()
       }
 
       for (const item of items) {
@@ -4014,19 +4034,17 @@
         }
 
         if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
-          if (!vehicleLocationId) throw new Error('Pro vratku/odpis chybí vozidlo.')
-          movementRows.push({
-            product_id: productId,
-            batch_id: null,
-            from_stock_location_id: vehicleLocationId,
-            to_stock_location_id: null,
-            movement_type: 'waste',
-            quantity_base_units: quantity,
-            reference_type: 'mobile_stock_request',
-            reference_id: referenceId,
-            created_by: state.employee.id,
-            note: `Mobilní vratka/odpis #${request.id}`
-          })
+          if (!aggregateMachinesLocationId) throw new Error('Pro vratku/odpis chybí sklad Automaty.')
+          movementRows.push(...await moveStockPreservingBatches({
+            productId,
+            quantity,
+            fromStockLocationId: aggregateMachinesLocationId,
+            toStockLocationId: null,
+            movementType: 'waste',
+            referenceId,
+            note: `Mobilní vratka/odpis z automatů #${request.id}`,
+            allowNegative: false
+          }))
         }
       }
 
