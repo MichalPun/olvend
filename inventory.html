@@ -1791,6 +1791,7 @@
     let vehicleAutoLoadProfiles = []
     let vehicleAutoLoadDeferredNeeds = []
     let autoLoadRows = []
+    const AUTO_LOAD_DEFAULT_RESERVE_RATIO = 0.15
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v2'
     const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
     const AUDIT_DRAFT_STORAGE_KEY = 'olvend.inventoryAuditDraft.v1'
@@ -4013,6 +4014,14 @@
           && date < targetDate
       })
     }
+    function getAutoLoadActualMachineFillQty(vehicleLocationId, productId, dateValue) {
+      return stockMovementsV13
+        .filter((movement) => String(movement.from_stock_location_id || '') === String(vehicleLocationId)
+          && String(movement.product_id || '') === String(productId)
+          && movement.movement_type === 'fill_machine'
+          && movementLocalDate(movement.created_at) === dateValue)
+        .reduce((sum, movement) => Number((sum + Number(movement.quantity_base_units || 0)).toFixed(3)), 0)
+    }
     function estimateAutoLoadTripDemand(vehicleLocationId, productId, historyDays, targetDate) {
       const rows = getAutoLoadHistoryRows(vehicleLocationId, productId, historyDays, targetDate)
       if (!rows.length) return { expected: 0, samples: 0, source: 'bez historie' }
@@ -4036,6 +4045,39 @@
         samples: sourceRows.length,
         source: sameDay.length >= 2 ? 'stejný den v týdnu' : 'poslední jízdy'
       }
+    }
+    function getDateRangeBeforeTarget(targetDate) {
+      const today = new Date().toISOString().slice(0, 10)
+      const dates = []
+      const cursor = new Date(`${today}T00:00:00`)
+      const end = new Date(`${targetDate}T00:00:00`)
+      while (cursor < end) {
+        dates.push(cursor.toISOString().slice(0, 10))
+        cursor.setDate(cursor.getDate() + 1)
+      }
+      return dates
+    }
+    function estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, productId, historyDays, targetDate) {
+      const dates = getDateRangeBeforeTarget(targetDate)
+      if (!dates.length) return { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 }
+      return dates.reduce((summary, dateValue) => {
+        const actualQty = getAutoLoadActualMachineFillQty(vehicleLocationId, productId, dateValue)
+        if (actualQty > 0.0001) {
+          summary.actual = Number((summary.actual + actualQty).toFixed(3))
+          summary.coveredDates += 1
+          return summary
+        }
+        const estimate = estimateAutoLoadTripDemand(vehicleLocationId, productId, historyDays, dateValue)
+        const expectedQty = Number(estimate.expected || 0)
+        if (expectedQty > 0.0001) {
+          summary.expected = Number((summary.expected + expectedQty).toFixed(3))
+          summary.pending = Number((summary.pending + expectedQty).toFixed(3))
+          summary.estimatedDates += 1
+        } else {
+          summary.skippedDates += 1
+        }
+        return summary
+      }, { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 })
     }
     function getLastVehicleProductMovement(vehicleLocationId, productId) {
       return stockMovementsV13
@@ -4184,14 +4226,19 @@
           const currentVehicleQty = getLocationQuantity(vehicleLocation.id, product.id)
           const warehouseQty = getLocationQuantity(warehouseLocation.id, product.id)
           const estimate = estimateAutoLoadTripDemand(vehicleLocation.id, product.id, profile.history_days, targetDate)
-          const safetyQty = Number(profile.safety_stock_quantity || 0)
+          const pendingBeforeTarget = estimateAutoLoadPendingDemandBeforeTarget(vehicleLocation.id, product.id, profile.history_days, targetDate)
+          const projectedVehicleBeforeTarget = Math.max(0, Number((currentVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
+          const fixedSafetyQty = Number(profile.safety_stock_quantity || 0)
+          const dynamicSafetyQty = Number((Number(estimate.expected || 0) * AUTO_LOAD_DEFAULT_RESERVE_RATIO).toFixed(3))
+          const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
           const deferredNeed = getAutoLoadDeferredNeed(vehicleId, product.id)
           const deferredQty = Number(deferredNeed?.quantity_base_units || 0)
           const tripDemandQty = Number((estimate.expected + deferredQty).toFixed(3))
-          const requiredFromNew = Math.max(0, Number((tripDemandQty + safetyQty - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const targetNeedQty = Number((tripDemandQty + safetyQty).toFixed(3))
+          const requiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const packageCount = packageQty > 0 ? Math.ceil(requiredFromNew / packageQty) : 0
           const suggestedQty = packageQty > 0 ? Number((packageCount * packageQty).toFixed(3)) : 0
-          const expectedUseFromNew = Math.max(0, Number((tripDemandQty - Math.max(0, currentVehicleQty)).toFixed(3)))
+          const expectedUseFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const usageRatio = suggestedQty > 0 ? Number((Math.min(expectedUseFromNew, suggestedQty) / suggestedQty).toFixed(3)) : 0
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
           const lastMovement = getLastVehicleProductMovement(vehicleLocation.id, product.id)
@@ -4203,13 +4250,19 @@
           const allowedByRatio = suggestedQty > 0 && usageRatio + 0.0001 >= minRatio
           const approvedPackageCount = allowedByRatio ? packageCount : 0
           const approvedQty = allowedByRatio ? suggestedQty : 0
-          const projectedVehicleAfterTrip = Number((currentVehicleQty + approvedQty - tripDemandQty).toFixed(3))
+          const projectedVehicleAfterTrip = Number((projectedVehicleBeforeTarget + approvedQty - tripDemandQty).toFixed(3))
           const reasons = []
+          if (pendingBeforeTarget.pending > 0.0001) {
+            reasons.push(`do ${targetDate} čeká odhad doplnění ${formatQuantityValue(pendingBeforeTarget.pending, product.base_unit || 'ks')}`)
+          }
+          if (safetyQty > 0.0001) {
+            reasons.push(`rezerva ${formatQuantityValue(safetyQty, product.base_unit || 'ks')}`)
+          }
           if (deferredQty > 0.0001) {
             reasons.push(`z minula odloženo ${formatQuantityValue(deferredQty, product.base_unit || 'ks')}`)
           }
-          if (requiredFromNew <= 0.0001 && currentVehicleQty > 0) {
-            reasons.push(`nenakládat, stav na autě pokryje odhad jízdy`)
+          if (requiredFromNew <= 0.0001 && projectedVehicleBeforeTarget > 0) {
+            reasons.push(`nenakládat, očekávaný stav auta pokryje odhad jízdy`)
           }
           if (missingPackage) {
             reasons.push(`chybí ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, ale v kartě zásoby není velikost balení`)
@@ -4239,7 +4292,13 @@
             currentVehicleQty,
             warehouseQty,
             expectedDemand: estimate.expected,
+            pendingBeforeTarget,
+            projectedVehicleBeforeTarget,
+            safetyQty,
+            fixedSafetyQty,
+            dynamicSafetyQty,
             tripDemandQty,
+            targetNeedQty,
             deferredNeed,
             deferredQty,
             samples: estimate.samples,
@@ -4291,8 +4350,8 @@
         return `
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
-            <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong></td>
-            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml(row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)} · ` : '')}donaložit potřeba ${escapeHtml(formatQuantityValue(row.requiredFromNew, unit))}</span></td>
+            <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml(row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu')}</span></td>
+            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([row.pendingBeforeTarget?.pending > 0 ? `čeká ${formatQuantityValue(row.pendingBeforeTarget.pending, unit)}` : '', row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)}` : '', row.safetyQty > 0 ? `rezerva ${formatQuantityValue(row.safetyQty, unit)}` : '', `donaložit potřeba ${formatQuantityValue(row.requiredFromNew, unit)}`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
@@ -4319,7 +4378,7 @@
       if (autoLoadStatus) {
         autoLoadStatus.className = 'status-line'
         autoLoadStatus.textContent = rows.length
-          ? `Návrh spočítaný pro ${autoLoadDate?.value || ''} · ${getAutoLoadScopeLabel()}. ${autoLoadOnlyActionable?.checked ? 'Zobrazuji jen položky k naložení nebo kontrole.' : 'Zobrazuji celý výpočet včetně položek bez akce.'}`
+          ? `Návrh spočítaný pro ${autoLoadDate?.value || ''} · ${getAutoLoadScopeLabel()} · rezerva ${(AUTO_LOAD_DEFAULT_RESERVE_RATIO * 100).toFixed(0)} %. ${autoLoadOnlyActionable?.checked ? 'Zobrazuji jen položky k naložení nebo kontrole.' : 'Zobrazuji celý výpočet včetně položek bez akce.'}`
           : 'Pro vybrané vozidlo není co navrhnout.'
       }
     }
