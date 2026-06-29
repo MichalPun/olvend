@@ -267,9 +267,15 @@
     .transfer-line-row { padding:10px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); }
     .transfer-line-row.has-shortage { border-color:rgba(239,68,68,0.75); background:rgba(239,68,68,0.08); }
     .transfer-line-row input, .transfer-line-row select { padding:10px; border-radius:10px; }
-    .transfer-product-cell { display:grid; grid-template-columns:minmax(0,1fr) 34px; gap:6px; align-items:center; }
+    .transfer-product-cell { position:relative; display:grid; grid-template-columns:minmax(0,1fr) 34px; gap:6px; align-items:center; }
     .transfer-product-cell input { min-width:0; }
     .transfer-product-clear { width:34px; height:40px; border-radius:10px; }
+    .transfer-autocomplete { position:absolute; left:0; right:40px; top:calc(100% + 4px); z-index:80; max-height:260px; overflow:auto; padding:6px; border:1px solid rgba(147,197,253,0.45); border-radius:10px; background:#f8fafc; box-shadow:0 18px 38px rgba(0,0,0,0.35); color:#111827; }
+    .transfer-autocomplete button { width:100%; display:block; padding:8px 10px; border:0; border-radius:8px; background:transparent; color:#111827; text-align:left; cursor:pointer; }
+    .transfer-autocomplete button:hover,
+    .transfer-autocomplete button:focus { background:#dbeafe; outline:none; }
+    .transfer-autocomplete strong { display:block; font-size:12px; line-height:1.25; }
+    .transfer-autocomplete span { display:block; margin-top:2px; color:#4b5563; font-size:11px; line-height:1.3; }
     .transfer-line-availability { min-height:40px; display:flex; flex-direction:column; justify-content:center; gap:2px; padding:8px 10px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.03); font-size:12px; font-weight:800; color:var(--text); }
     .transfer-line-availability span { color:var(--muted); font-size:11px; font-weight:700; }
     .transfer-line-availability.ok { border-color:rgba(34,197,94,0.32); color:#bbf7d0; }
@@ -6473,7 +6479,6 @@
       const row = input.closest('.transfer-line-row')
       const hidden = row?.querySelector('[data-transfer-product]')
       if (!hidden) return null
-      renderSimpleTransferProductDatalist(input.value)
       const product = findProductBySearchValue(input.value, getSimpleTransferSearchProducts())
       hidden.value = product?.id ? String(product.id) : ''
       if (row) {
@@ -6483,6 +6488,52 @@
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
       return product
+    }
+    function hideSimpleTransferAutocomplete(input = null) {
+      const scope = input?.closest('.transfer-product-cell') || simpleTransferLines
+      scope?.querySelectorAll('.transfer-autocomplete').forEach((item) => item.remove())
+    }
+    function getSimpleTransferAutocompleteProducts(query) {
+      const normalizedQuery = normalizeText(query)
+      if (!normalizedQuery) return []
+      return getSimpleTransferSearchProducts()
+        .map((product) => ({ product, score: productSearchMatchScore(product, query) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score || normalizeText(a.product.name).localeCompare(normalizeText(b.product.name), 'cs'))
+        .slice(0, 8)
+        .map((entry) => entry.product)
+    }
+    function renderSimpleTransferAutocomplete(input) {
+      if (!input) return
+      const cell = input.closest('.transfer-product-cell')
+      if (!cell) return
+      hideSimpleTransferAutocomplete(input)
+      const rows = getSimpleTransferAutocompleteProducts(input.value)
+      if (!rows.length) return
+      const box = document.createElement('div')
+      box.className = 'transfer-autocomplete'
+      box.innerHTML = rows.map((product) => `
+        <button type="button" data-transfer-autocomplete-product="${escapeHtml(String(product.id))}">
+          <strong>${escapeHtml([product.sku, product.name].filter(Boolean).join(' · ') || 'Produkt')}</strong>
+          <span>${escapeHtml([product.ean ? `EAN ${product.ean}` : '', product.active === false ? 'neaktivní karta' : '', getProductCategoryLabel(product.product_category)].filter(Boolean).join(' · '))}</span>
+        </button>
+      `).join('')
+      cell.appendChild(box)
+    }
+    function chooseSimpleTransferAutocompleteProduct(button) {
+      const row = button.closest('.transfer-line-row')
+      const input = row?.querySelector('[data-transfer-product-search]')
+      const hidden = row?.querySelector('[data-transfer-product]')
+      const product = productsV13.find((item) => String(item.id) === String(button.dataset.transferAutocompleteProduct || ''))
+      if (!row || !input || !hidden || !product) return
+      input.value = productSearchLabel(product)
+      hidden.value = String(product.id)
+      row.dataset.defaultTransferKind = shouldUsePackageByDefault(product) ? 'package' : 'product'
+      syncTransferUnitSelect(row, product)
+      hideSimpleTransferAutocomplete(input)
+      updateSimpleTransferSalesSummary()
+      syncSimpleTransferAvailability()
+      input.focus({ preventScroll: true })
     }
     function getSimpleTransferSourceLocationId() {
       const direction = document.getElementById('simpleTransferDirection')?.value || 'warehouse_to_vehicle'
@@ -6725,7 +6776,7 @@
       wrapper.dataset.defaultTransferKind = defaultKind
       wrapper.innerHTML = `
         <div class="transfer-product-cell">
-          <input data-transfer-product-search list="simpleTransferProductOptions" type="search" autocomplete="off" placeholder="${escapeHtml(searchPlaceholder)}" value="${escapeHtml(searchValue)}" />
+          <input data-transfer-product-search type="search" autocomplete="off" placeholder="${escapeHtml(searchPlaceholder)}" value="${escapeHtml(searchValue)}" />
           <input data-transfer-product type="hidden" value="${escapeHtml(row.productId || '')}" />
           <button class="icon-btn transfer-product-clear" type="button" data-transfer-line-action="clear-product" title="Vybrat jinou položku">×</button>
         </div>
@@ -8954,6 +9005,11 @@
     simpleTransferModalBackdrop.addEventListener('click', (event) => { if (event.target === simpleTransferModalBackdrop) closeSimpleTransferModal() })
     initialStockModalBackdrop.addEventListener('click', (event) => { if (event.target === initialStockModalBackdrop) closeInitialStockModal() })
     simpleTransferLines.addEventListener('click', (event) => {
+      const autocompleteButton = event.target.closest('[data-transfer-autocomplete-product]')
+      if (autocompleteButton) {
+        chooseSimpleTransferAutocompleteProduct(autocompleteButton)
+        return
+      }
       const clearButton = event.target.closest('[data-transfer-line-action="clear-product"]')
       if (clearButton) {
         const row = clearButton.closest('.transfer-line-row')
@@ -8980,13 +9036,14 @@
     simpleTransferLines.addEventListener('focusin', (event) => {
       const productSearch = event.target.closest('[data-transfer-product-search]')
       if (!productSearch) return
-      renderSimpleTransferProductDatalist(productSearch.value)
+      renderSimpleTransferAutocomplete(productSearch)
       if (productSearch.value) productSearch.select()
     })
     simpleTransferLines.addEventListener('input', (event) => {
       const productSearch = event.target.closest('[data-transfer-product-search]')
       if (productSearch) {
         syncSimpleTransferProductSearchInput(productSearch)
+        renderSimpleTransferAutocomplete(productSearch)
         return
       }
       updateSimpleTransferSalesSummary()
@@ -9000,6 +9057,10 @@
       }
       updateSimpleTransferSalesSummary()
       syncSimpleTransferAvailability()
+    })
+    document.addEventListener('click', (event) => {
+      if (event.target.closest('.transfer-product-cell')) return
+      hideSimpleTransferAutocomplete()
     })
     document.getElementById('simpleTransferVehicleId').addEventListener('change', () => {
       renderSimpleTransferProductDatalist()
