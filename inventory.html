@@ -2189,11 +2189,13 @@
       const parseAmount = (value) => Number(String(value || '').replace(',', '.'))
       const kgMatch = name.match(/(\d+(?:[,.]\d+)?)\s*kg\b/)
       if (kgMatch && ['g', 'kg'].includes(baseUnit)) {
-        return { package_name: `${kgMatch[1]} kg`, units_per_package: Number((parseAmount(kgMatch[1]) * 1000).toFixed(3)), is_default: true, inferred: true }
+        const amount = parseAmount(kgMatch[1])
+        return { package_name: `${kgMatch[1]} kg`, units_per_package: Number((baseUnit === 'kg' ? amount : amount * 1000).toFixed(3)), is_default: true, inferred: true }
       }
       const gramMatch = name.match(/(\d+(?:[,.]\d+)?)\s*g\b/)
       if (gramMatch && ['g', 'kg'].includes(baseUnit)) {
-        return { package_name: `${gramMatch[1]} g`, units_per_package: Number(parseAmount(gramMatch[1]).toFixed(3)), is_default: true, inferred: true }
+        const amount = parseAmount(gramMatch[1])
+        return { package_name: `${gramMatch[1]} g`, units_per_package: Number((baseUnit === 'kg' ? amount / 1000 : amount).toFixed(3)), is_default: true, inferred: true }
       }
       const ksMatch = name.match(/\((\d+(?:[,.]\d+)?)\s*ks\)/)
       if (ksMatch && baseUnit === 'ks') {
@@ -2217,6 +2219,9 @@
       if (unit === 'kg') return 'g'
       if (unit === 'l') return 'ml'
       return baseUnit || 'ks'
+    }
+    function getDefaultIngredientPackageUnits(baseUnit) {
+      return normalizeText(baseUnit || '') === 'kg' ? 1 : 1000
     }
     function getRecipeBaseUnitCost(productId) {
       const product = productsV13.find((item) => String(item.id) === String(productId))
@@ -3953,6 +3958,7 @@
     function isAutoLoadProductCandidate(product) {
       const category = product?.product_category || ''
       const kind = getProductKind(product)
+      if (kind === 'hot_drink') return false
       return product?.active !== false && ([
         'food_ready',
         'snack_ready',
@@ -3987,6 +3993,13 @@
     }
     function getDefaultProductPackage(productId) {
       return getPreferredOperationalPackage(productId)
+    }
+    function getAutoLoadPackageQuantity(product, pack) {
+      const packageQty = Number(pack?.units_per_package || 0)
+      const unit = normalizeText(product?.base_unit || '')
+      const kind = getProductKind(product)
+      if (kind === 'ingredient' && unit === 'kg' && packageQty >= 100) return 1
+      return packageQty
     }
     function getLocationQuantity(stockLocationId, productId) {
       return stockBalancesV13
@@ -4191,24 +4204,45 @@
         await closeAutoLoadDeferredNeed(row.deferredNeed, `Uzavřeno automaticky: stav auta už pokrývá odloženou potřebu k ${targetDate}.`)
       }
     }
-    async function fulfillAutoLoadDeferredNeeds(rows, vehicleId, targetDate) {
-      const fulfilledRows = rows.filter((row) => row.approvedQty > 0 && row.deferredNeed?.id)
-      for (const row of fulfilledRows) {
-        const deferredQty = Number(row.deferredNeed.quantity_base_units || 0)
-        if (row.approvedQty + 0.0001 >= deferredQty) {
-          await closeAutoLoadDeferredNeed(row.deferredNeed, `Uzavřeno nakládkou ${targetDate}: doporučeno ${formatQuantityValue(row.approvedQty, row.product.base_unit || 'ks')}.`)
+    async function fetchAutoLoadDeferredNeed(vehicleId, productId) {
+      const local = getAutoLoadDeferredNeed(vehicleId, productId)
+      if (local?.id) return local
+      const { data, error } = await supabase
+        .from('vehicle_auto_load_deferred_needs')
+        .select('id, vehicle_id, product_id, quantity_base_units, unit, status, first_deferred_for_date, last_deferred_for_date, last_reason, last_scope, last_min_trip_usage_ratio, last_usage_ratio, note, updated_at')
+        .eq('vehicle_id', vehicleId)
+        .eq('product_id', productId)
+        .eq('status', 'open')
+        .limit(1)
+      if (error) throw error
+      return data?.[0] || null
+    }
+    async function applyActualLoadToDeferredNeeds(request, items) {
+      if (!['vehicle_order', 'vehicle_load'].includes(request?.request_type)) return
+      const vehicleId = Number(request.vehicle_id || 0)
+      if (!vehicleId) return
+      const targetDate = request.requested_for_date || new Date().toISOString().slice(0, 10)
+      for (const item of items) {
+        if (!item.product_id) continue
+        const quantity = getMobilePickQuantity(item)
+        if (quantity <= 0) continue
+        const existing = await fetchAutoLoadDeferredNeed(vehicleId, item.product_id)
+        if (!existing?.id) continue
+        const deferredQty = Number(existing.quantity_base_units || 0)
+        if (quantity + 0.0001 >= deferredQty) {
+          await closeAutoLoadDeferredNeed(existing, `Uzavřeno skutečnou nakládkou #${request.id} k ${targetDate}: naloženo ${formatQuantityValue(quantity, item.unit || existing.unit || 'ks')}.`)
         } else {
-          const remaining = Number((deferredQty - row.approvedQty).toFixed(3))
+          const remaining = Number((deferredQty - quantity).toFixed(3))
           const { error } = await supabase
             .from('vehicle_auto_load_deferred_needs')
             .update({
               quantity_base_units: remaining,
               last_deferred_for_date: targetDate,
-              last_reason: `Částečně pokryto nakládkou, zbývá ${formatQuantityValue(remaining, row.product.base_unit || 'ks')}.`
+              last_reason: `Částečně pokryto skutečnou nakládkou #${request.id}, zbývá ${formatQuantityValue(remaining, item.unit || existing.unit || 'ks')}.`
             })
-            .eq('id', row.deferredNeed.id)
+            .eq('id', existing.id)
           if (error) throw error
-          row.deferredNeed.quantity_base_units = remaining
+          existing.quantity_base_units = remaining
         }
       }
     }
@@ -4228,7 +4262,7 @@
         .map((product) => {
           const profile = getAutoLoadDefaultProfile(product)
           const pack = getDefaultProductPackage(product.id)
-          const packageQty = Number(pack?.units_per_package || 0)
+          const packageQty = getAutoLoadPackageQuantity(product, pack)
           const currentVehicleQty = getLocationQuantity(vehicleLocation.id, product.id)
           const warehouseQty = getLocationQuantity(warehouseLocation.id, product.id)
           const estimate = estimateAutoLoadTripDemand(vehicleLocation.id, product.id, profile.history_days, targetDate)
@@ -4442,7 +4476,6 @@
       }))
       const { error: itemsError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
       if (itemsError) throw itemsError
-      await fulfillAutoLoadDeferredNeeds(rows, vehicleId, requestedDate)
       mobilePickRequestsCollapsed = false
       await loadMobilePickRequests()
       autoLoadStatus.className = 'status-line success'
@@ -5783,6 +5816,7 @@
       if (!movements.length) throw new Error('Doklad nemá žádnou platnou položku se skladovou kartou a množstvím.')
       validateMobilePickMovementAvailability(movements)
       await applyStockMovementsAtomically(movements)
+      await applyActualLoadToDeferredNeeds(request, items)
       const { error } = await supabase
         .from('mobile_stock_requests')
         .update({
@@ -6068,7 +6102,7 @@
       if (productMarginRoundTo) productMarginRoundTo.value = '1'
       if (productMarginSummary) productMarginSummary.textContent = 'Zadej nákupní cenu a marži, cena se dopočítá automaticky.'
       productPackageRows.innerHTML = ''
-      addProductPackageRow({ package_name: 'Balení 1 kg', units_per_package: 1000, is_default: true })
+      addProductPackageRow({ package_name: 'Balení 1 kg', units_per_package: getDefaultIngredientPackageUnits(document.getElementById('productBaseUnit')?.value), is_default: true })
       renderProductRecipeRows([])
       updateProductTypeHelper()
       productModalTitle.textContent = 'Nová karta zásoby'
@@ -8993,7 +9027,7 @@
         document.getElementById('productBaseUnit').value = 'ks'
       }
       if (category === 'ingredient' && !productPackageRows.children.length) {
-        addProductPackageRow({ package_name: 'Balení 1 kg', units_per_package: 1000, is_default: true })
+        addProductPackageRow({ package_name: 'Balení 1 kg', units_per_package: getDefaultIngredientPackageUnits(document.getElementById('productBaseUnit')?.value), is_default: true })
       } else if (category !== 'ingredient') {
         productPackageRows.innerHTML = ''
       }
