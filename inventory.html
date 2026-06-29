@@ -6366,15 +6366,39 @@
         product.id ? String(product.id) : ''
       ].filter(Boolean)
     }
-    function productSearchOptionsHtml(rows = productsV13) {
+    function productSearchMatchScore(product, query) {
+      const normalizedQuery = normalizeText(query)
+      const compactQuery = normalizeLookupValue(query)
+      if (!normalizedQuery && !compactQuery) return 0
+      const textCandidates = [product.name, product.sku, product.ean, productSearchLabel(product)]
+        .filter(Boolean)
+        .map((value) => normalizeText(value))
+      const compactCandidates = [product.name, product.sku, product.ean, productSearchLabel(product)]
+        .filter(Boolean)
+        .map((value) => normalizeLookupValue(value))
+      if (textCandidates.some((candidate) => candidate === normalizedQuery) || compactCandidates.some((candidate) => candidate === compactQuery)) return 100
+      if (textCandidates.some((candidate) => candidate.startsWith(normalizedQuery)) || compactCandidates.some((candidate) => candidate.startsWith(compactQuery))) return 80
+      if (textCandidates.some((candidate) => candidate.includes(normalizedQuery)) || compactCandidates.some((candidate) => candidate.includes(compactQuery))) return 60
+      return 0
+    }
+    function productSearchOptionsHtml(rows = productsV13, query = '') {
       const seen = new Set()
-      return rows
+      const normalizedQuery = normalizeText(query)
+      const filteredRows = normalizedQuery
+        ? rows
+          .map((product) => ({ product, score: productSearchMatchScore(product, query) }))
+          .filter((entry) => entry.score > 0)
+          .sort((a, b) => b.score - a.score || normalizeText(a.product.name).localeCompare(normalizeText(b.product.name), 'cs'))
+          .map((entry) => entry.product)
+        : rows
+      return filteredRows
+        .slice(0, normalizedQuery ? 50 : 500)
         .map((product) => {
-          const value = product.name || productSearchLabel(product)
+          const value = productSearchLabel(product)
           const key = normalizeLookupValue(value || product.id)
           if (!key || seen.has(key)) return ''
           seen.add(key)
-          const label = [product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : '', product.active === false ? 'neaktivní karta' : ''].filter(Boolean).join(' · ')
+          const label = [product.name, product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : '', product.active === false ? 'neaktivní karta' : ''].filter(Boolean).join(' · ')
           return `<option value="${escapeHtml(value)}" label="${escapeHtml(label)}"></option>`
         })
         .join('')
@@ -6384,14 +6408,14 @@
       if (!datalist) return
       datalist.innerHTML = productSearchOptionsHtml(productsV13)
     }
-    function renderSimpleTransferProductDatalist() {
+    function renderSimpleTransferProductDatalist(query = '') {
       const datalist = document.getElementById('simpleTransferProductOptions')
       if (!datalist) return
       const direction = document.getElementById('simpleTransferDirection')?.value || ''
       const rows = ['machines_sale', 'vehicle_sale'].includes(direction)
         ? productsV13.filter(canProductAppearOnSalesDocument)
         : getSimpleTransferSearchProducts()
-      datalist.innerHTML = productSearchOptionsHtml(rows)
+      datalist.innerHTML = productSearchOptionsHtml(rows, query)
     }
     function getSimpleTransferSourceProductIds() {
       const sourceLocationId = getSimpleTransferSourceLocationId()
@@ -6449,6 +6473,7 @@
       const row = input.closest('.transfer-line-row')
       const hidden = row?.querySelector('[data-transfer-product]')
       if (!hidden) return null
+      renderSimpleTransferProductDatalist(input.value)
       const product = findProductBySearchValue(input.value, getSimpleTransferSearchProducts())
       hidden.value = product?.id ? String(product.id) : ''
       if (row) {
@@ -8954,8 +8979,9 @@
     })
     simpleTransferLines.addEventListener('focusin', (event) => {
       const productSearch = event.target.closest('[data-transfer-product-search]')
-      if (!productSearch || !productSearch.value) return
-      productSearch.select()
+      if (!productSearch) return
+      renderSimpleTransferProductDatalist(productSearch.value)
+      if (productSearch.value) productSearch.select()
     })
     simpleTransferLines.addEventListener('input', (event) => {
       const productSearch = event.target.closest('[data-transfer-product-search]')
