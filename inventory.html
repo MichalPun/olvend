@@ -1798,6 +1798,18 @@
     let vehicleAutoLoadDeferredNeeds = []
     let autoLoadRows = []
     const AUTO_LOAD_DEFAULT_RESERVE_RATIO = 0.15
+    const AUTO_LOAD_FLAVOR_GROUP_RULES = [
+      {
+        key: 'drwitt-isotonic-550',
+        label: 'DrWitt Isotonic 550 ml - příchutě',
+        matches: (product) => {
+          const name = normalizeText(product?.name || '')
+          return getProductKind(product) === 'water_product'
+            && name.includes('drwitt isotonic vitamin mineralni voda')
+            && name.includes('550ml')
+        }
+      }
+    ]
     const STOCK_V13_COLUMN_STORAGE_KEY = 'olvend.stockV13.columnOrder.v2'
     const INITIAL_STOCK_DRAFT_STORAGE_KEY = 'olvend.initialStockDraft.v1'
     const AUDIT_DRAFT_STORAGE_KEY = 'olvend.inventoryAuditDraft.v1'
@@ -4159,12 +4171,85 @@
     function getAutoLoadDeferredNeed(vehicleId, productId) {
       return vehicleAutoLoadDeferredNeeds.find((item) => String(item.vehicle_id) === String(vehicleId) && String(item.product_id) === String(productId) && item.status === 'open') || null
     }
+    function getAutoLoadFlavorGroup(product) {
+      return AUTO_LOAD_FLAVOR_GROUP_RULES.find((rule) => rule.matches(product)) || null
+    }
+    function getAutoLoadGroupMembers(product) {
+      const group = getAutoLoadFlavorGroup(product)
+      if (!group) return [product]
+      return productsV13
+        .filter((item) => item.active !== false && group.matches(item))
+        .sort((a, b) => normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs') || Number(a.id || 0) - Number(b.id || 0))
+    }
+    function isAutoLoadGroupRepresentative(product) {
+      const group = getAutoLoadFlavorGroup(product)
+      if (!group) return true
+      const members = getAutoLoadGroupMembers(product)
+      return String(members[0]?.id || '') === String(product.id)
+    }
+    function getAutoLoadGroupLabel(product) {
+      const group = getAutoLoadFlavorGroup(product)
+      return group ? group.label : ''
+    }
+    function getAutoLoadGroupLocationQuantity(stockLocationId, product) {
+      return getAutoLoadGroupMembers(product)
+        .reduce((sum, member) => Number((sum + getLocationQuantity(stockLocationId, member.id)).toFixed(3)), 0)
+    }
+    function getAutoLoadGroupDeferredNeeds(vehicleId, product) {
+      const memberIds = new Set(getAutoLoadGroupMembers(product).map((member) => String(member.id)))
+      return vehicleAutoLoadDeferredNeeds.filter((item) => String(item.vehicle_id) === String(vehicleId) && item.status === 'open' && memberIds.has(String(item.product_id)))
+    }
+    function getAutoLoadGroupDeferredQuantity(vehicleId, product) {
+      return getAutoLoadGroupDeferredNeeds(vehicleId, product)
+        .reduce((sum, item) => Number((sum + Number(item.quantity_base_units || 0)).toFixed(3)), 0)
+    }
+    function getAutoLoadDeferredQuantityForTarget(vehicleId, product, targetDate) {
+      return getAutoLoadGroupDeferredNeeds(vehicleId, product)
+        .reduce((summary, item) => {
+          const quantity = Number(item.quantity_base_units || 0)
+          if (item.last_deferred_for_date === targetDate) {
+            summary.forTarget = Number((summary.forTarget + quantity).toFixed(3))
+          } else {
+            summary.carryover = Number((summary.carryover + quantity).toFixed(3))
+          }
+          return summary
+        }, { carryover: 0, forTarget: 0 })
+    }
+    function estimateAutoLoadGroupTripDemand(vehicleLocationId, product, historyDays, targetDate) {
+      const members = getAutoLoadGroupMembers(product)
+      if (members.length <= 1) return estimateAutoLoadTripDemand(vehicleLocationId, product.id, historyDays, targetDate)
+      const estimates = members.map((member) => estimateAutoLoadTripDemand(vehicleLocationId, member.id, historyDays, targetDate))
+      return {
+        expected: Number(estimates.reduce((sum, estimate) => sum + Number(estimate.expected || 0), 0).toFixed(3)),
+        samples: estimates.reduce((sum, estimate) => sum + Number(estimate.samples || 0), 0),
+        source: getAutoLoadGroupLabel(product)
+      }
+    }
+    function estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocationId, product, historyDays, targetDate) {
+      const members = getAutoLoadGroupMembers(product)
+      if (members.length <= 1) return estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, product.id, historyDays, targetDate)
+      return members.reduce((summary, member) => {
+        const item = estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, member.id, historyDays, targetDate)
+        summary.expected = Number((summary.expected + Number(item.expected || 0)).toFixed(3))
+        summary.actual = Number((summary.actual + Number(item.actual || 0)).toFixed(3))
+        summary.pending = Number((summary.pending + Number(item.pending || 0)).toFixed(3))
+        summary.coveredDates += Number(item.coveredDates || 0)
+        summary.estimatedDates += Number(item.estimatedDates || 0)
+        summary.skippedDates += Number(item.skippedDates || 0)
+        return summary
+      }, { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 })
+    }
     async function upsertAutoLoadDeferredNeed(row, vehicleId, targetDate) {
       const existing = getAutoLoadDeferredNeed(vehicleId, row.product.id)
+      const existingQuantity = Number(existing?.quantity_base_units || 0)
+      const requiredQuantity = Number(row.requiredFromNew || 0)
+      const nextQuantity = existing?.last_deferred_for_date === targetDate
+        ? Math.min(existingQuantity || requiredQuantity, requiredQuantity)
+        : requiredQuantity
       const payload = {
         vehicle_id: vehicleId,
         product_id: row.product.id,
-        quantity_base_units: Number(row.requiredFromNew || 0),
+        quantity_base_units: nextQuantity,
         unit: row.product.base_unit || 'ks',
         status: 'open',
         first_deferred_for_date: existing?.first_deferred_for_date || targetDate,
@@ -4201,7 +4286,10 @@
         await upsertAutoLoadDeferredNeed(row, vehicleId, targetDate)
       }
       for (const row of resolvedRows) {
-        await closeAutoLoadDeferredNeed(row.deferredNeed, `Uzavřeno automaticky: stav auta už pokrývá odloženou potřebu k ${targetDate}.`)
+        const needs = row.deferredNeeds?.length ? row.deferredNeeds : [row.deferredNeed].filter(Boolean)
+        for (const need of needs) {
+          await closeAutoLoadDeferredNeed(need, `Uzavřeno automaticky: stav auta už pokrývá odloženou potřebu k ${targetDate}.`)
+        }
       }
     }
     async function fetchAutoLoadDeferredNeed(vehicleId, productId) {
@@ -4217,6 +4305,17 @@
       if (error) throw error
       return data?.[0] || null
     }
+    async function fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, productId) {
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      const members = product ? getAutoLoadGroupMembers(product) : []
+      const memberIds = members.length ? members.map((member) => member.id) : [productId]
+      const needs = []
+      for (const memberId of memberIds) {
+        const need = await fetchAutoLoadDeferredNeed(vehicleId, memberId)
+        if (need?.id && !needs.some((item) => String(item.id) === String(need.id))) needs.push(need)
+      }
+      return needs.sort((a, b) => String(a.first_deferred_for_date || '').localeCompare(String(b.first_deferred_for_date || '')) || String(a.updated_at || '').localeCompare(String(b.updated_at || '')))
+    }
     async function applyActualLoadToDeferredNeeds(request, items) {
       if (!['vehicle_order', 'vehicle_load'].includes(request?.request_type)) return
       const vehicleId = Number(request.vehicle_id || 0)
@@ -4226,13 +4325,17 @@
         if (!item.product_id) continue
         const quantity = getMobilePickQuantity(item)
         if (quantity <= 0) continue
-        const existing = await fetchAutoLoadDeferredNeed(vehicleId, item.product_id)
-        if (!existing?.id) continue
-        const deferredQty = Number(existing.quantity_base_units || 0)
-        if (quantity + 0.0001 >= deferredQty) {
-          await closeAutoLoadDeferredNeed(existing, `Uzavřeno skutečnou nakládkou #${request.id} k ${targetDate}: naloženo ${formatQuantityValue(quantity, item.unit || existing.unit || 'ks')}.`)
-        } else {
-          const remaining = Number((deferredQty - quantity).toFixed(3))
+        const needs = await fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, item.product_id)
+        let loadedRemaining = quantity
+        for (const existing of needs) {
+          if (loadedRemaining <= 0.0001) break
+          const deferredQty = Number(existing.quantity_base_units || 0)
+          if (loadedRemaining + 0.0001 >= deferredQty) {
+            await closeAutoLoadDeferredNeed(existing, `Uzavřeno skutečnou nakládkou #${request.id} k ${targetDate}: naloženo ${formatQuantityValue(quantity, item.unit || existing.unit || 'ks')}.`)
+            loadedRemaining = Number((loadedRemaining - deferredQty).toFixed(3))
+            continue
+          }
+          const remaining = Number((deferredQty - loadedRemaining).toFixed(3))
           const { error } = await supabase
             .from('vehicle_auto_load_deferred_needs')
             .update({
@@ -4243,6 +4346,7 @@
             .eq('id', existing.id)
           if (error) throw error
           existing.quantity_base_units = remaining
+          loadedRemaining = 0
         }
       }
     }
@@ -4259,23 +4363,29 @@
       return productsV13
         .filter(shouldIncludeAutoLoadProduct)
         .filter(matchesAutoLoadScope)
+        .filter(isAutoLoadGroupRepresentative)
         .map((product) => {
           const profile = getAutoLoadDefaultProfile(product)
           const pack = getDefaultProductPackage(product.id)
           const packageQty = getAutoLoadPackageQuantity(product, pack)
-          const currentVehicleQty = getLocationQuantity(vehicleLocation.id, product.id)
-          const warehouseQty = getLocationQuantity(warehouseLocation.id, product.id)
-          const estimate = estimateAutoLoadTripDemand(vehicleLocation.id, product.id, profile.history_days, targetDate)
-          const pendingBeforeTarget = estimateAutoLoadPendingDemandBeforeTarget(vehicleLocation.id, product.id, profile.history_days, targetDate)
+          const groupLabel = getAutoLoadGroupLabel(product)
+          const currentVehicleQty = getAutoLoadGroupLocationQuantity(vehicleLocation.id, product)
+          const warehouseQty = getAutoLoadGroupLocationQuantity(warehouseLocation.id, product)
+          const estimate = estimateAutoLoadGroupTripDemand(vehicleLocation.id, product, profile.history_days, targetDate)
+          const pendingBeforeTarget = estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocation.id, product, profile.history_days, targetDate)
           const projectedVehicleBeforeTarget = Math.max(0, Number((currentVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
           const fixedSafetyQty = Number(profile.safety_stock_quantity || 0)
           const dynamicSafetyQty = Number((Number(estimate.expected || 0) * AUTO_LOAD_DEFAULT_RESERVE_RATIO).toFixed(3))
           const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
-          const deferredNeed = getAutoLoadDeferredNeed(vehicleId, product.id)
-          const deferredQty = Number(deferredNeed?.quantity_base_units || 0)
+          const deferredNeeds = getAutoLoadGroupDeferredNeeds(vehicleId, product)
+          const deferredNeed = deferredNeeds.find((item) => String(item.product_id) === String(product.id)) || deferredNeeds[0] || null
+          const deferredSummary = getAutoLoadDeferredQuantityForTarget(vehicleId, product, targetDate)
+          const deferredQty = deferredSummary.carryover
+          const sameTargetDeferredQty = deferredSummary.forTarget
           const tripDemandQty = Number((estimate.expected + deferredQty).toFixed(3))
           const targetNeedQty = Number((tripDemandQty + safetyQty).toFixed(3))
-          const requiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
+          const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
+          const requiredFromNew = sameTargetDeferredQty > 0.0001 ? sameTargetDeferredQty : calculatedRequiredFromNew
           const packageCount = packageQty > 0 ? Math.ceil(requiredFromNew / packageQty) : 0
           const suggestedQty = packageQty > 0 ? Number((packageCount * packageQty).toFixed(3)) : 0
           const expectedUseFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
@@ -4300,6 +4410,9 @@
           }
           if (deferredQty > 0.0001) {
             reasons.push(`z minula odloženo ${formatQuantityValue(deferredQty, product.base_unit || 'ks')}`)
+          }
+          if (sameTargetDeferredQty > 0.0001) {
+            reasons.push(`odloženo pro tento den ${formatQuantityValue(sameTargetDeferredQty, product.base_unit || 'ks')}`)
           }
           if (requiredFromNew <= 0.0001 && projectedVehicleBeforeTarget > 0) {
             reasons.push(`nenakládat, očekávaný stav auta pokryje odhad jízdy`)
@@ -4327,6 +4440,7 @@
           return {
             product,
             profile,
+            groupLabel,
             package: pack,
             packageQty,
             currentVehicleQty,
@@ -4340,7 +4454,9 @@
             tripDemandQty,
             targetNeedQty,
             deferredNeed,
+            deferredNeeds,
             deferredQty,
+            sameTargetDeferredQty,
             samples: estimate.samples,
             estimateSource: estimate.source,
             requiredFromNew,
@@ -4389,7 +4505,7 @@
             : `auto stačí, po jízdě cca ${formatQuantityValue(row.projectedVehicleAfterTrip, unit)}`
         return `
           <tr>
-            <td data-label="Produkt"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
+            <td data-label="Produkt"><strong>${escapeHtml(row.groupLabel || row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.groupLabel ? row.product.name : '', row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml(row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu')}</span></td>
             <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([row.pendingBeforeTarget?.pending > 0 ? `čeká ${formatQuantityValue(row.pendingBeforeTarget.pending, unit)}` : '', row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)}` : '', row.safetyQty > 0 ? `rezerva ${formatQuantityValue(row.safetyQty, unit)}` : '', `donaložit potřeba ${formatQuantityValue(row.requiredFromNew, unit)}`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
