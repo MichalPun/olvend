@@ -512,6 +512,7 @@
     let recipeItems = []
     let customers = loadCustomers()
     let currentDocumentId = null
+    let currentDocumentCopyMode = false
     let salesSeriesSettingsCache = null
     let companyProfileCache = null
     let salesPaymentCache = null
@@ -541,6 +542,14 @@
       const date = new Date(`${isoDate || todayIso()}T00:00:00`)
       date.setDate(date.getDate() + Number(days || 0))
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    }
+    function daysBetweenIso(fromIso, toIso) {
+      if (!fromIso || !toIso) return null
+      const from = new Date(`${fromIso}T00:00:00`)
+      const to = new Date(`${toIso}T00:00:00`)
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null
+      const diff = Math.round((to.getTime() - from.getTime()) / 86400000)
+      return Number.isFinite(diff) ? diff : null
     }
     function formatCurrency(value) {
       return `${Number(value || 0).toLocaleString('cs-CZ', { minimumFractionDigits:2, maximumFractionDigits:2 })} Kč`
@@ -1747,32 +1756,38 @@
       updateLineTotals()
       setTimeout(() => invoiceLines.querySelector(`[data-invoice-line="${CSS.escape(key)}"] [data-line-product-search]`)?.focus(), 0)
     }
-    function openInvoiceModal(row = null) {
-      currentDocumentId = row?.id || null
+    function openInvoiceModal(row = null, options = {}) {
+      const isCopy = options.mode === 'copy'
+      currentDocumentId = isCopy ? null : (row?.id || null)
+      currentDocumentCopyMode = isCopy
       const meta = extractMeta(row)
       const payment = loadPaymentSettings()
       invoiceForm.reset()
       invoiceLines.innerHTML = ''
       documentType.value = row?.document_type || 'invoice'
-      documentStatus.value = row?.status || 'issued'
+      documentStatus.value = isCopy ? 'issued' : (row?.status || 'issued')
       customerName.value = row?.customer_name || ''
-      issuedDate.value = row?.issued_at ? String(row.issued_at).slice(0, 10) : todayIso()
-      taxableSupplyDate.value = meta.taxableSupplyDate || issuedDate.value
+      const originalIssuedDate = row?.issued_at ? String(row.issued_at).slice(0, 10) : ''
+      issuedDate.value = isCopy ? todayIso() : (originalIssuedDate || todayIso())
+      taxableSupplyDate.value = isCopy ? issuedDate.value : (meta.taxableSupplyDate || issuedDate.value)
       const customer = customerByName(customerName.value)
       const defaultDueDays = Number(customer?.defaultDueDays ?? 14)
-      dueDate.value = meta.dueDate || (row ? '' : addDaysIso(issuedDate.value, Number.isFinite(defaultDueDays) ? defaultDueDays : 14))
+      const copiedDueDays = isCopy ? daysBetweenIso(originalIssuedDate, meta.dueDate) : null
+      const dueDays = Number.isFinite(copiedDueDays) && copiedDueDays >= 0 ? copiedDueDays : (Number.isFinite(defaultDueDays) ? defaultDueDays : 14)
+      dueDate.value = isCopy ? addDaysIso(issuedDate.value, dueDays) : (meta.dueDate || (row ? '' : addDaysIso(issuedDate.value, dueDays)))
       renderStockIssueLocations(meta.stockLocationId || '')
       invoiceCurrency.value = meta.currency || 'CZK'
       invoiceVatMode.value = meta.vatMode || 'domestic'
       exchangeRate.value = meta.exchangeRate || ''
       roundingMode.value = meta.roundingMode || 'none'
-      variableSymbol.value = meta.variableSymbol || ''
+      variableSymbol.value = isCopy ? '' : (meta.variableSymbol || '')
       customerOrderNumber.value = meta.customerOrderNumber || meta.orderNumber || ''
       paymentIban.value = meta.payment?.iban || payment.iban || ''
       paymentAccount.value = meta.payment?.account || payment.account || ''
       constantSymbol.value = meta.payment?.constantSymbol || payment.constantSymbol || '0308'
       documentNote.value = cleanNote(row?.note || '')
-      invoiceModalTitle.textContent = currentDocumentId ? `Upravit doklad · ${documentNumber(row)}` : 'Vystavit doklad'
+      invoiceModalTitle.textContent = isCopy ? `Kopírovat doklad · ${documentNumber(row)}` : (currentDocumentId ? `Upravit doklad · ${documentNumber(row)}` : 'Vystavit doklad')
+      saveInvoiceBtn.textContent = isCopy ? 'Uložit kopii' : 'Uložit doklad'
       const items = invoiceItems(row)
       if (items.length) items.forEach(addInvoiceLine)
       else addInvoiceLine()
@@ -1782,6 +1797,8 @@
     function closeInvoiceModal() {
       invoiceModalBackdrop.classList.remove('show')
       currentDocumentId = null
+      currentDocumentCopyMode = false
+      saveInvoiceBtn.textContent = 'Uložit doklad'
       invoiceForm.reset()
       invoiceLines.innerHTML = ''
     }
@@ -2091,7 +2108,7 @@
             <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">Vystaveno</span></td>
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(amountSubtext)}</span></td>
-            <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
+            <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="copy" data-id="${escapeHtml(String(row.id))}">Kopírovat</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
           </tr>
         `
       }).join('')
@@ -3054,6 +3071,7 @@
       if (!row) return
       try {
         if (button.dataset.action === 'edit') openInvoiceModal(row)
+        if (button.dataset.action === 'copy') openInvoiceModal(row, { mode: 'copy' })
         if (button.dataset.action === 'print') printDocument(row)
         if (button.dataset.action === 'email') openEmailModal(row)
         if (button.dataset.action === 'money-s3') exportMoneyS3(row)
@@ -3078,7 +3096,7 @@
         setLineStatus(`Doklad se nepodařilo uložit: ${error.message}`, 'error')
       } finally {
         saveInvoiceBtn.disabled = false
-        saveInvoiceBtn.textContent = 'Uložit doklad'
+        saveInvoiceBtn.textContent = currentDocumentCopyMode ? 'Uložit kopii' : 'Uložit doklad'
       }
     })
     invoiceModalBackdrop.addEventListener('click', (event) => {
