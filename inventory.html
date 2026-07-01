@@ -4281,17 +4281,22 @@
       return getAutoLoadGroupDeferredNeeds(vehicleId, product)
         .reduce((sum, item) => Number((sum + Number(item.quantity_base_units || 0)).toFixed(3)), 0)
     }
-    function getAutoLoadDeferredQuantityForTarget(vehicleId, product, targetDate) {
-      return getAutoLoadGroupDeferredNeeds(vehicleId, product)
-        .reduce((summary, item) => {
-          const quantity = Number(item.quantity_base_units || 0)
-          if (item.last_deferred_for_date === targetDate) {
-            summary.forTarget = Number((summary.forTarget + quantity).toFixed(3))
-          } else {
-            summary.carryover = Number((summary.carryover + quantity).toFixed(3))
-          }
-          return summary
-        }, { carryover: 0, forTarget: 0 })
+    function summarizeAutoLoadDeferredNeedsForTarget(needs, targetDate) {
+      return needs.reduce((summary, item) => {
+        const quantity = Number(item.quantity_base_units || 0)
+        if (item.last_deferred_for_date === targetDate) {
+          summary.forTarget = Number((summary.forTarget + quantity).toFixed(3))
+        } else {
+          summary.carryover = Number((summary.carryover + quantity).toFixed(3))
+        }
+        return summary
+      }, { carryover: 0, forTarget: 0 })
+    }
+    function isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocationId, targetDate, currentVehicleQty, need) {
+      const deferredDate = (need?.last_deferred_for_date || '').slice(0, 10)
+      if (!deferredDate || deferredDate >= targetDate) return false
+      if (Number(currentVehicleQty || 0) <= 0.0001) return false
+      return hasAutoLoadVehicleFillOnDate(vehicleLocationId, deferredDate)
     }
     function estimateAutoLoadGroupTripDemand(vehicleLocationId, product, historyDays, targetDate) {
       const members = getAutoLoadGroupMembers(product)
@@ -4401,6 +4406,7 @@
         return ['blocked', 'missing_package'].includes(row.status)
       })
       const resolvedRows = rows.filter((row) => row.requiredFromNew <= 0.0001 && row.deferredNeed?.id)
+      const actualTripResolvedRows = rows.filter((row) => row.resolvedDeferredNeeds?.length)
       for (const row of deferredRows) {
         await upsertAutoLoadDeferredNeed(row, vehicleId, targetDate)
       }
@@ -4408,6 +4414,11 @@
         const needs = row.deferredNeeds?.length ? row.deferredNeeds : [row.deferredNeed].filter(Boolean)
         for (const need of needs) {
           await closeAutoLoadDeferredNeed(need, `Uzavřeno automaticky: stav auta už pokrývá odloženou potřebu k ${targetDate}.`)
+        }
+      }
+      for (const row of actualTripResolvedRows) {
+        for (const need of row.resolvedDeferredNeeds) {
+          await closeAutoLoadDeferredNeed(need, `Uzavřeno automaticky: po jízdě ${need.last_deferred_for_date || ''} zůstalo na autě ${formatQuantityValue(row.currentVehicleQty, row.product.base_unit || 'ks')}, odložená potřeba se nepotvrdila.`)
         }
       }
     }
@@ -4516,9 +4527,12 @@
           const fixedSafetyQty = Number(profile.safety_stock_quantity || 0)
           const dynamicSafetyQty = Number((Number(estimate.expected || 0) * AUTO_LOAD_DEFAULT_RESERVE_RATIO).toFixed(3))
           const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
-          const deferredNeeds = getAutoLoadGroupDeferredNeeds(vehicleId, product)
+          const allDeferredNeeds = getAutoLoadGroupDeferredNeeds(vehicleId, product)
+          const resolvedDeferredNeeds = allDeferredNeeds.filter((need) => isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocation.id, targetDate, currentVehicleQty, need))
+          const resolvedDeferredNeedIds = new Set(resolvedDeferredNeeds.map((need) => String(need.id)))
+          const deferredNeeds = allDeferredNeeds.filter((need) => !resolvedDeferredNeedIds.has(String(need.id)))
           const deferredNeed = deferredNeeds.find((item) => String(item.product_id) === String(product.id)) || deferredNeeds[0] || null
-          const deferredSummary = getAutoLoadDeferredQuantityForTarget(vehicleId, product, targetDate)
+          const deferredSummary = summarizeAutoLoadDeferredNeedsForTarget(deferredNeeds, targetDate)
           const deferredQty = deferredSummary.carryover
           const sameTargetDeferredQty = deferredSummary.forTarget
           const tripDemandQty = Number((estimate.expected + deferredQty).toFixed(3))
@@ -4577,6 +4591,9 @@
           if (deferredQty > 0.0001) {
             reasons.push(`z minula odloženo ${formatQuantityValue(deferredQty, product.base_unit || 'ks')}`)
           }
+          if (resolvedDeferredNeeds.length) {
+            reasons.push('odložená potřeba z minulé jízdy uzavřena podle skutečného zůstatku na autě')
+          }
           if (sameTargetDeferredQty > 0.0001) {
             reasons.push(`odloženo pro tento den ${formatQuantityValue(sameTargetDeferredQty, product.base_unit || 'ks')}`)
           }
@@ -4626,6 +4643,7 @@
             targetNeedQty,
             deferredNeed,
             deferredNeeds,
+            resolvedDeferredNeeds,
             deferredQty,
             sameTargetDeferredQty,
             samples: estimate.samples,
