@@ -4248,6 +4248,26 @@
       return getAutoLoadGroupMembers(product)
         .reduce((sum, member) => Number((sum + getLocationQuantity(stockLocationId, member.id)).toFixed(3)), 0)
     }
+    function getPendingAutoLoadQuantity(vehicleId, targetDate, productId) {
+      const requestIds = new Set(mobileStockRequests
+        .filter((request) => ['vehicle_order', 'vehicle_load'].includes(request.request_type))
+        .filter((request) => ['requested', 'picking', 'ready'].includes(request.status))
+        .filter((request) => String(request.vehicle_id || '') === String(vehicleId))
+        .filter((request) => (request.requested_for_date || '').slice(0, 10) === targetDate)
+        .map((request) => String(request.id)))
+      if (!requestIds.size) return 0
+      return mobileStockRequestItems
+        .filter((item) => requestIds.has(String(item.request_id)))
+        .filter((item) => String(item.product_id || '') === String(productId))
+        .reduce((sum, item) => {
+          const quantity = Number(item.prepared_quantity ?? item.requested_quantity ?? 0)
+          return Number((sum + quantity).toFixed(3))
+        }, 0)
+    }
+    function getAutoLoadGroupPendingLoadQuantity(vehicleId, targetDate, product) {
+      return getAutoLoadGroupMembers(product)
+        .reduce((sum, member) => Number((sum + getPendingAutoLoadQuantity(vehicleId, targetDate, member.id)).toFixed(3)), 0)
+    }
     function getAutoLoadGroupDeferredNeeds(vehicleId, product) {
       const memberIds = new Set(getAutoLoadGroupMembers(product).map((member) => String(member.id)))
       return vehicleAutoLoadDeferredNeeds.filter((item) => String(item.vehicle_id) === String(vehicleId) && item.status === 'open' && memberIds.has(String(item.product_id)))
@@ -4477,10 +4497,12 @@
           const packageQty = getAutoLoadPackageQuantity(product, pack)
           const groupLabel = getAutoLoadGroupLabel(product)
           const currentVehicleQty = getAutoLoadGroupLocationQuantity(vehicleLocation.id, product)
+          const pendingLoadQty = getAutoLoadGroupPendingLoadQuantity(vehicleId, targetDate, product)
           const warehouseQty = getAutoLoadGroupLocationQuantity(warehouseLocation.id, product)
           const estimate = estimateAutoLoadGroupTripDemand(vehicleLocation.id, product, profile.history_days, targetDate)
           const pendingBeforeTarget = estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocation.id, product, profile.history_days, targetDate)
-          const projectedVehicleBeforeTarget = Math.max(0, Number((currentVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
+          const plannedVehicleQty = Number((currentVehicleQty + pendingLoadQty).toFixed(3))
+          const projectedVehicleBeforeTarget = Math.max(0, Number((plannedVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
           const fixedSafetyQty = Number(profile.safety_stock_quantity || 0)
           const dynamicSafetyQty = Number((Number(estimate.expected || 0) * AUTO_LOAD_DEFAULT_RESERVE_RATIO).toFixed(3))
           const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
@@ -4528,6 +4550,9 @@
           if (pendingBeforeTarget.pending > 0.0001) {
             reasons.push(`do ${targetDate} čeká odhad doplnění ${formatQuantityValue(pendingBeforeTarget.pending, product.base_unit || 'ks')}`)
           }
+          if (pendingLoadQty > 0.0001) {
+            reasons.push(`už nachystáno ${formatQuantityValue(pendingLoadQty, product.base_unit || 'ks')}`)
+          }
           if (safetyQty > 0.0001) {
             reasons.push(`rezerva ${formatQuantityValue(safetyQty, product.base_unit || 'ks')}`)
           }
@@ -4571,6 +4596,8 @@
             package: pack,
             packageQty,
             currentVehicleQty,
+            pendingLoadQty,
+            plannedVehicleQty,
             warehouseQty,
             expectedDemand: estimate.expected,
             pendingBeforeTarget,
@@ -4602,7 +4629,7 @@
             status
           }
         })
-        .filter((row) => row.approvedQty > 0 || row.staleRisk || row.expectedDemand > 0 || row.currentVehicleQty > 0)
+        .filter((row) => row.approvedQty > 0 || row.staleRisk || row.expectedDemand > 0 || row.currentVehicleQty > 0 || row.pendingLoadQty > 0)
         .sort((a, b) => {
           const statusOrder = { recommended: 0, missing_package: 1, audit: 2, blocked: 3, idle: 4 }
           const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -4634,7 +4661,7 @@
         return `
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.groupLabel || row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.groupLabel ? row.product.name : '', row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
-            <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml(row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu')}</span></td>
+            <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml([row.pendingLoadQty > 0 ? `nachystáno ${formatQuantityValue(row.pendingLoadQty, unit)}` : '', row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu'].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([row.pendingBeforeTarget?.pending > 0 ? `čeká ${formatQuantityValue(row.pendingBeforeTarget.pending, unit)}` : '', row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)}` : '', row.safetyQty > 0 ? `rezerva ${formatQuantityValue(row.safetyQty, unit)}` : '', `donaložit potřeba ${formatQuantityValue(row.requiredFromNew, unit)}`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
