@@ -816,7 +816,7 @@
             <div class="summary-grid" id="autoLoadSummary"></div>
             <div class="action-row auto-load-actions">
               <button class="btn" type="button" id="autoLoadCreateRequestBtn">Vytvořit nakládku</button>
-              <button class="btn secondary" type="button" id="autoLoadCreateAuditsBtn">Vytvořit inventury pro rizika</button>
+              <button class="btn secondary" type="button" id="autoLoadCreateAuditsBtn">Týdenní namátková inventura</button>
             </div>
             <div class="table-wrap auto-load-table-wrap" id="autoLoadTableWrap" hidden>
               <table class="stock-excel-table">
@@ -1842,6 +1842,10 @@
     let vehicleAutoLoadDeferredNeeds = []
     let autoLoadRows = []
     const AUTO_LOAD_DEFAULT_RESERVE_RATIO = 0.15
+    const AUTO_LOAD_WEEKLY_AUDIT_MARKER = 'AUTO_WEEKLY_RANDOM_AUDIT'
+    const AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS = 12
+    const AUTO_LOAD_LOW_STOCK_MIN_QTY = 1
+    const AUTO_LOAD_LOW_STOCK_MAX_QTY = 3
     const AUTO_LOAD_FLAVOR_GROUP_RULES = [
       {
         key: 'drwitt-isotonic-550',
@@ -4877,20 +4881,120 @@
       }))
       const { error: itemsError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
       if (itemsError) throw itemsError
+      let weeklyAuditText = ''
+      try {
+        const weeklyAudit = await createAutoLoadRiskAudits({ silent: true })
+        if (weeklyAudit?.created) {
+          weeklyAuditText = ` Týdenní namátková inventura #${weeklyAudit.auditId} byla založená automaticky.`
+        } else if (weeklyAudit?.existingId) {
+          weeklyAuditText = ` Týdenní namátková inventura už tento týden existuje jako #${weeklyAudit.existingId}.`
+        }
+      } catch (error) {
+        weeklyAuditText = ` Týdenní namátkovou inventuru se nepodařilo založit: ${error.message}`
+      }
       mobilePickRequestsCollapsed = false
       await loadMobilePickRequests()
       autoLoadStatus.className = 'status-line success'
-      autoLoadStatus.textContent = `Automatická nakládka #${request.id} byla založená a čeká ve skladových pohybech.`
+      autoLoadStatus.textContent = `Automatická nakládka #${request.id} byla založená a čeká ve skladových pohybech.${weeklyAuditText}`
     }
-    async function createAutoLoadRiskAudits() {
-      const rows = autoLoadRows.filter((row) => row.staleRisk)
-      if (!rows.length) throw new Error('Není tu žádný rizikový zůstatek k inventuře.')
+    function getAutoLoadWeekBounds(dateValue) {
+      const base = new Date(`${dateValue || new Date().toISOString().slice(0, 10)}T00:00:00`)
+      const day = base.getDay() || 7
+      const start = new Date(base)
+      start.setDate(base.getDate() - day + 1)
+      const end = new Date(start)
+      end.setDate(start.getDate() + 6)
+      return {
+        weekStart: start.toISOString().slice(0, 10),
+        weekEnd: end.toISOString().slice(0, 10)
+      }
+    }
+    function hashAutoLoadAuditSeed(value) {
+      return String(value || '').split('').reduce((hash, char) => {
+        const next = ((hash << 5) - hash) + char.charCodeAt(0)
+        return next >>> 0
+      }, 2166136261)
+    }
+    function buildAutoLoadWeeklyAuditCandidates(vehicleId, vehicleLocationId, auditDateValue, weekStart) {
+      const scope = autoLoadScope?.value || 'vehicle_default'
+      const candidates = []
+      productsV13
+        .filter(shouldIncludeAutoLoadProduct)
+        .filter(matchesAutoLoadScope)
+        .forEach((product) => {
+          const currentQty = getLocationQuantity(vehicleLocationId, product.id)
+          if (currentQty <= 0.0001) return
+          const unit = product.base_unit || 'ks'
+          const normalizedUnit = normalizeText(unit)
+          const reasons = []
+          let priority = 9
+          if (normalizedUnit === 'ks' && currentQty >= AUTO_LOAD_LOW_STOCK_MIN_QTY && currentQty <= AUTO_LOAD_LOW_STOCK_MAX_QTY) {
+            reasons.push(`malý zůstatek před nakládkou ${formatQuantityValue(currentQty, unit)}`)
+            priority = Math.min(priority, 0)
+          }
+          const profile = getAutoLoadDefaultProfile(product)
+          const staleLimit = Number(profile.stale_vehicle_days ?? getAutoLoadDefaultStaleDays(product))
+          const lastMovement = getLastVehicleProductMovement(vehicleLocationId, product.id)
+          const lastMovementDate = movementLocalDate(lastMovement?.created_at)
+          const staleDays = lastMovementDate ? daysBetweenDates(lastMovementDate, auditDateValue) : null
+          if (staleLimit >= 0 && (staleDays === null || staleDays >= staleLimit)) {
+            reasons.push(staleDays === null ? 'na autě bez dohledatelného pohybu' : `bez pohybu ${staleDays} dní`)
+            priority = Math.min(priority, 1)
+          }
+          if (!reasons.length) return
+          candidates.push({
+            product,
+            currentQty,
+            unit,
+            reasons,
+            priority,
+            staleDays: staleDays ?? 999,
+            groupLabel: getVehicleAuditProductGroupLabel(product),
+            seed: hashAutoLoadAuditSeed(`${vehicleId}:${weekStart}:${scope}:${product.id}`)
+          })
+        })
+      return candidates
+        .sort((a, b) => a.priority - b.priority || b.staleDays - a.staleDays || a.seed - b.seed || normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs'))
+        .slice(0, AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS)
+        .sort((a, b) => normalizeText(a.groupLabel || '').localeCompare(normalizeText(b.groupLabel || ''), 'cs') || normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs'))
+    }
+    async function findExistingAutoLoadWeeklyAudit(vehicleId, weekStart, weekEnd) {
+      const marker = `${AUTO_LOAD_WEEKLY_AUDIT_MARKER}:${vehicleId}:${weekStart}`
+      const { data, error } = await supabase
+        .from('inventory_audits')
+        .select('id, audit_date, status, note')
+        .eq('vehicle_id', vehicleId)
+        .gte('audit_date', weekStart)
+        .lte('audit_date', weekEnd)
+        .neq('status', 'cancelled')
+        .ilike('note', `%${marker}%`)
+        .limit(1)
+      if (error) throw error
+      return data?.[0] || null
+    }
+    async function createAutoLoadRiskAudits(options = {}) {
+      const silent = Boolean(options.silent)
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const employeeId = autoLoadEmployee?.value || ''
       const auditDateValue = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
       if (!vehicleId) throw new Error('Vyber vozidlo.')
-      if (!employeeId) throw new Error('Vyber operátorku pro cílenou inventuru.')
+      if (!employeeId) throw new Error('Vyber operátorku pro týdenní inventuru.')
+      const { weekStart, weekEnd } = getAutoLoadWeekBounds(auditDateValue)
+      const existingAudit = await findExistingAutoLoadWeeklyAudit(vehicleId, weekStart, weekEnd)
+      if (existingAudit?.id) {
+        if (!silent) {
+          autoLoadStatus.className = 'status-line success'
+          autoLoadStatus.textContent = `Týdenní namátková inventura pro ${getVehicleLabel(vehicleId)} už v týdnu ${weekStart} - ${weekEnd} existuje jako #${existingAudit.id}.`
+        }
+        return { created: false, existingId: existingAudit.id }
+      }
       const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId)) }
+      const rows = buildAutoLoadWeeklyAuditCandidates(vehicleId, targetLocation.id, auditDateValue, weekStart)
+      if (!rows.length) {
+        if (silent) return { created: false, reason: 'empty' }
+        throw new Error('Pro týdenní namátkovou inventuru není žádná položka: žádný malý zůstatek 1-3 ks ani dlouho stojící zboží na autě.')
+      }
+      const marker = `${AUTO_LOAD_WEEKLY_AUDIT_MARKER}:${vehicleId}:${weekStart}`
       const { data: audit, error: auditError } = await supabase
         .from('inventory_audits')
         .insert([{
@@ -4900,7 +5004,7 @@
           vehicle_id: vehicleId,
           assigned_employee_id: employeeId,
           responsible_name: getVehicleAuditEmployeeLabel(employeeId),
-          note: 'Automatická cílená inventura: dlouho neodečtený zůstatek na vozidle',
+          note: `Týdenní namátková inventura: malé zůstatky 1-3 ks a dlouho stojící zboží na vozidle. ${marker}`,
           status: 'assigned',
           created_by: null
         }])
@@ -4911,20 +5015,20 @@
         audit_id: audit.id,
         stock_location_id: targetLocation.id,
         product_id: row.product.id,
-        book_quantity: row.currentVehicleQty,
+        book_quantity: row.currentQty,
         counted_quantity: 0,
         difference_quantity: 0,
         unit_cost: getStockUnitCost(row.product) || null,
         difference_value: 0,
-        note: `Automaticky vybráno: zůstatek na autě bez pohybu ${row.staleDays} dní`
+        note: `Namátkově vybráno: ${row.reasons.join(' · ')}`
       }))
       const { error: itemError } = await supabase.from('inventory_audit_items').insert(itemRows)
       if (itemError) throw itemError
       const { data: instruction, error: instructionError } = await supabase
         .from('daily_instructions')
         .insert([{
-          title: `Kontrola zůstatků na vozidle ${getVehicleLabel(vehicleId)}`,
-          message: `Ověř fyzicky vybrané položky, které podle evidence zůstávají na autě dlouho bez pohybu. Inventura #${audit.id}.`,
+          title: `Týdenní namátková inventura ${getVehicleLabel(vehicleId)}`,
+          message: `Spočítej namátkově vybrané položky na autě: malé zůstatky 1-3 ks a položky bez pohybu. Inventura #${audit.id}.`,
           target_type: 'employee',
           target_employee_id: employeeId,
           valid_from: auditDateValue,
@@ -4938,9 +5042,12 @@
       if (!instructionError && instruction?.id) {
         await supabase.from('inventory_audits').update({ instruction_id: instruction.id }).eq('id', audit.id)
       }
-      await loadInventoryV13Overview()
-      autoLoadStatus.className = 'status-line success'
-      autoLoadStatus.textContent = `Cílená inventura #${audit.id} byla založená pro ${rows.length} rizikových položek.`
+      if (!silent) {
+        await loadInventoryV13Overview()
+        autoLoadStatus.className = 'status-line success'
+        autoLoadStatus.textContent = `Týdenní namátková inventura #${audit.id} byla založená pro ${rows.length} položek. Další pro stejné auto půjde založit až další týden.`
+      }
+      return { created: true, auditId: audit.id, count: rows.length }
     }
     function getVehicleAuditProductRows() {
       const query = normalizeText(vehicleAuditSearch?.value || '')
@@ -9436,7 +9543,7 @@
         autoLoadStatus.className = 'status-line error'
       } finally {
         autoLoadCreateAuditsBtn.disabled = false
-        autoLoadCreateAuditsBtn.textContent = 'Vytvořit inventury pro rizika'
+        autoLoadCreateAuditsBtn.textContent = 'Týdenní namátková inventura'
       }
     })
     document.getElementById('closeItemModalBtn').addEventListener('click', closeItemModal)
