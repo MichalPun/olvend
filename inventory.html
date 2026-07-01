@@ -2354,6 +2354,28 @@
       if (!recipe) return []
       return recipeItemsV13.filter((item) => String(item.recipe_id) === String(recipe.id))
     }
+    function isTrisEliteCoffeeProduct(product) {
+      const name = normalizeText(product?.name || '')
+      return name.includes('barbera tris') || name.includes('ove elite')
+    }
+    function getRecipeIngredientEquivalentProducts(product) {
+      if (!product) return []
+      if (!isTrisEliteCoffeeProduct(product)) return [product]
+      return productsV13
+        .filter(isTrisEliteCoffeeProduct)
+        .sort((a, b) => {
+          const aElite = normalizeText(a.name).includes('ove elite')
+          const bElite = normalizeText(b.name).includes('ove elite')
+          if (aElite !== bElite) return aElite ? -1 : 1
+          return normalizeText(a.name).localeCompare(normalizeText(b.name), 'cs')
+        })
+    }
+    function getStockLocationAvailableQuantity(stockLocationId, productId) {
+      if (!stockLocationId || !productId) return null
+      return stockBalancesV13
+        .filter((balance) => String(balance.stock_location_id) === String(stockLocationId) && String(balance.product_id) === String(productId))
+        .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+    }
     function renderProductRecipeRows(rows = []) {
       const ingredients = getRecipeIngredients()
       productRecipeRows.innerHTML = rows.map((row) => {
@@ -6779,10 +6801,14 @@
     }
     function getSimpleTransferAvailableQuantity(productId) {
       const sourceLocationId = getSimpleTransferSourceLocationId()
+      return getStockLocationAvailableQuantity(sourceLocationId, productId)
+    }
+    function getSimpleTransferEquivalentAvailableQuantity(productId) {
+      const sourceLocationId = getSimpleTransferSourceLocationId()
       if (!sourceLocationId || !productId) return null
-      return stockBalancesV13
-        .filter((balance) => String(balance.stock_location_id) === String(sourceLocationId) && String(balance.product_id) === String(productId))
-        .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      return getRecipeIngredientEquivalentProducts(product)
+        .reduce((sum, candidate) => Number((sum + Number(getStockLocationAvailableQuantity(sourceLocationId, candidate.id) || 0)).toFixed(3)), 0)
     }
     function getRecipeConsumptionRequirements(productId, quantity) {
       const recipeItems = getRecipeItemsForProduct(productId)
@@ -6791,7 +6817,8 @@
           const ingredient = productsV13.find((product) => String(product.id) === String(item.product_id))
           if (!ingredient) return null
           const required = Number((Number(quantity || 0) * convertRecipeQuantityToBase(item.quantity, item.unit, ingredient.base_unit)).toFixed(3))
-          return required > 0 ? { product: ingredient, quantity: required } : null
+          const equivalents = getRecipeIngredientEquivalentProducts(ingredient)
+          return required > 0 ? { product: ingredient, quantity: required, equivalents } : null
         })
         .filter(Boolean)
     }
@@ -6800,7 +6827,9 @@
       if (!requirements.length) return null
       const shortages = requirements
         .map((requirement) => {
-          const available = getSimpleTransferAvailableQuantity(requirement.product.id)
+          const available = requirement.equivalents?.length > 1
+            ? getSimpleTransferEquivalentAvailableQuantity(requirement.product.id)
+            : getSimpleTransferAvailableQuantity(requirement.product.id)
           const missing = available == null ? 0 : Number((requirement.quantity - available).toFixed(3))
           return { ...requirement, available, missing }
         })
@@ -6809,10 +6838,13 @@
         const first = shortages[0]
         const unit = first.product.base_unit || 'ks'
         if (first.available == null) return { cls: 'warn', label: 'Receptura', note: 'Vyber zdroj', missing: 0 }
+        const productLabel = first.equivalents?.length > 1
+          ? first.equivalents.map((product) => product.name).join(' + ')
+          : first.product.name
         return {
           cls: 'bad',
           label: 'Receptura',
-          note: `Chybí ${first.product.name}: ${formatQuantityValue(first.missing, unit)}`,
+          note: `Chybí ${productLabel}: ${formatQuantityValue(first.missing, unit)}`,
           missing: first.missing,
           available: first.available
         }
@@ -8097,20 +8129,36 @@
         if (!ingredient) continue
         const consumedQuantity = Number((quantity * convertRecipeQuantityToBase(item.quantity, item.unit, ingredient.base_unit)).toFixed(3))
         if (consumedQuantity <= 0) continue
-        const ingredientMovements = await moveStockPreservingBatches({
-          productId: Number(ingredient.id),
-          quantity: consumedQuantity,
-          fromStockLocationId,
-          toStockLocationId: null,
-          movementType: 'consumption',
-          unitPrice: getRecipeBaseUnitCost(ingredient.id) || Number(ingredient.purchase_price || 0) || null,
-          referenceType: 'manual_sale',
-          referenceId,
-          note: [note, `spotřeba receptury ${soldProduct.name}`].filter(Boolean).join(' · ') || null,
-          allowNegative,
-          applyBalances
-        })
-        movements.push(...ingredientMovements)
+        let remainingQuantity = consumedQuantity
+        const candidates = getRecipeIngredientEquivalentProducts(ingredient)
+        for (const candidate of candidates) {
+          if (remainingQuantity <= 0.0001) break
+          const candidateAvailable = getStockLocationAvailableQuantity(fromStockLocationId, candidate.id)
+          const isLastCandidate = candidate === candidates[candidates.length - 1]
+          const candidateQuantity = allowNegative && isLastCandidate
+            ? remainingQuantity
+            : Math.min(Number(candidateAvailable || 0), remainingQuantity)
+          if (candidateQuantity <= 0.0001) continue
+          const ingredientMovements = await moveStockPreservingBatches({
+            productId: Number(candidate.id),
+            quantity: Number(candidateQuantity.toFixed(3)),
+            fromStockLocationId,
+            toStockLocationId: null,
+            movementType: 'consumption',
+            unitPrice: getRecipeBaseUnitCost(candidate.id) || Number(candidate.purchase_price || 0) || null,
+            referenceType: 'manual_sale',
+            referenceId,
+            note: [note, `spotřeba receptury ${soldProduct.name}`, String(candidate.id) !== String(ingredient.id) ? `náhrada za ${ingredient.name}` : null].filter(Boolean).join(' · ') || null,
+            allowNegative: allowNegative && isLastCandidate,
+            applyBalances
+          })
+          movements.push(...ingredientMovements)
+          remainingQuantity = Number((remainingQuantity - candidateQuantity).toFixed(3))
+        }
+        if (remainingQuantity > 0.0001) {
+          const label = candidates.length > 1 ? candidates.map((product) => product.name).join(' + ') : ingredient.name
+          throw new Error(`Na zdrojovém místě není dost suroviny pro ${soldProduct.name}: ${label} chybí ${formatQuantityValue(remainingQuantity, ingredient.base_unit || 'ks')}.`)
+        }
       }
       return movements
     }
