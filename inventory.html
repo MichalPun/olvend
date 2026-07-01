@@ -4352,19 +4352,6 @@
         blockedUsageRatio: addRemainderPackage || remainder <= 0.0001 ? 0 : remainderRatio
       }
     }
-    function shouldForceAutoLoadSafetyPackage({ requiredFromNew, packageQty, estimate, projectedVehicleBeforeTarget, tripDemandQty, safetyQty, packagePlan }) {
-      const required = Number(requiredFromNew || 0)
-      const pack = Number(packageQty || 0)
-      const expected = Number(estimate?.expected || 0)
-      if (required <= 0.0001 || pack <= 0 || expected <= 0.0001) return false
-      if (Number(packagePlan?.approvedQty || 0) > 0 || Number(packagePlan?.blockedQty || 0) <= 0) return false
-      const projectedAfterTripWithoutLoad = Number((Number(projectedVehicleBeforeTarget || 0) - Number(tripDemandQty || 0)).toFixed(3))
-      const expectedPackageRatio = Number((expected / pack).toFixed(3))
-      const requiredPackageRatio = Number((required / pack).toFixed(3))
-      const reserveFloor = Math.max(0, Number(safetyQty || 0))
-      return projectedAfterTripWithoutLoad < reserveFloor
-        && (expectedPackageRatio >= 0.5 || requiredPackageRatio >= 0.5 || projectedAfterTripWithoutLoad < 0)
-    }
     async function upsertAutoLoadDeferredNeed(row, vehicleId, targetDate) {
       const existing = getAutoLoadDeferredNeed(vehicleId, row.product.id)
       const requiredQuantity = Number(row.deferredAfterLoadQty ?? row.requiredFromNew ?? 0)
@@ -4516,22 +4503,7 @@
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
-          let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
-          if (shouldForceAutoLoadSafetyPackage({ requiredFromNew, packageQty, estimate, projectedVehicleBeforeTarget, tripDemandQty, safetyQty, packagePlan })) {
-            packagePlan = {
-              ...packagePlan,
-              packageCount: 1,
-              suggestedQty: packageQty,
-              approvedPackageCount: 1,
-              approvedQty: packageQty,
-              usageRatio: packageQty > 0 ? Number((Math.min(requiredFromNew, packageQty) / packageQty).toFixed(3)) : 0,
-              deferredAfterLoadQty: 0,
-              blockedPackageCount: 0,
-              blockedQty: 0,
-              blockedUsageRatio: 0,
-              safetyOverride: true
-            }
-          }
+          const packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
           const packageCount = packagePlan.packageCount
           const suggestedQty = packagePlan.suggestedQty
           const expectedUseFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
@@ -4571,9 +4543,6 @@
           if (estimate.samples <= 0) reasons.push('bez historického vyskladnění')
           if (packagePlan.blockedQty > 0) {
             reasons.push(`další balení nenakládat, zbytek ${formatQuantityValue(deferredAfterLoadQty || requiredFromNew, product.base_unit || 'ks')} by využil jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} % balení`)
-          }
-          if (packagePlan.safetyOverride) {
-            reasons.push('povoleno kvůli rychlé spotřebě, jinak by auto po jízdě spadlo pod rezervu')
           }
           if (deferredAfterLoadQty > 0.0001 && approvedQty > 0) reasons.push(`zbytek ${formatQuantityValue(deferredAfterLoadQty, product.base_unit || 'ks')} zůstane odložený`)
           if (warehouseQty < approvedQty - 0.0001) reasons.push('na skladě není dost kusů')
@@ -4695,6 +4664,7 @@
     }
     async function generateAutoLoadRecommendation() {
       syncAutoLoadWarehouseFromVehicle()
+      await loadMobilePickRequests()
       autoLoadRows = buildAutoLoadRows()
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
