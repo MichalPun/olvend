@@ -4526,10 +4526,33 @@
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
-          const packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
+          const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
+          let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
+          const tripUsageRatio = packagePlan.approvedQty > 0
+            ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
+            : Number(packagePlan.usageRatio || 0)
+          if (packagePlan.approvedQty > 0 && tripUsageRatio + 0.0001 < minRatio) {
+            packagePlan = {
+              ...packagePlan,
+              packageCount: 0,
+              suggestedQty: 0,
+              approvedPackageCount: 0,
+              approvedQty: 0,
+              usageRatio: tripUsageRatio,
+              deferredAfterLoadQty: requiredFromNew,
+              blockedPackageCount: Math.max(Number(packagePlan.packageCount || 0), 1),
+              blockedQty: packagePlan.suggestedQty || packageQty,
+              blockedUsageRatio: tripUsageRatio,
+              blockedByTripUsage: true
+            }
+          } else if (packagePlan.approvedQty > 0) {
+            packagePlan = {
+              ...packagePlan,
+              usageRatio: tripUsageRatio
+            }
+          }
           const packageCount = packagePlan.packageCount
           const suggestedQty = packagePlan.suggestedQty
-          const expectedUseFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const usageRatio = packagePlan.usageRatio
           const lastMovement = getLastVehicleProductMovement(vehicleLocation.id, product.id)
           const lastMovementDate = movementLocalDate(lastMovement?.created_at)
@@ -4564,7 +4587,9 @@
             reasons.push(`chybí ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, ale v kartě zásoby není velikost balení`)
           }
           if (estimate.samples <= 0) reasons.push('bez historického vyskladnění')
-          if (packagePlan.blockedQty > 0) {
+          if (packagePlan.blockedByTripUsage) {
+            reasons.push(`nenakládat, z nového balení by se na jízdě využilo jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} %`)
+          } else if (packagePlan.blockedQty > 0) {
             reasons.push(`další balení nenakládat, zbytek ${formatQuantityValue(deferredAfterLoadQty || requiredFromNew, product.base_unit || 'ks')} by využil jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} % balení`)
           }
           if (deferredAfterLoadQty > 0.0001 && approvedQty > 0) reasons.push(`zbytek ${formatQuantityValue(deferredAfterLoadQty, product.base_unit || 'ks')} zůstane odložený`)
