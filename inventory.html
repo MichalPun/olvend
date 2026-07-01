@@ -4066,6 +4066,9 @@
       if (kind === 'ingredient' && unit === 'kg' && packageQty >= 100) return 1
       return packageQty
     }
+    function isAutoLoadWaterStockoutCandidate(product) {
+      return getProductKind(product) === 'water_product' || product?.product_category === 'water_product'
+    }
     function getLocationQuantity(stockLocationId, productId) {
       return stockBalancesV13
         .filter((balance) => String(balance.stock_location_id) === String(stockLocationId) && String(balance.product_id) === String(productId))
@@ -4110,6 +4113,15 @@
       return stockMovementsV13.some((movement) => String(movement.from_stock_location_id || '') === String(vehicleLocationId)
         && movement.movement_type === 'fill_machine'
         && movementLocalDate(movement.created_at) === dateValue)
+    }
+    function getAutoLoadLastVehicleFillDate(vehicleLocationId, targetDate) {
+      return stockMovementsV13
+        .filter((movement) => String(movement.from_stock_location_id || '') === String(vehicleLocationId)
+          && movement.movement_type === 'fill_machine'
+          && movementLocalDate(movement.created_at) < targetDate)
+        .map((movement) => movementLocalDate(movement.created_at))
+        .filter(Boolean)
+        .sort((a, b) => b.localeCompare(a))[0] || ''
     }
     function estimateAutoLoadTripDemand(vehicleLocationId, productId, historyDays, targetDate) {
       const rows = getAutoLoadHistoryRows(vehicleLocationId, productId, historyDays, targetDate)
@@ -4272,6 +4284,28 @@
     function getAutoLoadGroupPendingLoadQuantity(vehicleId, targetDate, product) {
       return getAutoLoadGroupMembers(product)
         .reduce((sum, member) => Number((sum + getPendingAutoLoadQuantity(vehicleId, targetDate, member.id)).toFixed(3)), 0)
+    }
+    function getAutoLoadGroupConfirmedLoadQuantity(vehicleId, dateValue, product) {
+      const requestIds = new Set(mobileStockRequests
+        .filter((request) => ['vehicle_order', 'vehicle_load'].includes(request.request_type))
+        .filter((request) => request.status === 'confirmed')
+        .filter((request) => String(request.vehicle_id || '') === String(vehicleId))
+        .filter((request) => (request.requested_for_date || '').slice(0, 10) === dateValue)
+        .map((request) => String(request.id)))
+      if (!requestIds.size) return 0
+      const memberIds = new Set(getAutoLoadGroupMembers(product).map((member) => String(member.id)))
+      return mobileStockRequestItems
+        .filter((item) => requestIds.has(String(item.request_id)))
+        .filter((item) => memberIds.has(String(item.product_id || '')))
+        .reduce((sum, item) => Number((sum + getMobilePickQuantity(item)).toFixed(3)), 0)
+    }
+    function getAutoLoadWaterStockoutBonusQty(vehicleLocationId, vehicleId, targetDate, product, currentVehicleQty, packageQty) {
+      if (!isAutoLoadWaterStockoutCandidate(product)) return 0
+      if (Number(currentVehicleQty || 0) > 0.0001 || Number(packageQty || 0) <= 0) return 0
+      const lastTripDate = getAutoLoadLastVehicleFillDate(vehicleLocationId, targetDate)
+      if (!lastTripDate) return 0
+      const loadedQty = getAutoLoadGroupConfirmedLoadQuantity(vehicleId, lastTripDate, product)
+      return loadedQty > 0.0001 ? Number(packageQty || 0) : 0
     }
     function getAutoLoadGroupDeferredNeeds(vehicleId, product) {
       const memberIds = new Set(getAutoLoadGroupMembers(product).map((member) => String(member.id)))
@@ -4536,7 +4570,8 @@
           const deferredQty = deferredSummary.carryover
           const sameTargetDeferredQty = deferredSummary.forTarget
           const tripDemandQty = Number((estimate.expected + deferredQty).toFixed(3))
-          const targetNeedQty = Number((tripDemandQty + safetyQty).toFixed(3))
+          const stockoutBonusQty = getAutoLoadWaterStockoutBonusQty(vehicleLocation.id, vehicleId, targetDate, product, currentVehicleQty, packageQty)
+          const targetNeedQty = Number((tripDemandQty + safetyQty + stockoutBonusQty).toFixed(3))
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
@@ -4545,7 +4580,7 @@
           const tripUsageRatio = packagePlan.approvedQty > 0
             ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
             : Number(packagePlan.usageRatio || 0)
-          if (packagePlan.approvedQty > 0 && tripUsageRatio + 0.0001 < minRatio) {
+          if (packagePlan.approvedQty > 0 && stockoutBonusQty <= 0.0001 && tripUsageRatio + 0.0001 < minRatio) {
             packagePlan = {
               ...packagePlan,
               packageCount: 0,
@@ -4587,6 +4622,9 @@
           }
           if (safetyQty > 0.0001) {
             reasons.push(`rezerva ${formatQuantityValue(safetyQty, product.base_unit || 'ks')}`)
+          }
+          if (stockoutBonusQty > 0.0001) {
+            reasons.push(`balení navíc, po minulé jízdě zůstalo auto na 0`)
           }
           if (deferredQty > 0.0001) {
             reasons.push(`z minula odloženo ${formatQuantityValue(deferredQty, product.base_unit || 'ks')}`)
@@ -4637,6 +4675,7 @@
             pendingBeforeTarget,
             projectedVehicleBeforeTarget,
             safetyQty,
+            stockoutBonusQty,
             fixedSafetyQty,
             dynamicSafetyQty,
             tripDemandQty,
@@ -4697,7 +4736,7 @@
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.groupLabel || row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.groupLabel ? row.product.name : '', row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, `${row.samples} vzorků`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml([row.pendingLoadQty > 0 ? `nachystáno ${formatQuantityValue(row.pendingLoadQty, unit)}` : '', row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu'].filter(Boolean).join(' · '))}</span></td>
-            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([row.pendingBeforeTarget?.pending > 0 ? `čeká ${formatQuantityValue(row.pendingBeforeTarget.pending, unit)}` : '', row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)}` : '', row.safetyQty > 0 ? `rezerva ${formatQuantityValue(row.safetyQty, unit)}` : '', `donaložit potřeba ${formatQuantityValue(row.requiredFromNew, unit)}`].filter(Boolean).join(' · '))}</span></td>
+            <td data-label="Odhad jízdy"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([row.pendingBeforeTarget?.pending > 0 ? `čeká ${formatQuantityValue(row.pendingBeforeTarget.pending, unit)}` : '', row.deferredQty > 0 ? `odloženo ${formatQuantityValue(row.deferredQty, unit)}` : '', row.safetyQty > 0 ? `rezerva ${formatQuantityValue(row.safetyQty, unit)}` : '', row.stockoutBonusQty > 0 ? `bonus po nule ${formatQuantityValue(row.stockoutBonusQty, unit)}` : '', `donaložit potřeba ${formatQuantityValue(row.requiredFromNew, unit)}`].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
