@@ -4367,11 +4367,12 @@
         return summary
       }, { carryover: 0, forTarget: 0 })
     }
-    function isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocationId, targetDate, currentVehicleQty, need) {
+    function isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocationId, targetDate, currentVehicleQty, need, pendingBeforeTarget = null) {
       const deferredDate = (need?.last_deferred_for_date || '').slice(0, 10)
-      if (!deferredDate || deferredDate >= targetDate) return false
+      if (!deferredDate || deferredDate > targetDate) return false
       if (Number(currentVehicleQty || 0) <= 0.0001) return false
-      return hasAutoLoadVehicleFillOnDate(vehicleLocationId, deferredDate)
+      if (Number(pendingBeforeTarget?.pending || 0) > 0.0001) return false
+      return Boolean(getAutoLoadLastVehicleFillDate(vehicleLocationId, targetDate))
     }
     function estimateAutoLoadGroupTripDemand(vehicleLocationId, product, historyDays, targetDate) {
       const members = getAutoLoadGroupMembers(product)
@@ -4603,7 +4604,7 @@
           const dynamicSafetyQty = Number((Number(estimate.expected || 0) * AUTO_LOAD_DEFAULT_RESERVE_RATIO).toFixed(3))
           const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
           const allDeferredNeeds = getAutoLoadGroupDeferredNeeds(vehicleId, product)
-          const resolvedDeferredNeeds = allDeferredNeeds.filter((need) => isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocation.id, targetDate, currentVehicleQty, need))
+          const resolvedDeferredNeeds = allDeferredNeeds.filter((need) => isAutoLoadDeferredNeedResolvedByActualTrip(vehicleLocation.id, targetDate, currentVehicleQty, need, pendingBeforeTarget))
           const resolvedDeferredNeedIds = new Set(resolvedDeferredNeeds.map((need) => String(need.id)))
           const deferredNeeds = allDeferredNeeds.filter((need) => !resolvedDeferredNeedIds.has(String(need.id)))
           const deferredNeed = deferredNeeds.find((item) => String(item.product_id) === String(product.id)) || deferredNeeds[0] || null
@@ -4615,9 +4616,11 @@
           const targetNeedQty = Number((tripDemandQty + safetyQty + stockoutBonusQty).toFixed(3))
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
+          const canCarryDeferredNeed = pendingBeforeTarget.pending > 0.0001 || projectedVehicleBeforeTarget <= 0.0001
           const minRatio = Number(profile.min_trip_usage_ratio ?? 0.667)
           const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
           let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
+          let skippedDeferredCarry = false
           const tripUsageRatio = packagePlan.approvedQty > 0
             ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
             : Number(packagePlan.usageRatio || 0)
@@ -4640,6 +4643,13 @@
               ...packagePlan,
               usageRatio: tripUsageRatio
             }
+          }
+          if (!canCarryDeferredNeed && Number(packagePlan.deferredAfterLoadQty || 0) > 0.0001) {
+            packagePlan = {
+              ...packagePlan,
+              deferredAfterLoadQty: 0
+            }
+            skippedDeferredCarry = true
           }
           const packageCount = packagePlan.packageCount
           const suggestedQty = packagePlan.suggestedQty
@@ -4687,6 +4697,9 @@
             reasons.push(`nenakládat, z nového balení by se na jízdě využilo jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} %`)
           } else if (packagePlan.blockedQty > 0) {
             reasons.push(`další balení nenakládat, zbytek ${formatQuantityValue(deferredAfterLoadQty || requiredFromNew, product.base_unit || 'ks')} by využil jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} % balení`)
+          }
+          if (skippedDeferredCarry) {
+            reasons.push('odklad nezakládám, po skutečné jízdě zůstává položka na autě')
           }
           if (deferredAfterLoadQty > 0.0001 && approvedQty > 0) reasons.push(`zbytek ${formatQuantityValue(deferredAfterLoadQty, product.base_unit || 'ks')} zůstane odložený`)
           if (warehouseQty < approvedQty - 0.0001) reasons.push('na skladě není dost kusů')
