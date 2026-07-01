@@ -4106,6 +4106,11 @@
           && movementLocalDate(movement.created_at) === dateValue)
         .reduce((sum, movement) => Number((sum + Number(movement.quantity_base_units || 0)).toFixed(3)), 0)
     }
+    function hasAutoLoadVehicleFillOnDate(vehicleLocationId, dateValue) {
+      return stockMovementsV13.some((movement) => String(movement.from_stock_location_id || '') === String(vehicleLocationId)
+        && movement.movement_type === 'fill_machine'
+        && movementLocalDate(movement.created_at) === dateValue)
+    }
     function estimateAutoLoadTripDemand(vehicleLocationId, productId, historyDays, targetDate) {
       const rows = getAutoLoadHistoryRows(vehicleLocationId, productId, historyDays, targetDate)
       if (!rows.length) return { expected: 0, samples: 0, source: 'bez historie' }
@@ -4146,7 +4151,7 @@
       if (!dates.length) return { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 }
       return dates.reduce((summary, dateValue) => {
         const actualQty = getAutoLoadActualMachineFillQty(vehicleLocationId, productId, dateValue)
-        if (actualQty > 0.0001) {
+        if (actualQty > 0.0001 || hasAutoLoadVehicleFillOnDate(vehicleLocationId, dateValue)) {
           summary.actual = Number((summary.actual + actualQty).toFixed(3))
           summary.coveredDates += 1
           return summary
@@ -4464,6 +4469,24 @@
         }
       }
     }
+    async function refreshAutoLoadCalculationData() {
+      const [balancesResult, fillMovementsResult, deferredNeedsResult] = await Promise.all([
+        supabase.from('stock_location_balances').select('id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at, inventory_batches(id, lot_code, best_before_date, use_by_date, received_at)').order('updated_at', { ascending: false }),
+        supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('movement_type', 'fill_machine').order('created_at', { ascending: false }).limit(10000),
+        supabase.from('vehicle_auto_load_deferred_needs').select('id, vehicle_id, product_id, quantity_base_units, unit, status, first_deferred_for_date, last_deferred_for_date, last_reason, last_scope, last_min_trip_usage_ratio, last_usage_ratio, note, updated_at').eq('status', 'open')
+      ])
+      if (balancesResult.error || fillMovementsResult.error || deferredNeedsResult.error) {
+        throw balancesResult.error || fillMovementsResult.error || deferredNeedsResult.error
+      }
+      stockBalancesV13 = balancesResult.data ?? []
+      const nonFillMovements = stockMovementsV13.filter((movement) => movement.movement_type !== 'fill_machine')
+      stockMovementsV13 = [
+        ...nonFillMovements,
+        ...(fillMovementsResult.data ?? [])
+      ].filter((movement, index, rows) => rows.findIndex((item) => String(item.id) === String(movement.id)) === index)
+      vehicleAutoLoadDeferredNeeds = deferredNeedsResult.data ?? []
+      await loadMobilePickRequests()
+    }
     function buildAutoLoadRows() {
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
       const vehicleId = Number(autoLoadVehicle?.value || 0)
@@ -4664,7 +4687,7 @@
     }
     async function generateAutoLoadRecommendation() {
       syncAutoLoadWarehouseFromVehicle()
-      await loadMobilePickRequests()
+      await refreshAutoLoadCalculationData()
       autoLoadRows = buildAutoLoadRows()
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
