@@ -371,6 +371,13 @@
     .auto-load-panel .summary-box-value { font-size:22px; }
     .auto-load-actions { margin:12px 0; }
     .auto-load-actions .btn { min-height:40px; padding:9px 13px; border-radius:9px; }
+    .auto-load-audit-preview { margin:10px 0 12px; border:1px solid rgba(147,197,253,0.18); border-radius:8px; background:rgba(59,130,246,0.055); overflow:hidden; }
+    .auto-load-audit-preview[hidden] { display:none; }
+    .auto-load-audit-preview-head { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .auto-load-audit-preview h3 { margin:0; font-size:15px; }
+    .auto-load-audit-preview p { margin:3px 0 0; color:var(--muted); font-size:12px; line-height:1.35; }
+    .auto-load-audit-preview .table-wrap { border:0; border-radius:0; box-shadow:none; }
+    .auto-load-audit-preview .mini-excel-table { min-width:720px; border:0; border-radius:0; }
     .auto-load-table-wrap { margin-top:10px; }
     .auto-load-table-wrap[hidden] { display:none; }
     .auto-load-panel .stock-excel-table { min-width:980px; }
@@ -817,6 +824,28 @@
             <div class="action-row auto-load-actions">
               <button class="btn" type="button" id="autoLoadCreateRequestBtn">Vytvořit nakládku</button>
               <button class="btn secondary" type="button" id="autoLoadCreateAuditsBtn">Týdenní namátková inventura</button>
+            </div>
+            <div class="auto-load-audit-preview" id="autoLoadAuditPreview" hidden>
+              <div class="auto-load-audit-preview-head">
+                <div>
+                  <h3>Co se bude počítat v namátkové inventuře</h3>
+                  <p id="autoLoadAuditPreviewNote">Náhled se zobrazí po výpočtu nakládky.</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="mini-excel-table">
+                  <thead>
+                    <tr>
+                      <th>Položka</th>
+                      <th>Skupina</th>
+                      <th>Na autě</th>
+                      <th>Důvod</th>
+                    </tr>
+                  </thead>
+                  <tbody id="autoLoadAuditPreviewBody"></tbody>
+                </table>
+              </div>
+              <div class="empty-state" id="autoLoadAuditPreviewEmpty" style="display:none;">Pro tento týden není vybraná žádná položka k namátkové inventuře.</div>
             </div>
             <div class="table-wrap auto-load-table-wrap" id="autoLoadTableWrap" hidden>
               <table class="stock-excel-table">
@@ -1796,6 +1825,10 @@
     const autoLoadRowsBody = document.getElementById('autoLoadRowsBody')
     const autoLoadEmpty = document.getElementById('autoLoadEmpty')
     const autoLoadOnlyActionable = document.getElementById('autoLoadOnlyActionable')
+    const autoLoadAuditPreview = document.getElementById('autoLoadAuditPreview')
+    const autoLoadAuditPreviewNote = document.getElementById('autoLoadAuditPreviewNote')
+    const autoLoadAuditPreviewBody = document.getElementById('autoLoadAuditPreviewBody')
+    const autoLoadAuditPreviewEmpty = document.getElementById('autoLoadAuditPreviewEmpty')
 
     let items = []
     let movements = []
@@ -4835,6 +4868,7 @@
       await syncAutoLoadDeferredNeeds(autoLoadRows, vehicleId, targetDate)
       autoLoadRows = buildAutoLoadRows()
       renderAutoLoadRows()
+      renderAutoLoadWeeklyAuditPreview()
     }
     async function createAutoLoadMobileRequest() {
       const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
@@ -4958,6 +4992,34 @@
         .slice(0, AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS)
         .sort((a, b) => normalizeText(a.groupLabel || '').localeCompare(normalizeText(b.groupLabel || ''), 'cs') || normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs'))
     }
+    function renderAutoLoadWeeklyAuditPreview() {
+      if (!autoLoadAuditPreview || !autoLoadAuditPreviewBody || !autoLoadAuditPreviewEmpty) return
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const auditDateValue = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
+      const targetLocation = vehicleId ? getVehicleStockLocationByVehicleId(vehicleId) : null
+      if (!vehicleId || !targetLocation?.id || !autoLoadRows.length) {
+        autoLoadAuditPreview.hidden = true
+        autoLoadAuditPreviewBody.innerHTML = ''
+        return
+      }
+      const { weekStart, weekEnd } = getAutoLoadWeekBounds(auditDateValue)
+      const rows = buildAutoLoadWeeklyAuditCandidates(vehicleId, targetLocation.id, auditDateValue, weekStart)
+      autoLoadAuditPreview.hidden = false
+      if (autoLoadAuditPreviewNote) {
+        autoLoadAuditPreviewNote.textContent = rows.length
+          ? `Náhled pro týden ${weekStart} - ${weekEnd}. Založí se maximálně ${AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS} položek pro ${getVehicleLabel(vehicleId)}.`
+          : `Pro týden ${weekStart} - ${weekEnd} systém nenašel malý zůstatek 1-3 ks ani dlouho stojící zboží.`
+      }
+      autoLoadAuditPreviewBody.innerHTML = rows.map((row) => `
+        <tr>
+          <td data-label="Položka"><strong>${escapeHtml(row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(row.product.sku ? `SKU ${row.product.sku}` : 'Bez SKU')}</span></td>
+          <td data-label="Skupina">${escapeHtml(row.groupLabel || 'Ostatní')}</td>
+          <td data-label="Na autě"><strong>${escapeHtml(formatQuantityValue(row.currentQty, row.unit))}</strong></td>
+          <td data-label="Důvod">${escapeHtml(row.reasons.join(' · '))}</td>
+        </tr>
+      `).join('')
+      autoLoadAuditPreviewEmpty.style.display = rows.length ? 'none' : 'block'
+    }
     async function findExistingAutoLoadWeeklyAudit(vehicleId, weekStart, weekEnd) {
       const marker = `${AUTO_LOAD_WEEKLY_AUDIT_MARKER}:${vehicleId}:${weekStart}`
       const { data, error } = await supabase
@@ -5046,6 +5108,7 @@
         await loadInventoryV13Overview()
         autoLoadStatus.className = 'status-line success'
         autoLoadStatus.textContent = `Týdenní namátková inventura #${audit.id} byla založená pro ${rows.length} položek. Další pro stejné auto půjde založit až další týden.`
+        renderAutoLoadWeeklyAuditPreview()
       }
       return { created: true, auditId: audit.id, count: rows.length }
     }
@@ -6489,6 +6552,7 @@
         renderVehicleAuditProducts()
         renderVehicleAuditList()
         renderAutoLoadRows()
+        renderAutoLoadWeeklyAuditPreview()
         const rows = getStockExcelRows()
         renderStockV13Summary(rows)
         renderStockV13Rows()
@@ -9483,11 +9547,18 @@
     autoLoadVehicle?.addEventListener('change', () => {
       if (autoLoadWarehouse) autoLoadWarehouse.value = ''
       syncAutoLoadWarehouseFromVehicle()
+      autoLoadRows = []
+      renderAutoLoadRows()
+      renderAutoLoadWeeklyAuditPreview()
+    })
+    ;[autoLoadDate, autoLoadWarehouse, autoLoadEmployee].forEach((control) => {
+      control?.addEventListener('change', renderAutoLoadWeeklyAuditPreview)
     })
     autoLoadScope?.addEventListener('change', async () => {
       if (!autoLoadVehicle?.value || !autoLoadWarehouse?.value) {
         autoLoadRows = []
         renderAutoLoadRows()
+        renderAutoLoadWeeklyAuditPreview()
         if (autoLoadStatus) {
           autoLoadStatus.className = 'status-line'
           autoLoadStatus.textContent = 'Vyber sklad a vozidlo, potom spočítej návrh pro zvolený rozsah.'
@@ -9517,7 +9588,10 @@
       }
     })
     autoLoadRefreshBtn?.addEventListener('click', () => loadInventoryV13Overview())
-    autoLoadOnlyActionable?.addEventListener('change', renderAutoLoadRows)
+    autoLoadOnlyActionable?.addEventListener('change', () => {
+      renderAutoLoadRows()
+      renderAutoLoadWeeklyAuditPreview()
+    })
     autoLoadCreateRequestBtn?.addEventListener('click', async () => {
       try {
         autoLoadCreateRequestBtn.disabled = true
