@@ -5127,11 +5127,12 @@
         if (['draft', 'assigned'].includes(existingAudit.status)) {
           const addedCount = await addMissingAutoLoadWeeklyAuditItems(existingAudit.id, targetLocation, rows)
           if (!silent) {
+            await loadInventoryV13Overview()
             autoLoadStatus.className = 'status-line success'
             autoLoadStatus.textContent = addedCount
               ? `Týdenní namátková inventura #${existingAudit.id} už existuje. Doplnil jsem ${addedCount} chybějících příchutí / položek do stejné inventury.`
               : `Týdenní namátková inventura #${existingAudit.id} už existuje a obsahuje všechny aktuální položky pro tento týden.`
-            await loadInventoryV13Overview()
+            openVehicleAuditDetail(existingAudit.id)
           }
           return { created: false, existingId: existingAudit.id, addedCount }
         }
@@ -5188,6 +5189,7 @@
         autoLoadStatus.className = 'status-line success'
         autoLoadStatus.textContent = `Týdenní namátková inventura #${audit.id} byla založená pro ${rows.length} položek. Další pro stejné auto půjde založit až další týden.`
         renderAutoLoadWeeklyAuditPreview()
+        openVehicleAuditDetail(audit.id)
       }
       return { created: true, auditId: audit.id, count: rows.length }
     }
@@ -5304,20 +5306,93 @@
     function getVehicleAuditItems(auditId) {
       return vehicleInventoryAuditItems.filter((item) => String(item.audit_id) === String(auditId))
     }
+    function getVehicleAuditStatusLabel(status) {
+      return {
+        assigned: 'Zadáno operátorce',
+        counted: 'Spočítáno',
+        transfer_ready: 'Převodky potvrzené',
+        evaluated: 'Vyhodnoceno',
+        closed: 'Uzavřeno',
+        cancelled: 'Zrušeno'
+      }[status] || status || 'Draft'
+    }
+    function getVehicleAuditStatusBadgeClass(status) {
+      if (status === 'closed' || status === 'evaluated' || status === 'transfer_ready' || status === 'counted') return 'good'
+      if (status === 'cancelled') return 'bad'
+      return 'warn'
+    }
+    function openVehicleAuditDetail(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) {
+        auditStatus.textContent = 'Inventura už není v načteném seznamu. Zkus obnovit data.'
+        auditStatus.className = 'status-line error'
+        return
+      }
+      const items = getVehicleAuditItems(auditId)
+      const counted = items.filter((item) => item.counted_at).length
+      const bookTotal = Number(audit.book_quantity_total || items.reduce((sum, item) => sum + Number(item.book_quantity || 0), 0))
+      const countedTotal = Number(audit.counted_quantity_total || items.reduce((sum, item) => sum + Number(item.counted_quantity || 0), 0))
+      const diffTotal = Number(audit.difference_quantity_total || items.reduce((sum, item) => sum + Number(item.difference_quantity || 0), 0))
+      const valueTotal = Number(audit.difference_value_total || items.reduce((sum, item) => sum + Number(item.difference_value || 0), 0))
+      currentDetailContext = { type: 'audit', auditId }
+      detailMoveBtn.style.display = 'none'
+      detailEditBtn.style.display = 'none'
+      detailModalTitle.textContent = `Inventura #${audit.id}`
+      detailModalContent.innerHTML = `
+        <div class="detail-spreadsheet">
+          <section class="detail-spreadsheet-title">
+            <div>
+              <h4>${escapeHtml(audit.scope_type === 'warehouse' ? `Inventura skladu #${audit.id}` : `Inventura vozidla #${audit.id}`)}</h4>
+              <p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit), getVehicleAuditEmployeeLabel(audit.assigned_employee_id)].filter(Boolean).join(' · '))}</p>
+            </div>
+            <span class="badge ${escapeHtml(getVehicleAuditStatusBadgeClass(audit.status))}">${escapeHtml(getVehicleAuditStatusLabel(audit.status))}</span>
+          </section>
+          <section class="detail-sheet-section">
+            <h5>Souhrn inventury</h5>
+            ${renderDetailSheetCells([
+              { label: 'Položky', value: `${counted}/${items.length}`, note: counted === items.length ? 'Všechny fyzické počty jsou uložené.' : 'Čeká na dopočítání operátorkou.' },
+              { label: 'Účetní stav', value: bookTotal.toFixed(2), note: 'Stav podle evidence při založení / vyhodnocení.' },
+              { label: 'Skutečnost', value: countedTotal.toFixed(2), note: counted ? 'Součet uložených fyzických počtů.' : 'Zatím bez fyzických počtů.' },
+              { label: 'Rozdíl', value: diffTotal.toFixed(2), note: formatStockMoney(valueTotal) },
+              { label: 'Stav', value: getVehicleAuditStatusLabel(audit.status), note: audit.closed_at ? `Uzavřeno ${new Date(audit.closed_at).toLocaleString('cs-CZ')}` : 'Inventura je stále dohledatelná v přehledu.' },
+              { label: 'Poznámka', value: audit.note || 'Bez poznámky', note: 'Interní informace k inventuře.' }
+            ])}
+          </section>
+          <section class="detail-sheet-section">
+            <h5>Položky k počítání</h5>
+            ${renderDetailTable([
+              { label: 'Produkt', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', item.note || ''].filter(Boolean).join(' · ') || 'Bez poznámky')}</span>`
+              } },
+              { label: 'Evidence', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<strong>${escapeHtml(formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks'))}</strong>`
+              } },
+              { label: 'Spočítáno', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return item.counted_at ? `<strong>${escapeHtml(formatQuantityValue(item.counted_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(new Date(item.counted_at).toLocaleString('cs-CZ'))}</span>` : '<span class="subtext">Čeká na operátorku</span>'
+              } },
+              { label: 'Rozdíl', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return item.counted_at || ['evaluated', 'closed'].includes(audit.status)
+                  ? `<strong>${escapeHtml(formatQuantityValue(item.difference_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(formatStockMoney(item.difference_value || 0))}</span>`
+                  : '<span class="subtext">Zatím bez rozdílu</span>'
+              } },
+              { label: 'Poznámka počtu', render: (item) => `<span>${escapeHtml(item.counted_note || '—')}</span>` }
+            ], items, 'Inventura zatím nemá žádné položky.')}
+          </section>
+        </div>
+      `
+      openDetailModal()
+    }
     function renderVehicleAuditList() {
       if (!vehicleAuditListBody) return
       vehicleAuditListEmpty.style.display = vehicleInventoryAudits.length ? 'none' : 'block'
       vehicleAuditListBody.innerHTML = vehicleInventoryAudits.map((audit) => {
         const items = getVehicleAuditItems(audit.id)
         const counted = items.filter((item) => item.counted_at).length
-        const statusLabel = {
-          assigned: 'Zadáno operátorce',
-          counted: 'Spočítáno',
-          transfer_ready: 'Převodky potvrzené',
-          evaluated: 'Vyhodnoceno',
-          closed: 'Uzavřeno',
-          cancelled: 'Zrušeno'
-        }[audit.status] || audit.status || 'Draft'
+        const statusLabel = getVehicleAuditStatusLabel(audit.status)
         const canEvaluate = ['counted', 'transfer_ready'].includes(audit.status)
           && items.length > 0
           && counted === items.length
@@ -5328,10 +5403,11 @@
           <tr>
             <td data-label="Inventura"><strong>#${escapeHtml(String(audit.id))} · ${escapeHtml(audit.audit_date || '')}</strong><span class="subtext">${escapeHtml(audit.note || 'Bez poznámky')}</span></td>
             <td data-label="Místo / operátor"><strong>${escapeHtml(getAuditTargetLabel(audit))}</strong><span class="subtext">${escapeHtml(getVehicleAuditEmployeeLabel(audit.assigned_employee_id))}</span></td>
-            <td data-label="Stav"><span class="badge ${audit.status === 'closed' ? 'green' : audit.status === 'evaluated' ? 'blue' : 'yellow'}">${escapeHtml(statusLabel)}</span></td>
+            <td data-label="Stav"><span class="badge ${escapeHtml(getVehicleAuditStatusBadgeClass(audit.status))}">${escapeHtml(statusLabel)}</span></td>
             <td data-label="Souhrn"><strong>${escapeHtml(String(counted))}/${escapeHtml(String(items.length))} řádků</strong><span class="subtext">${missingCounts ? 'Chybí uložené fyzické počty položek' : `Rozdíl ${formatQuantityValue(audit.difference_quantity_total || 0, 'ks')} · ${formatStockMoney(audit.difference_value_total || 0)}`}</span></td>
             <td data-label="Akce">
               <div class="action-row">
+                <button class="btn secondary" type="button" data-vehicle-audit-action="open" data-audit-id="${escapeHtml(String(audit.id))}">Otevřít</button>
                 ${canEvaluate ? `<button class="btn secondary" type="button" data-vehicle-audit-action="evaluate" data-audit-id="${escapeHtml(String(audit.id))}">${audit.scope_type === 'warehouse' ? 'Vyhodnotit' : 'Převodky hotové, vyhodnotit'}</button>` : ''}
                 ${canClose ? `<button class="btn" type="button" data-vehicle-audit-action="close" data-audit-id="${escapeHtml(String(audit.id))}">Dorovnat a uzavřít</button>` : ''}
                 ${canPrint ? `<button class="btn secondary" type="button" data-vehicle-audit-action="print" data-audit-id="${escapeHtml(String(audit.id))}">Protokol</button>` : ''}
@@ -5411,6 +5487,7 @@
       await loadInventoryV13Overview()
       auditStatus.textContent = `${scope === 'warehouse' ? 'Inventura skladu' : 'Inventura vozidla'} #${audit.id} je založená a propsaná do Pokynů dne.`
       auditStatus.className = 'status-line success'
+      openVehicleAuditDetail(audit.id)
     }
     async function evaluateVehicleInventoryAudit(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
@@ -6995,6 +7072,8 @@
       currentDetailContext = null
       detailModalContent.innerHTML = ''
       detailModalTitle.textContent = 'Detail zásoby'
+      detailMoveBtn.style.display = ''
+      detailEditBtn.style.display = ''
     }
     function openBagettePilotModal(mode) {
       bagettePilotMode = mode
@@ -9584,6 +9663,10 @@
       if (!button) return
       try {
         button.disabled = true
+        if (button.dataset.vehicleAuditAction === 'open') {
+          openVehicleAuditDetail(button.dataset.auditId)
+          return
+        }
         if (button.dataset.vehicleAuditAction === 'print') {
           printAuditProtocol(vehicleAuditProtocol(button.dataset.auditId))
           return
