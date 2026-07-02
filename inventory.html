@@ -4330,6 +4330,13 @@
         .filter((item) => item.active !== false && group.matches(item))
         .sort((a, b) => normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs') || Number(a.id || 0) - Number(b.id || 0))
     }
+    function getAutoLoadAuditGroupMembers(product, vehicleLocationId) {
+      const group = getAutoLoadFlavorGroup(product)
+      if (!group) return [product]
+      return productsV13
+        .filter((item) => group.matches(item) && (item.active !== false || getLocationQuantity(vehicleLocationId, item.id) > 0.0001))
+        .sort((a, b) => normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs') || Number(a.id || 0) - Number(b.id || 0))
+    }
     function isAutoLoadGroupRepresentative(product) {
       const group = getAutoLoadFlavorGroup(product)
       if (!group) return true
@@ -4949,6 +4956,48 @@
         return next >>> 0
       }, 2166136261)
     }
+    function pushUniqueReason(reasons, reason) {
+      if (reason && !reasons.includes(reason)) reasons.push(reason)
+    }
+    function expandAutoLoadWeeklyAuditFlavorGroups(rows, vehicleId, vehicleLocationId, weekStart, scope) {
+      const expanded = new Map()
+      const addRow = (row) => {
+        const key = String(row.product.id)
+        const existing = expanded.get(key)
+        if (existing) {
+          row.reasons.forEach((reason) => pushUniqueReason(existing.reasons, reason))
+          existing.priority = Math.min(existing.priority, row.priority)
+          existing.staleDays = Math.max(existing.staleDays, row.staleDays)
+          return
+        }
+        expanded.set(key, { ...row, reasons: [...row.reasons] })
+      }
+      rows.forEach(addRow)
+      rows.forEach((row) => {
+        const group = getAutoLoadFlavorGroup(row.product)
+        if (!group) return
+        const groupReason = `kontrola celé skupiny ${group.label}`
+        getAutoLoadAuditGroupMembers(row.product, vehicleLocationId).forEach((member) => {
+          const key = String(member.id)
+          const currentQty = getLocationQuantity(vehicleLocationId, member.id)
+          if (expanded.has(key)) {
+            pushUniqueReason(expanded.get(key).reasons, groupReason)
+            return
+          }
+          addRow({
+            product: member,
+            currentQty,
+            unit: member.base_unit || row.unit || 'ks',
+            reasons: [groupReason],
+            priority: row.priority + 0.25,
+            staleDays: row.staleDays,
+            groupLabel: getVehicleAuditProductGroupLabel(member),
+            seed: hashAutoLoadAuditSeed(`${vehicleId}:${weekStart}:${scope}:${row.product.id}:group:${member.id}`)
+          })
+        })
+      })
+      return Array.from(expanded.values())
+    }
     function buildAutoLoadWeeklyAuditCandidates(vehicleId, vehicleLocationId, auditDateValue, weekStart) {
       const scope = autoLoadScope?.value || 'vehicle_default'
       const candidates = []
@@ -4987,9 +5036,10 @@
             seed: hashAutoLoadAuditSeed(`${vehicleId}:${weekStart}:${scope}:${product.id}`)
           })
         })
-      return candidates
+      const selectedRows = candidates
         .sort((a, b) => a.priority - b.priority || b.staleDays - a.staleDays || a.seed - b.seed || normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs'))
         .slice(0, AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS)
+      return expandAutoLoadWeeklyAuditFlavorGroups(selectedRows, vehicleId, vehicleLocationId, weekStart, scope)
         .sort((a, b) => normalizeText(a.groupLabel || '').localeCompare(normalizeText(b.groupLabel || ''), 'cs') || normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs'))
     }
     function renderAutoLoadWeeklyAuditPreview() {
@@ -5007,7 +5057,7 @@
       autoLoadAuditPreview.hidden = false
       if (autoLoadAuditPreviewNote) {
         autoLoadAuditPreviewNote.textContent = rows.length
-          ? `Náhled pro týden ${weekStart} - ${weekEnd}. Založí se maximálně ${AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS} položek pro ${getVehicleLabel(vehicleId)}.`
+          ? `Náhled pro týden ${weekStart} - ${weekEnd}. Vybírá se max. ${AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS} spouštěcích položek; příchuťové skupiny se rozbalí celé. Zobrazeno ${rows.length} řádků pro ${getVehicleLabel(vehicleId)}.`
           : `Pro týden ${weekStart} - ${weekEnd} systém nenašel malý zůstatek 1-3 ks ani dlouho stojící zboží.`
       }
       autoLoadAuditPreviewBody.innerHTML = rows.map((row) => `
@@ -5034,6 +5084,34 @@
       if (error) throw error
       return data?.[0] || null
     }
+    function buildAutoLoadAuditItemRows(auditId, targetLocation, rows) {
+      return rows.map((row) => ({
+        audit_id: auditId,
+        stock_location_id: targetLocation.id,
+        product_id: row.product.id,
+        book_quantity: row.currentQty,
+        counted_quantity: 0,
+        difference_quantity: 0,
+        unit_cost: getStockUnitCost(row.product) || null,
+        difference_value: 0,
+        note: `Namátkově vybráno: ${row.reasons.join(' · ')}`
+      }))
+    }
+    async function addMissingAutoLoadWeeklyAuditItems(auditId, targetLocation, rows) {
+      const { data, error } = await supabase
+        .from('inventory_audit_items')
+        .select('product_id')
+        .eq('audit_id', auditId)
+      if (error) throw error
+      const existingProductIds = new Set((data || []).map((item) => String(item.product_id)))
+      const missingRows = rows.filter((row) => !existingProductIds.has(String(row.product.id)))
+      if (!missingRows.length) return 0
+      const { error: insertError } = await supabase
+        .from('inventory_audit_items')
+        .insert(buildAutoLoadAuditItemRows(auditId, targetLocation, missingRows))
+      if (insertError) throw insertError
+      return missingRows.length
+    }
     async function createAutoLoadRiskAudits(options = {}) {
       const silent = Boolean(options.silent)
       const vehicleId = Number(autoLoadVehicle?.value || 0)
@@ -5042,16 +5120,27 @@
       if (!vehicleId) throw new Error('Vyber vozidlo.')
       if (!employeeId) throw new Error('Vyber operátorku pro týdenní inventuru.')
       const { weekStart, weekEnd } = getAutoLoadWeekBounds(auditDateValue)
+      const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId)) }
+      const rows = buildAutoLoadWeeklyAuditCandidates(vehicleId, targetLocation.id, auditDateValue, weekStart)
       const existingAudit = await findExistingAutoLoadWeeklyAudit(vehicleId, weekStart, weekEnd)
       if (existingAudit?.id) {
+        if (['draft', 'assigned'].includes(existingAudit.status)) {
+          const addedCount = await addMissingAutoLoadWeeklyAuditItems(existingAudit.id, targetLocation, rows)
+          if (!silent) {
+            autoLoadStatus.className = 'status-line success'
+            autoLoadStatus.textContent = addedCount
+              ? `Týdenní namátková inventura #${existingAudit.id} už existuje. Doplnil jsem ${addedCount} chybějících příchutí / položek do stejné inventury.`
+              : `Týdenní namátková inventura #${existingAudit.id} už existuje a obsahuje všechny aktuální položky pro tento týden.`
+            await loadInventoryV13Overview()
+          }
+          return { created: false, existingId: existingAudit.id, addedCount }
+        }
         if (!silent) {
           autoLoadStatus.className = 'status-line success'
-          autoLoadStatus.textContent = `Týdenní namátková inventura pro ${getVehicleLabel(vehicleId)} už v týdnu ${weekStart} - ${weekEnd} existuje jako #${existingAudit.id}.`
+          autoLoadStatus.textContent = `Týdenní namátková inventura pro ${getVehicleLabel(vehicleId)} už v týdnu ${weekStart} - ${weekEnd} existuje jako #${existingAudit.id} a je ve stavu ${existingAudit.status}. Uzavřené nebo rozpracované inventury zpětně neměním.`
         }
         return { created: false, existingId: existingAudit.id }
       }
-      const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId)) }
-      const rows = buildAutoLoadWeeklyAuditCandidates(vehicleId, targetLocation.id, auditDateValue, weekStart)
       if (!rows.length) {
         if (silent) return { created: false, reason: 'empty' }
         throw new Error('Pro týdenní namátkovou inventuru není žádná položka: žádný malý zůstatek 1-3 ks ani dlouho stojící zboží na autě.')
@@ -5066,31 +5155,21 @@
           vehicle_id: vehicleId,
           assigned_employee_id: employeeId,
           responsible_name: getVehicleAuditEmployeeLabel(employeeId),
-          note: `Týdenní namátková inventura: malé zůstatky 1-3 ks a dlouho stojící zboží na vozidle. ${marker}`,
+          note: `Týdenní namátková inventura: malé zůstatky 1-3 ks, dlouho stojící zboží a celé příchuťové skupiny na vozidle. ${marker}`,
           status: 'assigned',
           created_by: null
         }])
         .select('id')
         .single()
       if (auditError) throw auditError
-      const itemRows = rows.map((row) => ({
-        audit_id: audit.id,
-        stock_location_id: targetLocation.id,
-        product_id: row.product.id,
-        book_quantity: row.currentQty,
-        counted_quantity: 0,
-        difference_quantity: 0,
-        unit_cost: getStockUnitCost(row.product) || null,
-        difference_value: 0,
-        note: `Namátkově vybráno: ${row.reasons.join(' · ')}`
-      }))
+      const itemRows = buildAutoLoadAuditItemRows(audit.id, targetLocation, rows)
       const { error: itemError } = await supabase.from('inventory_audit_items').insert(itemRows)
       if (itemError) throw itemError
       const { data: instruction, error: instructionError } = await supabase
         .from('daily_instructions')
         .insert([{
           title: `Týdenní namátková inventura ${getVehicleLabel(vehicleId)}`,
-          message: `Spočítej namátkově vybrané položky na autě: malé zůstatky 1-3 ks a položky bez pohybu. Inventura #${audit.id}.`,
+          message: `Spočítej namátkově vybrané položky na autě: malé zůstatky 1-3 ks, položky bez pohybu a u příchutí vždy celou skupinu. Inventura #${audit.id}.`,
           target_type: 'employee',
           target_employee_id: employeeId,
           valid_from: auditDateValue,
