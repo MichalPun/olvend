@@ -5357,7 +5357,8 @@
       const valueTotal = Number(audit.difference_value_total || items.reduce((sum, item) => sum + Number(item.difference_value || 0), 0))
       currentDetailContext = { type: 'audit', auditId }
       detailMoveBtn.style.display = 'none'
-      detailEditBtn.style.display = 'none'
+      detailEditBtn.style.display = ['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? '' : 'none'
+      detailEditBtn.textContent = 'Opravit počty'
       detailModalTitle.textContent = `Inventura #${audit.id}`
       detailModalContent.innerHTML = `
         <div class="detail-spreadsheet">
@@ -5407,6 +5408,161 @@
       `
       openDetailModal()
     }
+    function openVehicleAuditCorrection(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) {
+        auditStatus.textContent = 'Inventura už není v načteném seznamu. Zkus obnovit data.'
+        auditStatus.className = 'status-line error'
+        return
+      }
+      const items = getVehicleAuditItems(auditId)
+      if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) {
+        auditStatus.textContent = 'Tahle inventura zatím nemá uložené fyzické počty k opravě.'
+        auditStatus.className = 'status-line error'
+        return
+      }
+      currentDetailContext = { type: 'audit-edit', auditId }
+      detailMoveBtn.style.display = 'none'
+      detailEditBtn.style.display = 'none'
+      detailModalTitle.textContent = `Oprava inventury #${audit.id}`
+      detailModalContent.innerHTML = `
+        <div class="detail-spreadsheet">
+          <section class="detail-spreadsheet-title">
+            <div>
+              <h4>${escapeHtml(audit.scope_type === 'warehouse' ? `Oprava inventury skladu #${audit.id}` : `Oprava inventury vozidla #${audit.id}`)}</h4>
+              <p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit), getVehicleAuditEmployeeLabel(audit.assigned_employee_id)].filter(Boolean).join(' · '))}</p>
+            </div>
+            <span class="badge ${escapeHtml(getVehicleAuditStatusBadgeClass(audit.status))}">${escapeHtml(getVehicleAuditStatusLabel(audit.status))}</span>
+          </section>
+          <section class="detail-sheet-section">
+            <h5>Opravit fyzické počty</h5>
+            <div class="status-line ${audit.status === 'closed' ? 'error' : ''}">
+              ${audit.status === 'closed'
+                ? 'Inventura už je uzavřená. Uložení zapíše do skladu pouze korekci rozdílu proti původně uloženému počtu.'
+                : 'Uložení přepočítá souhrn inventury. Do skladu se zapíše až při uzavření.'}
+            </div>
+            ${renderDetailTable([
+              { label: 'Produkt', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', item.note || ''].filter(Boolean).join(' · ') || 'Bez poznámky')}</span>`
+              } },
+              { label: 'Evidence', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<strong>${escapeHtml(formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks'))}</strong>`
+              } },
+              { label: 'Původně spočítáno', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<strong>${escapeHtml(formatQuantityValue(item.counted_quantity || 0, product.base_unit || 'ks'))}</strong>`
+              } },
+              { label: 'Opraveno', render: (item) => {
+                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+                return `<input data-audit-correction-counted data-item-id="${escapeHtml(String(item.id))}" data-original-counted="${escapeHtml(String(item.counted_quantity || 0))}" data-book-quantity="${escapeHtml(String(item.book_quantity || 0))}" data-unit-cost="${escapeHtml(String(item.unit_cost || getStockUnitCost(product) || 0))}" type="number" step="0.001" min="0" value="${escapeHtml(String(item.counted_quantity || 0))}" />`
+              } },
+              { label: 'Poznámka', render: (item) => `<input data-audit-correction-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.counted_note || item.note || '')}" placeholder="Důvod opravy" />` }
+            ], items, 'Inventura zatím nemá žádné položky.')}
+            <div class="action-row" style="justify-content:flex-end;margin-top:10px;">
+              <button class="btn secondary" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zpět na detail</button>
+              <button class="btn" type="button" data-detail-action="save-audit-correction" data-audit-id="${escapeHtml(String(audit.id))}">Uložit opravu</button>
+            </div>
+          </section>
+        </div>
+      `
+      openDetailModal()
+    }
+    async function saveVehicleAuditCorrection(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) throw new Error('Inventura už není v načteném seznamu.')
+      const items = getVehicleAuditItems(auditId)
+      if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) throw new Error('Tahle inventura zatím nejde opravovat.')
+      const inputs = [...detailModalContent.querySelectorAll('[data-audit-correction-counted]')]
+      if (!inputs.length) throw new Error('Není co uložit.')
+      const corrections = inputs.map((input) => {
+        const item = items.find((row) => String(row.id) === String(input.dataset.itemId))
+        if (!item) throw new Error('Řádek inventury už není v načtených datech.')
+        const counted = Number(input.value || 0)
+        if (!Number.isFinite(counted) || counted < 0) throw new Error('Opravený počet musí být nezáporné číslo.')
+        const book = Number(input.dataset.bookQuantity || item.book_quantity || 0)
+        const unitCost = Number(input.dataset.unitCost || item.unit_cost || 0)
+        const previousCounted = Number(input.dataset.originalCounted || item.counted_quantity || 0)
+        const correctionDelta = Number((counted - previousCounted).toFixed(3))
+        const difference = Number((counted - book).toFixed(3))
+        const note = detailModalContent.querySelector(`[data-audit-correction-note][data-item-id="${CSS.escape(String(item.id))}"]`)?.value?.trim() || ''
+        return {
+          item,
+          counted,
+          book,
+          unitCost,
+          previousCounted,
+          correctionDelta,
+          difference,
+          differenceValue: Number((difference * unitCost).toFixed(2)),
+          note
+        }
+      })
+      const changed = corrections.filter((row) => Math.abs(row.correctionDelta) > 0.0001 || row.note !== String(row.item.counted_note || row.item.note || ''))
+      if (!changed.length) throw new Error('Není tam žádná změna k uložení.')
+      for (const row of changed) {
+        const product = row.item.products || productsV13.find((candidate) => String(candidate.id) === String(row.item.product_id)) || {}
+        if (audit.status === 'closed' && Math.abs(row.correctionDelta) > 0.0001) {
+          await addBalanceToBatch(row.item.stock_location_id, row.item.product_id, row.item.batch_id || null, row.correctionDelta)
+          const { error: movementError } = await supabase.from('stock_movements_v13').insert([{
+            product_id: row.item.product_id,
+            batch_id: row.item.batch_id || null,
+            from_stock_location_id: row.correctionDelta < 0 ? row.item.stock_location_id : null,
+            to_stock_location_id: row.correctionDelta > 0 ? row.item.stock_location_id : null,
+            movement_type: 'adjustment',
+            quantity_base_units: Math.abs(row.correctionDelta),
+            unit_price: row.unitCost || null,
+            reference_type: audit.scope_type === 'warehouse' ? 'warehouse_inventory_audit_correction' : 'vehicle_inventory_audit_correction',
+            reference_id: `${audit.scope_type || 'inventory'}-inventory-correction:${audit.id}`,
+            note: [
+              audit.audit_date,
+              'oprava fyzického počtu po inventuře',
+              `${formatQuantityValue(row.previousCounted, product.base_unit || 'ks')} -> ${formatQuantityValue(row.counted, product.base_unit || 'ks')}`,
+              row.note
+            ].filter(Boolean).join(' · ')
+          }])
+          if (movementError) throw movementError
+        }
+        const { error: itemError } = await supabase.from('inventory_audit_items').update({
+          counted_quantity: row.counted,
+          difference_quantity: row.difference,
+          unit_cost: row.unitCost || null,
+          difference_value: row.differenceValue,
+          counted_note: row.note || row.item.counted_note || null,
+          counted_at: row.item.counted_at || new Date().toISOString()
+        }).eq('id', row.item.id)
+        if (itemError) throw itemError
+      }
+      const nextItems = items.map((item) => {
+        const correction = corrections.find((row) => String(row.item.id) === String(item.id))
+        return correction ? {
+          ...item,
+          counted_quantity: correction.counted,
+          difference_quantity: correction.difference,
+          difference_value: correction.differenceValue,
+          unit_cost: correction.unitCost,
+          counted_note: correction.note || item.counted_note
+        } : item
+      })
+      const totals = nextItems.reduce((acc, item) => {
+        acc.book += Number(item.book_quantity || 0)
+        acc.counted += Number(item.counted_quantity || 0)
+        acc.diff += Number(item.difference_quantity || 0)
+        acc.value += Number(item.difference_value || 0)
+        return acc
+      }, { book: 0, counted: 0, diff: 0, value: 0 })
+      const { error: auditError } = await supabase.from('inventory_audits').update({
+        book_quantity_total: Number(totals.book.toFixed(3)),
+        counted_quantity_total: Number(totals.counted.toFixed(3)),
+        difference_quantity_total: Number(totals.diff.toFixed(3)),
+        difference_value_total: Number(totals.value.toFixed(2)),
+        evaluation_note: [audit.evaluation_note || '', `Oprava počtů ${new Date().toLocaleString('cs-CZ')}`].filter(Boolean).join(' · ')
+      }).eq('id', audit.id)
+      if (auditError) throw auditError
+      await loadInventoryV13Overview()
+      openVehicleAuditDetail(audit.id)
+    }
     function renderVehicleAuditList() {
       if (!vehicleAuditListBody) return
       vehicleAuditListEmpty.style.display = vehicleInventoryAudits.length ? 'none' : 'block'
@@ -5429,6 +5585,7 @@
             <td data-label="Akce">
               <div class="action-row">
                 <button class="btn secondary" type="button" data-vehicle-audit-action="open" data-audit-id="${escapeHtml(String(audit.id))}">Otevřít</button>
+                ${['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? `<button class="btn secondary" type="button" data-vehicle-audit-action="edit-counts" data-audit-id="${escapeHtml(String(audit.id))}">Opravit počty</button>` : ''}
                 ${canEvaluate ? `<button class="btn secondary" type="button" data-vehicle-audit-action="evaluate" data-audit-id="${escapeHtml(String(audit.id))}">${audit.scope_type === 'warehouse' ? 'Vyhodnotit' : 'Převodky hotové, vyhodnotit'}</button>` : ''}
                 ${canClose ? `<button class="btn" type="button" data-vehicle-audit-action="close" data-audit-id="${escapeHtml(String(audit.id))}">Dorovnat a uzavřít</button>` : ''}
                 ${canPrint ? `<button class="btn secondary" type="button" data-vehicle-audit-action="print" data-audit-id="${escapeHtml(String(audit.id))}">Protokol</button>` : ''}
@@ -7095,6 +7252,7 @@
       detailModalTitle.textContent = 'Detail zásoby'
       detailMoveBtn.style.display = ''
       detailEditBtn.style.display = ''
+      detailEditBtn.textContent = 'Upravit'
     }
     function openBagettePilotModal(mode) {
       bagettePilotMode = mode
@@ -9688,6 +9846,10 @@
           openVehicleAuditDetail(button.dataset.auditId)
           return
         }
+        if (button.dataset.vehicleAuditAction === 'edit-counts') {
+          openVehicleAuditCorrection(button.dataset.auditId)
+          return
+        }
         if (button.dataset.vehicleAuditAction === 'print') {
           printAuditProtocol(vehicleAuditProtocol(button.dataset.auditId))
           return
@@ -10193,6 +10355,26 @@
     detailModalContent.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-detail-action]')
       if (!button || !currentDetailContext) return
+      if (button.dataset.detailAction === 'open-audit') {
+        openVehicleAuditDetail(button.dataset.auditId)
+        return
+      }
+      if (button.dataset.detailAction === 'save-audit-correction') {
+        try {
+          button.disabled = true
+          button.textContent = 'Ukládám...'
+          await saveVehicleAuditCorrection(button.dataset.auditId)
+          auditStatus.textContent = 'Oprava inventury byla uložená.'
+          auditStatus.className = 'status-line success'
+        } catch (error) {
+          console.error(error)
+          auditStatus.textContent = error.message || 'Opravu inventury se nepodařilo uložit.'
+          auditStatus.className = 'status-line error'
+          button.disabled = false
+          button.textContent = 'Uložit opravu'
+        }
+        return
+      }
       if (button.dataset.detailAction === 'movement') {
         if (currentDetailContext.type === 'legacy') {
           const item = items.find((stockItem) => String(stockItem.id) === String(currentDetailContext.itemId))
@@ -10223,6 +10405,9 @@
       if (context.type === 'v13') {
         const product = productsV13.find((item) => String(item.id) === String(context.productId))
         if (product) fillProductForm(product)
+      }
+      if (context.type === 'audit') {
+        openVehicleAuditCorrection(context.auditId)
       }
     })
     detailMoveBtn.addEventListener('click', () => {
