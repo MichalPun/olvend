@@ -1118,6 +1118,7 @@
     let warehouses = []
     let stockLocations = []
     let products = []
+    let productPackagesByProduct = new Map()
     let supplierProductMappings = []
     let currentInvoiceImport = null
     let productRecommendationMap = new Map()
@@ -1483,6 +1484,28 @@
         && String(mapping.product_id) === String(productId)
         && mapping.active !== false
       )) || null
+    }
+    function productPackages(productId) {
+      return productPackagesByProduct.get(String(productId)) || []
+    }
+    function defaultProductPackage(productId) {
+      const packages = productPackages(productId).filter((item) => item.active !== false)
+      return packages.find((item) => item.is_default) || packages[0] || null
+    }
+    function invoiceUnitMultiplier(productId, supplierId = '') {
+      if (!productId) return 1
+      const mapping = supplierMappingForProduct(supplierId, productId)
+      const mapped = Number(mapping?.base_units_per_invoice_unit || 0)
+      if (mapped > 0 && mapped !== 1) return mapped
+      const pack = defaultProductPackage(productId)
+      const packageUnits = Number(pack?.units_per_package || 0)
+      return packageUnits > 1 ? packageUnits : 1
+    }
+    function invoiceUnitMultiplierLabel(productId, multiplier) {
+      const product = getProductById(productId)
+      const pack = defaultProductPackage(productId)
+      if (Number(multiplier || 1) <= 1) return `1 = 1 ${product?.base_unit || 'ks'}`
+      return `1 ${pack?.package_name || 'balení'} = ${Number(multiplier).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'}`
     }
     async function saveSupplierProductCode({ supplierId, productId, code, product = null }) {
       const normalizedCode = String(code || '').trim()
@@ -1949,6 +1972,8 @@
     function importLineAmounts(row) {
       const quantity = parseMoneyNumber(row.querySelector('[data-import-quantity]')?.value || 0)
       const unitCost = parseMoneyNumber(row.querySelector('[data-import-unit-cost]')?.value || 0)
+      const baseUnitsPerInvoiceUnit = Math.max(parseMoneyNumber(row.querySelector('[data-import-unit-multiplier]')?.value || 1), 0.000001)
+      const baseQuantity = quantity * baseUnitsPerInvoiceUnit
       const vatRate = parseMoneyNumber(row.querySelector('[data-import-vat-rate]')?.value || 0)
       const currency = currentPurchaseCurrency()
       const exchangeRate = currentPurchaseExchangeRate()
@@ -1957,10 +1982,14 @@
       const net = roundMoney(quantity * unitCost)
       const gross = vatMeta.grossUsesVat ? roundMoney(net * (1 + (vatRate / 100))) : net
       const unitCostCzk = currency === 'CZK' ? unitCost : purchaseAmountToCzk(unitCost, currency, exchangeRate)
+      const baseUnitCostCzk = baseQuantity > 0 ? unitCostCzk / baseUnitsPerInvoiceUnit : unitCostCzk
       return {
         quantity,
+        baseQuantity,
+        baseUnitsPerInvoiceUnit,
         unitCost,
-        unitCostCzk,
+        unitCostCzk: baseUnitCostCzk,
+        documentUnitCostCzk: unitCostCzk,
         vatRate,
         net,
         gross,
@@ -2091,6 +2120,14 @@
       target.className = `price-watch${message.type ? ` ${message.type}` : ''}`
       return message
     }
+    function updateImportLineStockQuantity(row) {
+      const productId = row.querySelector('[data-import-product]')?.value || ''
+      const target = row.querySelector('[data-import-stock-quantity]')
+      if (!target) return
+      const product = getProductById(productId)
+      const amounts = importLineAmounts(row)
+      target.textContent = `${Number(amounts.baseQuantity || 0).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'} · ${invoiceUnitMultiplierLabel(productId, amounts.baseUnitsPerInvoiceUnit)}`
+    }
     function syncInvoiceImportLineFromRow(row) {
       if (!currentInvoiceImport || !row) return
       const rowKey = row.dataset.importLineKey || ''
@@ -2102,6 +2139,7 @@
       source.productId = productId ? Number(productId) : null
       source.description = row.querySelector('[data-import-description]')?.value.trim() || source.description || ''
       source.quantity = amounts.quantity || 0
+      source.baseUnitsPerInvoiceUnit = amounts.baseUnitsPerInvoiceUnit || 1
       source.unitPriceNet = amounts.unitCost || 0
       source.vatRate = amounts.vatRate || 0
       source.productSearch = row.querySelector('[data-import-product-search]')?.value || ''
@@ -2130,6 +2168,10 @@
       const lastPrice = getLastPurchasePrice(product.id)
       if (unitCostInput && lastPrice && Number(unitCostInput.value || 0) <= 0) {
         unitCostInput.value = String(purchaseCzkToDocumentAmount(lastPrice))
+      }
+      const multiplierInput = row.querySelector('[data-import-unit-multiplier]')
+      if (multiplierInput && Number(multiplierInput.value || 0) <= 1) {
+        multiplierInput.value = String(invoiceUnitMultiplier(product.id, invoiceImportSupplierId?.value || ''))
       }
       syncInvoiceImportLineFromRow(row)
       updateInvoiceImportTotals()
@@ -2174,6 +2216,7 @@
         const grossTarget = row.querySelector('[data-import-total-gross]')
         if (netTarget) netTarget.textContent = formatMoney(amounts.net, currency)
         if (grossTarget) grossTarget.textContent = formatMoney(amounts.gross, currency)
+        updateImportLineStockQuantity(row)
         const priceWatch = updateImportLinePriceWatch(row)
         if (priceWatch?.type === 'warn') priceWarningCount += 1
       })
@@ -2232,6 +2275,8 @@
         if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = purchaseCzkToDocumentAmount(lastPrice, currency, exchangeRate)
         const quantity = Number(line.quantity || 0)
         const unitCost = Number(line.unitPriceNet || 0)
+        const unitMultiplier = Number(line.baseUnitsPerInvoiceUnit || invoiceUnitMultiplier(selectedProductId, supplierId) || 1)
+        const stockQuantity = quantity * unitMultiplier
         const vatRate = Number(line.vatRate || 0)
         const totalNet = quantity * unitCost
         const totalGross = purchaseVatModeMeta(invoiceImportVatMode?.value || 'domestic').grossUsesVat ? totalNet * (1 + (vatRate / 100)) : totalNet
@@ -2258,11 +2303,16 @@
               </div>
             </div>
             <div class="field">
-              <label>Množství</label>
+              <label>Množství v dokladu</label>
               <input data-import-quantity type="number" min="0" step="0.001" value="${escapeHtml(String(quantity || 1))}" />
             </div>
             <div class="field">
-              <label>Cena bez DPH / ks (${escapeHtml(currency)})</label>
+              <label>Přepočet na sklad</label>
+              <input data-import-unit-multiplier type="number" min="0.000001" step="0.001" value="${escapeHtml(String(unitMultiplier || 1))}" />
+              <div class="subtext" data-import-stock-quantity>${escapeHtml(`${Number(stockQuantity || 0).toLocaleString('cs-CZ')} ${selectedProduct?.base_unit || 'ks'} · ${invoiceUnitMultiplierLabel(selectedProductId, unitMultiplier)}`)}</div>
+            </div>
+            <div class="field">
+              <label>Cena bez DPH / jednotku dokladu (${escapeHtml(currency)})</label>
               <input data-import-unit-cost type="number" min="0" step="0.01" value="${escapeHtml(String(unitCost || 0))}" />
               <div class="price-watch" data-import-price-watch></div>
             </div>
@@ -2396,7 +2446,7 @@
             ean: line.ean || null,
             supplier_item_name: line.description || null,
             invoice_unit_code: line.unitCode || null,
-            base_units_per_invoice_unit: 1,
+            base_units_per_invoice_unit: line.baseUnitsPerInvoiceUnit || 1,
             last_unit_price: line.unitCost || null,
             last_seen_at: new Date().toISOString(),
             active: true
@@ -2470,9 +2520,10 @@
           ...source,
           description: row.querySelector('[data-import-description]')?.value.trim() || source.description || productName || `Položka ${index + 1}`,
           productId,
-          receivedQuantity: amounts.quantity,
+          receivedQuantity: amounts.baseQuantity,
           unitCost: amounts.unitCostCzk,
           documentUnitCost: amounts.unitCost,
+          baseUnitsPerInvoiceUnit: amounts.baseUnitsPerInvoiceUnit,
           vatRate: amounts.vatRate,
           totalNet: amounts.netCzk,
           totalGross: amounts.grossCzk,
@@ -2493,25 +2544,28 @@
             receivedQuantity: line.receivedQuantity,
             costTotal: line.receivedQuantity * Number(line.unitCost || 0),
             documentCostTotal: Number(line.documentTotalNet || 0),
+            invoiceQuantity: Number(line.quantity || 0),
+            baseUnitsPerInvoiceUnit: Number(line.baseUnitsPerInvoiceUnit || 1),
             vatRate: Number(line.vatRate || 0),
             grossTotal: Number(line.totalGross || 0),
             documentGrossTotal: Number(line.documentTotalGross || 0),
             priceChecks: line.priceCheck ? [line.priceCheck] : [],
-            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
+            notes: [[line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', Number(line.baseUnitsPerInvoiceUnit || 1) !== 1 ? `přepočet ${Number(line.quantity || 0).toLocaleString('cs-CZ')} × ${Number(line.baseUnitsPerInvoiceUnit || 1).toLocaleString('cs-CZ')} = ${Number(line.receivedQuantity || 0).toLocaleString('cs-CZ')} ${getProductById(line.productId)?.base_unit || 'ks'}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · ')]
           })
           return
         }
         existing.receivedQuantity += line.receivedQuantity
         existing.costTotal += line.receivedQuantity * Number(line.unitCost || 0)
         existing.documentCostTotal += Number(line.documentTotalNet || 0)
+        existing.invoiceQuantity += Number(line.quantity || 0)
         existing.grossTotal += Number(line.totalGross || 0)
         existing.documentGrossTotal += Number(line.documentTotalGross || 0)
         if (line.priceCheck) existing.priceChecks.push(line.priceCheck)
-        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
+        existing.notes.push([line.description, line.ean ? `EAN ${line.ean}` : '', line.supplierCode ? `kód dodavatele ${line.supplierCode}` : '', line.unitCode ? `jednotka faktury ${line.unitCode}` : '', Number(line.baseUnitsPerInvoiceUnit || 1) !== 1 ? `přepočet ${Number(line.quantity || 0).toLocaleString('cs-CZ')} × ${Number(line.baseUnitsPerInvoiceUnit || 1).toLocaleString('cs-CZ')} = ${Number(line.receivedQuantity || 0).toLocaleString('cs-CZ')} ${getProductById(line.productId)?.base_unit || 'ks'}` : '', line.sourceNote || '', currency !== 'CZK' ? `doklad ${formatMoney(line.documentTotalNet, currency)} · kurz ${exchangeRate}` : '', line.lastUnitCost ? `poslední cena ${formatCurrency(line.lastUnitCost)}` : ''].filter(Boolean).join(' · '))
       })
       const groupedLines = Array.from(groupedLineMap.values()).map((line) => ({
         ...line,
-        unitCost: line.receivedQuantity > 0 ? Number((line.costTotal / line.receivedQuantity).toFixed(2)) : null
+        unitCost: line.receivedQuantity > 0 ? Number((line.costTotal / line.receivedQuantity).toFixed(4)) : null
       }))
       const requiresReceiptDetails = groupedLines.some((line) => {
         const product = getProductById(line.productId)
@@ -3791,7 +3845,7 @@
         setStatus('Načítám doklady...')
         const params = new URLSearchParams(window.location.search)
         const preselectedSupplier = params.get('supplier') || ''
-        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, stockLocationsResult, productsResult] = await Promise.all([
+        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, stockLocationsResult, productsResult, productPackagesResult] = await Promise.all([
           supabase.from('purchase_product_recommendations_v13').select('*'),
           supabase.from('purchase_recurring_orders').select('*').order('id', { ascending: true }),
           supabase.from('purchase_recurring_order_items').select('id, recurring_order_id, product_id, active, base_order_quantity, order_quantity_by_weekday, note').order('id', { ascending: true }),
@@ -3801,10 +3855,11 @@
           supabase.from('purchase_order_items').select('id, purchase_order_id, product_id, ordered_quantity, received_quantity, unit_cost, note, recurring_order_item_id, products(name)').order('id', { ascending: true }),
           supabase.from('warehouses').select('id, name, code, active').eq('active', true).order('name', { ascending: true }),
           supabase.from('stock_locations').select('id, warehouse_id, location_type, name, active').eq('location_type', 'warehouse'),
-          supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true })
+          supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true }),
+          supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false })
         ])
-        if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error) {
-          throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error
+        if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error || productPackagesResult.error) {
+          throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error || productPackagesResult.error
         }
         suppliers = suppliersResult.data || []
         warehouses = warehousesResult.data || []
@@ -3819,6 +3874,12 @@
         }
         stockLocations = stockLocationsResult.data || []
         products = productsResult.data || []
+        productPackagesByProduct = new Map()
+        ;(productPackagesResult.data || []).forEach((pack) => {
+          const key = String(pack.product_id)
+          if (!productPackagesByProduct.has(key)) productPackagesByProduct.set(key, [])
+          productPackagesByProduct.get(key).push(pack)
+        })
         const mappingsResult = await supabase
           .from('supplier_product_mappings')
           .select('id, supplier_id, product_id, supplier_item_code, ean, supplier_item_name, invoice_unit_code, base_units_per_invoice_unit, last_unit_price, active')
