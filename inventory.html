@@ -2324,6 +2324,33 @@
       const pack = getEffectiveDefaultPackage(product.id)
       return getProductKind(product) === 'ingredient' && Number(pack?.units_per_package || 0) > 1
     }
+    function getMobilePickOperationalPackage(product) {
+      if (!product || !shouldUsePackageByDefault(product)) return null
+      const pack = getEffectiveDefaultPackage(product.id)
+      return Number(pack?.units_per_package || 0) > 1 ? pack : null
+    }
+    function isMobilePickPackageQuantity(item, product) {
+      const pack = getMobilePickOperationalPackage(product)
+      if (!pack) return false
+      const unit = normalizeText(item?.unit || '')
+      const baseUnit = normalizeText(product?.base_unit || '')
+      if (!unit) return false
+      return unit !== baseUnit
+    }
+    function getMobilePickQuantity(item) {
+      return Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? 0)
+    }
+    function getMobilePickStockQuantity(item) {
+      const quantity = getMobilePickQuantity(item)
+      const product = productsV13.find((row) => String(row.id) === String(item?.product_id))
+      const pack = getMobilePickOperationalPackage(product)
+      if (!quantity || !product || !pack || !isMobilePickPackageQuantity(item, product)) return quantity
+      return convertPackageQuantityToBase(product, quantity, pack)
+    }
+    function getMobilePickDisplayUnit(item, product) {
+      if (isMobilePickPackageQuantity(item, product)) return item.unit || getMobilePickOperationalPackage(product)?.package_name || 'balení'
+      return product?.base_unit || item?.unit || 'ks'
+    }
     function getPackageQuantityUnit(baseUnit) {
       const unit = normalizeText(baseUnit || '')
       if (unit === 'kg') return 'g'
@@ -4384,7 +4411,7 @@
         .filter((item) => requestIds.has(String(item.request_id)))
         .filter((item) => String(item.product_id || '') === String(productId))
         .reduce((sum, item) => {
-          const quantity = Number(item.prepared_quantity ?? item.requested_quantity ?? 0)
+          const quantity = getMobilePickStockQuantity(item)
           return Number((sum + quantity).toFixed(3))
         }, 0)
     }
@@ -4404,7 +4431,7 @@
       return mobileStockRequestItems
         .filter((item) => requestIds.has(String(item.request_id)))
         .filter((item) => memberIds.has(String(item.product_id || '')))
-        .reduce((sum, item) => Number((sum + getMobilePickQuantity(item)).toFixed(3)), 0)
+        .reduce((sum, item) => Number((sum + getMobilePickStockQuantity(item)).toFixed(3)), 0)
     }
     function getAutoLoadWaterStockoutBonusQty(vehicleLocationId, vehicleId, targetDate, product, currentVehicleQty, packageQty) {
       if (!isAutoLoadWaterStockoutCandidate(product)) return 0
@@ -4595,7 +4622,7 @@
       const targetDate = request.requested_for_date || new Date().toISOString().slice(0, 10)
       for (const item of items) {
         if (!item.product_id) continue
-        const quantity = getMobilePickQuantity(item)
+        const quantity = getMobilePickStockQuantity(item)
         if (quantity <= 0) continue
         const needs = await fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, item.product_id)
         let loadedRemaining = quantity
@@ -4603,7 +4630,7 @@
           if (loadedRemaining <= 0.0001) break
           const deferredQty = Number(existing.quantity_base_units || 0)
           if (loadedRemaining + 0.0001 >= deferredQty) {
-            await closeAutoLoadDeferredNeed(existing, `Uzavřeno skutečnou nakládkou #${request.id} k ${targetDate}: naloženo ${formatQuantityValue(quantity, item.unit || existing.unit || 'ks')}.`)
+            await closeAutoLoadDeferredNeed(existing, `Uzavřeno skutečnou nakládkou #${request.id} k ${targetDate}: naloženo ${formatQuantityValue(quantity, existing.unit || 'ks')}.`)
             loadedRemaining = Number((loadedRemaining - deferredQty).toFixed(3))
             continue
           }
@@ -4613,7 +4640,7 @@
             .update({
               quantity_base_units: remaining,
               last_deferred_for_date: targetDate,
-              last_reason: `Částečně pokryto skutečnou nakládkou #${request.id}, zbývá ${formatQuantityValue(remaining, item.unit || existing.unit || 'ks')}.`
+              last_reason: `Částečně pokryto skutečnou nakládkou #${request.id}, zbývá ${formatQuantityValue(remaining, existing.unit || 'ks')}.`
             })
             .eq('id', existing.id)
           if (error) throw error
@@ -6227,7 +6254,7 @@
       return row.items.map((item) => {
         const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
         const unit = product?.base_unit || item.unit || 'ks'
-        const requested = Number(item.prepared_quantity ?? item.requested_quantity ?? 0)
+        const requested = getMobilePickStockQuantity(item)
         const available = getMobilePickAvailableQuantity(row, item.product_id)
         return {
           item,
@@ -6341,21 +6368,23 @@
           : flow.readyAction
         const shortages = getMobilePickShortages(row)
         const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && (hasNoItems || shortages.length > 0)
-        const requestedTotal = row.items.reduce((sum, item) => sum + Number(item.requested_quantity || 0), 0)
-        const preparedTotal = row.items.reduce((sum, item) => sum + Number(item.prepared_quantity ?? item.requested_quantity ?? 0), 0)
+        const requestedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null }), 0)
+        const preparedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity(item), 0)
         const detailRows = row.items.map((item) => {
           const prepared = item.prepared_quantity ?? item.requested_quantity ?? 0
           const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
-          const unit = product?.base_unit || item.unit || 'ks'
+          const unit = product?.base_unit || 'ks'
+          const displayUnit = getMobilePickDisplayUnit(item, product)
+          const preparedStockQuantity = getMobilePickStockQuantity(item)
           const available = getMobilePickAvailableQuantity(row, item.product_id)
-          const hasShortage = available !== null && Number(prepared || 0) > available + 0.0001
-          const shortage = hasShortage ? Number((Number(prepared || 0) - available).toFixed(3)) : 0
+          const hasShortage = available !== null && preparedStockQuantity > available + 0.0001
+          const shortage = hasShortage ? Number((preparedStockQuantity - available).toFixed(3)) : 0
           const isZeroed = Number(prepared || 0) <= 0 && Number(item.requested_quantity || 0) > 0
           return `
             <tr class="${hasShortage ? 'mobile-pick-shortage' : ''}">
-              <td><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml([item.sku ? `SKU ${item.sku}` : '', unit, isZeroed ? 'nevydáno / 0 ks' : ''].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
+              <td><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><span class="subtext">${escapeHtml([item.sku ? `SKU ${item.sku}` : '', displayUnit, isZeroed ? 'nevydáno / 0 ks' : ''].filter(Boolean).join(' · ') || 'Bez kódu')}</span></td>
               <td>${escapeHtml(Number(item.requested_quantity || 0).toFixed(2))}</td>
-              <td>${escapeHtml(unit)}</td>
+              <td>${escapeHtml(displayUnit)}</td>
               <td class="${hasShortage ? 'mobile-pick-stock-warning' : ''}">
                 ${hasShortage ? '<strong>Nedostatek</strong>' : ''}
                 ${available === null ? '-' : escapeHtml(`${formatQuantityValue(available, unit)}`)}
@@ -6555,15 +6584,22 @@
         throw new Error('Vyber konkrétní položku z našeptávače.')
       }
       if (!quantity || quantity <= 0) throw new Error('Zadej množství větší než nula.')
+      const pack = getMobilePickOperationalPackage(selectedProduct)
+      const itemUnit = pack ? (pack.package_name || 'balení') : (selectedProduct.base_unit || 'ks')
+      const stockQuantity = pack ? convertPackageQuantityToBase(selectedProduct, quantity, pack) : quantity
+      const noteParts = [
+        noteInput?.value.trim() || null,
+        pack ? `zadáno v balení: ${quantity} × ${pack.package_name || 'balení'} = ${formatQuantityValue(stockQuantity, selectedProduct.base_unit || 'ks')}` : null
+      ].filter(Boolean)
       const { error } = await supabase.from('mobile_stock_request_items').insert({
         request_id: requestId,
         product_id: selectedProduct.id,
         product_name: selectedProduct.name,
         sku: selectedProduct.sku || null,
-        unit: selectedProduct.base_unit || 'ks',
+        unit: itemUnit,
         requested_quantity: quantity,
         prepared_quantity: quantity,
-        note: noteInput?.value.trim() || null
+        note: noteParts.join(' · ') || null
       })
       if (error) throw error
       setStockV13Status('Řádek byl přidaný do mobilního požadavku.', 'success')
@@ -6586,9 +6622,6 @@
       }
       renderMobilePickRequests()
       setStockV13Status('Řádek zůstal v dokladu a je vynulovaný.', 'success')
-    }
-    function getMobilePickQuantity(item) {
-      return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
     }
     async function mobileStockReferenceAlreadyApplied(referenceId) {
       const { data, error } = await supabase
@@ -6672,7 +6705,7 @@
         ? await ensureAggregateMachinesStockLocation()
         : null
       for (const item of items) {
-        const quantity = getMobilePickQuantity(item)
+        const quantity = getMobilePickStockQuantity(item)
         if (!item.product_id || quantity <= 0) continue
         const product = productsV13.find((row) => String(row.id) === String(item.product_id))
         const allowNegativeLoad = product?.product_category === 'food_ready'
