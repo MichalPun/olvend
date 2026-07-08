@@ -520,6 +520,7 @@
     let documents = []
     let documentItems = []
     let products = []
+    let productPackages = []
     let stockLocations = []
     let recipes = []
     let recipeItems = []
@@ -1288,6 +1289,35 @@
     function productById(id) {
       return products.find((product) => String(product.id) === String(id)) || null
     }
+    function packagesForProduct(productId) {
+      return productPackages.filter((pack) => String(pack.product_id) === String(productId) && pack.active !== false)
+    }
+    function packageForProductUnit(product, unit) {
+      const normalizedUnit = normalizeText(unit)
+      if (!product || !normalizedUnit) return null
+      return packagesForProduct(product.id).find((pack) => normalizeText(pack.package_name) === normalizedUnit && Number(pack.units_per_package || 0) > 1) || null
+    }
+    function preferredSalesPackage(product) {
+      if (!product) return null
+      const packages = packagesForProduct(product.id).filter((pack) => Number(pack.units_per_package || 0) > 1)
+      return packages.find((pack) => normalizeText(pack.package_name).includes('tyc')) || null
+    }
+    function preferredSalesUnit(product) {
+      return preferredSalesPackage(product)?.package_name || productUnit(product)
+    }
+    function salesLineStockQuantity(line) {
+      const product = productById(line.productId ?? line.product_id)
+      const pack = packageForProductUnit(product, line.unit)
+      const quantity = Number(line.quantity || 0)
+      return Number((quantity * (pack ? Number(pack.units_per_package || 1) : 1)).toFixed(3))
+    }
+    function salesLineStockSource(line) {
+      const product = productById(line.productId ?? line.product_id)
+      const base = product?.name || line.productName || line.product_name || 'Položka'
+      const pack = packageForProductUnit(product, line.unit)
+      if (!pack) return base
+      return `${base} · ${Number(line.quantity || 0).toLocaleString('cs-CZ')} × ${pack.package_name} = ${salesLineStockQuantity(line).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'}`
+    }
     function isServiceInvoiceProduct(product) {
       return product?.usage_type === 'service_use'
     }
@@ -1488,7 +1518,7 @@
       lines.forEach((line) => {
         if (lineKind(line) === 'non_stock') return
         const productId = line.productId ?? line.product_id
-        const quantity = Number(line.quantity || 0)
+        const quantity = salesLineStockQuantity(line)
         if (!productId || quantity <= 0) return
         const components = getRecipeItemsForProduct(productId)
         if (components.length) {
@@ -1510,7 +1540,7 @@
         const current = map.get(key) || {
           productId: Number(productId),
           quantity: 0,
-          source: productById(productId)?.name || line.productName || 'Položka'
+          source: salesLineStockSource(line)
         }
         current.quantity = Number((current.quantity + quantity).toFixed(3))
         map.set(key, current)
@@ -1675,7 +1705,7 @@
         const costInput = row.querySelector('[data-line-unit-cost]')
         if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(invoiceCurrencyUnitPriceFromCzk(product.sale_price))
         if (vatInput && product.vat_rate != null) vatInput.value = String(Number(product.vat_rate || 0))
-        if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
+        if (unitInput) unitInput.value = preferredSalesUnit(product) || unitInput.value || 'ks'
         if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
       }
       if (type === 'non_stock') {
@@ -1692,7 +1722,7 @@
         const costInput = row.querySelector('[data-line-unit-cost]')
         if (priceInput && Number(priceInput.value || 0) <= 0 && product.sale_price != null) priceInput.value = String(invoiceCurrencyUnitPriceFromCzk(product.sale_price))
         if (vatInput && product.vat_rate != null) vatInput.value = String(Number(product.vat_rate || 0))
-        if (unitInput) unitInput.value = product.base_unit || unitInput.value || 'ks'
+        if (unitInput) unitInput.value = preferredSalesUnit(product) || unitInput.value || 'ks'
         if (costInput && Number(costInput.value || 0) <= 0) costInput.value = String(productUnitCost(product) || 0)
       }
       syncTravelRoutePanel(row)
@@ -1706,7 +1736,7 @@
       const quantity = Number(source.quantity ?? 1)
       const hasSourcePrice = source.unit_price != null || source.unitPrice != null
       const unitPrice = Number(hasSourcePrice ? (source.unit_price ?? source.unitPrice) : invoiceCurrencyUnitPriceFromCzk(product?.sale_price || 0))
-      const unit = source.unit || productUnit(product)
+      const unit = source.unit || preferredSalesUnit(product)
       const unitCost = Number(source.unit_cost ?? source.unitCost ?? productUnitCost(product) ?? 0)
       const vatRate = effectiveVatRate(source.vat_rate ?? source.vatRate ?? product?.vat_rate ?? 21)
       const net = roundMoney(quantity * unitPrice)
@@ -2838,16 +2868,18 @@
       try {
         ensureMoneyExportPeriod()
         setStatus('Načítám vystavené faktury...')
-        const [documentsResult, itemsResult, productsResult, locationsResult, recipesResult, recipeItemsResult] = await Promise.all([
+        const [documentsResult, itemsResult, productsResult, packagesResult, locationsResult, recipesResult, recipeItemsResult] = await Promise.all([
           supabase.from('sales_documents').select('*').order('issued_at', { ascending:false }),
           supabase.from('sales_document_items').select('id, document_id, product_id, product_name, unit, unit_cost, quantity, unit_price, vat_rate, source_type, source_id, products(name)').order('id', { ascending:true }),
           supabase.from('products').select('id, name, sku, ean, product_category, usage_type, base_unit, purchase_price, sale_price, vat_rate, active, note').eq('active', true).order('name', { ascending:true }),
+          supabase.from('product_packages').select('id, product_id, package_name, units_per_package, active').eq('active', true),
           supabase.from('stock_locations').select('id, name, location_type, warehouse_id, vehicle_id, active, note').eq('active', true).order('name', { ascending:true }),
           supabase.from('recipes').select('id, machine_id, machine_type, selection_code, name, sale_price, active, note').eq('machine_type', 'product_catalog').eq('active', true).order('name', { ascending:true }),
           supabase.from('recipe_items').select('id, recipe_id, product_id, quantity, unit').order('id', { ascending:true })
         ])
-        if (documentsResult.error || itemsResult.error || productsResult.error || locationsResult.error) throw documentsResult.error || itemsResult.error || productsResult.error || locationsResult.error
+        if (documentsResult.error || itemsResult.error || productsResult.error || packagesResult.error || locationsResult.error) throw documentsResult.error || itemsResult.error || productsResult.error || packagesResult.error || locationsResult.error
         products = productsResult.data || []
+        productPackages = packagesResult.data || []
         stockLocations = locationsResult.data || []
         recipes = recipesResult.error ? [] : (recipesResult.data || [])
         recipeItems = recipeItemsResult.error ? [] : (recipeItemsResult.data || [])
