@@ -5,12 +5,18 @@ create table if not exists public.telemetry_planogram_counters (
   planogram_slot_id bigint not null references public.machine_planogram_slots (id) on delete cascade,
   selection_code text not null,
   last_total_count integer not null default 0,
+  last_cash_count integer,
+  last_cashless_count integer,
   last_event_at timestamp with time zone,
   last_ingest_id bigint references public.telemetry_dex_ingests (id) on delete set null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
   unique (provider, machine_id, planogram_slot_id, selection_code)
 );
+
+alter table public.telemetry_planogram_counters
+  add column if not exists last_cash_count integer,
+  add column if not exists last_cashless_count integer;
 
 create index if not exists telemetry_planogram_counters_machine_idx
   on public.telemetry_planogram_counters (provider, machine_id);

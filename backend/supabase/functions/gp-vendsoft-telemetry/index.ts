@@ -250,6 +250,112 @@ function numericCounter(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+function convertRecipeQuantityToContainerUnit(quantity: number, recipeUnit: unknown, containerUnit: unknown) {
+  const from = String(recipeUnit || "").trim().toLowerCase();
+  const to = String(containerUnit || "").trim().toLowerCase();
+  if (!from || !to || from === to) return quantity;
+  if (from === "kg" && to === "g") return quantity * 1000;
+  if (from === "g" && to === "kg") return quantity / 1000;
+  if (from === "l" && to === "ml") return quantity * 1000;
+  if (from === "ml" && to === "l") return quantity / 1000;
+  return quantity;
+}
+
+async function applyCoffeeRecipeDepletion(
+  adminClient: ReturnType<typeof createClient>,
+  params: {
+    machineId: number;
+    deltas: Record<string, unknown>[];
+  },
+) {
+  const positiveDeltas = params.deltas
+    .map((delta) => ({
+      selection: normalizeSelectionCode(delta.selection_code),
+      quantity: Number(delta.vend_delta || 0),
+    }))
+    .filter((delta) => delta.selection && delta.quantity > 0);
+
+  if (!positiveDeltas.length) return [];
+
+  const selections = uniq(positiveDeltas.map((delta) => delta.selection));
+  const { data: buttons, error: buttonsError } = await adminClient
+    .from("machine_coffee_buttons")
+    .select("id, selection_code")
+    .eq("machine_id", params.machineId)
+    .eq("active", true)
+    .in("selection_code", selections);
+
+  if (buttonsError) throw buttonsError;
+  if (!buttons?.length) return [];
+
+  const deltaByButtonId = new Map<number, number>();
+  for (const button of buttons) {
+    const selection = normalizeSelectionCode(button.selection_code);
+    const delta = positiveDeltas.find((item) => item.selection === selection);
+    if (delta) deltaByButtonId.set(Number(button.id), delta.quantity);
+  }
+
+  const buttonIds = buttons.map((button) => Number(button.id)).filter(Boolean);
+  const { data: recipeItems, error: recipeError } = await adminClient
+    .from("machine_coffee_recipe_items")
+    .select("coffee_button_id, coffee_container_id, quantity_per_vend, unit")
+    .eq("machine_id", params.machineId)
+    .eq("active", true)
+    .in("coffee_button_id", buttonIds);
+
+  if (recipeError) throw recipeError;
+  if (!recipeItems?.length) return [];
+
+  const containerIds = uniq(recipeItems.map((item) => item.coffee_container_id)).map(Number).filter(Boolean);
+  if (!containerIds.length) return [];
+
+  const { data: containers, error: containersError } = await adminClient
+    .from("machine_coffee_containers")
+    .select("id, current_quantity, unit")
+    .eq("machine_id", params.machineId)
+    .eq("active", true)
+    .in("id", containerIds);
+
+  if (containersError) throw containersError;
+
+  const containerMap = new Map((containers || []).map((container) => [Number(container.id), container]));
+  const usageByContainer = new Map<number, number>();
+
+  for (const recipeItem of recipeItems) {
+    const buttonDelta = deltaByButtonId.get(Number(recipeItem.coffee_button_id)) || 0;
+    const containerId = Number(recipeItem.coffee_container_id || 0);
+    const container = containerMap.get(containerId);
+    if (!buttonDelta || !container) continue;
+    const quantityPerVend = Number(recipeItem.quantity_per_vend || 0);
+    if (!Number.isFinite(quantityPerVend) || quantityPerVend <= 0) continue;
+    const usage = convertRecipeQuantityToContainerUnit(quantityPerVend * buttonDelta, recipeItem.unit, container.unit);
+    usageByContainer.set(containerId, (usageByContainer.get(containerId) || 0) + usage);
+  }
+
+  const applied: Record<string, unknown>[] = [];
+  for (const [containerId, usage] of usageByContainer.entries()) {
+    const container = containerMap.get(containerId);
+    if (!container || usage <= 0) continue;
+    const currentQuantity = Number(container.current_quantity ?? 0);
+    const nextQuantity = Math.max(0, currentQuantity - usage);
+    const { error: updateError } = await adminClient
+      .from("machine_coffee_containers")
+      .update({ current_quantity: nextQuantity, updated_at: new Date().toISOString() })
+      .eq("id", containerId);
+
+    if (updateError) throw updateError;
+    applied.push({
+      coffee_container_id: containerId,
+      previous_quantity: currentQuantity,
+      used_quantity: Math.round(usage * 1000) / 1000,
+      next_quantity: Math.round(nextQuantity * 1000) / 1000,
+      unit: container.unit || null,
+    });
+  }
+
+  return applied;
+}
+
 async function applyPlanogramDepletion(
   adminClient: ReturnType<typeof createClient>,
   params: {
@@ -260,17 +366,21 @@ async function applyPlanogramDepletion(
     eventAt: string;
   },
 ) {
-  const selectionTotals = new Map<string, { selection: string; totalCount: number; eventAt: string }>();
+  const selectionTotals = new Map<string, { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string }>();
 
   params.counters.forEach((counter) => {
     const selection = normalizeSelectionCode(counter.selection);
     if (!selection) return;
-    const totalCount = numericCounter(counter.count_cash) + numericCounter(counter.count_cashless);
+    const cashCount = numericCounter(counter.count_cash);
+    const cashlessCount = numericCounter(counter.count_cashless);
+    const totalCount = cashCount + cashlessCount;
     if (totalCount <= 0) return;
     const current = selectionTotals.get(selection);
     if (!current || totalCount > current.totalCount) {
       selectionTotals.set(selection, {
         selection,
+        cashCount,
+        cashlessCount,
         totalCount,
         eventAt: String(counter.last_vend_at || params.eventAt),
       });
@@ -281,7 +391,7 @@ async function applyPlanogramDepletion(
 
   const { data: slots, error: slotsError } = await adminClient
     .from("machine_planogram_slots")
-    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
+    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, dex_price_czk, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
     .eq("machine_id", params.machineId)
     .eq("active", true);
 
@@ -297,7 +407,7 @@ async function applyPlanogramDepletion(
 
     const { data: previous, error: previousError } = await adminClient
       .from("telemetry_planogram_counters")
-      .select("last_total_count")
+      .select("last_total_count, last_cash_count, last_cashless_count")
       .eq("provider", params.provider)
       .eq("machine_id", params.machineId)
       .eq("planogram_slot_id", slot.id)
@@ -307,7 +417,19 @@ async function applyPlanogramDepletion(
     if (previousError) throw previousError;
 
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
+    const previousCash = previous?.last_cash_count == null ? null : Number(previous.last_cash_count);
+    const previousCashless = previous?.last_cashless_count == null ? null : Number(previous.last_cashless_count);
     const delta = Math.max(0, counter.totalCount - previousTotal);
+    let cashDelta = previousCash == null ? 0 : Math.max(0, counter.cashCount - previousCash);
+    let cashlessDelta = previousCashless == null ? 0 : Math.max(0, counter.cashlessCount - previousCashless);
+    const knownPaymentDelta = cashDelta + cashlessDelta;
+    let unknownPaymentDelta = Math.max(0, delta - knownPaymentDelta);
+    if (knownPaymentDelta > delta && knownPaymentDelta > 0) {
+      const ratio = delta / knownPaymentDelta;
+      cashDelta = Math.round(cashDelta * ratio * 1000) / 1000;
+      cashlessDelta = Math.round(cashlessDelta * ratio * 1000) / 1000;
+      unknownPaymentDelta = 0;
+    }
 
     const { error: counterError } = await adminClient
       .from("telemetry_planogram_counters")
@@ -317,12 +439,39 @@ async function applyPlanogramDepletion(
         planogram_slot_id: slot.id,
         selection_code: selection,
         last_total_count: counter.totalCount,
+        last_cash_count: counter.cashCount,
+        last_cashless_count: counter.cashlessCount,
         last_event_at: counter.eventAt,
         last_ingest_id: params.ingestId,
       }, { onConflict: "provider,machine_id,planogram_slot_id,selection_code" });
 
     if (counterError) throw counterError;
     if (delta <= 0) continue;
+
+    const unitPrice = Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0);
+    const { error: salesEventError } = await adminClient
+      .from("telemetry_sales_events")
+      .upsert({
+        provider: params.provider,
+        ingest_id: params.ingestId,
+        machine_id: params.machineId,
+        planogram_slot_id: slot.id,
+        selection_code: selection,
+        product_name: slot.product_name ?? null,
+        product_sku: slot.product_sku ?? null,
+        quantity: delta,
+        cash_quantity: cashDelta,
+        cashless_quantity: cashlessDelta,
+        unknown_payment_quantity: unknownPaymentDelta,
+        unit_price_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
+        total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(delta * unitPrice * 100) / 100 : null,
+        cash_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(cashDelta * unitPrice * 100) / 100 : null,
+        cashless_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(cashlessDelta * unitPrice * 100) / 100 : null,
+        unknown_payment_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(unknownPaymentDelta * unitPrice * 100) / 100 : null,
+        source_event_at: counter.eventAt,
+      }, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code" });
+
+    if (salesEventError) throw salesEventError;
 
     const currentUnits = slot.current_units == null ? null : Number(slot.current_units);
     const capacityUnits = slot.capacity_units == null ? null : Number(slot.capacity_units);
@@ -382,6 +531,13 @@ async function applyPlanogramDepletion(
       previous_total: previousTotal,
       current_total: counter.totalCount,
       vend_delta: delta,
+      cash_delta: cashDelta,
+      cashless_delta: cashlessDelta,
+      unknown_payment_delta: unknownPaymentDelta,
+      product_name: slot.product_name ?? null,
+      product_sku: slot.product_sku ?? null,
+      unit_price_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
+      total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(delta * unitPrice * 100) / 100 : null,
       next_units: nextUnits,
       next_fill_percent: nextFillPercent,
       settlement_type: settlementType,
@@ -534,6 +690,7 @@ Deno.serve(async (req) => {
     ]);
 
     let planogramDepletion: Record<string, unknown>[] = [];
+    let coffeeRecipeDepletion: Record<string, unknown>[] = [];
 
     if (machineId) {
       const { error: stateError } = await adminClient
@@ -565,6 +722,11 @@ Deno.serve(async (req) => {
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
       });
+
+      coffeeRecipeDepletion = await applyCoffeeRecipeDepletion(adminClient, {
+        machineId: Number(machineId),
+        deltas: planogramDepletion,
+      });
     }
 
     return json({
@@ -577,6 +739,7 @@ Deno.serve(async (req) => {
       terminal_id: parsedDex.terminal_id,
       product_counter_count: parsedDex.product_counters.length,
       planogram_depletion_count: planogramDepletion.length,
+      coffee_recipe_depletion_count: coffeeRecipeDepletion.length,
       message: "DEX payload received and parsed.",
     });
   } catch (error) {
