@@ -65,9 +65,11 @@
     .action-menu-list .btn { justify-content:flex-start; width:100%; min-height:30px; padding:7px 9px; border-radius:7px; font-size:12px; white-space:nowrap; }
     tbody tr[data-row-id] { cursor:pointer; }
     .empty-state { padding:14px; text-align:center; color:var(--muted); border:1px dashed rgba(255,255,255,0.1); border-radius:8px; background:rgba(255,255,255,0.02); font-size:13px; }
-    .money-export-controls { display:grid; grid-template-columns:124px 124px auto; gap:6px; align-items:center; padding:6px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.025); }
-    .money-export-controls input { min-height:30px; padding:6px 8px; font-size:12px; }
+    .money-export-controls { display:grid; grid-template-columns:132px 118px 118px auto; gap:6px; align-items:center; padding:6px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.025); }
+    .money-export-controls input,
+    .money-export-controls select { min-height:30px; padding:6px 8px; font-size:12px; }
     .money-export-controls .btn { min-height:30px; padding:6px 9px; font-size:12px; }
+    .money-export-hint { grid-column:1 / -1; color:var(--soft); font-size:11px; line-height:1.2; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.72); display:none; align-items:center; justify-content:center; padding:20px; z-index:1200; overflow:auto; }
     .modal-backdrop.show { display:flex; }
     .modal { width:100%; max-width:1180px; height:min(90vh,900px); max-height:min(90vh,900px); background:#111319; border:1px solid var(--border); border-radius:24px; box-shadow:0 30px 80px rgba(0,0,0,0.45); overflow:hidden; display:flex; flex-direction:column; }
@@ -132,9 +134,15 @@
           <div class="actions">
             <button class="btn secondary" id="refreshBtn" type="button">Obnovit</button>
             <div class="money-export-controls">
+              <select id="moneyExportPreset" aria-label="Money S3 období">
+                <option value="current_month">Tento měsíc</option>
+                <option value="previous_month">Minulý měsíc</option>
+                <option value="custom">Vlastní období</option>
+              </select>
               <input id="moneyExportFrom" type="date" aria-label="Money S3 od" />
               <input id="moneyExportTo" type="date" aria-label="Money S3 do" />
               <button class="btn secondary" id="exportMoneyPeriodBtn" type="button">Money S3 období</button>
+              <div class="money-export-hint" id="moneyExportHint">Export se vybírá podle DUZP.</div>
             </div>
             <button class="btn" id="openInvoiceBtn" type="button">+ Vystavit doklad</button>
           </div>
@@ -171,6 +179,8 @@
                 <option value="">Všechna data</option>
                 <option value="today">Dnes</option>
                 <option value="month">Tento měsíc</option>
+                <option value="duzp_current_month">DUZP tento měsíc</option>
+                <option value="duzp_previous_month">DUZP minulý měsíc</option>
                 <option value="unpaid">Nezaplacené</option>
               </select>
             </div>
@@ -425,8 +435,10 @@
     const invoiceBody = document.getElementById('invoiceBody')
     const invoiceEmpty = document.getElementById('invoiceEmpty')
     const refreshBtn = document.getElementById('refreshBtn')
+    const moneyExportPreset = document.getElementById('moneyExportPreset')
     const moneyExportFrom = document.getElementById('moneyExportFrom')
     const moneyExportTo = document.getElementById('moneyExportTo')
+    const moneyExportHint = document.getElementById('moneyExportHint')
     const exportMoneyPeriodBtn = document.getElementById('exportMoneyPeriodBtn')
     const openInvoiceBtn = document.getElementById('openInvoiceBtn')
     const mobileNavShell = document.getElementById('mobileNavShell')
@@ -537,6 +549,15 @@
     function todayIso() {
       const date = new Date()
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    }
+    function isoFromDate(date) {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    }
+    function monthBounds(offset = 0) {
+      const today = new Date()
+      const first = new Date(today.getFullYear(), today.getMonth() + offset, 1)
+      const last = new Date(today.getFullYear(), today.getMonth() + offset + 1, 0)
+      return { from: isoFromDate(first), to: isoFromDate(last) }
     }
     function addDaysIso(isoDate, days) {
       const date = new Date(`${isoDate || todayIso()}T00:00:00`)
@@ -2062,6 +2083,7 @@
       const date = dateFilter.value
       const today = todayIso()
       const month = today.slice(0, 7)
+      const previousMonth = monthBounds(-1).from.slice(0, 7)
       return documents.filter((row) => {
         const meta = extractMeta(row)
         const haystack = normalizeText([row.customer_name, row.note, documentNumber(row), meta.customerOrderNumber, ...(row.items || []).map((item) => item.product_name)].join(' '))
@@ -2070,8 +2092,11 @@
         if (status && status !== 'active' && row.status !== status) return false
         if (type && row.document_type !== type) return false
         const issued = String(row.issued_at || '').slice(0, 10)
+        const taxable = meta.taxableSupplyDate || issued
         if (date === 'today' && issued !== today) return false
         if (date === 'month' && issued.slice(0, 7) !== month) return false
+        if (date === 'duzp_current_month' && taxable.slice(0, 7) !== month) return false
+        if (date === 'duzp_previous_month' && taxable.slice(0, 7) !== previousMonth) return false
         if (date === 'unpaid' && !['draft', 'issued'].includes(row.status)) return false
         return true
       })
@@ -2101,14 +2126,18 @@
         const status = statusMeta(row.status)
         const type = documentTypeMeta(row.document_type)
         const vatMode = currentVatMode(row)
-        const currency = extractMeta(row).currency || 'CZK'
+        const meta = extractMeta(row)
+        const currency = meta.currency || 'CZK'
+        const issued = String(row.issued_at || '').slice(0, 10)
+        const taxable = meta.taxableSupplyDate || issued
         const amountSubtext = rowCzkInfo(row) || (isNoVatMode(vatMode) ? 'bez DPH' : 's DPH')
+        const dateSubtext = taxable && taxable !== issued ? `DUZP ${formatDate(taxable)}` : 'Vystaveno'
         return `
           <tr data-row-id="${escapeHtml(String(row.id))}">
             <td data-label="Stav"><span class="badge ${status.badge}">${escapeHtml(status.label)}</span></td>
             <td data-label="Doklad"><strong>${escapeHtml(documentNumber(row))}</strong><span class="subtext">${escapeHtml(type.label)}</span></td>
             <td data-label="Odběratel"><strong>${escapeHtml(row.customer_name || 'Odběratel')}</strong><span class="subtext">${escapeHtml(cleanNote(row.note) || 'Bez poznámky')}</span></td>
-            <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">Vystaveno</span></td>
+            <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">${escapeHtml(dateSubtext)}</span></td>
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(amountSubtext)}</span></td>
             <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="copy" data-id="${escapeHtml(String(row.id))}">Kopírovat</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
@@ -2117,6 +2146,7 @@
       }).join('')
       invoiceEmpty.style.display = rows.length ? 'none' : 'block'
       renderSummary(rows)
+      updateMoneyExportHint()
     }
     function qrPaymentPayload(row) {
       const meta = extractMeta(row)
@@ -2724,10 +2754,40 @@
       downloadTextFile(`${documentNumber(row)}-money-s3.xml`, moneyS3Xml(row))
       setStatus(`Export Money S3 pro ${documentNumber(row)} byl připraven ke stažení.`, 'success')
     }
+    function moneyPresetBounds(preset) {
+      if (preset === 'previous_month') return monthBounds(-1)
+      if (preset === 'current_month') return monthBounds(0)
+      return null
+    }
+    function setMoneyExportPeriod(from, to, preset = 'custom') {
+      if (moneyExportPreset) moneyExportPreset.value = preset
+      if (moneyExportFrom) moneyExportFrom.value = from || ''
+      if (moneyExportTo) moneyExportTo.value = to || ''
+      updateMoneyExportHint()
+    }
+    function applyMoneyExportPreset(preset = moneyExportPreset?.value || 'current_month') {
+      const bounds = moneyPresetBounds(preset)
+      if (bounds) setMoneyExportPeriod(bounds.from, bounds.to, preset)
+      else updateMoneyExportHint()
+    }
+    function updateMoneyExportHint() {
+      if (!moneyExportHint) return
+      const from = moneyExportFrom?.value || ''
+      const to = moneyExportTo?.value || ''
+      const rows = from && to && from <= to ? moneyPeriodRows(from, to) : []
+      const total = sumRowsInCzk(rows)
+      const label = moneyExportPreset?.value === 'previous_month'
+        ? 'Minulý měsíc'
+        : moneyExportPreset?.value === 'current_month'
+          ? 'Tento měsíc'
+          : 'Vlastní období'
+      moneyExportHint.textContent = from && to
+        ? `${label}: ${from} až ${to} podle DUZP · ${rows.length} dokladů · ${total.missingRate ? 'chybí kurz' : formatMoney(total.amount, 'CZK')}`
+        : 'Export se vybírá podle DUZP.'
+    }
     function ensureMoneyExportPeriod() {
-      const today = todayIso()
-      if (moneyExportFrom && !moneyExportFrom.value) moneyExportFrom.value = `${today.slice(0, 8)}01`
-      if (moneyExportTo && !moneyExportTo.value) moneyExportTo.value = today
+      if (!moneyExportFrom?.value || !moneyExportTo?.value) applyMoneyExportPreset(moneyExportPreset?.value || 'current_month')
+      else updateMoneyExportHint()
     }
     function moneyPeriodRows(from, to) {
       return documents
@@ -2930,6 +2990,11 @@
     typeFilter.addEventListener('change', renderRows)
     dateFilter.addEventListener('change', renderRows)
     refreshBtn.addEventListener('click', loadPage)
+    moneyExportPreset.addEventListener('change', () => applyMoneyExportPreset())
+    ;[moneyExportFrom, moneyExportTo].forEach((input) => input.addEventListener('change', () => {
+      if (moneyExportPreset) moneyExportPreset.value = 'custom'
+      updateMoneyExportHint()
+    }))
     exportMoneyPeriodBtn.addEventListener('click', exportMoneyS3Period)
     openInvoiceBtn.addEventListener('click', () => openInvoiceModal())
     closeInvoiceModalBtn.addEventListener('click', closeInvoiceModal)
