@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v31-readable-instructions';
+const CACHE_NAME = 'olvend-v32-mobile-load-confirm';
 const APP_SHELL = [
   './',
   './index.html',

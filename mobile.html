@@ -3860,6 +3860,81 @@
       return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
     }
 
+    function formatStockQuantityValue(quantity, unit = 'ks') {
+      const normalizedUnit = normalizeText(unit || 'ks')
+      const digits = normalizedUnit === 'ks' ? 0 : 2
+      return `${Number(quantity || 0).toFixed(digits)} ${unit || 'ks'}`
+    }
+
+    async function fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, productId) {
+      if (!vehicleId || !productId) return []
+      const { data, error } = await supabase
+        .from('vehicle_auto_load_deferred_needs')
+        .select('id, vehicle_id, product_id, quantity_base_units, unit, status, first_deferred_for_date, last_deferred_for_date, last_reason, note, updated_at')
+        .eq('vehicle_id', vehicleId)
+        .eq('product_id', productId)
+        .eq('status', 'open')
+        .order('first_deferred_for_date', { ascending: true })
+        .order('updated_at', { ascending: true })
+      if (error) {
+        const message = String(error.message || '')
+        if (message.includes('vehicle_auto_load_deferred_needs') || message.includes('schema cache')) {
+          console.warn('Auto-load deferred needs table is not available for mobile confirmation.', error)
+          return []
+        }
+        throw error
+      }
+      return data || []
+    }
+
+    async function closeAutoLoadDeferredNeed(need, note = '') {
+      if (!need?.id) return
+      const { error } = await supabase
+        .from('vehicle_auto_load_deferred_needs')
+        .update({
+          status: 'closed',
+          note: [need.note, note].filter(Boolean).join('\n') || null
+        })
+        .eq('id', need.id)
+      if (error) throw error
+    }
+
+    async function applyActualLoadToDeferredNeeds(request, items) {
+      if (!['vehicle_order', 'vehicle_load'].includes(request?.request_type)) return
+      const vehicleId = Number(request.vehicle_id || state.attendanceDay?.vehicle_id || state.vehicleLog?.vehicle_id || 0)
+      if (!vehicleId) return
+      const targetDate = request.requested_for_date || todayIso
+      for (const item of items) {
+        if (!item.product_id) continue
+        const quantity = getRequestQuantity(item)
+        if (quantity <= 0) continue
+        const product = state.products.find((row) => String(row.id) === String(item.product_id))
+        const unit = product?.base_unit || item.unit || 'ks'
+        const needs = await fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, item.product_id)
+        let loadedRemaining = quantity
+        for (const need of needs) {
+          if (loadedRemaining <= 0.0001) break
+          const deferredQty = Number(need.quantity_base_units || 0)
+          if (loadedRemaining + 0.0001 >= deferredQty) {
+            await closeAutoLoadDeferredNeed(need, `Uzavřeno skutečnou mobilní nakládkou #${request.id} k ${targetDate}: naloženo ${formatStockQuantityValue(quantity, need.unit || unit)}.`)
+            loadedRemaining = Number((loadedRemaining - deferredQty).toFixed(3))
+            continue
+          }
+          const remaining = Number((deferredQty - loadedRemaining).toFixed(3))
+          const { error } = await supabase
+            .from('vehicle_auto_load_deferred_needs')
+            .update({
+              quantity_base_units: remaining,
+              last_deferred_for_date: targetDate,
+              last_reason: `Částečně pokryto skutečnou mobilní nakládkou #${request.id}, zbývá ${formatStockQuantityValue(remaining, need.unit || unit)}.`
+            })
+            .eq('id', need.id)
+          if (error) throw error
+          loadedRemaining = 0
+        }
+      }
+    }
+
     async function getBalanceRecords(stockLocationId, productId) {
       const { data, error } = await supabase
         .from('stock_location_balances')
@@ -3958,6 +4033,7 @@
       const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
       const movementRows = []
       if (await stockReferenceAlreadyApplied(referenceId)) {
+        await applyActualLoadToDeferredNeeds(request, items)
         await supabase
           .from('mobile_stock_requests')
           .update({
@@ -4050,6 +4126,7 @@
 
       if (!movementRows.length) throw new Error('Skladový doklad nemá platnou položku se skladovou kartou.')
       await applyStockMovementsAtomically(movementRows)
+      await applyActualLoadToDeferredNeeds(request, items)
 
       const { error: requestError } = await supabase
         .from('mobile_stock_requests')
