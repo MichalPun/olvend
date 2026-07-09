@@ -6573,19 +6573,15 @@
         throw new Error('Vyber konkrétní položku z našeptávače.')
       }
       if (!quantity || quantity <= 0) throw new Error('Zadej množství větší než nula.')
-      const pack = getMobilePickOperationalPackage(selectedProduct)
-      const itemUnit = pack ? (pack.package_name || 'balení') : (selectedProduct.base_unit || 'ks')
-      const stockQuantity = pack ? convertPackageQuantityToBase(selectedProduct, quantity, pack) : quantity
       const noteParts = [
-        noteInput?.value.trim() || null,
-        pack ? `zadáno v balení: ${quantity} × ${pack.package_name || 'balení'} = ${formatQuantityValue(stockQuantity, selectedProduct.base_unit || 'ks')}` : null
+        noteInput?.value.trim() || null
       ].filter(Boolean)
       const { error } = await supabase.from('mobile_stock_request_items').insert({
         request_id: requestId,
         product_id: selectedProduct.id,
         product_name: selectedProduct.name,
         sku: selectedProduct.sku || null,
-        unit: itemUnit,
+        unit: selectedProduct.base_unit || 'ks',
         requested_quantity: quantity,
         prepared_quantity: quantity,
         note: noteParts.join(' · ') || null
@@ -8128,15 +8124,25 @@
       const flatText = xml.documentElement?.textContent || ''
       return parseTableRowsFromMatrix(flatText.split(/\r?\n/).map((line) => line.split(/[;\t,]/).map((cell) => cell.trim())))
     }
+    function shouldImportFilledIngredientAsPackage(product) {
+      if (!product) return false
+      const baseUnit = normalizeText(product.base_unit || '')
+      if (baseUnit === 'kg' || baseUnit === 'l') return false
+      return true
+    }
+    function getFilledProductsImportKind(row, product, importMeta) {
+      const isFilledIngredient = importMeta?.sourceFormat === 'filled_products' && normalizeText(row?.type) === 'ingredient'
+      if (!isFilledIngredient) return row?.kind || 'product'
+      return shouldImportFilledIngredientAsPackage(product) ? 'package' : 'product'
+    }
     function fillSimpleTransferFromImport(file, rows) {
       const importedRows = rows.map((row) => {
         const product = findProductForImportRow(row)
         const source = formatImportSource(row)
-        const isFilledIngredient = rows.importMeta?.sourceFormat === 'filled_products' && normalizeText(row.type) === 'ingredient'
         return {
           productId: product?.id || '',
           quantity: row.quantity,
-          kind: isFilledIngredient ? 'package' : 'product',
+          kind: getFilledProductsImportKind(row, product, rows.importMeta),
           totalIncome: row.totalIncome ?? null,
           note: product ? [row.type, row.totalIncome != null ? `tržba ${Number(row.totalIncome || 0).toFixed(2)} Kč` : ''].filter(Boolean).join(' · ') : '',
           importSource: product ? '' : source
@@ -8184,7 +8190,7 @@
           productId: product?.id || '',
           productName: row.productName || '',
           quantity: row.quantity,
-          kind: rows.importMeta?.sourceFormat === 'filled_products' && normalizeText(row.type) === 'ingredient' ? 'package' : (row.kind || 'product'),
+          kind: getFilledProductsImportKind(row, product, rows.importMeta),
           purchasePrice: row.purchasePrice ?? (product?.purchase_price != null ? Number(product.purchase_price) : null),
           lotCode: product ? '' : '',
           importSource: product ? '' : source
