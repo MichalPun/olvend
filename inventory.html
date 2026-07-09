@@ -8124,27 +8124,47 @@
       const flatText = xml.documentElement?.textContent || ''
       return parseTableRowsFromMatrix(flatText.split(/\r?\n/).map((line) => line.split(/[;\t,]/).map((cell) => cell.trim())))
     }
-    function shouldImportFilledIngredientAsPackage(product) {
-      if (!product) return false
-      const baseUnit = normalizeText(product.base_unit || '')
-      if (baseUnit === 'kg' || baseUnit === 'l') return false
-      return true
+    function getImportPackageUnitsFromProductName(name, baseUnit) {
+      const normalizedUnit = normalizeText(baseUnit || 'ks')
+      if (normalizedUnit !== 'ks') return 0
+      const match = String(name || '').match(/\((\d+(?:[.,]\d+)?)\s*ks\)/i)
+      if (!match) return 0
+      const amount = Number(match[1].replace(',', '.'))
+      return Number.isFinite(amount) && amount > 1 ? amount : 0
     }
     function getFilledProductsImportKind(row, product, importMeta) {
       const isFilledIngredient = importMeta?.sourceFormat === 'filled_products' && normalizeText(row?.type) === 'ingredient'
       if (!isFilledIngredient) return row?.kind || 'product'
-      return shouldImportFilledIngredientAsPackage(product) ? 'package' : 'product'
+      return 'product'
+    }
+    function getFilledProductsImportQuantity(row, product, importMeta) {
+      const isFilledIngredient = importMeta?.sourceFormat === 'filled_products' && normalizeText(row?.type) === 'ingredient'
+      const quantity = Number(row?.quantity || 0)
+      if (!isFilledIngredient) return quantity
+      const packageUnits = getImportPackageUnitsFromProductName(row?.productName, product?.base_unit)
+      return packageUnits > 0 ? Number((quantity * packageUnits).toFixed(3)) : quantity
+    }
+    function getFilledProductsImportPurchasePrice(row, product, importMeta) {
+      if (row?.purchasePrice == null) return product?.purchase_price != null ? Number(product.purchase_price) : null
+      const baseQuantity = getFilledProductsImportQuantity(row, product, importMeta)
+      return row?.totalCost != null && baseQuantity > 0 ? Number((Number(row.totalCost || 0) / baseQuantity).toFixed(6)) : row.purchasePrice
+    }
+    function getFilledProductsImportNote(row, product, importMeta) {
+      const isFilledIngredient = importMeta?.sourceFormat === 'filled_products' && normalizeText(row?.type) === 'ingredient'
+      const packageUnits = isFilledIngredient ? getImportPackageUnitsFromProductName(row?.productName, product?.base_unit) : 0
+      return packageUnits > 0 ? `soubor: ${row.quantity} × ${formatQuantityValue(packageUnits, product?.base_unit || 'ks')}` : ''
     }
     function fillSimpleTransferFromImport(file, rows) {
       const importedRows = rows.map((row) => {
         const product = findProductForImportRow(row)
         const source = formatImportSource(row)
+        const packageNote = getFilledProductsImportNote(row, product, rows.importMeta)
         return {
           productId: product?.id || '',
-          quantity: row.quantity,
+          quantity: getFilledProductsImportQuantity(row, product, rows.importMeta),
           kind: getFilledProductsImportKind(row, product, rows.importMeta),
           totalIncome: row.totalIncome ?? null,
-          note: product ? [row.type, row.totalIncome != null ? `tržba ${Number(row.totalIncome || 0).toFixed(2)} Kč` : ''].filter(Boolean).join(' · ') : '',
+          note: product ? [row.type, packageNote, row.totalIncome != null ? `tržba ${Number(row.totalIncome || 0).toFixed(2)} Kč` : ''].filter(Boolean).join(' · ') : '',
           importSource: product ? '' : source
         }
       })
@@ -8189,10 +8209,10 @@
         return {
           productId: product?.id || '',
           productName: row.productName || '',
-          quantity: row.quantity,
+          quantity: getFilledProductsImportQuantity(row, product, rows.importMeta),
           kind: getFilledProductsImportKind(row, product, rows.importMeta),
-          purchasePrice: row.purchasePrice ?? (product?.purchase_price != null ? Number(product.purchase_price) : null),
-          lotCode: product ? '' : '',
+          purchasePrice: getFilledProductsImportPurchasePrice(row, product, rows.importMeta),
+          lotCode: product ? getFilledProductsImportNote(row, product, rows.importMeta) : '',
           importSource: product ? '' : source
         }
       })
