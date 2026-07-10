@@ -416,6 +416,7 @@ async function applyPlanogramDepletion(
 
     if (previousError) throw previousError;
 
+    const isInitialCounter = !previous;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
     const previousCash = previous?.last_cash_count == null ? null : Number(previous.last_cash_count);
     const previousCashless = previous?.last_cashless_count == null ? null : Number(previous.last_cashless_count);
@@ -446,6 +447,19 @@ async function applyPlanogramDepletion(
       }, { onConflict: "provider,machine_id,planogram_slot_id,selection_code" });
 
     if (counterError) throw counterError;
+    if (isInitialCounter) {
+      applied.push({
+        slot_id: slot.id,
+        selection_code: selection,
+        previous_total: null,
+        current_total: counter.totalCount,
+        vend_delta: 0,
+        baseline_initialized: true,
+        product_name: slot.product_name ?? null,
+        product_sku: slot.product_sku ?? null,
+      });
+      continue;
+    }
     if (delta <= 0) continue;
 
     const unitPrice = Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0);
