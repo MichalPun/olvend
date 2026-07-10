@@ -4261,19 +4261,30 @@
         source: sameDay.length >= 2 ? 'stejný den v týdnu' : 'poslední jízdy'
       }
     }
-    function getDateRangeBeforeTarget(targetDate) {
+    function hasAutoLoadPlannedVehicleTrip(vehicleId, dateValue) {
+      if (!vehicleId || !dateValue) return false
+      return mobileStockRequests
+        .filter((request) => ['vehicle_order', 'vehicle_load'].includes(request.request_type))
+        .filter((request) => ['requested', 'picking', 'ready', 'confirmed'].includes(request.status))
+        .some((request) => String(request.vehicle_id || '') === String(vehicleId)
+          && (request.requested_for_date || '').slice(0, 10) === dateValue)
+    }
+    function getDateRangeBeforeTarget(targetDate, vehicleId = null) {
       const today = new Date().toISOString().slice(0, 10)
       const dates = []
       const cursor = new Date(`${today}T00:00:00`)
       const end = new Date(`${targetDate}T00:00:00`)
       while (cursor < end) {
-        dates.push(cursor.toISOString().slice(0, 10))
+        const dateValue = cursor.toISOString().slice(0, 10)
+        if (!vehicleId || hasAutoLoadPlannedVehicleTrip(vehicleId, dateValue)) {
+          dates.push(dateValue)
+        }
         cursor.setDate(cursor.getDate() + 1)
       }
       return dates
     }
-    function estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, productId, historyDays, targetDate) {
-      const dates = getDateRangeBeforeTarget(targetDate)
+    function estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, vehicleId, productId, historyDays, targetDate) {
+      const dates = getDateRangeBeforeTarget(targetDate, vehicleId)
       if (!dates.length) return { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 }
       const lastCompletedTripDate = getAutoLoadLastVehicleFillDate(vehicleLocationId, targetDate)
       return dates.reduce((summary, dateValue) => {
@@ -4479,11 +4490,11 @@
         source: getAutoLoadGroupLabel(product)
       }
     }
-    function estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocationId, product, historyDays, targetDate) {
+    function estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocationId, vehicleId, product, historyDays, targetDate) {
       const members = getAutoLoadGroupMembers(product)
-      if (members.length <= 1) return estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, product.id, historyDays, targetDate)
+      if (members.length <= 1) return estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, vehicleId, product.id, historyDays, targetDate)
       return members.reduce((summary, member) => {
-        const item = estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, member.id, historyDays, targetDate)
+        const item = estimateAutoLoadPendingDemandBeforeTarget(vehicleLocationId, vehicleId, member.id, historyDays, targetDate)
         summary.expected = Number((summary.expected + Number(item.expected || 0)).toFixed(3))
         summary.actual = Number((summary.actual + Number(item.actual || 0)).toFixed(3))
         summary.pending = Number((summary.pending + Number(item.pending || 0)).toFixed(3))
@@ -4692,7 +4703,7 @@
           const pendingLoadQty = getAutoLoadGroupPendingLoadQuantity(vehicleId, targetDate, product)
           const warehouseQty = getAutoLoadGroupLoadableLocationQuantity(warehouseLocation.id, product)
           const estimate = estimateAutoLoadGroupTripDemand(vehicleLocation.id, product, profile.history_days, targetDate)
-          const pendingBeforeTarget = estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocation.id, product, profile.history_days, targetDate)
+          const pendingBeforeTarget = estimateAutoLoadGroupPendingDemandBeforeTarget(vehicleLocation.id, vehicleId, product, profile.history_days, targetDate)
           const plannedVehicleQty = Number((currentVehicleQty + pendingLoadQty).toFixed(3))
           const projectedVehicleBeforeTarget = Math.max(0, Number((plannedVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
           const fixedSafetyQty = Number(profile.safety_stock_quantity || 0)
