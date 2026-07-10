@@ -6357,18 +6357,26 @@
         const flow = getMobileStockFlowMeta(row.request_type)
         const detailOpen = mobilePickOpenDetailIds.has(String(row.id))
         const hasNoItems = !row.items.length
+        const pendingStockFinalization = row.status !== 'confirmed'
+          && row.status !== 'cancelled'
+          && isMobileStockApprovalFlow(row.request_type)
+          && row.stock_applied_detected_at
+          && !row.stock_applied_at
         const needsStockApply = row.status === 'confirmed' && isMobileStockApprovalFlow(row.request_type) && !row.stock_applied_at
         const readyAction = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type) ? 'confirm' : 'ready'
         const isMachineReturn = row.request_type === 'vehicle_return' || row.request_type === 'vehicle_writeoff'
-        const statusBadge = hasNoItems ? 'bad' : needsStockApply ? 'warn' : getMobileStockStatusBadge(row.status)
-        const statusLabel = hasNoItems ? 'Bez položek' : needsStockApply ? 'Bez skladu' : getMobileStockStatusLabel(row.status)
-        const actionLabel = needsStockApply
+        const stockAlreadyApplied = Boolean(row.stock_applied_at || row.stock_applied_detected_at)
+        const statusBadge = hasNoItems ? 'bad' : (needsStockApply || pendingStockFinalization) ? 'warn' : getMobileStockStatusBadge(row.status)
+        const statusLabel = hasNoItems ? 'Bez položek' : pendingStockFinalization ? 'Sklad propsán' : needsStockApply ? 'Bez skladu' : getMobileStockStatusLabel(row.status)
+        const actionLabel = pendingStockFinalization
+          ? 'Dokončit doklad'
+          : needsStockApply
           ? 'Propsat sklad'
           : readyAction === 'confirm' && !['vehicle_return', 'vehicle_writeoff'].includes(row.request_type)
             ? 'Potvrdit doklad'
           : flow.readyAction
         const shortages = getMobilePickShortages(row)
-        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && (hasNoItems || shortages.length > 0)
+        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || shortages.length > 0)
         const requestedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null }), 0)
         const preparedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity(item), 0)
         const detailRows = row.items.map((item) => {
@@ -6391,9 +6399,9 @@
                 ${available === null ? '-' : escapeHtml(`${formatQuantityValue(available, unit)}`)}
                 ${hasShortage ? `<span class="mobile-pick-shortage-note">Chybí ${escapeHtml(formatQuantityValue(shortage, unit))}</span>` : ''}
               </td>
-              <td><input data-mobile-pick-qty data-item-id="${escapeHtml(String(item.id))}" type="number" step="0.001" min="0" value="${escapeHtml(prepared)}" /></td>
-              <td><input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" /></td>
-              <td><button class="btn secondary" type="button" data-mobile-pick-action="remove-item" data-request-id="${escapeHtml(String(row.id))}" data-item-id="${escapeHtml(String(item.id))}">Vynulovat</button></td>
+              <td><input data-mobile-pick-qty data-item-id="${escapeHtml(String(item.id))}" type="number" step="0.001" min="0" value="${escapeHtml(prepared)}" ${stockAlreadyApplied ? 'disabled' : ''} /></td>
+              <td><input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" ${stockAlreadyApplied ? 'disabled' : ''} /></td>
+              <td><button class="btn secondary" type="button" data-mobile-pick-action="remove-item" data-request-id="${escapeHtml(String(row.id))}" data-item-id="${escapeHtml(String(item.id))}" ${stockAlreadyApplied ? 'disabled' : ''}>Vynulovat</button></td>
             </tr>
           `
         }).join('')
@@ -6438,9 +6446,9 @@
                 </div>
                 <div class="mobile-pick-card-actions">
                   ${row.status === 'requested' ? `<button class="btn secondary" type="button" data-mobile-pick-action="start" data-request-id="${escapeHtml(String(row.id))}">Převzít</button>` : ''}
-                  ${needsStockApply ? `<button class="btn" type="button" data-mobile-pick-action="confirm" data-request-id="${escapeHtml(String(row.id))}">Propsat sklad</button>` : ''}
-                  ${row.status !== 'confirmed' && row.status !== 'cancelled' ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}" ${blocksReady ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>` : ''}
-                  ${row.status !== 'cancelled' && (row.status !== 'confirmed' || needsStockApply) ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
+                  ${needsStockApply || pendingStockFinalization ? `<button class="btn" type="button" data-mobile-pick-action="confirm" data-request-id="${escapeHtml(String(row.id))}">${escapeHtml(actionLabel)}</button>` : ''}
+                  ${row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}" ${blocksReady ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>` : ''}
+                  ${row.status !== 'cancelled' && !stockAlreadyApplied && (row.status !== 'confirmed' || needsStockApply) ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
                   <span class="mobile-pick-meta-note">${row.created_at ? escapeHtml(new Date(row.created_at).toLocaleString('cs-CZ')) : 'Bez data'}${row.requested_for_date ? ` · ${escapeHtml(row.requested_for_date)}` : ''}</span>
                   ${blocksReady ? `<span class="mobile-pick-action-blocked">${escapeHtml(hasNoItems ? 'Doklad nemá žádné položky. Přidej řádek nebo doklad zruš.' : 'Nejdřív uprav množství nebo odeber položky bez zásoby.')}</span>` : ''}
                 </div>
@@ -6498,17 +6506,43 @@
 
         const requestIds = (requests || []).map((request) => request.id)
         const employeeIds = [...new Set((requests || []).flatMap((request) => [request.employee_id, request.prepared_by, request.confirmed_by]).filter(Boolean))]
-        const [itemsResult, employeesResult] = await Promise.all([
+        const stockReferenceIds = [...new Set((requests || [])
+          .filter((request) => isMobileStockApprovalFlow(request.request_type))
+          .map((request) => request.stock_reference_id || `mobile-stock:${request.id}`)
+          .filter(Boolean))]
+        const [itemsResult, employeesResult, appliedMovementsResult] = await Promise.all([
           requestIds.length
             ? supabase.from('mobile_stock_request_items').select('*').in('request_id', requestIds).order('id', { ascending: true })
             : Promise.resolve({ data: [], error: null }),
           employeeIds.length
             ? supabase.from('employees').select('id, name, surname, email').in('id', employeeIds)
+            : Promise.resolve({ data: [], error: null }),
+          stockReferenceIds.length
+            ? supabase.from('stock_movements_v13').select('reference_id, created_at').eq('reference_type', 'mobile_stock_request').in('reference_id', stockReferenceIds)
             : Promise.resolve({ data: [], error: null })
         ])
-        if (itemsResult.error || employeesResult.error) throw itemsResult.error || employeesResult.error
+        if (itemsResult.error || employeesResult.error || appliedMovementsResult.error) throw itemsResult.error || employeesResult.error || appliedMovementsResult.error
 
-        mobileStockRequests = requests || []
+        const appliedReferences = new Map()
+        ;(appliedMovementsResult.data || []).forEach((movement) => {
+          const referenceId = movement.reference_id
+          if (!referenceId) return
+          const current = appliedReferences.get(referenceId)
+          if (!current || String(movement.created_at || '') > String(current || '')) {
+            appliedReferences.set(referenceId, movement.created_at || new Date().toISOString())
+          }
+        })
+        mobileStockRequests = (requests || []).map((request) => {
+          const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
+          if (!request.stock_applied_at && appliedReferences.has(referenceId)) {
+            return {
+              ...request,
+              stock_reference_id: referenceId,
+              stock_applied_detected_at: appliedReferences.get(referenceId)
+            }
+          }
+          return request
+        })
         mobileStockRequestItems = itemsResult.data || []
         mobileStockRequestEmployees = employeesResult.data || []
         renderMobilePickRequests()
@@ -6665,8 +6699,19 @@
     async function applyMobilePickRequestToStock(requestId) {
       const request = mobileStockRequests.find((item) => String(item.id) === String(requestId))
       if (!request) throw new Error('Mobilní požadavek už není v načteném seznamu. Dej obnovit a zkus to znovu.')
-      if (request.stock_applied_at) {
-        await updateMobilePickRequestStatus(requestId, 'confirmed')
+      const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
+      if (request.stock_applied_at || request.stock_applied_detected_at) {
+        const { error } = await supabase
+          .from('mobile_stock_requests')
+          .update({
+            status: 'confirmed',
+            confirmed_by: getStoredEmployeeId(),
+            confirmed_at: request.confirmed_at || new Date().toISOString(),
+            stock_applied_at: request.stock_applied_at || request.stock_applied_detected_at || new Date().toISOString(),
+            stock_reference_id: referenceId
+          })
+          .eq('id', requestId)
+        if (error) throw error
         return
       }
       const items = getMobileRequestItems(requestId)
@@ -6675,7 +6720,6 @@
       if (!vehicleId) throw new Error('U dokladu chybí vozidlo.')
       const vehicle = vehicles.find((item) => String(item.id) === String(vehicleId))
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, getVehicleLabel(vehicleId))
-      const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
       const movements = []
       if (await mobileStockReferenceAlreadyApplied(referenceId)) {
         const { error } = await supabase
@@ -6684,7 +6728,7 @@
             status: 'confirmed',
             confirmed_by: getStoredEmployeeId(),
             confirmed_at: request.confirmed_at || new Date().toISOString(),
-            stock_applied_at: request.stock_applied_at || new Date().toISOString(),
+            stock_applied_at: request.stock_applied_at || request.stock_applied_detected_at || new Date().toISOString(),
             stock_reference_id: referenceId
           })
           .eq('id', requestId)
