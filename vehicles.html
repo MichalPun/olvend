@@ -2909,9 +2909,9 @@
       4: { target: 4.00, limit: 4.50, label: 'Servisní auto limit' }
     }
 
-    const COST_PER_KM_INVOICE_MARKER = 'DKV 26/652641267/002'
-    const COST_PER_KM_START_DATE = '2026-06-01'
-    const COST_PER_KM_END_DATE = '2026-06-15'
+    const COST_PER_KM_INVOICE_MARKER = 'DKV 26/652992510/001'
+    const COST_PER_KM_START_DATE = '2026-06-16'
+    const COST_PER_KM_END_DATE = '2026-06-30'
 
     function getCostPerKmLimit(vehicle) {
       return COST_PER_KM_LIMITS[Number(vehicle?.id)] || { target: 3.00, limit: 3.50, label: 'Provozní limit' }
@@ -2924,6 +2924,10 @@
 
     function hasDkvInvoiceMarker(value) {
       return String(value || '').includes(COST_PER_KM_INVOICE_MARKER)
+    }
+
+    function hasDkvCostMarker(value) {
+      return String(value || '').includes('DKV ')
     }
 
     function getCostPerKmTone(costPerKm, target, limit) {
@@ -2956,9 +2960,23 @@
       const fuelCostPerKm = distanceKm > 0 && fuelAmount > 0 ? fuelAmount / distanceKm : null
       const litersPer100Km = distanceKm > 0 && fuelLiters > 0 ? (fuelLiters / distanceKm) * 100 : null
       const tone = getCostPerKmTone(costPerKm, limits.target, limits.limit)
+      const allDkvFuelLogs = vehicleLogs.filter((log) => hasDkvCostMarker(log.fuel_note) && Number(log.fuel_cost || 0) > 0)
+      const allDkvExpenses = vehicleExpenses.filter((expense) => hasDkvCostMarker(expense.note) && Number(expense.amount || 0) > 0)
+      const firstDkvDate = [...allDkvFuelLogs.map((log) => log.log_date), ...allDkvExpenses.map((expense) => expense.expense_date)]
+        .filter(Boolean)
+        .sort()[0] || null
+      const trackedLogs = firstDkvDate ? vehicleLogs.filter((log) => String(log.log_date) >= firstDkvDate) : []
+      const cumulativeDistanceKm = trackedLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
+      const cumulativeFuelAmount = allDkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
+      const cumulativeFuelLiters = allDkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
+      const cumulativeOtherAmount = allDkvExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
+      const cumulativeTotalAmount = cumulativeFuelAmount + cumulativeOtherAmount
+      const cumulativeCostPerKm = cumulativeDistanceKm > 0 && cumulativeTotalAmount > 0 ? cumulativeTotalAmount / cumulativeDistanceKm : null
+      const cumulativeLitersPer100Km = cumulativeDistanceKm > 0 && cumulativeFuelLiters > 0 ? (cumulativeFuelLiters / cumulativeDistanceKm) * 100 : null
+      const cumulativeTone = getCostPerKmTone(cumulativeCostPerKm, limits.target, limits.limit)
 
       return {
-        periodLabel: '1.–15. 6. 2026',
+        periodLabel: '16.–30. 6. 2026',
         distanceKm,
         distanceRows: periodLogs.filter((log) => Number(log.distance_km || 0) > 0).length,
         fuelAmount,
@@ -2973,7 +2991,17 @@
         limitLabel: limits.label,
         tone,
         statusLabel: getCostPerKmStatusLabel(tone),
-        invoiceRows: invoiceFuelLogs.length + invoiceExpenses.length
+        invoiceRows: invoiceFuelLogs.length + invoiceExpenses.length,
+        firstDkvDate,
+        cumulativeDistanceKm,
+        cumulativeFuelAmount,
+        cumulativeOtherAmount,
+        cumulativeTotalAmount,
+        cumulativeCostPerKm,
+        cumulativeLitersPer100Km,
+        cumulativeTone,
+        cumulativeStatusLabel: getCostPerKmStatusLabel(cumulativeTone),
+        cumulativeRows: allDkvFuelLogs.length + allDkvExpenses.length
       }
     }
 
@@ -3000,7 +3028,7 @@
                 </div>
                 <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
                 <div class="cost-control-note">
-                  ${escapeHtml(`${insight.periodLabel} · ${formatQuantity(insight.distanceKm, 'km')} · náklad ${formatMoney(insight.totalAmount)} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}
+                  ${escapeHtml(`${insight.periodLabel} · ${formatQuantity(insight.distanceKm, 'km')} · náklad ${formatMoney(insight.totalAmount)} · průměr od startu ${insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}
                 </div>
               </article>
             `).join('')}
@@ -3023,6 +3051,14 @@
               </div>
               <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
               <div class="cost-control-note">${escapeHtml(`Limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km · cíl ${formatDecimal(insight.targetCostPerKm, 2)} Kč/km`)}</div>
+            </article>
+            <article class="cost-control-card ${escapeHtml(insight.cumulativeTone)}">
+              <div class="cost-control-top">
+                <div class="cost-control-title">Průměr od začátku sledování</div>
+                <span class="cost-control-status">${escapeHtml(insight.cumulativeStatusLabel)}</span>
+              </div>
+              <div class="cost-control-value">${escapeHtml(insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'Bez km')}</div>
+              <div class="cost-control-note">${escapeHtml(`${insight.firstDkvDate ? `Od ${formatDateLabel(insight.firstDkvDate)} · ` : ''}${formatQuantity(insight.cumulativeDistanceKm, 'km')} · DKV náklad ${formatMoney(insight.cumulativeTotalAmount)}${insight.cumulativeLitersPer100Km != null ? ` · ${formatConsumption(insight.cumulativeLitersPer100Km)} / 100 km` : ''}`)}</div>
             </article>
             <article class="cost-control-card">
               <div class="cost-control-top">
@@ -3636,6 +3672,10 @@
                   <span class="vehicle-metric-label">DKV Kč/km</span>
                   <span class="cost-km-badge ${escapeHtml(costPerKmInsight.tone)}">${escapeHtml(costPerKmInsight.costPerKm != null ? `${formatDecimal(costPerKmInsight.costPerKm, 2)} · ${costPerKmInsight.statusLabel}` : 'Bez km')}</span>
                 </div>
+                <div class="vehicle-metric-row">
+                  <span class="vehicle-metric-label">Průměr DKV</span>
+                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.cumulativeTone)}">${escapeHtml(costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} · ${costPerKmInsight.cumulativeStatusLabel}` : 'Bez km')}</span>
+                </div>
               ` : ''}
               <div class="fleet-control-cell">
                 <span class="usage-badge ${escapeHtml(reviewBadge.className)}">${escapeHtml(reviewBadge.label)}</span>
@@ -3987,12 +4027,12 @@
         if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'danger') {
           reviewItems.push({
             short: 'překročené Kč/km',
-            full: `Náklad podle DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, limit je ${formatDecimal(costPerKmInsight.limitCostPerKm, 2)} Kč/km. Tohle je moc a je potřeba to řešit s řidičem.`
+            full: `Náklad podle poslední DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, dlouhodobý průměr je ${costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} a limit je ${formatDecimal(costPerKmInsight.limitCostPerKm, 2)} Kč/km. Tohle je moc a je potřeba to řešit s řidičem.`
           })
         } else if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'warning') {
           reviewItems.push({
             short: 'vyšší Kč/km',
-            full: `Náklad podle DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, cíl je ${formatDecimal(costPerKmInsight.targetCostPerKm, 2)} Kč/km. Je to nad cílem, hlídat další období.`
+            full: `Náklad podle poslední DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, dlouhodobý průměr je ${costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} a cíl je ${formatDecimal(costPerKmInsight.targetCostPerKm, 2)} Kč/km. Je to nad cílem, hlídat další období.`
           })
         }
 
