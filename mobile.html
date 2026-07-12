@@ -1236,6 +1236,18 @@
       background: rgba(99, 168, 255, 0.055);
     }
 
+    .coffee-visit-form summary {
+      cursor: pointer;
+      color: var(--text);
+      font-size: 17px;
+      font-weight: 950;
+    }
+
+    button.is-busy {
+      opacity: 0.72;
+      cursor: progress;
+    }
+
     .coffee-check-row {
       display: grid;
       grid-template-columns: 34px minmax(0, 1fr);
@@ -1972,6 +1984,35 @@
     function showMessage(text, type = 'info', options = {}) {
       els.messageArea.innerHTML = text ? `<div class="message ${type === 'error' ? 'error' : ''}">${escapeHtml(text)}</div>` : ''
       if (text && options.scroll !== false) els.messageArea.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+
+    function setButtonBusy(button, label = 'Pracuji...') {
+      if (!button) return () => {}
+      if (!button.dataset.originalText) button.dataset.originalText = button.textContent
+      button.textContent = label
+      button.disabled = true
+      button.classList.add('is-busy')
+      return () => {
+        if (!button.isConnected) return
+        button.textContent = button.dataset.originalText || button.textContent
+        button.disabled = false
+        button.classList.remove('is-busy')
+        delete button.dataset.originalText
+      }
+    }
+
+    function getBusyLabel(action) {
+      if (action === 'open-machine') return 'Otevírám...'
+      if (action === 'pick-container') return 'Odečítám...'
+      if (action === 'accept-container') return 'Ukládám...'
+      if (action === 'adjust-container') return 'Ukládám...'
+      if (action === 'save-cash') return 'Ukládám...'
+      if (action === 'save-machine-work') return 'Ukládám...'
+      if (action === 'save-free-coffee') return 'Ukládám...'
+      if (action === 'complete-stop') return 'Dokončuji...'
+      if (action === 'accept-route') return 'Přebírám...'
+      if (action === 'finish-route') return 'Ukončuji...'
+      return 'Pracuji...'
     }
 
     function showStartupMessage() {
@@ -3163,6 +3204,7 @@
 
       return `
         <div class="coffee-visit-detail">
+          ${!detail.machineOpen ? `
           <div class="task-head">
             <div>
               <h4>Picklist k automatu</h4>
@@ -3170,7 +3212,7 @@
             </div>
             <span class="badge ${allPicked ? 'green' : 'yellow'}">${pickedCount}/${neededCount}</span>
           </div>
-          <div class="muted-text">Náhledový picklist pro tuto zastávku. Potvrzením se odečte z vozidla, doplnění do automatu se potvrdí až níže u zásobníků.</div>
+          <div class="muted-text">Náhledový picklist pro tuto zastávku. Potvrzením se odečte z vozidla, doplnění do automatu se potvrdí až v dalším kroku po otevření automatu.</div>
           <div class="coffee-visit-grid">
             ${containers.map((container) => {
               const suggested = getCoffeeSuggestedPackages(container)
@@ -3207,6 +3249,7 @@
           <div class="route-stop-actions">
             <button class="primary-btn" type="button" data-coffee-action="open-machine" data-stop-id="${escapeHtml(stop.id)}" ${allPicked ? '' : 'disabled'}>${allPicked ? 'Mám zboží, otevřít automat' : 'Nejdřív dokonči picklist'}</button>
           </div>
+          ` : ''}
           ${detail.machineOpen ? `
           <div class="task-head">
             <div>
@@ -3215,6 +3258,7 @@
             </div>
             <span class="badge blue">zásobníky</span>
           </div>
+          <button class="secondary-btn" type="button" data-coffee-action="back-picklist" data-stop-id="${escapeHtml(stop.id)}">Zpět na picklist</button>
           <div class="coffee-visit-grid">
             ${containers.map((container) => {
               const packages = getCoffeeActualPackages(stop.id, container)
@@ -3246,8 +3290,9 @@
           </div>
           ` : ''}
           ${detail.machineOpen ? `
-          <div class="coffee-visit-form">
-            <strong>Práce s automatem</strong>
+          <details class="coffee-visit-form">
+            <summary>Práce s automatem</summary>
+            <div class="muted-text">Použij jen při změně tlačítka, ceny, sortimentu nebo při kávě zdarma.</div>
             <label>
               Změna tlačítka / ceny
               <select data-coffee-button-select data-stop-id="${escapeHtml(stop.id)}">
@@ -3272,7 +3317,7 @@
               <input data-free-coffee-count data-stop-id="${escapeHtml(stop.id)}" inputmode="numeric" value="${escapeHtml(detail.draft?.freeCoffeeCount || 1)}" />
             </label>
             <button class="secondary-btn" type="button" data-coffee-action="save-free-coffee" data-stop-id="${escapeHtml(stop.id)}">Zapsat kávu zdarma</button>
-          </div>
+          </details>
           <div class="coffee-visit-form">
             <strong>Výběr hotovosti</strong>
             <div class="muted-text">${expectedCash > 0 ? `Očekávaně k vybrání ${formatNumber(expectedCash)} Kč.` : 'Očekávaná hotovost zatím není z telemetrie k dispozici.'} ${expectedCash > 0 && expectedCash < 100 ? 'Doporučení: nevybírat, ale rozhodnutí zapiš.' : ''}</div>
@@ -4462,6 +4507,14 @@
         detail.machineOpen = true
         showMessage('Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.', 'success', { scroll: false })
         renderRouteMachineScreen()
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        return
+      }
+
+      if (action === 'back-picklist') {
+        detail.machineOpen = false
+        renderRouteMachineScreen()
+        window.scrollTo({ top: 0, behavior: 'smooth' })
         return
       }
 
@@ -5900,18 +5953,33 @@
       els.assignedRoutePanel?.addEventListener('click', (event) => {
         const button = event.target.closest('[data-route-action]')
         if (!button) return
-        handleAssignedRouteAction(button.dataset.routeAction, button.dataset.stopId).catch(handleError)
+        if (button.disabled || button.classList.contains('is-busy')) return
+        const restore = setButtonBusy(button, getBusyLabel(button.dataset.routeAction))
+        handleAssignedRouteAction(button.dataset.routeAction, button.dataset.stopId)
+          .catch(handleError)
+          .finally(restore)
       })
       els.backToRouteButton?.addEventListener('click', () => openScreen('vehicle'))
       els.routeMachineContent?.addEventListener('click', (event) => {
         const routeButton = event.target.closest('[data-route-action]')
         if (routeButton) {
-          handleAssignedRouteAction(routeButton.dataset.routeAction, routeButton.dataset.stopId).catch(handleError)
+          if (routeButton.disabled || routeButton.classList.contains('is-busy')) return
+          const restore = setButtonBusy(routeButton, getBusyLabel(routeButton.dataset.routeAction))
+          handleAssignedRouteAction(routeButton.dataset.routeAction, routeButton.dataset.stopId)
+            .catch(handleError)
+            .finally(restore)
           return
         }
         const coffeeButton = event.target.closest('[data-coffee-action]')
         if (!coffeeButton) return
-        handleCoffeeAction(coffeeButton.dataset.coffeeAction, coffeeButton.dataset.stopId, coffeeButton).catch(handleError)
+        if (coffeeButton.disabled || coffeeButton.classList.contains('is-busy')) return
+        const instantActions = ['step-container', 'back-picklist']
+        const restore = instantActions.includes(coffeeButton.dataset.coffeeAction)
+          ? () => {}
+          : setButtonBusy(coffeeButton, getBusyLabel(coffeeButton.dataset.coffeeAction))
+        handleCoffeeAction(coffeeButton.dataset.coffeeAction, coffeeButton.dataset.stopId, coffeeButton)
+          .catch(handleError)
+          .finally(restore)
       })
       els.routeMachineContent?.addEventListener('change', (event) => {
         const check = event.target.closest('[data-coffee-check]')
