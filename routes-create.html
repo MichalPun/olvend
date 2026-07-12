@@ -2158,7 +2158,29 @@
           unknownAmount: 0,
           lastSeen: null,
           source: 'telemetry_sales_events',
+          machineBreakdown: [],
         }
+      }
+
+      let lastCollectedByMachine = new Map()
+      try {
+        const { data: reports, error: reportError } = await supabase
+          .from('route_cash_reports')
+          .select('machine_id, reported_at')
+          .in('machine_id', machineIds)
+          .eq('collection_status', 'collected')
+          .order('reported_at', { ascending: false })
+
+        if (!reportError) {
+          ;(reports || []).forEach((report) => {
+            const key = String(report.machine_id)
+            if (!lastCollectedByMachine.has(key)) {
+              lastCollectedByMachine.set(key, report.reported_at)
+            }
+          })
+        }
+      } catch (reportError) {
+        console.warn('Route cash report baseline unavailable:', reportError)
       }
 
       const { data, error } = await supabase
@@ -2169,20 +2191,61 @@
 
       if (error) throw error
 
-      const rows = data || []
+      const rows = (data || []).filter((row) => {
+        const lastCollectedAt = lastCollectedByMachine.get(String(row.machine_id))
+        if (!lastCollectedAt) return true
+        return new Date(row.source_event_at).getTime() > new Date(lastCollectedAt).getTime()
+      })
+      const breakdownMap = new Map(machineIds.map((machineId) => {
+        const machine = state.machines.find((item) => String(item.id) === String(machineId))
+        const location = machine?.location_id ? state.locations.find((item) => String(item.id) === String(machine.location_id)) : null
+        return [String(machineId), {
+          machineId: Number(machineId),
+          machineName: machine?.name || `Automat ${machineId}`,
+          locationId: machine?.location_id || null,
+          locationName: [location?.city, location?.name].filter(Boolean).join(' · '),
+          expectedCashCzk: 0,
+          expectedCardCzk: 0,
+          expectedUnknownCzk: 0,
+          expectedTotalCzk: 0,
+          lastSeen: null,
+          telemetryFromAt: lastCollectedByMachine.get(String(machineId)) || null,
+        }]
+      }))
+
+      rows.forEach((row) => {
+        const item = breakdownMap.get(String(row.machine_id))
+        if (!item) return
+        const cash = Number(row.cash_amount_czk || 0)
+        const card = Number(row.cashless_amount_czk || 0)
+        const unknown = Number(row.unknown_payment_amount_czk || 0)
+        const total = row.total_amount_czk != null ? Number(row.total_amount_czk || 0) : cash + card + unknown
+        item.expectedCashCzk += cash
+        item.expectedCardCzk += card
+        item.expectedUnknownCzk += unknown
+        item.expectedTotalCzk += total
+        if (!item.lastSeen || new Date(row.source_event_at).getTime() > new Date(item.lastSeen).getTime()) {
+          item.lastSeen = row.source_event_at
+        }
+      })
+
+      const machineBreakdown = [...breakdownMap.values()].map((item) => ({
+        ...item,
+        expectedCashCzk: Math.round(item.expectedCashCzk * 100) / 100,
+        expectedCardCzk: Math.round(item.expectedCardCzk * 100) / 100,
+        expectedUnknownCzk: Math.round(item.expectedUnknownCzk * 100) / 100,
+        expectedTotalCzk: Math.round(item.expectedTotalCzk * 100) / 100,
+      }))
+
       return {
         machineCount: machineIds.length,
-        revenue: rows.reduce((sum, row) => {
-          const total = row.total_amount_czk != null
-            ? Number(row.total_amount_czk || 0)
-            : Number(row.cash_amount_czk || 0) + Number(row.cashless_amount_czk || 0) + Number(row.unknown_payment_amount_czk || 0)
-          return sum + total
-        }, 0),
-        cashAmount: rows.reduce((sum, row) => sum + Number(row.cash_amount_czk || 0), 0),
-        cashlessAmount: rows.reduce((sum, row) => sum + Number(row.cashless_amount_czk || 0), 0),
-        unknownAmount: rows.reduce((sum, row) => sum + Number(row.unknown_payment_amount_czk || 0), 0),
+        revenue: machineBreakdown.reduce((sum, row) => sum + Number(row.expectedTotalCzk || 0), 0),
+        cashAmount: machineBreakdown.reduce((sum, row) => sum + Number(row.expectedCashCzk || 0), 0),
+        cashlessAmount: machineBreakdown.reduce((sum, row) => sum + Number(row.expectedCardCzk || 0), 0),
+        unknownAmount: machineBreakdown.reduce((sum, row) => sum + Number(row.expectedUnknownCzk || 0), 0),
         lastSeen: rows[0]?.source_event_at || null,
         source: 'telemetry_sales_events',
+        machineBreakdown,
       }
     }
 
