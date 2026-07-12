@@ -113,7 +113,7 @@
     }
     input:focus, select:focus, textarea:focus { border-color: rgba(213,16,26,0.5); box-shadow: 0 0 0 3px rgba(213,16,26,0.12); }
     .table-wrap { overflow: auto; max-height: calc(100vh - 310px); border: 1px solid rgba(255,255,255,0.08); }
-    table { width: 100%; min-width: 1280px; border-collapse: collapse; table-layout: fixed; }
+    table { width: 100%; min-width: 1420px; border-collapse: collapse; table-layout: fixed; }
     th, td { text-align: left; padding: 8px 10px; border-right: 1px solid rgba(255,255,255,0.07); border-bottom: 1px solid rgba(255,255,255,0.07); vertical-align: middle; }
     th { position: sticky; top: 0; z-index: 3; background: #171a21; color: #b4bac5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; height: 34px; }
     td { height: 38px; font-size: 13px; }
@@ -122,6 +122,9 @@
     tbody tr:hover td { background: rgba(88,166,255,0.11); }
     .cell-strong { display: block; font-weight: 850; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .subtext { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .visit-cell { display: grid; gap: 3px; min-width: 0; }
+    .visit-cell-main { font-weight: 850; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .visit-cell-sub { color: var(--muted); font-size: 11px; font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .badge {
       display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px;
       font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid rgba(255,255,255,0.08);
@@ -623,12 +626,13 @@
                 <thead>
                   <tr>
                     <th style="width:80px;">Ev. č.</th>
-                    <th style="width:220px;">Stroj</th>
+                    <th style="width:200px;">Stroj</th>
                     <th>Typ</th>
                     <th>Značka</th>
                     <th>Model</th>
                     <th>Sériové číslo</th>
                     <th>Lokalita</th>
+                    <th style="width:180px;">Poslední návštěva</th>
                     <th style="width:130px;">Stav</th>
                     <th style="width:90px;">Aktivní</th>
                     <th>QR</th>
@@ -1068,6 +1072,7 @@
     let planogramSlots = []
     let coffeePlanogramButtons = []
     let products = []
+    let lastMachineVisits = new Map()
     let planogramAvailable = true
     let transferHistoryAvailable = true
     let isEditMode = false
@@ -1213,6 +1218,98 @@
     function formatDateTime(value) {
       if (!value) return 'Bez data'
       return new Date(value).toLocaleString('cs-CZ')
+    }
+
+    function formatDate(value) {
+      if (!value) return 'Bez data'
+      return new Date(value).toLocaleDateString('cs-CZ')
+    }
+
+    function getVisitStatusLabel(status) {
+      const normalized = String(status || '').toLowerCase()
+      if (normalized === 'completed') return 'Dokončeno'
+      if (normalized === 'arrived') return 'Na místě'
+      if (normalized === 'skipped') return 'Přeskočeno'
+      if (normalized === 'draft') return 'Rozpracováno'
+      if (normalized === 'sync_error') return 'Chyba synchronizace'
+      return status || 'Bez stavu'
+    }
+
+    function getVisitTimestamp(visit) {
+      return visit?.completed_at || visit?.arrived_at || visit?.synced_at || visit?.created_at || visit?.visit_date || ''
+    }
+
+    function getEmployeeName(employee) {
+      if (!employee) return ''
+      return employee.full_name || [employee.name, employee.surname].filter(Boolean).join(' ') || employee.name || [employee.first_name, employee.last_name].filter(Boolean).join(' ') || employee.email || ''
+    }
+
+    function renderLastVisitCell(machineId) {
+      const visit = lastMachineVisits.get(String(machineId))
+      if (!visit) {
+        return `
+          <span class="visit-cell">
+            <span class="visit-cell-main">Bez návštěvy</span>
+            <span class="visit-cell-sub">Zatím bez mobilního zápisu</span>
+          </span>
+        `
+      }
+      const timestamp = getVisitTimestamp(visit)
+      const employeeName = getEmployeeName(visit.employees)
+      return `
+        <span class="visit-cell">
+          <span class="visit-cell-main">${escapeHtml(formatDate(timestamp))}</span>
+          <span class="visit-cell-sub">${escapeHtml([getVisitStatusLabel(visit.status), employeeName].filter(Boolean).join(' · '))}</span>
+        </span>
+      `
+    }
+
+    async function loadLastMachineVisits() {
+      try {
+        const { data: visitsData, error: visitsError } = await supabase
+          .from('route_machine_visits')
+          .select('id, machine_id, employee_id, visit_date, status, arrived_at, completed_at, synced_at, created_at')
+          .in('status', ['arrived', 'completed', 'skipped'])
+          .order('completed_at', { ascending: false, nullsFirst: false })
+          .order('arrived_at', { ascending: false, nullsFirst: false })
+          .limit(1200)
+
+        if (visitsError) {
+          if (/route_machine_visits|schema cache/i.test(String(visitsError.message || ''))) return new Map()
+          throw visitsError
+        }
+
+        const visits = visitsData || []
+        const employeeIds = [...new Set(visits.map((visit) => visit.employee_id).filter(Boolean))]
+        let employeesById = new Map()
+        if (employeeIds.length) {
+          const { data: employeesData, error: employeesError } = await supabase
+            .from('employees')
+            .select('id, name, surname, email')
+            .in('id', employeeIds)
+          if (employeesError) throw employeesError
+          employeesById = new Map((employeesData || []).map((employee) => [String(employee.id), employee]))
+        }
+
+        const sortedVisits = [...visits].sort((a, b) => {
+          const aTime = new Date(getVisitTimestamp(a) || 0).getTime()
+          const bTime = new Date(getVisitTimestamp(b) || 0).getTime()
+          return bTime - aTime
+        })
+        const visitMap = new Map()
+        sortedVisits.forEach((visit) => {
+          const key = String(visit.machine_id || '')
+          if (!key || visitMap.has(key)) return
+          visitMap.set(key, {
+            ...visit,
+            employees: employeesById.get(String(visit.employee_id || '')) || null
+          })
+        })
+        return visitMap
+      } catch (error) {
+        console.warn('Last machine visits failed:', error)
+        return new Map()
+      }
     }
 
     function getPrimaryTelemetryLink(links = []) {
@@ -1526,6 +1623,9 @@
           </td>
           <td data-label="Lokalita">
             <span class="cell-strong">${escapeHtml(getLocationLabel(item.location_id))}</span>
+          </td>
+          <td data-label="Poslední návštěva">
+            ${renderLastVisitCell(item.id)}
           </td>
           <td data-label="Stav">
             <span class="badge ${escapeHtml(item.status || 'ok')}">${escapeHtml(getStatusLabel(item.status))}</span>
@@ -2148,12 +2248,14 @@
         .eq('active', true)
         .eq('can_be_sold_directly', true)
         .order('name', { ascending: true })
+      const visitsQuery = loadLastMachineVisits()
 
       const [
         { data: machinesData, error: machinesError },
         { data: rulesData, error: rulesError },
-        { data: productsData, error: productsError }
-      ] = await Promise.all([machinesQuery, rulesQuery, productsQuery])
+        { data: productsData, error: productsError },
+        visitsMap
+      ] = await Promise.all([machinesQuery, rulesQuery, productsQuery, visitsQuery])
       if (machinesError) {
         machines = []
         renderSummary()
@@ -2168,6 +2270,7 @@
       machines = machinesData ?? []
       serviceRules = rulesData ?? []
       products = productsData ?? []
+      lastMachineVisits = visitsMap || new Map()
       renderProductCatalogOptions()
       machineDetailCache.clear()
       applyListFiltersFromUrl()
