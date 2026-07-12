@@ -57,21 +57,26 @@ function parseTimestamp(value: string, offset = "") {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+function pragueOffsetForIsoDate(value = "") {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return pragueOffsetForDateParts(Number(match[1]), Number(match[2]), Number(match[3]));
+}
+
 function parseWrapperTimestamp(value: string, offset = "", fallbackOffset = "") {
   const normalizedOffset = normalizeOffset(offset);
   const normalizedFallbackOffset = normalizeOffset(fallbackOffset);
-  const effectiveOffset = normalizedOffset === "+00:00" && normalizedFallbackOffset
+  const rawEffectiveOffset = normalizedOffset === "+00:00" && normalizedFallbackOffset
     ? normalizedFallbackOffset
     : normalizedOffset || normalizedFallbackOffset;
+  const pragueOffset = pragueOffsetForIsoDate(value);
+  const effectiveOffset = pragueOffset && (!rawEffectiveOffset || rawEffectiveOffset === "+00:00" || rawEffectiveOffset === "+01:00")
+    ? pragueOffset
+    : rawEffectiveOffset;
   return parseTimestamp(value, effectiveOffset);
 }
 
-function pragueOffsetForDexDate(dateValue = "") {
-  const match = String(dateValue).match(/^(\d{2})(\d{2})(\d{2})$/);
-  if (!match) return "+01:00";
-  const year = Number(match[1]) >= 70 ? 1900 + Number(match[1]) : 2000 + Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
+function pragueOffsetForDateParts(year: number, month: number, day: number) {
   const lastSunday = (targetMonth: number) => {
     const date = new Date(Date.UTC(year, targetMonth, 0));
     date.setUTCDate(date.getUTCDate() - date.getUTCDay());
@@ -84,6 +89,15 @@ function pragueOffsetForDexDate(dateValue = "") {
     month === 3 && day >= dstStartDay ||
     month === 10 && day < dstEndDay;
   return isSummer ? "+02:00" : "+01:00";
+}
+
+function pragueOffsetForDexDate(dateValue = "") {
+  const match = String(dateValue).match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return "+01:00";
+  const year = Number(match[1]) >= 70 ? 1900 + Number(match[1]) : 2000 + Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  return pragueOffsetForDateParts(year, month, day);
 }
 
 function parseDexDateTime(dateValue = "", timeValue = "", offset = "") {
