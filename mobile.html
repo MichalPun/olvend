@@ -3058,10 +3058,12 @@
 
     function getAssignedRoutePlan() {
       const activeStatuses = ['assigned', 'in_progress', 'started', 'open', 'draft']
-      return state.routePlans.find((plan) => {
-        if (plan.planning_date !== todayIso) return false
-        return activeStatuses.includes(String(plan.execution_status || 'assigned'))
-      }) || state.routePlans[0] || null
+      const doneStatuses = ['done', 'completed']
+      const todayPlans = state.routePlans.filter((plan) => String(plan.planning_date || '') === String(todayIso))
+      return todayPlans.find((plan) => activeStatuses.includes(String(plan.execution_status || 'assigned')))
+        || todayPlans.find((plan) => doneStatuses.includes(String(plan.execution_status || '')))
+        || todayPlans[0]
+        || null
     }
 
     function getRouteStops(plan) {
@@ -3411,8 +3413,11 @@
       const completedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
       const allCompleted = stops.length > 0 && completedStops === stops.length
       const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
-      const routeStatus = allCompleted ? 'Hotovo' : (String(plan.execution_status || '') === 'in_progress' ? 'Převzato' : 'Čeká')
-      const canAccept = !['in_progress', 'started', 'done', 'completed'].includes(String(plan.execution_status || ''))
+      const normalizedRouteStatus = String(plan.execution_status || '')
+      const routeAlreadyDone = ['done', 'completed'].includes(normalizedRouteStatus)
+      const routeStatus = allCompleted || routeAlreadyDone ? 'Hotovo' : (normalizedRouteStatus === 'in_progress' ? 'Převzato' : 'Čeká')
+      const canAccept = !['in_progress', 'started', 'done', 'completed'].includes(normalizedRouteStatus)
+      const canFinish = allCompleted && !routeAlreadyDone
       const stopCards = stops.map((stop) => {
         const machine = getRouteStopMachine(stop)
         const status = getRouteStopStatus(stop)
@@ -3456,11 +3461,17 @@
                 <span>${completedStops}/${stops.length || 0} zastávek hotovo</span>
               </div>
             </div>
-            <span class="badge ${allCompleted ? 'green' : 'yellow'}">${routeStatus}</span>
+            <span class="badge ${allCompleted || routeAlreadyDone ? 'green' : 'yellow'}">${routeStatus}</span>
           </div>
+          ${allCompleted || routeAlreadyDone ? `
+            <div class="attention-box">
+              <strong>Dnešní trasa je hotová.</strong>
+              <span>Zítřejší trasa se v mobilu otevře až v den plánování, aby se omylem nerozpracovala dopředu.</span>
+            </div>
+          ` : ''}
           ${canAccept ? '<button class="primary-btn" type="button" data-route-action="accept-route">Převzít trasu</button>' : ''}
           ${stopCards || '<div class="empty">Trasa nemá žádnou zastávku.</div>'}
-          ${allCompleted ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
+          ${canFinish ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
         </section>
       `
     }
@@ -3772,19 +3783,14 @@
       }
 
       const currentVehicleId = getCurrentVehicleId() || els.vehicleSelect?.value || ''
-      const activeStatuses = ['draft', 'assigned', 'in_progress']
+      const activeStatuses = ['draft', 'assigned', 'in_progress', 'started', 'open']
       const todayPlans = nearbyPlans.filter((plan) => String(plan.planning_date || '') === String(todayIso))
-      const activeTodayPlans = todayPlans.filter((plan) => activeStatuses.includes(String(plan.execution_status || 'draft')))
-      const activeNearbyPlans = nearbyPlans.filter((plan) => activeStatuses.includes(String(plan.execution_status || 'draft')))
-      const employeePlans = activeTodayPlans.filter((plan) => String(plan.planned_employee_id || '') === String(state.employee.id))
+      const employeePlans = todayPlans.filter((plan) => String(plan.planned_employee_id || '') === String(state.employee.id))
       const vehiclePlans = currentVehicleId
-        ? activeTodayPlans.filter((plan) => String(plan.vehicle_id || '') === String(currentVehicleId))
+        ? todayPlans.filter((plan) => String(plan.vehicle_id || '') === String(currentVehicleId))
         : []
-      const unassignedPlans = activeTodayPlans.filter((plan) => !plan.planned_employee_id)
-      const singleTodayPlan = activeTodayPlans.length === 1 ? activeTodayPlans : []
-      const nearbyVehiclePlans = currentVehicleId
-        ? activeNearbyPlans.filter((plan) => String(plan.vehicle_id || '') === String(currentVehicleId))
-        : []
+      const unassignedPlans = todayPlans.filter((plan) => !plan.planned_employee_id)
+      const singleTodayPlan = todayPlans.length === 1 ? todayPlans : []
 
       state.routePlans = employeePlans.length
         ? employeePlans
@@ -3794,9 +3800,7 @@
             ? unassignedPlans
             : singleTodayPlan.length
               ? singleTodayPlan
-              : nearbyVehiclePlans.length === 1
-                ? nearbyVehiclePlans
-                : []
+              : []
 
       state.routePlanDiagnostics = {
         reason: state.routePlans.length
@@ -3804,11 +3808,11 @@
           : todayPlans.length
             ? 'Dnešní trasy existují, ale nejsou jednoznačně přiřazené k tobě ani k autu směny.'
             : nearbyPlans.length
-              ? 'V okolí dneška trasy existují, ale žádná není založená přesně na dnešní datum.'
+              ? 'V okolí dneška trasy existují, ale mobil dnes otevírá jen trasu s dnešním datem.'
               : 'V PC jsem pro dnešek ani okolní dny nenašel žádnou uloženou trasu.',
         totalNearby: nearbyPlans.length,
         todayCount: todayPlans.length,
-        activeTodayCount: activeTodayPlans.length,
+        activeTodayCount: todayPlans.filter((plan) => activeStatuses.includes(String(plan.execution_status || 'draft'))).length,
         currentVehicleId: currentVehicleId || '',
         dates: [...new Set(nearbyPlans.map((plan) => plan.planning_date).filter(Boolean))],
         titles: nearbyPlans.slice(0, 4).map((plan) => `${plan.planning_date || '-'} · ${plan.title || 'Bez názvu'} · ${plan.execution_status || 'draft'}`)
@@ -4436,6 +4440,15 @@
         result = await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
       }
       if (result.error) throw result.error
+      const savedFinalQuantity = Number(result.data.final_quantity ?? row.final_quantity ?? finalQty)
+      if (Number.isFinite(savedFinalQuantity)) {
+        const { error: containerError } = await supabase
+          .from('machine_coffee_containers')
+          .update({ current_quantity: savedFinalQuantity })
+          .eq('id', container.id)
+        if (containerError) throw containerError
+        container.current_quantity = savedFinalQuantity
+      }
       detail.visitItems = [
         ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
         result.data
