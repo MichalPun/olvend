@@ -1457,6 +1457,123 @@
         background: rgba(15, 23, 42, 0.04) !important;
         border-color: rgba(15, 23, 42, 0.08) !important;
       }
+
+      :root[data-olvend-theme="light"] .modal,
+      :root[data-olvend-theme="light"] .modal-card,
+      :root[data-olvend-theme="light"] .modal-shell,
+      :root[data-olvend-theme="light"] .dialog,
+      :root[data-olvend-theme="light"] .dialog-card {
+        background: #f8fafc !important;
+        color: #17212b !important;
+        border-color: rgba(15, 23, 42, 0.14) !important;
+        box-shadow: 0 28px 80px rgba(15, 23, 42, 0.22) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal-header,
+      :root[data-olvend-theme="light"] .modal-footer,
+      :root[data-olvend-theme="light"] .modal-head,
+      :root[data-olvend-theme="light"] .modal-body,
+      :root[data-olvend-theme="light"] .panel-header,
+      :root[data-olvend-theme="light"] .table-header {
+        border-color: rgba(15, 23, 42, 0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal h1,
+      :root[data-olvend-theme="light"] .modal h2,
+      :root[data-olvend-theme="light"] .modal h3,
+      :root[data-olvend-theme="light"] .modal h4,
+      :root[data-olvend-theme="light"] .modal h5,
+      :root[data-olvend-theme="light"] .modal strong,
+      :root[data-olvend-theme="light"] .modal td,
+      :root[data-olvend-theme="light"] .modal th,
+      :root[data-olvend-theme="light"] .modal label,
+      :root[data-olvend-theme="light"] .modal .summary-box-value,
+      :root[data-olvend-theme="light"] .modal .sales-summary-value,
+      :root[data-olvend-theme="light"] .modal .detail-sheet-value,
+      :root[data-olvend-theme="light"] .modal .detail-list-value,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-meta-value {
+        color: #17212b !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal p,
+      :root[data-olvend-theme="light"] .modal .subtext,
+      :root[data-olvend-theme="light"] .modal .helper-line,
+      :root[data-olvend-theme="light"] .modal .sales-summary-note,
+      :root[data-olvend-theme="light"] .modal .summary-box-label,
+      :root[data-olvend-theme="light"] .modal .sales-summary-label,
+      :root[data-olvend-theme="light"] .modal .field label,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-meta-note,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-meta-label {
+        color: #475467 !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal input,
+      :root[data-olvend-theme="light"] .modal select,
+      :root[data-olvend-theme="light"] .modal textarea {
+        background: #ffffff !important;
+        border-color: rgba(15, 23, 42, 0.18) !important;
+        color: #101828 !important;
+        box-shadow: inset 0 1px 0 rgba(15, 23, 42, 0.02) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal input:focus,
+      :root[data-olvend-theme="light"] .modal select:focus,
+      :root[data-olvend-theme="light"] .modal textarea:focus {
+        border-color: rgba(213, 16, 26, 0.55) !important;
+        box-shadow: 0 0 0 3px rgba(213, 16, 26, 0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal .summary-box,
+      :root[data-olvend-theme="light"] .modal .sales-summary-card,
+      :root[data-olvend-theme="light"] .modal .sales-summary-item,
+      :root[data-olvend-theme="light"] .modal .transfer-line-row,
+      :root[data-olvend-theme="light"] .modal .config-table-row,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-request-card,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-detail,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-add-line,
+      :root[data-olvend-theme="light"] .modal .mini-excel-table,
+      :root[data-olvend-theme="light"] .modal tr {
+        background: #ffffff !important;
+        border-color: rgba(15, 23, 42, 0.12) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal th {
+        background: #eef2f7 !important;
+        color: #344054 !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal .badge.good,
+      :root[data-olvend-theme="light"] .modal .mobile-pick-source-label,
+      :root[data-olvend-theme="light"] .modal .stock-ok,
+      :root[data-olvend-theme="light"] .modal .status-ok {
+        color: #027a48 !important;
+        background: rgba(46, 204, 113, 0.12) !important;
+        border-color: rgba(46, 204, 113, 0.34) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal .badge.warn,
+      :root[data-olvend-theme="light"] .modal .helper-line.warn,
+      :root[data-olvend-theme="light"] .modal .status-warning {
+        color: #b54708 !important;
+        background: rgba(255, 182, 72, 0.12) !important;
+        border-color: rgba(255, 182, 72, 0.36) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal .badge.bad,
+      :root[data-olvend-theme="light"] .modal .helper-line.error,
+      :root[data-olvend-theme="light"] .modal .status-error {
+        color: #b42318 !important;
+        background: rgba(255, 91, 102, 0.1) !important;
+        border-color: rgba(255, 91, 102, 0.36) !important;
+      }
+
+      :root[data-olvend-theme="light"] .modal .close-btn,
+      :root[data-olvend-theme="light"] .modal .modal-close-btn,
+      :root[data-olvend-theme="light"] .modal .icon-btn {
+        color: #17212b !important;
+        background: rgba(15, 23, 42, 0.04) !important;
+        border-color: rgba(15, 23, 42, 0.14) !important;
+      }
     `;
 
     document.head.appendChild(style);
