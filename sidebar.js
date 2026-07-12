@@ -92,13 +92,6 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
-    "routes-history.html": {
-      currentLabel: "Vytvořené trasy",
-      activeKey: "routes",
-      versionLabel: "Aktuální verze",
-      versionValue: APP_VERSION,
-      versionNote: ""
-    },
     "controlling.html": {
       currentLabel: "Kontrolní trasy",
       activeKey: "controlling",
