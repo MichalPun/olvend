@@ -1903,6 +1903,13 @@
         return
       }
 
+      const telemetry = plan.telemetryRevenue || {}
+      const revenue = Number(telemetry.revenue || 0)
+      const cashAmount = Number(telemetry.cashAmount || 0)
+      const cashlessAmount = Number(telemetry.cashlessAmount || 0)
+      const unknownAmount = Number(telemetry.unknownAmount || 0)
+      const telemetryNote = `${formatTelemetryFreshness(telemetry.lastSeen)} · ${formatMachineCountLabel(telemetry.machineCount || 0)}`
+
       routeSummaryGrid.innerHTML = `
         <div class="summary-box">
           <div class="summary-box-label">Zastávky</div>
@@ -1918,6 +1925,21 @@
           <div class="summary-box-label">Servisní čas</div>
           <div class="summary-box-value">${formatNumber(plan.estimatedServiceMinutes)}</div>
           <div class="summary-box-note">${escapeHtml(getSelectedEmployeeLabel())}</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-box-label">Očekávaná tržba</div>
+          <div class="summary-box-value">${escapeHtml(formatMoney(revenue))}</div>
+          <div class="summary-box-note">${escapeHtml(telemetryNote)}</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-box-label">Hotově</div>
+          <div class="summary-box-value">${escapeHtml(formatMoney(cashAmount))}</div>
+          <div class="summary-box-note">Očekávaný odvod hotovosti.</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-box-label">Kartou</div>
+          <div class="summary-box-value">${escapeHtml(formatMoney(cashlessAmount))}</div>
+          <div class="summary-box-note">${unknownAmount > 0 ? escapeHtml(`Neznámé platby ${formatMoney(unknownAmount)}.`) : 'Bezhotovostní prodeje.'}</div>
         </div>
       `
 
@@ -2081,6 +2103,89 @@
       return date.toLocaleDateString('cs-CZ')
     }
 
+    function formatMoney(value) {
+      return new Intl.NumberFormat('cs-CZ', {
+        style: 'currency',
+        currency: 'CZK',
+        maximumFractionDigits: 0,
+      }).format(Number(value || 0))
+    }
+
+    function formatTelemetryFreshness(value) {
+      if (!value) return 'Bez online záznamu'
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return 'Online telemetrie'
+      return `Online k ${date.toLocaleString('cs-CZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+    }
+
+    function formatMachineCountLabel(count) {
+      const value = Number(count || 0)
+      if (value === 1) return '1 automat'
+      if (value >= 2 && value <= 4) return `${formatNumber(value)} automaty`
+      return `${formatNumber(value)} automatů`
+    }
+
+    function getMachineIdsForStop(stop) {
+      const ids = new Set()
+      const addId = (value) => {
+        if (value == null || value === '') return
+        ids.add(String(value))
+      }
+
+      addId(stop.machineId)
+      addId(stop.machine_id)
+      stop.requests?.forEach((request) => addId(request.machine_id))
+
+      const hasSpecificMachine = ids.size > 0
+      const locationId = stop.locationId ?? stop.location_id ?? (hasSpecificMachine ? null : stop.id)
+      if (!hasSpecificMachine && locationId != null) {
+        state.machines
+          .filter((machine) => String(machine.location_id || '') === String(locationId))
+          .forEach((machine) => addId(machine.id))
+      }
+
+      return [...ids]
+    }
+
+    async function loadTelemetryRevenueForPlan(plan) {
+      const machineIds = [...new Set((plan?.orderedStops || []).flatMap(getMachineIdsForStop))]
+      if (!machineIds.length) {
+        return {
+          machineCount: 0,
+          revenue: 0,
+          cashAmount: 0,
+          cashlessAmount: 0,
+          unknownAmount: 0,
+          lastSeen: null,
+          source: 'telemetry_sales_events',
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('telemetry_sales_events')
+        .select('machine_id, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at')
+        .in('machine_id', machineIds)
+        .order('source_event_at', { ascending: false })
+
+      if (error) throw error
+
+      const rows = data || []
+      return {
+        machineCount: machineIds.length,
+        revenue: rows.reduce((sum, row) => {
+          const total = row.total_amount_czk != null
+            ? Number(row.total_amount_czk || 0)
+            : Number(row.cash_amount_czk || 0) + Number(row.cashless_amount_czk || 0) + Number(row.unknown_payment_amount_czk || 0)
+          return sum + total
+        }, 0),
+        cashAmount: rows.reduce((sum, row) => sum + Number(row.cash_amount_czk || 0), 0),
+        cashlessAmount: rows.reduce((sum, row) => sum + Number(row.cashless_amount_czk || 0), 0),
+        unknownAmount: rows.reduce((sum, row) => sum + Number(row.unknown_payment_amount_czk || 0), 0),
+        lastSeen: rows[0]?.source_event_at || null,
+        source: 'telemetry_sales_events',
+      }
+    }
+
     function getSavedPlanEmployeeLabel(plan) {
       const payloadName = plan?.route_payload?.planned_employee_name
       if (payloadName && payloadName !== 'Bez výběru') return payloadName
@@ -2168,6 +2273,7 @@
         estimatedDistanceKm: Number(plan.estimated_distance_km ?? payload.estimatedDistanceKm ?? 0),
         estimatedDriveMinutes: Number(plan.estimated_drive_minutes ?? payload.estimatedDriveMinutes ?? 0),
         estimatedServiceMinutes: Number(payload.estimatedServiceMinutes ?? orderedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0)),
+        telemetryRevenue: payload.telemetryRevenue || plan.telemetryRevenue || null,
       }
     }
 
@@ -3056,6 +3162,7 @@
           current_position: state.currentPosition,
           provider: state.currentPlan.provider,
           google: state.currentPlan.google || null,
+          telemetryRevenue: state.currentPlan.telemetryRevenue || null,
         },
         created_by: employeeId,
       }
@@ -3654,6 +3761,14 @@
           engineBadge.textContent = 'Odhad'
           engineBadge.className = 'route-badge heuristic'
           setStatus(`Google teď není dostupný, takže jsem použil přibližný výpočet. ${message}`, 'warning')
+        }
+
+        try {
+          plan.telemetryRevenue = await loadTelemetryRevenueForPlan(plan)
+        } catch (telemetryError) {
+          console.warn('Route telemetry revenue failed:', telemetryError)
+          plan.telemetryRevenue = null
+          setStatus('Trasa je spočítaná, ale online tržbu se teď nepodařilo načíst.', 'warning')
         }
 
         state.currentPlan = plan
