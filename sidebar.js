@@ -1574,6 +1574,105 @@
         background: rgba(15, 23, 42, 0.04) !important;
         border-color: rgba(15, 23, 42, 0.14) !important;
       }
+
+      :root[data-olvend-theme="light"] .panel,
+      :root[data-olvend-theme="light"] .panel-shell,
+      :root[data-olvend-theme="light"] .table-shell,
+      :root[data-olvend-theme="light"] .table-wrap,
+      :root[data-olvend-theme="light"] .summary-box,
+      :root[data-olvend-theme="light"] .summary-card,
+      :root[data-olvend-theme="light"] .stat-card,
+      :root[data-olvend-theme="light"] .content-card,
+      :root[data-olvend-theme="light"] .widget,
+      :root[data-olvend-theme="light"] .card {
+        background: #ffffff !important;
+        border-color: rgba(15, 23, 42, 0.12) !important;
+        box-shadow: 0 16px 38px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      :root[data-olvend-theme="light"] thead,
+      :root[data-olvend-theme="light"] th,
+      :root[data-olvend-theme="light"] .stock-excel-table th,
+      :root[data-olvend-theme="light"] .dashboard-table th,
+      :root[data-olvend-theme="light"] .excel-table th {
+        background: #eef2f7 !important;
+        color: #344054 !important;
+        border-color: rgba(15, 23, 42, 0.14) !important;
+      }
+
+      :root[data-olvend-theme="light"] tbody tr,
+      :root[data-olvend-theme="light"] .stock-excel-table tbody tr,
+      :root[data-olvend-theme="light"] .dashboard-table tbody tr,
+      :root[data-olvend-theme="light"] .excel-table tbody tr {
+        background: #ffffff !important;
+      }
+
+      :root[data-olvend-theme="light"] tbody tr:nth-child(even),
+      :root[data-olvend-theme="light"] .stock-excel-table tbody tr:nth-child(even),
+      :root[data-olvend-theme="light"] .dashboard-table tbody tr:nth-child(even),
+      :root[data-olvend-theme="light"] .excel-table tbody tr:nth-child(even) {
+        background: #f8fafc !important;
+      }
+
+      :root[data-olvend-theme="light"] tbody tr:hover,
+      :root[data-olvend-theme="light"] .stock-excel-table tbody tr:hover,
+      :root[data-olvend-theme="light"] .dashboard-table tbody tr:hover,
+      :root[data-olvend-theme="light"] .excel-table tbody tr:hover {
+        background: #f1f5f9 !important;
+      }
+
+      :root[data-olvend-theme="light"] td,
+      :root[data-olvend-theme="light"] td strong,
+      :root[data-olvend-theme="light"] .summary-box-value,
+      :root[data-olvend-theme="light"] .stat-value,
+      :root[data-olvend-theme="light"] .kpi-value {
+        color: #17212b !important;
+      }
+
+      :root[data-olvend-theme="light"] .summary-box-label,
+      :root[data-olvend-theme="light"] .summary-box-note,
+      :root[data-olvend-theme="light"] .subtext,
+      :root[data-olvend-theme="light"] .status-line,
+      :root[data-olvend-theme="light"] .table-note {
+        color: #475467 !important;
+      }
+
+      :root[data-olvend-theme="light"] .status-line.success {
+        color: #067647 !important;
+        font-weight: 800 !important;
+      }
+
+      :root[data-olvend-theme="light"] .status-line.error {
+        color: #b42318 !important;
+        font-weight: 800 !important;
+      }
+
+      :root[data-olvend-theme="light"] .badge.ok,
+      :root[data-olvend-theme="light"] .badge.active,
+      :root[data-olvend-theme="light"] .badge.good,
+      :root[data-olvend-theme="light"] .badge.success {
+        color: #027a48 !important;
+        background: rgba(46, 204, 113, 0.14) !important;
+        border-color: rgba(46, 204, 113, 0.36) !important;
+      }
+
+      :root[data-olvend-theme="light"] .badge.service_needed,
+      :root[data-olvend-theme="light"] .badge.return_with_part,
+      :root[data-olvend-theme="light"] .badge.warn,
+      :root[data-olvend-theme="light"] .badge.warning {
+        color: #b54708 !important;
+        background: rgba(255, 182, 72, 0.14) !important;
+        border-color: rgba(255, 182, 72, 0.38) !important;
+      }
+
+      :root[data-olvend-theme="light"] .badge.offline,
+      :root[data-olvend-theme="light"] .badge.inactive,
+      :root[data-olvend-theme="light"] .badge.bad,
+      :root[data-olvend-theme="light"] .badge.danger {
+        color: #b42318 !important;
+        background: rgba(255, 91, 102, 0.12) !important;
+        border-color: rgba(255, 91, 102, 0.38) !important;
+      }
     `;
 
     document.head.appendChild(style);
