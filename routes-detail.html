@@ -693,6 +693,7 @@
       vehicles: [],
       warehouses: [],
       cashReports: [],
+      mobileVisits: [],
       routeVehicleLog: null,
       map: null,
       mapLayer: null,
@@ -797,18 +798,42 @@
       return state.cashReports.find((report) => String(report.machine_id) === String(machineId)) || null
     }
 
-    function getCashDifferenceClass(value) {
-      const number = Number(value || 0)
-      if (number > 0) return 'positive'
-      if (number < 0) return 'negative'
-      return ''
+    function getMobileVisitForMachine(machineId) {
+      return state.mobileVisits.find((visit) => String(visit.machine_id) === String(machineId)) || null
     }
 
-    function getStopForCashMachine(machineId, locationId) {
-      const stops = Array.isArray(state.plan?.orderedStops) ? state.plan.orderedStops : []
-      return stops.find((stop) => String(stop.machine_id || stop.machineId || '') === String(machineId)) ||
-        stops.find((stop) => locationId && String(stop.location_id || stop.locationId || '') === String(locationId)) ||
-        null
+    function getVisitCashReport(visit) {
+      if (!visit) return null
+      const nested = visit.route_machine_cash_reports
+      if (Array.isArray(nested)) return nested[0] || null
+      return nested || null
+    }
+
+    function getMobileVisitStatusLabel(visit) {
+      const status = String(visit?.status || '').toLowerCase()
+      const map = {
+        draft: 'Rozpracováno',
+        arrived: 'Na místě',
+        completed: 'Hotovo',
+        skipped: 'Přeskočeno',
+        sync_error: 'Chyba sync',
+      }
+      return visit ? (map[status] || status || 'Zapsáno') : 'Čeká na mobil'
+    }
+
+    function getMobileCashStatusLabel(visit, cashReport) {
+      if (!visit) return 'Čeká na mobil'
+      if (!cashReport) return 'Bez zápisu hotovosti'
+      return cashReport.operator_collected_confirmed ? 'Vybráno v mobilu' : 'Nevybráno v mobilu'
+    }
+
+    function getCashRuleNote(expectedCash, cashReport) {
+      const cash = Number(expectedCash || 0)
+      if (cash <= 100) return 'Pravidlo: do 100 Kč nevybírat'
+      if (!cashReport) return 'Nad 100 Kč čekáme výběr nebo důvod'
+      return cashReport.operator_collected_confirmed
+        ? 'Výběr potvrzený v mobilu'
+        : 'Nad 100 Kč nevybráno - zkontrolovat důvod'
     }
 
     function renderCashReportSection(plan) {
@@ -821,7 +846,7 @@
           <div class="panel-header">
             <div>
               <h2>Svoz hotovosti</h2>
-              <p>Označ, jestli se hotovost opravdu svezla. Nesvezená hotovost se přičte do očekávání při další trase.</p>
+              <p>Kontrola z mobilní aplikace. Operátorka potvrzuje výběr a sáček v mobilu, desktop tady jen vyhodnocuje.</p>
             </div>
           </div>
           <div class="panel-body">
@@ -832,10 +857,12 @@
                     <tr>
                       <th>Automat</th>
                       <th>Lokalita</th>
+                      <th>Návštěva v mobilu</th>
+                      <th>Svoz v mobilu</th>
                       <th class="numeric">Oček. hotovost</th>
                       <th class="numeric">Kartou</th>
-                      <th>Stav svozu</th>
-                      <th class="numeric">Skutečně</th>
+                      <th>Sáček</th>
+                      <th class="numeric">Reálně dovezeno</th>
                       <th>Rozdíl</th>
                       <th>Poznámka</th>
                       <th>Akce</th>
@@ -843,34 +870,35 @@
                   </thead>
                   <tbody>
                     ${breakdown.map((row) => {
-                      const report = getCashReport(row.machineId)
-                      const status = report?.collection_status || 'pending'
-                      const expectedCash = Number(row.expectedCashCzk || report?.expected_cash_czk || 0)
-                      const expectedCard = Number(row.expectedCardCzk || report?.expected_card_czk || 0)
-                      const actualCash = report?.actual_cash_czk ?? ''
-                      const diff = report?.difference_cash_czk
-                      const diffText = status === 'collected' && diff != null
+                      const legacyReport = getCashReport(row.machineId)
+                      const visit = getMobileVisitForMachine(row.machineId)
+                      const mobileCash = getVisitCashReport(visit)
+                      const expectedCash = Number(mobileCash?.expected_cash_czk ?? row.expectedCashCzk ?? legacyReport?.expected_cash_czk ?? 0)
+                      const expectedCard = Number(mobileCash?.expected_card_czk ?? row.expectedCardCzk ?? legacyReport?.expected_card_czk ?? 0)
+                      const countedCash = mobileCash?.supervisor_counted_cash_czk ?? legacyReport?.actual_cash_czk ?? null
+                      const diff = mobileCash?.difference_cash_czk ?? legacyReport?.difference_cash_czk ?? null
+                      const diffText = diff != null
                         ? `${Number(diff) > 0 ? '+' : ''}${formatMoney(diff)}`
-                        : status === 'not_collected'
-                          ? 'Přenese se dál'
-                          : 'Neuloženo'
+                        : mobileCash?.operator_collected_confirmed === false
+                          ? 'Nesvezeno'
+                          : 'Čeká'
+                      const cashRuleNote = getCashRuleNote(expectedCash, mobileCash)
                       return `
                         <tr>
                           <td><strong>${escapeHtml(row.machineName || `Stroj ${row.machineId}`)}</strong></td>
                           <td class="muted-cell">${escapeHtml(row.locationName || 'Bez lokality')}</td>
+                          <td>${escapeHtml(getMobileVisitStatusLabel(visit))}</td>
+                          <td>${escapeHtml(getMobileCashStatusLabel(visit, mobileCash))}</td>
                           <td class="numeric strong-number">${escapeHtml(formatMoney(expectedCash))}</td>
                           <td class="numeric">${escapeHtml(formatMoney(expectedCard))}</td>
+                          <td>${escapeHtml(mobileCash?.operator_bag_label || '—')}</td>
+                          <td>${visit ? `<input data-supervisor-cash="${escapeHtml(visit.id)}" type="number" step="1" min="0" value="${escapeHtml(countedCash ?? '')}" placeholder="${mobileCash?.operator_collected_confirmed ? escapeHtml(String(Math.round(expectedCash))) : '0'}" />` : '—'}</td>
+                          <td class="${escapeHtml(getDiffClass(diff))}">${escapeHtml(diffText)}</td>
                           <td>
-                            <select data-cash-status="${escapeHtml(row.machineId)}">
-                              <option value="pending"${status === 'pending' ? ' selected' : ''}>Čeká</option>
-                              <option value="collected"${status === 'collected' ? ' selected' : ''}>Svezeno</option>
-                              <option value="not_collected"${status === 'not_collected' ? ' selected' : ''}>Nesvezeno</option>
-                            </select>
+                            <div class="muted-cell">${escapeHtml(cashRuleNote)}</div>
+                            ${visit ? `<input data-supervisor-note="${escapeHtml(visit.id)}" type="text" value="${escapeHtml(mobileCash?.note || legacyReport?.note || '')}" placeholder="např. chybí 50 Kč" />` : escapeHtml('Čeká na mobilní zápis.')}
                           </td>
-                          <td><input data-cash-actual="${escapeHtml(row.machineId)}" type="number" step="1" min="0" value="${escapeHtml(actualCash)}" placeholder="${escapeHtml(String(Math.round(expectedCash)))}" /></td>
-                          <td class="${escapeHtml(getCashDifferenceClass(diff))}">${escapeHtml(diffText)}</td>
-                          <td><input data-cash-note="${escapeHtml(row.machineId)}" type="text" value="${escapeHtml(report?.note || '')}" placeholder="např. chybí 50 Kč" /></td>
-                          <td><button class="btn secondary" type="button" data-save-cash-report="${escapeHtml(row.machineId)}">Uložit</button></td>
+                          <td>${visit ? `<button class="btn secondary" type="button" data-save-supervisor-cash="${escapeHtml(visit.id)}" data-cash-report-id="${escapeHtml(mobileCash?.id || '')}" data-machine-id="${escapeHtml(row.machineId)}" data-expected-cash="${escapeHtml(expectedCash)}" data-expected-card="${escapeHtml(expectedCard)}">Uložit přepočet</button>` : '—'}</td>
                         </tr>
                       `
                     }).join('')}
@@ -1277,8 +1305,8 @@
 
       document.getElementById('markDoneBtn')?.addEventListener('click', () => updateRouteStatus('done'))
       document.getElementById('cancelRouteBtn')?.addEventListener('click', () => updateRouteStatus('cancelled'))
-      detailShell.querySelectorAll('[data-save-cash-report]').forEach((button) => {
-        button.addEventListener('click', () => saveCashReport(button.dataset.saveCashReport))
+      detailShell.querySelectorAll('[data-save-supervisor-cash]').forEach((button) => {
+        button.addEventListener('click', () => saveSupervisorCashCount(button))
       })
     }
 
@@ -1317,6 +1345,24 @@
       }
 
       state.cashReports = data || []
+    }
+
+    async function loadMobileRouteExecution(routePlanId) {
+      state.mobileVisits = []
+      if (!Number.isFinite(Number(routePlanId))) return
+
+      const { data, error } = await supabase
+        .from('route_machine_visits')
+        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, status, arrived_at, completed_at, skipped_at, skip_reason, operator_note, synced_at, route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, supervisor_counted_cash_czk, difference_cash_czk, note)')
+        .eq('route_plan_id', Number(routePlanId))
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        if (/route_machine_visits|route_machine_cash_reports/i.test(String(error.message || ''))) return
+        throw error
+      }
+
+      state.mobileVisits = data || []
     }
 
     async function loadRouteVehicleLog(plan) {
@@ -1368,77 +1414,79 @@
       }
     }
 
-    async function saveCashReport(machineId) {
-      if (!state.plan || !Number.isFinite(Number(state.plan.id))) {
-        setStatus('Svoz hotovosti jde uložit jen u trasy uložené v OLVEND.', 'warning')
+    async function getCurrentEmployeeId() {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession()
+        const authUserId = sessionData?.session?.user?.id
+        if (!authUserId) return null
+
+        const { data, error } = await supabase
+          .from('employees')
+          .select('id')
+          .eq('auth_user_id', authUserId)
+          .maybeSingle()
+
+        if (error) return null
+        return data?.id || null
+      } catch (error) {
+        console.warn('Current employee lookup failed:', error)
+        return null
+      }
+    }
+
+    async function saveSupervisorCashCount(button) {
+      const visitId = button?.dataset?.saveSupervisorCash
+      const reportId = button?.dataset?.cashReportId
+      const machineId = button?.dataset?.machineId
+      if (!visitId || !machineId) return
+
+      const cashInput = detailShell.querySelector(`[data-supervisor-cash="${CSS.escape(String(visitId))}"]`)
+      const noteInput = detailShell.querySelector(`[data-supervisor-note="${CSS.escape(String(visitId))}"]`)
+      const cashText = String(cashInput?.value || '').trim()
+      const countedCash = cashText ? Number(cashText) : null
+
+      if (cashText && !Number.isFinite(countedCash)) {
+        setStatus('Reálně dovezená hotovost musí být číslo.', 'warning')
         return
       }
 
-      const breakdown = Array.isArray(state.plan.telemetryRevenue?.machineBreakdown)
-        ? state.plan.telemetryRevenue.machineBreakdown
-        : []
-      const row = breakdown.find((item) => String(item.machineId) === String(machineId))
-      if (!row) return
-
-      const status = detailShell.querySelector(`[data-cash-status="${CSS.escape(String(machineId))}"]`)?.value || 'pending'
-      const actualInput = detailShell.querySelector(`[data-cash-actual="${CSS.escape(String(machineId))}"]`)
-      const noteInput = detailShell.querySelector(`[data-cash-note="${CSS.escape(String(machineId))}"]`)
-      const expectedCash = Number(row.expectedCashCzk || 0)
-      const expectedCard = Number(row.expectedCardCzk || 0)
-      const expectedTotal = Number(row.expectedTotalCzk || 0)
-      const actualText = String(actualInput?.value || '').trim()
-      const actualCash = status === 'collected'
-        ? (actualText ? Number(actualText) : expectedCash)
-        : null
-      const stop = getStopForCashMachine(machineId, row.locationId)
-
-      if (status === 'collected' && !Number.isFinite(actualCash)) {
-        setStatus('Skutečně převzatá hotovost musí být číslo.', 'warning')
-        return
-      }
-
+      const expectedCash = Number(button.dataset.expectedCash || 0)
+      const expectedCard = Number(button.dataset.expectedCard || 0)
+      const supervisorId = await getCurrentEmployeeId()
       const payload = {
-        route_plan_id: Number(state.plan.id),
-        route_plan_stop_id: stop?.id && Number.isFinite(Number(stop.id)) ? Number(stop.id) : null,
-        machine_id: Number(machineId),
-        location_id: row.locationId ? Number(row.locationId) : null,
-        collection_status: status,
-        expected_cash_czk: expectedCash,
-        expected_card_czk: expectedCard,
-        expected_total_czk: expectedTotal,
-        actual_cash_czk: actualCash,
-        telemetry_from_at: row.telemetryFromAt || null,
-        telemetry_to_at: row.lastSeen || null,
-        reported_at: new Date().toISOString(),
+        supervisor_counted_cash_czk: countedCash,
+        supervisor_counted_by: supervisorId,
+        supervisor_counted_at: new Date().toISOString(),
         note: String(noteInput?.value || '').trim() || null,
       }
 
       try {
-        const { data, error } = await supabase
-          .from('route_cash_reports')
-          .upsert(payload, { onConflict: 'route_plan_id,machine_id' })
-          .select('id, route_plan_id, route_plan_stop_id, machine_id, location_id, collection_status, expected_cash_czk, expected_card_czk, expected_total_czk, actual_cash_czk, difference_cash_czk, telemetry_from_at, telemetry_to_at, reported_at, note')
-          .single()
+        let result
+        if (reportId) {
+          result = await supabase
+            .from('route_machine_cash_reports')
+            .update(payload)
+            .eq('id', Number(reportId))
+        } else {
+          result = await supabase
+            .from('route_machine_cash_reports')
+            .insert([{
+              ...payload,
+              visit_id: Number(visitId),
+              machine_id: Number(machineId),
+              expected_cash_czk: expectedCash,
+              expected_card_czk: expectedCard,
+              expected_total_czk: expectedCash + expectedCard,
+            }])
+        }
 
-        if (error) throw error
-
-        state.cashReports = [
-          data,
-          ...state.cashReports.filter((report) => String(report.machine_id) !== String(machineId)),
-        ]
-
-        setStatus(
-          status === 'not_collected'
-            ? 'Uloženo jako nesvezeno. Tahle hotovost se přičte do další trasy.'
-            : status === 'collected'
-              ? `Svoz uložen. Rozdíl: ${formatMoney(data.difference_cash_czk || 0)}.`
-              : 'Stav svozu je uložený.',
-          status === 'not_collected' ? 'warning' : 'success'
-        )
+        if (result.error) throw result.error
+        setStatus('Přepočet hotovosti je uložený.', 'success')
+        await loadMobileRouteExecution(state.plan?.id)
         renderDetail()
       } catch (error) {
         console.error(error)
-        setStatus(`Nepodařilo se uložit svoz hotovosti: ${error.message || error}`, 'error')
+        setStatus(`Nepodařilo se uložit přepočet hotovosti: ${error.message || error}`, 'error')
       }
     }
 
@@ -1446,6 +1494,7 @@
       if (!routeId) {
         state.plan = null
         state.cashReports = []
+        state.mobileVisits = []
         state.routeVehicleLog = null
         return
       }
@@ -1462,6 +1511,7 @@
           state.plan = buildPlan(data)
           await Promise.all([
             loadCashReports(data.id),
+            loadMobileRouteExecution(data.id),
             loadRouteVehicleLog(state.plan),
           ])
           return
@@ -1476,6 +1526,7 @@
       const localPlan = localPlans.find((item) => getPlanKey(item) === routeId)
       state.plan = localPlan ? buildPlan(localPlan) : null
       state.cashReports = []
+      state.mobileVisits = []
       state.routeVehicleLog = null
     }
 
