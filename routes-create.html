@@ -2722,6 +2722,59 @@
       }
     }
 
+    function findCandidateForRouteStop(stop) {
+      if (!stop) return null
+      const identifiers = [
+        stop.key,
+        stop.stopKey,
+        stop.machineId != null ? `machine-${stop.machineId}` : null,
+        stop.machine_id != null ? `machine-${stop.machine_id}` : null,
+        stop.locationId != null ? `location-${stop.locationId}` : null,
+        stop.location_id != null ? `location-${stop.location_id}` : null,
+      ].filter(Boolean).map(String)
+
+      for (const key of identifiers) {
+        const exact = state.candidates.find((candidate) => String(candidate.key) === key)
+        if (exact) return exact
+      }
+
+      if (stop.stopKind === 'service_request' || stop.stopKind === 'manual' || stop.machineId != null || stop.machine_id != null) {
+        const machineId = stop.machineId ?? stop.machine_id ?? stop.id
+        const machineMatch = state.candidates.find((candidate) => candidate.machineId != null && String(candidate.machineId) === String(machineId))
+        if (machineMatch) return machineMatch
+      }
+
+      const locationId = stop.locationId ?? stop.location_id ?? stop.id
+      return state.candidates.find((candidate) => candidate.machineId == null && String(candidate.locationId ?? candidate.id) === String(locationId)) || null
+    }
+
+    function enrichRouteStop(stop, fallbackCandidate = null) {
+      const sourceStop = stop && typeof stop === 'object' ? stop : {}
+      const candidate = findCandidateForRouteStop(sourceStop) || fallbackCandidate
+      const merged = candidate ? { ...candidate, ...sourceStop } : { ...sourceStop }
+      const stableKey = merged.key || candidate?.key || (
+        merged.machineId != null ? `machine-${merged.machineId}` :
+          merged.machine_id != null ? `machine-${merged.machine_id}` :
+            merged.locationId != null ? `location-${merged.locationId}` :
+              merged.location_id != null ? `location-${merged.location_id}` : ''
+      )
+
+      return {
+        ...merged,
+        key: stableKey,
+        name: merged.name || candidate?.name || 'Neznámá zastávka',
+        city: merged.city || candidate?.city || '',
+        address: merged.address || candidate?.address || '',
+        latitude: merged.latitude ?? candidate?.latitude ?? null,
+        longitude: merged.longitude ?? candidate?.longitude ?? null,
+        parentLocationName: merged.parentLocationName || candidate?.parentLocationName || '',
+        effectivePriority: merged.effectivePriority || candidate?.effectivePriority || 'normal',
+        routeNote: merged.routeNote || candidate?.routeNote || '',
+        openRequestCount: Number(merged.openRequestCount ?? candidate?.openRequestCount ?? 0),
+        matchesSelectedDay: Boolean(merged.matchesSelectedDay ?? candidate?.matchesSelectedDay ?? false),
+      }
+    }
+
     function buildGoogleDepartureTime(dateString) {
       const now = new Date()
       const planned = new Date(`${dateString}T07:00:00`)
@@ -2761,8 +2814,13 @@
       const payload = {
         origin: startPoint,
         stops: selectedStops.map((stop) => ({
+          key: stop.key,
           id: stop.id,
+          locationId: stop.locationId,
+          machineId: stop.machineId,
+          stopKind: stop.stopKind,
           name: stop.name,
+          parentLocationName: stop.parentLocationName,
           city: stop.city,
           address: stop.address,
           latitude: stop.latitude,
@@ -2827,11 +2885,17 @@
         throw new Error(data.error)
       }
 
-      const orderedStops = (data?.orderedStops || []).map((stop) => ({
-        ...stop,
-        distanceFromPreviousKm: Number(stop.googleLegDistanceMeters || 0) / 1000,
-        estimatedServiceMinutes: estimateServiceMinutes(stop),
-      }))
+      const orderedStops = (data?.orderedStops || []).map((stop, orderedIndex) => {
+        const originalIndex = stop && typeof stop === 'object' && stop.originalIndex != null ? Number(stop.originalIndex) : orderedIndex
+        const fallbackCandidate = selectedStops[Number.isFinite(originalIndex) ? originalIndex : orderedIndex] || selectedStops[orderedIndex] || null
+        const sourceStop = stop && typeof stop === 'object' ? stop : {}
+        const enrichedStop = enrichRouteStop(sourceStop, fallbackCandidate)
+        return {
+          ...enrichedStop,
+          distanceFromPreviousKm: Number(sourceStop.googleLegDistanceMeters || 0) / 1000,
+          estimatedServiceMinutes: estimateServiceMinutes(enrichedStop),
+        }
+      })
 
       return {
         orderedStops,
