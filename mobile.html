@@ -3059,7 +3059,7 @@
     function getAssignedRoutePlan() {
       const activeStatuses = ['assigned', 'in_progress', 'started', 'open', 'draft']
       const doneStatuses = ['done', 'completed']
-      const todayPlans = state.routePlans.filter((plan) => String(plan.planning_date || '') === String(todayIso))
+      const todayPlans = state.routePlans.filter((plan) => String(plan.planning_date || '') === String(todayIso) && String(plan.execution_status || '') !== 'cancelled')
       return todayPlans.find((plan) => activeStatuses.includes(String(plan.execution_status || 'assigned')))
         || todayPlans.find((plan) => doneStatuses.includes(String(plan.execution_status || '')))
         || todayPlans[0]
@@ -3170,6 +3170,25 @@
       return capacity ? Math.min(capacity, next) : next
     }
 
+    function getCoffeeCalibrationQuantity(stopId, container) {
+      const detail = getCoffeeDetail(stopId)
+      const draft = detail?.draft?.calibration?.[String(container.id)]
+      if (draft?.quantity != null) return Number(draft.quantity || 0)
+      return Number(container?.current_quantity || 0)
+    }
+
+    function isCoffeeContainerCalibrated(stopId, container) {
+      const detail = getCoffeeDetail(stopId)
+      return Boolean(detail?.draft?.calibration?.[String(container.id)]?.done)
+        || Boolean(detail?.calibratedContainers?.[String(container.id)])
+    }
+
+    function isCoffeeCalibrationComplete(stopId) {
+      const detail = getCoffeeDetail(stopId)
+      if (!detail?.needsCalibration) return true
+      return (detail.containers || []).every((container) => isCoffeeContainerCalibrated(stopId, container))
+    }
+
     function renderCoffeeTube(current, added, capacity) {
       const safeCapacity = Number(capacity || 0)
       const currentPct = safeCapacity ? Math.max(0, Math.min(100, (Number(current || 0) / safeCapacity) * 100)) : 0
@@ -3193,6 +3212,8 @@
       const pickedCount = containers.filter((container) => getCoffeeActualPackages(stop.id, container) > 0 && detail.draft?.containers?.[String(container.id)]?.picked).length
       const neededCount = containers.filter((container) => getCoffeeSuggestedPackages(container) > 0).length
       const allPicked = pickedCount >= neededCount
+      const calibrationComplete = isCoffeeCalibrationComplete(stop.id)
+      const showCalibration = Boolean(detail.machineOpen && detail.needsCalibration && !calibrationComplete)
       const expectedCash = Number(detail.cash?.expected_cash_czk || 0)
       const cashDecision = detail.draft?.cashDecision || (expectedCash > 0 && expectedCash < 100 ? 'skip' : '')
       const checkRows = [
@@ -3252,7 +3273,44 @@
             <button class="primary-btn" type="button" data-coffee-action="open-machine" data-stop-id="${escapeHtml(stop.id)}" ${allPicked ? '' : 'disabled'}>${allPicked ? 'Mám zboží, otevřít automat' : 'Nejdřív dokonči picklist'}</button>
           </div>
           ` : ''}
-          ${detail.machineOpen ? `
+          ${showCalibration ? `
+          <div class="task-head">
+            <div>
+              <h4>První načtení zásobníků</h4>
+              <div class="meta"><span>Jde o první reálné nastavení. Zapiš hladiny před běžným doplněním, bez odečtu z auta.</span></div>
+            </div>
+            <span class="badge yellow">${containers.filter((container) => isCoffeeContainerCalibrated(stop.id, container)).length}/${containers.length}</span>
+          </div>
+          <div class="coffee-visit-grid">
+            ${containers.map((container) => {
+              const current = Number(container.current_quantity || 0)
+              const capacity = Number(container.capacity_quantity || 0)
+              const realQty = getCoffeeCalibrationQuantity(stop.id, container)
+              const realPct = capacity ? Math.round((realQty / capacity) * 100) : 0
+              const calibrated = isCoffeeContainerCalibrated(stop.id, container)
+              return `
+                <article class="coffee-visit-row ${calibrated ? 'ready' : ''}">
+                  ${renderCoffeeTube(realQty, 0, capacity)}
+                  <div>
+                    <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
+                    <div class="meta">
+                      <span>PC stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}</span>
+                      <span>reálně ${formatNumber(realQty)}/${formatNumber(capacity)} · ${realPct}%</span>
+                    </div>
+                    <div class="coffee-visit-actions">
+                      <button class="${calibrated ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="calibration-same" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${calibrated ? 'Kalibrace hotová' : 'Sedí podle PC'}</button>
+                      <button class="secondary-btn" type="button" data-coffee-action="calibration-edit" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Zadat reálný stav</button>
+                    </div>
+                  </div>
+                </article>
+              `
+            }).join('')}
+          </div>
+          <div class="route-stop-actions">
+            <button class="primary-btn" type="button" data-coffee-action="finish-calibration" data-stop-id="${escapeHtml(stop.id)}" ${calibrationComplete ? '' : 'disabled'}>Pokračovat k doplnění</button>
+          </div>
+          ` : ''}
+          ${detail.machineOpen && !showCalibration ? `
           <div class="task-head">
             <div>
               <h4>Doplnění automatu</h4>
@@ -3291,7 +3349,7 @@
             }).join('')}
           </div>
           ` : ''}
-          ${detail.machineOpen ? `
+          ${detail.machineOpen && !showCalibration ? `
           <details class="coffee-visit-form">
             <summary>Práce s automatem</summary>
             <div class="muted-text">Použij jen při změně tlačítka, ceny, sortimentu nebo při kávě zdarma.</div>
@@ -3784,7 +3842,8 @@
 
       const currentVehicleId = getCurrentVehicleId() || els.vehicleSelect?.value || ''
       const activeStatuses = ['draft', 'assigned', 'in_progress', 'started', 'open']
-      const todayPlans = nearbyPlans.filter((plan) => String(plan.planning_date || '') === String(todayIso))
+      const availablePlans = nearbyPlans.filter((plan) => String(plan.execution_status || '') !== 'cancelled')
+      const todayPlans = availablePlans.filter((plan) => String(plan.planning_date || '') === String(todayIso))
       const employeePlans = todayPlans.filter((plan) => String(plan.planned_employee_id || '') === String(state.employee.id))
       const vehiclePlans = currentVehicleId
         ? todayPlans.filter((plan) => String(plan.vehicle_id || '') === String(currentVehicleId))
@@ -3814,8 +3873,8 @@
         todayCount: todayPlans.length,
         activeTodayCount: todayPlans.filter((plan) => activeStatuses.includes(String(plan.execution_status || 'draft'))).length,
         currentVehicleId: currentVehicleId || '',
-        dates: [...new Set(nearbyPlans.map((plan) => plan.planning_date).filter(Boolean))],
-        titles: nearbyPlans.slice(0, 4).map((plan) => `${plan.planning_date || '-'} · ${plan.title || 'Bez názvu'} · ${plan.execution_status || 'draft'}`)
+        dates: [...new Set(availablePlans.map((plan) => plan.planning_date).filter(Boolean))],
+        titles: availablePlans.slice(0, 4).map((plan) => `${plan.planning_date || '-'} · ${plan.title || 'Bez názvu'} · ${plan.execution_status || 'draft'}`)
       }
       const routeIds = state.routePlans.map((plan) => plan.id).filter(Boolean)
       if (!routeIds.length) return
@@ -4201,7 +4260,7 @@
         ...(state.routeCoffeeDetails[key] || {}),
         loading: true,
         error: '',
-        draft: state.routeCoffeeDetails[key]?.draft || { containers: {} }
+        draft: state.routeCoffeeDetails[key]?.draft || { containers: {}, calibration: {} }
       }
       renderRouteMachineScreen()
 
@@ -4230,6 +4289,18 @@
         const containers = containersResult.data || []
         const existingItems = itemsResult.data || []
         const draftContainers = { ...(state.routeCoffeeDetails[key]?.draft?.containers || {}) }
+        const draftCalibration = { ...(state.routeCoffeeDetails[key]?.draft?.calibration || {}) }
+        const calibratedContainers = {}
+        existingItems
+          .filter((item) => item.item_kind === 'coffee_container' && String(item.operator_note || '').includes('První kalibrace'))
+          .forEach((item) => {
+            if (!item.coffee_container_id) return
+            calibratedContainers[String(item.coffee_container_id)] = true
+            draftCalibration[String(item.coffee_container_id)] = {
+              quantity: Number(item.actual_before_quantity ?? item.final_quantity ?? 0),
+              done: true
+            }
+          })
         for (const container of containers) {
           const existing = existingItems.find((item) => String(item.coffee_container_id || '') === String(container.id))
           const suggestedPackages = getCoffeeSuggestedPackages(container)
@@ -4242,6 +4313,20 @@
               accepted: suggestedPackages <= 0 || Boolean(existing?.accepted_at)
             }
           }
+        }
+
+        let previousCalibrationCount = 0
+        try {
+          const previousResult = await supabase
+            .from('route_machine_visit_items')
+            .select('id', { count: 'exact', head: true })
+            .eq('machine_id', machine.id)
+            .eq('item_kind', 'coffee_container')
+            .not('accepted_at', 'is', null)
+            .neq('visit_id', visitId)
+          previousCalibrationCount = previousResult.count || 0
+        } catch (error) {
+          console.warn('Coffee previous calibration lookup failed:', error)
         }
 
         const vehiclePackages = {}
@@ -4281,10 +4366,13 @@
           checks: Object.fromEntries((checksResult.data || []).map((check) => [check.check_key, check.status])),
           cash: cashResult.data || null,
           vehiclePackages,
+          needsCalibration: previousCalibrationCount === 0 && containers.length > 0,
+          calibratedContainers,
           machineOpen: state.routeCoffeeDetails[key]?.machineOpen || false,
           draft: {
             ...(state.routeCoffeeDetails[key]?.draft || {}),
-            containers: draftContainers
+            containers: draftContainers,
+            calibration: draftCalibration
           }
         }
       } catch (error) {
@@ -4460,6 +4548,64 @@
       return result.data
     }
 
+    async function saveCoffeeContainerCalibration(stopId, container, realQuantity, note = '') {
+      const detail = getCoffeeDetail(stopId)
+      if (!detail?.visitId || !container?.id) throw new Error('Návštěva automatu není připravená.')
+      const current = Number(container.current_quantity || 0)
+      const capacity = Number(container.capacity_quantity || 0)
+      const boundedQuantity = capacity ? Math.max(0, Math.min(capacity, Number(realQuantity || 0))) : Math.max(0, Number(realQuantity || 0))
+      const existing = (detail.visitItems || []).find((item) => (
+        String(item.coffee_container_id || '') === String(container.id)
+        && String(item.operator_note || '').includes('První kalibrace')
+      ))
+      const row = {
+        visit_id: detail.visitId,
+        machine_id: container.machine_id,
+        item_kind: 'coffee_container',
+        coffee_container_id: container.id,
+        physical_position_label: container.container_code || null,
+        planned_product_id: container.product_id || null,
+        planned_product_sku: container.product_sku || null,
+        planned_product_name: container.product_name || null,
+        actual_product_id: container.product_id || null,
+        actual_product_sku: container.product_sku || null,
+        actual_product_name: container.product_name || null,
+        system_current_quantity: current,
+        actual_before_quantity: boundedQuantity,
+        suggested_add_quantity: 0,
+        actual_add_quantity: 0,
+        final_quantity: boundedQuantity,
+        capacity_quantity: capacity || null,
+        unit: container.unit || 'g',
+        issue_type: 'telemetry_mismatch',
+        operator_note: ['První kalibrace zásobníku', note].filter(Boolean).join(' · '),
+        accepted_at: new Date().toISOString()
+      }
+      const result = existing?.id
+        ? await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
+        : await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
+      if (result.error) throw result.error
+      const { error: containerError } = await supabase
+        .from('machine_coffee_containers')
+        .update({ current_quantity: boundedQuantity })
+        .eq('id', container.id)
+      if (containerError) throw containerError
+      container.current_quantity = boundedQuantity
+      detail.visitItems = [
+        ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
+        result.data
+      ]
+      detail.calibratedContainers = {
+        ...(detail.calibratedContainers || {}),
+        [String(container.id)]: true
+      }
+      detail.draft.calibration = {
+        ...(detail.draft.calibration || {}),
+        [String(container.id)]: { quantity: boundedQuantity, done: true }
+      }
+      return result.data
+    }
+
     async function moveCoffeePackagesFromVehicle(stopId, container) {
       const detail = getCoffeeDetail(stopId)
       const packages = getCoffeeActualPackages(stopId, container)
@@ -4528,6 +4674,33 @@
         detail.machineOpen = false
         renderRouteMachineScreen()
         window.scrollTo({ top: 0, behavior: 'smooth' })
+        return
+      }
+
+      if (action === 'calibration-same' && container) {
+        await saveCoffeeContainerCalibration(stopId, container, Number(container.current_quantity || 0), 'Operátor potvrdil, že PC stav sedí.')
+        showMessage('Zásobník je potvrzený pro první kalibraci.', 'success', { scroll: false })
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'calibration-edit' && container) {
+        const capacity = Number(container.capacity_quantity || 0)
+        const current = Number(container.current_quantity || 0)
+        const valueText = window.prompt(`Zadej reálný stav zásobníku ${container.container_code || ''} v ${container.unit || 'g'}${capacity ? ` (max ${formatNumber(capacity)})` : ''}.`, String(current).replace('.', ','))
+        if (valueText === null) return
+        const realQuantity = Math.max(0, Number(String(valueText).replace(',', '.')) || 0)
+        const note = window.prompt('Krátká poznámka pro kontrolora (volitelné):', 'První ruční načtení stavu') || 'První ruční načtení stavu'
+        await saveCoffeeContainerCalibration(stopId, container, realQuantity, note)
+        showMessage('Reálný stav zásobníku je uložený jako první kalibrace.', 'success', { scroll: false })
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'finish-calibration') {
+        if (!isCoffeeCalibrationComplete(stopId)) throw new Error('Nejdřív potvrď první načtení všech zásobníků.')
+        showMessage('První načtení zásobníků je hotové. Teď pokračuj běžným doplněním.', 'success', { scroll: false })
+        renderRouteMachineScreen()
         return
       }
 
