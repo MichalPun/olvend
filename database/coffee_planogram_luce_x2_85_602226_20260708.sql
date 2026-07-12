@@ -25,7 +25,7 @@ begin
     (v_machine_id, 'Z5', 108, '44', 'oVe FD COFFEE SOPHIA 500g', 1000, 614, 'g', 500, 'g', 500, 5, true, 'Import z reálného planogramu 85 / 2026-07-08.'),
     (v_machine_id, 'Z6', 110, '46', 'oVe SMART CAPPUCCINO IRISH CREAM FLAVOUR 1000g', 2000, 972, 'g', 1000, 'g', 1000, 6, true, 'Import z reálného planogramu 85 / 2026-07-08.'),
     (v_machine_id, 'Z7', 109, '49', 'oVe FRESH DRINK LEMON 1 kg', 3000, 2964, 'g', 1000, 'g', 1000, 7, true, 'Import z reálného planogramu 85 / 2026-07-08.'),
-    (v_machine_id, 'Z8', 78, '45', 'Kelímek 180 ml (100 ks)', 400, 257, 'ks', 100, 'ks', 100, 8, true, 'Import z reálného planogramu 85 / 2026-07-08.'),
+    (v_machine_id, 'Z8', 78, '45', 'Kelímek 180 ml (50 ks)', 400, 257, 'ks', 50, 'ks', 50, 8, true, 'Import z reálného planogramu 85 / 2026-07-08. Balení skladově po 50 ks.'),
     (v_machine_id, 'Z9', 80, '53', 'Kelímek 300 ml (50 ks)', 350, 270, 'ks', 50, 'ks', 50, 9, true, 'Import z reálného planogramu 85 / 2026-07-08.'),
     (v_machine_id, 'Z10', 136, '88', 'VÍČKO HUHTAMAKI PLAST ČERNÉ 300ml', 100, 99, 'ks', 100, 'ks', 100, 10, true, 'Import z reálného planogramu 85 / 2026-07-08.')
   on conflict (machine_id, container_code) do update set product_id=excluded.product_id, product_sku=excluded.product_sku, product_name=excluded.product_name, capacity_quantity=excluded.capacity_quantity, current_quantity=excluded.current_quantity, unit=excluded.unit, refill_package_quantity=excluded.refill_package_quantity, refill_package_unit=excluded.refill_package_unit, min_refill_quantity=excluded.min_refill_quantity, sort_order=excluded.sort_order, active=excluded.active, note=excluded.note, updated_at=now();
