@@ -2,6 +2,8 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     (async () => {
       try {
+        const PWA_BOOTSTRAP_VERSION = '20260713-attendance-readable-v4';
+        const PWA_BOOTSTRAP_KEY = 'olvendPwaBootstrapVersion';
         const registrations = await navigator.serviceWorker.getRegistrations();
         await Promise.all(registrations.map((registration) => registration.unregister()));
 
@@ -14,7 +16,13 @@ if ('serviceWorker' in navigator) {
           );
         }
 
-        await navigator.serviceWorker.register('./sw.js?v=20260627v17');
+        if (localStorage.getItem(PWA_BOOTSTRAP_KEY) !== PWA_BOOTSTRAP_VERSION) {
+          localStorage.setItem(PWA_BOOTSTRAP_KEY, PWA_BOOTSTRAP_VERSION);
+          window.location.reload();
+          return;
+        }
+
+        await navigator.serviceWorker.register('./sw.js?v=20260713attendance-readable-v4');
       } catch (error) {
         console.error('PWA registrace service workeru selhala:', error);
       }

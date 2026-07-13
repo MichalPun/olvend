@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v32-mobile-load-confirm';
+const CACHE_NAME = 'olvend-v35-attendance-readable-assets';
 const APP_SHELL = [
   './',
   './index.html',
@@ -47,7 +47,14 @@ self.addEventListener('fetch', (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
 
-  if (event.request.mode === 'navigate') {
+  const isFreshAsset =
+    event.request.mode === 'navigate'
+    || ['script', 'style', 'worker'].includes(event.request.destination)
+    || requestUrl.pathname.endsWith('.html')
+    || requestUrl.pathname.endsWith('.js')
+    || requestUrl.pathname.endsWith('.css');
+
+  if (isFreshAsset) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
