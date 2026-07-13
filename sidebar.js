@@ -211,6 +211,27 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "report-monthly-review.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "report-invoice-comparison.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "report-telemetry.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "manager-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
@@ -344,7 +365,10 @@
             { key: "reporty", href: "reporty.html", label: "Přehled reportů" },
             { key: "report-attendance", href: "report-attendance.html", label: "Docházka" },
             { key: "report-shift-overview", href: "report-shift-overview.html", label: "Směny" },
-            { key: "report-vehicles", href: "report-vehicles.html", label: "Vozidla" }
+            { key: "report-vehicles", href: "report-vehicles.html", label: "Vozidla" },
+            { key: "report-monthly-review", href: "report-monthly-review.html", label: "Měsíční uzávěrka" },
+            { key: "report-invoice-comparison", href: "report-invoice-comparison.html", label: "Srovnání fakturace" },
+            { key: "report-telemetry", href: "report-telemetry.html", label: "Telemetrické reporty" }
           ]
         },
         {
@@ -1614,6 +1638,8 @@
 
       :root[data-olvend-theme="light"] td,
       :root[data-olvend-theme="light"] td strong,
+      :root[data-olvend-theme="light"] .name-strong,
+      :root[data-olvend-theme="light"] .list-title,
       :root[data-olvend-theme="light"] .summary-box-value,
       :root[data-olvend-theme="light"] .stat-value,
       :root[data-olvend-theme="light"] .kpi-value {

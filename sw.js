@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v35-attendance-readable-assets';
+const CACHE_NAME = 'olvend-v36-telemetry-reports-assets';
 const APP_SHELL = [
   './',
   './index.html',
@@ -11,6 +11,11 @@ const APP_SHELL = [
   './warehouses.html',
   './company.html',
   './budget.html',
+  './reporty.html',
+  './report-telemetry.html',
+  './report-monthly-review.html',
+  './report-invoice-comparison.html',
+  './report-attendance.html',
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',
