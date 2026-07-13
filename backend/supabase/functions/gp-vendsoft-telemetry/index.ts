@@ -143,6 +143,15 @@ function countRecordCodes(records: DexRecord[]) {
   }, {});
 }
 
+function parsePaymentCounter(record: DexRecord | null) {
+  if (!record) return null;
+  return {
+    amount: Number(record.fields[0] || 0),
+    quantity: Number(record.fields[1] || 0),
+    raw: record.raw,
+  };
+}
+
 function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt: string | null = null) {
   const records = parseDexRecords(rawDex);
   const dxs = firstRecord(records, "DXS");
@@ -152,6 +161,8 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
   const id7 = firstRecord(records, "ID7");
   const ea3 = firstRecord(records, "EA3");
   const va1 = firstRecord(records, "VA1");
+  const ca2 = firstRecord(records, "CA2");
+  const da2 = firstRecord(records, "DA2");
   const terminalId = ca1?.fields[0] || id7?.fields[3] || fallbackDeviceId || "";
   const machineNumber = id1?.fields[2] || "";
   const dexReadAt = id5 ? parseDexDateTime(id5.fields[0], id5.fields[1]) : fallbackEventAt;
@@ -186,8 +197,10 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
     (current.raw_records as string[]).push(record.raw);
     if (record.code === "PA2") {
       current.pa2 = record.fields;
-      current.count_cash = Number(record.fields[2] || 0);
-      current.count_cashless = Number(record.fields[4] || 0);
+      current.count_total = Number(record.fields[0] || record.fields[2] || 0);
+      current.value_total = Number(record.fields[1] || record.fields[3] || 0);
+      current.count_cash = 0;
+      current.count_cashless = 0;
     }
     if (record.code === "PA5") {
       current.last_vend_at = parseDexDateTime(record.fields[0], record.fields[1]);
@@ -228,6 +241,11 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
       previous_read_at: parseDexDateTime(ea3.fields[4], ea3.fields[5]),
     } : null,
     va1: va1?.fields || null,
+    payment_counters: {
+      total: parsePaymentCounter(va1),
+      cash: parsePaymentCounter(ca2),
+      cashless: parsePaymentCounter(da2),
+    },
     product_labels: Array.from(productLabels.values()),
     product_counters: uniqueProductCounters,
     raw_product_counter_count: productCounters.length,
@@ -378,6 +396,8 @@ async function applyPlanogramDepletion(
     ingestId: number | null;
     counters: Record<string, unknown>[];
     eventAt: string;
+    paymentCounters?: Record<string, unknown> | null;
+    previousPaymentCounters?: Record<string, unknown> | null;
   },
 ) {
   const selectionTotals = new Map<string, { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string }>();
@@ -387,7 +407,8 @@ async function applyPlanogramDepletion(
     if (!selection) return;
     const cashCount = numericCounter(counter.count_cash);
     const cashlessCount = numericCounter(counter.count_cashless);
-    const totalCount = cashCount + cashlessCount;
+    const explicitTotalCount = numericCounter(counter.count_total);
+    const totalCount = explicitTotalCount > 0 ? explicitTotalCount : cashCount + cashlessCount;
     if (totalCount <= 0) return;
     const current = selectionTotals.get(selection);
     if (!current || totalCount > current.totalCount) {
@@ -412,7 +433,15 @@ async function applyPlanogramDepletion(
   if (slotsError) throw slotsError;
   if (!slots?.length) return [];
 
-  const applied: Record<string, unknown>[] = [];
+  const paymentDelta = getPaymentDelta(params.previousPaymentCounters, params.paymentCounters);
+  const planned: Array<{
+    slot: Record<string, unknown>;
+    counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string };
+    previous: Record<string, unknown> | null;
+    isInitialCounter: boolean;
+    previousTotal: number;
+    delta: number;
+  }> = [];
 
   for (const slot of slots) {
     const selection = normalizeSelectionCode(slot.slot_code);
@@ -432,19 +461,16 @@ async function applyPlanogramDepletion(
 
     const isInitialCounter = !previous;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
-    const previousCash = previous?.last_cash_count == null ? null : Number(previous.last_cash_count);
-    const previousCashless = previous?.last_cashless_count == null ? null : Number(previous.last_cashless_count);
     const delta = Math.max(0, counter.totalCount - previousTotal);
-    let cashDelta = previousCash == null ? 0 : Math.max(0, counter.cashCount - previousCash);
-    let cashlessDelta = previousCashless == null ? 0 : Math.max(0, counter.cashlessCount - previousCashless);
-    const knownPaymentDelta = cashDelta + cashlessDelta;
-    let unknownPaymentDelta = Math.max(0, delta - knownPaymentDelta);
-    if (knownPaymentDelta > delta && knownPaymentDelta > 0) {
-      const ratio = delta / knownPaymentDelta;
-      cashDelta = Math.round(cashDelta * ratio * 1000) / 1000;
-      cashlessDelta = Math.round(cashlessDelta * ratio * 1000) / 1000;
-      unknownPaymentDelta = 0;
-    }
+    planned.push({ slot, counter, previous, isInitialCounter, previousTotal, delta });
+  }
+
+  const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
+  const applied: Record<string, unknown>[] = [];
+
+  for (const item of planned) {
+    const { slot, counter, isInitialCounter, previousTotal, delta } = item;
+    const { cashDelta, cashlessDelta, unknownPaymentDelta } = allocatePaymentDelta(delta, totalVendDelta, paymentDelta);
 
     const { error: counterError } = await adminClient
       .from("telemetry_planogram_counters")
@@ -574,6 +600,41 @@ async function applyPlanogramDepletion(
   }
 
   return applied;
+}
+
+function nestedNumber(source: Record<string, unknown> | null | undefined, key: string, nestedKey: string) {
+  const value = source?.[key];
+  if (!value || typeof value !== "object") return 0;
+  return Number((value as Record<string, unknown>)[nestedKey] || 0);
+}
+
+function getPaymentDelta(previous: Record<string, unknown> | null | undefined, current: Record<string, unknown> | null | undefined) {
+  const cashQuantity = Math.max(0, nestedNumber(current, "cash", "quantity") - nestedNumber(previous, "cash", "quantity"));
+  const cashlessQuantity = Math.max(0, nestedNumber(current, "cashless", "quantity") - nestedNumber(previous, "cashless", "quantity"));
+  const cashAmount = Math.max(0, nestedNumber(current, "cash", "amount") - nestedNumber(previous, "cash", "amount"));
+  const cashlessAmount = Math.max(0, nestedNumber(current, "cashless", "amount") - nestedNumber(previous, "cashless", "amount"));
+  return { cashQuantity, cashlessQuantity, cashAmount, cashlessAmount, totalQuantity: cashQuantity + cashlessQuantity };
+}
+
+function allocatePaymentDelta(delta: number, totalVendDelta: number, paymentDelta: ReturnType<typeof getPaymentDelta>) {
+  if (delta <= 0) return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0 };
+  if (totalVendDelta <= 0 || paymentDelta.totalQuantity !== totalVendDelta) {
+    return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
+  }
+  if (paymentDelta.cashQuantity === totalVendDelta && paymentDelta.cashlessQuantity === 0) {
+    return { cashDelta: delta, cashlessDelta: 0, unknownPaymentDelta: 0 };
+  }
+  if (paymentDelta.cashlessQuantity === totalVendDelta && paymentDelta.cashQuantity === 0) {
+    return { cashDelta: 0, cashlessDelta: delta, unknownPaymentDelta: 0 };
+  }
+  if (totalVendDelta === 1 && delta === 1) {
+    return {
+      cashDelta: paymentDelta.cashQuantity === 1 ? 1 : 0,
+      cashlessDelta: paymentDelta.cashlessQuantity === 1 ? 1 : 0,
+      unknownPaymentDelta: paymentDelta.totalQuantity === 1 ? 0 : 1,
+    };
+  }
+  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
 }
 
 function assertIngestToken(req: Request) {
@@ -721,6 +782,15 @@ Deno.serve(async (req) => {
     let coffeeRecipeDepletion: Record<string, unknown>[] = [];
 
     if (machineId) {
+      const { data: previousState, error: previousStateError } = await adminClient
+        .from("machine_telemetry_state")
+        .select("counters_payload")
+        .eq("machine_id", machineId)
+        .eq("provider", provider)
+        .maybeSingle();
+
+      if (previousStateError) throw previousStateError;
+
       const { error: stateError } = await adminClient
         .from("machine_telemetry_state")
         .upsert({
@@ -737,6 +807,7 @@ Deno.serve(async (req) => {
             record_counts: parsedDex.record_counts,
             product_counter_count: parsedDex.product_counters.length,
             raw_product_counter_count: parsedDex.raw_product_counter_count,
+            payment_counters: parsedDex.payment_counters,
           },
           updated_at: new Date().toISOString(),
         }, { onConflict: "machine_id,provider" });
@@ -749,6 +820,8 @@ Deno.serve(async (req) => {
         ingestId: ingest?.id ?? null,
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
+        paymentCounters: parsedDex.payment_counters as Record<string, unknown>,
+        previousPaymentCounters: (previousState?.counters_payload as Record<string, unknown> | null | undefined)?.payment_counters as Record<string, unknown> | null | undefined,
       });
 
       coffeeRecipeDepletion = await applyCoffeeRecipeDepletion(adminClient, {
