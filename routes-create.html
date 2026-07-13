@@ -657,6 +657,8 @@
     .route-badge.heuristic { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
     .route-badge.live { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
     .route-badge.saved { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
+    .route-badge.stock { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
+    .route-badge.hygiene { color: #bbd8ff; border-color: rgba(88,166,255,0.24); background: rgba(88,166,255,0.12); }
 
     .candidate-grid {
       display: grid;
@@ -1288,6 +1290,7 @@
                         <select id="sourceFilter">
                           <option value="all_active">Všechny zastávky</option>
                           <option value="open_service">Jen otevřené servisy</option>
+                          <option value="recommended">Doporučené provozem</option>
                           <option value="assigned_service">Servisy přiřazené technikovi</option>
                           <option value="unassigned_service">Servisy bez technika</option>
                           <option value="today_window">Jen dnešní okna</option>
@@ -1458,6 +1461,8 @@
       routeTemplates: [],
       machines: [],
       requests: [],
+      coffeeContainers: [],
+      lastMachineVisits: new Map(),
       candidates: [],
       filteredCandidates: [],
       selectedKeys: new Set(),
@@ -1657,6 +1662,89 @@
         normal: 'Normální',
         low: 'Nízká',
       }[priority] || 'Bez priority'
+    }
+
+    function getPriorityMax(...priorities) {
+      return priorities.filter(Boolean).reduce((best, priority) => {
+        return priorityRank(priority) > priorityRank(best) ? priority : best
+      }, null)
+    }
+
+    function isExcludedContainerForRouteNeed(container) {
+      const text = normalizeText([
+        container?.container_code,
+        container?.product_name,
+        container?.product_sku,
+        container?.note,
+      ].filter(Boolean).join(' '))
+      if (!text) return false
+      return /\b(vick|vicko|vicka|lid|lids|cup lid|kelimek vícko|kelimek vicko)\b/.test(text)
+        || text.includes('vicko')
+        || text.includes('vicka')
+        || text.includes('lid')
+    }
+
+    function getVisitTimestamp(visit) {
+      return visit?.completed_at || visit?.arrived_at || visit?.synced_at || visit?.created_at || visit?.visit_date || ''
+    }
+
+    function daysSince(value, baseDateString = routeDateInput.value) {
+      if (!value || !baseDateString) return null
+      const valueDate = new Date(value)
+      const baseDate = new Date(`${baseDateString}T12:00:00`)
+      if (Number.isNaN(valueDate.getTime()) || Number.isNaN(baseDate.getTime())) return null
+      return Math.floor((baseDate.getTime() - valueDate.getTime()) / (24 * 60 * 60 * 1000))
+    }
+
+    function buildOperationalRecommendation(machine) {
+      const machineId = String(machine?.id || '')
+      if (!machineId) return null
+
+      const lowContainers = state.coffeeContainers
+        .filter((container) => String(container.machine_id || '') === machineId)
+        .filter((container) => container.active !== false)
+        .filter((container) => !isExcludedContainerForRouteNeed(container))
+        .map((container) => {
+          const capacity = Number(container.capacity_quantity || 0)
+          const current = Number(container.current_quantity || 0)
+          const ratio = capacity > 0 ? current / capacity : null
+          return { container, capacity, current, ratio }
+        })
+        .filter((item) => item.ratio != null && item.ratio <= 0.2)
+        .sort((a, b) => a.ratio - b.ratio)
+
+      const visit = state.lastMachineVisits.get(machineId)
+      const lastVisitAt = getVisitTimestamp(visit)
+      const ageDays = daysSince(lastVisitAt)
+      const staleVisit = ageDays != null && ageDays > 10
+
+      const reasons = []
+      if (lowContainers.length) {
+        const worst = lowContainers[0]
+        const pct = Math.max(0, Math.round(Number(worst.ratio || 0) * 100))
+        reasons.push({
+          type: 'stock',
+          badge: `${lowContainers.length}× nízký zásobník`,
+          note: `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'zásobník'} je na ${pct} %`,
+          priority: 'high',
+        })
+      }
+      if (staleVisit) {
+        reasons.push({
+          type: 'hygiene',
+          badge: `bez návštěvy ${ageDays} dnů`,
+          note: `Poslední návštěva ${new Date(lastVisitAt).toLocaleDateString('cs-CZ')}; zkontrolovat a umýt`,
+          priority: 'normal',
+        })
+      }
+
+      if (!reasons.length) return null
+      return {
+        reasons,
+        priority: getPriorityMax(...reasons.map((reason) => reason.priority)) || 'normal',
+        estimatedMinutes: reasons.some((reason) => reason.type === 'stock') ? 20 : 12,
+        sourceNote: reasons.map((reason) => reason.note).join(' · '),
+      }
     }
 
     function weekdayToken(dateString) {
@@ -1984,6 +2072,10 @@
         const reasons = []
 
         if (candidate.openRequestCount) reasons.push(`<span class="route-badge service">${candidate.openRequestCount}× servis</span>`)
+        ;(candidate.operationalRecommendations || []).slice(0, 2).forEach((reason) => {
+          const label = reason.machineName ? `${reason.machineName}: ${reason.badge}` : reason.badge
+          reasons.push(`<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(label)}</span>`)
+        })
         if (candidate.matchesSelectedDay) reasons.push('<span class="route-badge window">dnešní okno</span>')
         reasons.push(`<span class="route-badge ${escapeHtml(candidate.effectivePriority)}">${escapeHtml(priorityLabel(candidate.effectivePriority))}</span>`)
 
@@ -2072,6 +2164,7 @@
             <td>
               <span class="route-badge ${escapeHtml(stop.effectivePriority)}">${escapeHtml(priorityLabel(stop.effectivePriority))}</span>
               ${stop.openRequestCount ? `<span class="route-badge service">${stop.openRequestCount}× servis</span>` : ''}
+              ${(stop.operationalRecommendations || []).slice(0, 2).map((reason) => `<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(reason.badge)}</span>`).join('')}
               ${stop.matchesSelectedDay ? '<span class="route-badge window">okno</span>' : ''}
             </td>
             <td>${escapeHtml(distanceText)}</td>
@@ -2588,6 +2681,10 @@
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
           const locationMachines = machinesByLocation.get(String(location.id)) || []
+          const operationalRecommendations = locationMachines
+            .map((machine) => ({ machine, recommendation: buildOperationalRecommendation(machine) }))
+            .filter((item) => item.recommendation)
+          const bestOperationalPriority = getPriorityMax(...operationalRecommendations.map((item) => item.recommendation.priority))
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
 
@@ -2604,17 +2701,25 @@
             longitude: location.longitude,
             locationPriority: location.service_priority || null,
             requestPriority: maxRequestPriority,
-            effectivePriority: maxRequestPriority || location.service_priority || 'normal',
+            operationalPriority: bestOperationalPriority,
+            effectivePriority: getPriorityMax(maxRequestPriority, bestOperationalPriority, location.service_priority) || 'normal',
             serviceWindow: planningWindow || historicalWindowHint || '',
             routeNote: location.route_note || location.service_plan_note || '',
             matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
             openRequestCount: relatedRequests.length,
+            operationalRecommendations: operationalRecommendations.flatMap((item) => item.recommendation.reasons.map((reason) => ({
+              ...reason,
+              machineName: item.machine.name || '',
+            }))),
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
+              operationalRecommendations.reduce((sum, item) => sum + Number(item.recommendation.estimatedMinutes || 0), 0),
               relatedRequests.length ? 20 : 0
             ) || null,
             sourceNote: relatedRequests.length
               ? 'Servis'
+              : operationalRecommendations.length
+                ? operationalRecommendations.map((item) => `${item.machine.name || 'Stroj'}: ${item.recommendation.sourceNote}`).join(' · ')
               : planningWindow && matchesServiceWindow(planningWindow, routeDateInput.value)
                 ? 'Okno'
                 : historicalWindowHint && matchesServiceWindow(historicalWindowHint, routeDateInput.value)
@@ -2639,6 +2744,7 @@
           const maxRequestPriority = relatedRequests.reduce((best, request) => {
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
+          const operationalRecommendation = buildOperationalRecommendation(machine)
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
 
@@ -2657,17 +2763,27 @@
             longitude: location.longitude,
             locationPriority: location.service_priority || null,
             requestPriority: maxRequestPriority,
-            effectivePriority: maxRequestPriority || (machine.status === 'service_needed' ? 'high' : location.service_priority || 'normal'),
+            operationalPriority: operationalRecommendation?.priority || null,
+            effectivePriority: getPriorityMax(
+              maxRequestPriority,
+              operationalRecommendation?.priority,
+              machine.status === 'service_needed' ? 'high' : null,
+              location.service_priority
+            ) || 'normal',
             serviceWindow: planningWindow || historicalWindowHint || '',
             routeNote: machine.note || location.route_note || location.service_plan_note || '',
             matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
             openRequestCount: relatedRequests.length,
+            operationalRecommendations: operationalRecommendation?.reasons || [],
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
+              Number(operationalRecommendation?.estimatedMinutes || 0),
               relatedRequests.length ? 20 : 15
             ) || null,
             sourceNote: relatedRequests.length
               ? 'Servis stroje'
+              : operationalRecommendation
+                ? operationalRecommendation.sourceNote
               : planningWindow && matchesServiceWindow(planningWindow, routeDateInput.value)
                 ? 'Okno stroje'
                 : historicalWindowHint && matchesServiceWindow(historicalWindowHint, routeDateInput.value)
@@ -2705,6 +2821,8 @@
             candidate.city,
             candidate.address,
             candidate.routeNote,
+            candidate.sourceNote,
+            ...(candidate.operationalRecommendations || []).map((reason) => `${reason.badge || ''} ${reason.note || ''}`),
           ].join(' ').toLowerCase()
 
           return haystack.includes(query)
@@ -2728,12 +2846,14 @@
           filtered = unassignedService
         } else if (sourceMode === 'today_window') {
           filtered = filtered.filter((candidate) => candidate.matchesSelectedDay)
+        } else if (sourceMode === 'recommended') {
+          filtered = filtered.filter((candidate) => candidate.operationalRecommendations?.length)
         } else if (sourceMode === 'all_active') {
           filtered = filtered
         } else if (sourceMode === 'open_service') {
           filtered = filtered.filter((candidate) => candidate.openRequestCount > 0)
         } else {
-          filtered = assignedService.length ? assignedService : (unassignedService.length ? unassignedService : filtered.filter((candidate) => candidate.openRequestCount > 0))
+          filtered = assignedService.length ? assignedService : (unassignedService.length ? unassignedService : filtered.filter((candidate) => candidate.openRequestCount > 0 || candidate.operationalRecommendations?.length))
         }
       } else if (mode === 'template') {
         if (template) {
@@ -2763,7 +2883,10 @@
       state.filteredCandidates = filtered
 
       if (autoSelect && state.selectedKeys.size === 0) {
-        filtered.forEach((candidate) => state.selectedKeys.add(candidate.key))
+        const shouldAutoSelect = sourceMode === 'all_active'
+          ? filtered.filter((candidate) => candidate.openRequestCount > 0 || candidate.matchesSelectedDay || candidate.operationalRecommendations?.length)
+          : filtered
+        shouldAutoSelect.forEach((candidate) => state.selectedKeys.add(candidate.key))
       }
 
       if (mode === 'template' && template) {
@@ -3545,6 +3668,53 @@
       state.machines = data || []
     }
 
+    async function loadCoffeeContainers() {
+      const { data, error } = await supabase
+        .from('machine_coffee_containers')
+        .select('id, machine_id, container_code, product_sku, product_name, capacity_quantity, current_quantity, unit, active, note')
+        .eq('active', true)
+        .order('machine_id', { ascending: true })
+        .order('sort_order', { ascending: true })
+
+      if (error) {
+        if (/machine_coffee_containers|schema cache/i.test(String(error.message || ''))) {
+          state.coffeeContainers = []
+          return
+        }
+        throw error
+      }
+      state.coffeeContainers = data || []
+    }
+
+    async function loadLastMachineVisits() {
+      const { data, error } = await supabase
+        .from('route_machine_visits')
+        .select('id, machine_id, visit_date, status, arrived_at, completed_at, synced_at, created_at')
+        .in('status', ['arrived', 'completed'])
+        .order('completed_at', { ascending: false, nullsFirst: false })
+        .order('arrived_at', { ascending: false, nullsFirst: false })
+        .limit(1500)
+
+      if (error) {
+        if (/route_machine_visits|schema cache/i.test(String(error.message || ''))) {
+          state.lastMachineVisits = new Map()
+          return
+        }
+        throw error
+      }
+
+      const visitMap = new Map()
+      ;(data || [])
+        .slice()
+        .sort((a, b) => new Date(getVisitTimestamp(b) || 0).getTime() - new Date(getVisitTimestamp(a) || 0).getTime())
+        .forEach((visit) => {
+          const key = String(visit.machine_id || '')
+          if (!key || visitMap.has(key)) return
+          visitMap.set(key, visit)
+        })
+      state.lastMachineVisits = visitMap
+    }
+
     async function loadEmployees() {
       const { data, error } = await supabase
         .from('employees')
@@ -3619,6 +3789,8 @@
         await Promise.all([
           loadLocations(),
           loadMachines(),
+          loadCoffeeContainers(),
+          loadLastMachineVisits(),
           loadRequests(),
           loadVehicles(),
           loadEmployees(),
