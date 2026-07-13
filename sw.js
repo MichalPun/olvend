@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v42-telemetry-czech-report-names-assets';
+const CACHE_NAME = 'olvend-v43-telemetry-subtotals-fill-report-assets';
 const APP_SHELL = [
   './',
   './index.html',
