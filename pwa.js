@@ -2,7 +2,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     (async () => {
       try {
-        const PWA_BOOTSTRAP_VERSION = '20260713-telemetry-reports-v6';
+        const PWA_BOOTSTRAP_VERSION = '20260713-telemetry-reports-v7';
         const PWA_BOOTSTRAP_KEY = 'olvendPwaBootstrapVersion';
         const registrations = await navigator.serviceWorker.getRegistrations();
         await Promise.all(registrations.map((registration) => registration.unregister()));
@@ -22,7 +22,7 @@ if ('serviceWorker' in navigator) {
           return;
         }
 
-        await navigator.serviceWorker.register('./sw.js?v=20260713telemetry-reports-v6');
+        await navigator.serviceWorker.register('./sw.js?v=20260713telemetry-reports-v7');
       } catch (error) {
         console.error('PWA registrace service workeru selhala:', error);
       }
