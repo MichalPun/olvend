@@ -439,6 +439,7 @@ async function applyPlanogramDepletion(
     counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string };
     previous: Record<string, unknown> | null;
     isInitialCounter: boolean;
+    selection: string;
     previousTotal: number;
     delta: number;
   }> = [];
@@ -462,14 +463,14 @@ async function applyPlanogramDepletion(
     const isInitialCounter = !previous;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
     const delta = Math.max(0, counter.totalCount - previousTotal);
-    planned.push({ slot, counter, previous, isInitialCounter, previousTotal, delta });
+    planned.push({ slot, counter, previous, isInitialCounter, selection, previousTotal, delta });
   }
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
-    const { slot, counter, isInitialCounter, previousTotal, delta } = item;
+    const { slot, counter, isInitialCounter, previousTotal, delta, selection } = item;
     const { cashDelta, cashlessDelta, unknownPaymentDelta } = allocatePaymentDelta(delta, totalVendDelta, paymentDelta);
 
     const { error: counterError } = await adminClient
