@@ -94,7 +94,7 @@
     .btn:disabled { opacity: .6; cursor: wait; }
     .filters {
       display: grid;
-      grid-template-columns: 150px 150px 170px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr);
+      grid-template-columns: 150px 150px 170px 190px minmax(170px, 1fr) minmax(170px, 1fr) minmax(180px, 1fr);
       gap: 10px;
       padding: 14px;
       border: 1px solid var(--border);
@@ -181,6 +181,10 @@
     .kpi:last-child { border-right: 0; }
     .kpi span { display: block; color: var(--muted); font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
     .kpi strong { display: block; margin-top: 6px; font-size: 24px; letter-spacing: -0.03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .delta { display: inline-flex; align-items: center; gap: 4px; margin-top: 7px; font-size: 12px; font-weight: 900; }
+    .delta.up { color: var(--success); }
+    .delta.down { color: var(--accent); }
+    .delta.flat { color: var(--muted); }
     .chart-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 270px;
@@ -193,7 +197,7 @@
     .panel-head h3 { margin: 0; font-size: 16px; }
     .panel-head span { color: var(--muted); font-size: 12px; font-weight: 800; }
     .table-wrap { overflow: auto; max-height: min(680px, calc(100vh - 410px)); }
-    table { width: 100%; min-width: 1480px; border-collapse: collapse; }
+    table { width: 100%; min-width: 1680px; border-collapse: collapse; }
     th, td { padding: 10px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { position: sticky; top: 0; z-index: 2; background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
     td { font-size: 13px; line-height: 1.45; }
@@ -262,6 +266,39 @@
     .day-stack .cash { background: var(--success); }
     .day-stack .cashless { background: var(--info); }
     .day-stack .unknown { background: var(--warning); }
+    .day-bars {
+      min-height: 4px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 3px;
+      align-items: end;
+    }
+    .compare-bar {
+      width: 100%;
+      min-height: 4px;
+      border-radius: 8px 8px 3px 3px;
+      background: rgba(100,116,139,.38);
+    }
+    .compare-summary {
+      padding: 0 13px 13px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .compare-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: rgba(255,255,255,.04);
+    }
+    .compare-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--success); }
+    .compare-dot.compare { background: rgba(100,116,139,.62); }
     .payment-chart {
       padding: 12px;
       display: grid;
@@ -362,6 +399,14 @@
             </select>
           </div>
           <div class="field">
+            <label for="compareMode">Srovnat s</label>
+            <select id="compareMode">
+              <option value="previous_period" selected>Předchozí období</option>
+              <option value="previous_month">Minulý měsíc</option>
+              <option value="none">Bez srovnání</option>
+            </select>
+          </div>
+          <div class="field">
             <label for="machineFilter">Automat</label>
             <select id="machineFilter"><option value="">Všechny automaty</option></select>
           </div>
@@ -433,7 +478,7 @@
     </main>
   </div>
 
-  <script src="./sidebar.js?v=20260713telemetry-reports-v5"></script>
+  <script src="./sidebar.js?v=20260713telemetry-reports-v6"></script>
   <script type="module">
     import { supabase } from './supabase.js'
 
@@ -451,7 +496,7 @@
 
     const initialReport = new URLSearchParams(window.location.search).get('report');
     const DEFAULT_VAT_RATE = 12;
-    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], filteredRows: [], products: [], machines: [], locations: [], currentOutput: [] };
+    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], filteredRows: [], filteredCompareRows: [], products: [], machines: [], locations: [], currentOutput: [], compareRange: null };
     const els = {
       status: document.getElementById('statusLine'),
       refresh: document.getElementById('refreshBtn'),
@@ -460,6 +505,7 @@
       from: document.getElementById('fromDate'),
       to: document.getElementById('toDate'),
       preset: document.getElementById('periodPreset'),
+      compare: document.getElementById('compareMode'),
       machine: document.getElementById('machineFilter'),
       location: document.getElementById('locationFilter'),
       search: document.getElementById('searchInput'),
@@ -490,6 +536,31 @@
     }
     function pct(value) {
       return `${Number(value || 0).toFixed(1).replace('.', ',')} %`;
+    }
+    function signedMoney(value) {
+      const amount = Number(value || 0);
+      return `${amount > 0 ? '+' : ''}${money(amount)}`;
+    }
+    function signedQty(value) {
+      const amount = Number(value || 0);
+      return `${amount > 0 ? '+' : ''}${qty(amount)}`;
+    }
+    function changePct(current, previous) {
+      const base = Math.abs(Number(previous || 0));
+      if (!base) return Number(current || 0) ? 100 : 0;
+      return ((Number(current || 0) - Number(previous || 0)) / base) * 100;
+    }
+    function deltaClass(value) {
+      const amount = Number(value || 0);
+      if (amount > 0.0001) return 'up';
+      if (amount < -0.0001) return 'down';
+      return 'flat';
+    }
+    function deltaHtml(value, formatter = signedMoney, previous = null) {
+      const cls = deltaClass(value);
+      const arrow = cls === 'up' ? '▲' : cls === 'down' ? '▼' : '■';
+      const suffix = previous == null ? '' : ` · ${pct(changePct(Number(previous || 0) + Number(value || 0), previous))}`;
+      return `<span class="delta ${cls}">${escapeHtml(`${arrow} ${formatter(value)}${suffix}`)}</span>`;
     }
     function getProductKind(product) {
       if (product?.product_category && product.product_category !== 'beverage_ready') return product.product_category;
@@ -534,6 +605,10 @@
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleDateString('cs-CZ');
     }
+    function formatRange(range) {
+      if (!range) return 'bez srovnání';
+      return `${formatDate(range.from)} - ${formatDate(range.to)}`;
+    }
     function formatDateTime(value) {
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString('cs-CZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -557,6 +632,26 @@
       const date = new Date(`${dateValue}T00:00:00`);
       date.setDate(date.getDate() + 1);
       return date;
+    }
+    function getCurrentRange() {
+      return { from: els.from.value, to: els.to.value };
+    }
+    function getCompareRange() {
+      if (els.compare.value === 'none') return null;
+      const currentFrom = new Date(`${els.from.value}T00:00:00`);
+      const currentTo = new Date(`${els.to.value}T00:00:00`);
+      if (Number.isNaN(currentFrom.getTime()) || Number.isNaN(currentTo.getTime())) return null;
+      if (els.compare.value === 'previous_month') {
+        const start = new Date(currentFrom.getFullYear(), currentFrom.getMonth() - 1, 1);
+        const end = new Date(currentFrom.getFullYear(), currentFrom.getMonth(), 0);
+        return { from: toInputDate(start), to: toInputDate(end), label: 'minulý měsíc' };
+      }
+      const days = Math.max(1, Math.round((currentTo.getTime() - currentFrom.getTime()) / 86400000) + 1);
+      const end = new Date(currentFrom);
+      end.setDate(currentFrom.getDate() - 1);
+      const start = new Date(end);
+      start.setDate(end.getDate() - days + 1);
+      return { from: toInputDate(start), to: toInputDate(end), label: 'předchozí období' };
     }
     function applyPreset() {
       const today = startOfToday();
@@ -625,6 +720,24 @@
         margin: row.revenueNet > 0 ? ((row.revenueNet - row.cost) / row.revenueNet) * 100 : 0
       })).sort((a, b) => b.revenue - a.revenue);
     }
+    function attachComparison(currentRows, compareRows) {
+      if (!state.compareRange) return currentRows;
+      const compareMap = new Map(compareRows.map((row) => [row.key, row]));
+      return currentRows.map((row) => {
+        const previous = compareMap.get(row.key) || {};
+        return {
+          ...row,
+          compareQuantity: Number(previous.quantity || 0),
+          compareRevenue: Number(previous.revenue || 0),
+          compareRevenueNet: Number(previous.revenueNet || 0),
+          compareProfit: Number(previous.profit || 0),
+          quantityDelta: Number(row.quantity || 0) - Number(previous.quantity || 0),
+          revenueDelta: Number(row.revenue || 0) - Number(previous.revenue || 0),
+          revenueNetDelta: Number(row.revenueNet || 0) - Number(previous.revenueNet || 0),
+          profitDelta: Number(row.profit || 0) - Number(previous.profit || 0)
+        };
+      });
+    }
     function enrichRows(rows, machines, locations) {
       const machineMap = new Map(machines.map((item) => [String(item.id), item]));
       const locationMap = new Map(locations.map((item) => [String(item.id), item]));
@@ -661,8 +774,10 @@
     function populateFilters() {
       const selectedMachine = els.machine.value;
       const selectedLocation = els.location.value;
-      const machines = [...state.machines].sort((a, b) => String(a.evidence_number || a.name).localeCompare(String(b.evidence_number || b.name), 'cs', { numeric: true }));
-      const locationIds = new Set(state.rows.map((row) => String(row.location_id || '')).filter(Boolean));
+      const allRows = [...state.rows, ...state.compareRows];
+      const machineIds = new Set(allRows.map((row) => String(row.machine_id || '')).filter(Boolean));
+      const machines = [...state.machines].filter((machine) => machineIds.has(String(machine.id))).sort((a, b) => String(a.evidence_number || a.name).localeCompare(String(b.evidence_number || b.name), 'cs', { numeric: true }));
+      const locationIds = new Set(allRows.map((row) => String(row.location_id || '')).filter(Boolean));
       const locations = state.locations.filter((location) => locationIds.has(String(location.id))).sort((a, b) => String(a.name).localeCompare(String(b.name), 'cs'));
       els.machine.innerHTML = '<option value="">Všechny automaty</option>' + machines.map((machine) => `<option value="${escapeHtml(machine.id)}">${escapeHtml([machine.evidence_number && `EV ${machine.evidence_number}`, machine.name].filter(Boolean).join(' · '))}</option>`).join('');
       els.location.innerHTML = '<option value="">Všechny lokality</option>' + locations.map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml([location.city, location.name].filter(Boolean).join(' · '))}</option>`).join('');
@@ -671,33 +786,46 @@
     }
     function applyFilters() {
       const query = normalize(els.search.value);
-      state.filteredRows = state.rows.filter((row) => {
+      const filterRow = (row) => {
         if (els.machine.value && String(row.machine_id) !== els.machine.value) return false;
         if (els.location.value && String(row.location_id) !== els.location.value) return false;
         if (!query) return true;
         const haystack = normalize([row.product_name, row.product_sku, row.selection_code, row.machine_name, row.location_name].filter(Boolean).join(' '));
         return haystack.includes(query);
-      });
+      };
+      state.filteredRows = state.rows.filter(filterRow);
+      state.filteredCompareRows = state.compareRows.filter(filterRow);
     }
-    function renderKpis(rows) {
-      const t = totals(rows);
-      const netRevenue = rows.reduce((sum, row) => {
+    function netRevenue(rows) {
+      return rows.reduce((sum, row) => {
         const costInfo = productCost(row);
         return sum + (Number(row.total_amount_czk || 0) / (1 + (Number(costInfo.vatRate || 0) / 100)));
       }, 0);
+    }
+    function renderKpis(rows, compareRows = []) {
+      const t = totals(rows);
+      const c = totals(compareRows);
+      const currentNet = netRevenue(rows);
+      const compareNet = netRevenue(compareRows);
       const avg = t.quantity > 0 ? t.revenue / t.quantity : 0;
       els.kpis.innerHTML = [
-        ['Tržba s DPH', money(t.revenue)],
-        ['Základ bez DPH', money(netRevenue)],
-        ['Prodáno', `${qty(t.quantity)} ks`],
-        ['Hotově', money(t.cash)],
-        ['Kartou', money(t.cashless)]
-      ].map(([label, value]) => `<div class="kpi"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(String(value))}">${escapeHtml(value)}</strong></div>`).join('');
+        ['Tržba s DPH', money(t.revenue), t.revenue - c.revenue, signedMoney, c.revenue],
+        ['Základ bez DPH', money(currentNet), currentNet - compareNet, signedMoney, compareNet],
+        ['Prodáno', `${qty(t.quantity)} ks`, t.quantity - c.quantity, signedQty, c.quantity],
+        ['Hotově', money(t.cash), t.cash - c.cash, signedMoney, c.cash],
+        ['Kartou', money(t.cashless), t.cashless - c.cashless, signedMoney, c.cashless]
+      ].map(([label, value, delta, formatter, previous]) => `
+        <div class="kpi">
+          <span>${escapeHtml(label)}</span>
+          <strong title="${escapeHtml(String(value))}">${escapeHtml(value)}</strong>
+          ${state.compareRange ? deltaHtml(delta, formatter, previous) : ''}
+        </div>
+      `).join('');
       return avg;
     }
-    function buildDailyRows(rows) {
-      const from = new Date(`${els.from.value}T00:00:00`);
-      const to = new Date(`${els.to.value}T00:00:00`);
+    function buildDailyRows(rows, range = getCurrentRange()) {
+      const from = new Date(`${range.from}T00:00:00`);
+      const to = new Date(`${range.to}T00:00:00`);
       const keys = [];
       for (let date = new Date(from); date <= to; date.setDate(date.getDate() + 1)) {
         keys.push(toInputDate(date));
@@ -715,31 +843,47 @@
       });
       return Array.from(grouped.values());
     }
-    function renderCharts(rows) {
-      const daily = buildDailyRows(rows);
-      const max = Math.max(1, ...daily.map((row) => row.revenue));
+    function renderCharts(rows, compareRows = []) {
+      const daily = buildDailyRows(rows, getCurrentRange());
+      const compareDaily = state.compareRange ? buildDailyRows(compareRows, state.compareRange) : [];
+      const max = Math.max(1, ...daily.map((row) => row.revenue), ...compareDaily.map((row) => row.revenue));
       const axisTop = money(max);
       const axisMid = money(max / 2);
       els.trend.innerHTML = `
         <div class="chart-axis"><span>${escapeHtml(axisTop)}</span><span>${escapeHtml(axisMid)}</span><span>0 Kč</span></div>
         <div class="bar-chart">
-          ${daily.map((row) => {
-            const height = Math.max(row.revenue > 0 ? 5 : 1, Math.round((row.revenue / max) * 164));
+          ${daily.map((row, index) => {
+            const compareRow = compareDaily[index] || { revenue: 0, quantity: 0 };
+            const height = Math.max(row.revenue > 0 ? 5 : 1, Math.round((row.revenue / max) * 106));
+            const compareHeight = Math.max(compareRow.revenue > 0 ? 5 : 1, Math.round((compareRow.revenue / max) * 106));
             const cashPct = row.revenue > 0 ? Math.round((row.cash / row.revenue) * 100) : 0;
             const cashlessPct = row.revenue > 0 ? Math.round((row.cashless / row.revenue) * 100) : 0;
             const unknownPct = Math.max(0, 100 - cashPct - cashlessPct);
+            const title = state.compareRange
+              ? `${formatDate(row.date)} · ${money(row.revenue)} · ${qty(row.quantity)} ks | srovnání ${formatDate(compareRow.date || state.compareRange.from)} · ${money(compareRow.revenue)}`
+              : `${formatDate(row.date)} · ${money(row.revenue)} · ${qty(row.quantity)} ks`;
             return `
-              <div class="day-bar" title="${escapeHtml(`${formatDate(row.date)} · ${money(row.revenue)} · ${qty(row.quantity)} ks`)}">
-                <div class="day-stack" style="height:${height}px">
-                  <span class="cash" style="height:${cashPct}%"></span>
-                  <span class="cashless" style="height:${cashlessPct}%"></span>
-                  <span class="unknown" style="height:${unknownPct}%"></span>
+              <div class="day-bar" title="${escapeHtml(title)}">
+                <div class="day-bars">
+                  <div class="day-stack" style="height:${height}px">
+                    <span class="cash" style="height:${cashPct}%"></span>
+                    <span class="cashless" style="height:${cashlessPct}%"></span>
+                    <span class="unknown" style="height:${unknownPct}%"></span>
+                  </div>
+                  ${state.compareRange ? `<div class="compare-bar" style="height:${compareHeight}px"></div>` : ''}
                 </div>
                 <span>${escapeHtml(row.date.slice(8))}</span>
               </div>
             `;
           }).join('')}
         </div>
+        ${state.compareRange ? `
+          <div></div>
+          <div class="compare-summary">
+            <span class="compare-pill"><span class="compare-dot"></span>Aktuální: ${escapeHtml(formatRange(getCurrentRange()))}</span>
+            <span class="compare-pill"><span class="compare-dot compare"></span>Srovnání: ${escapeHtml(formatRange(state.compareRange))}</span>
+          </div>
+        ` : ''}
       `;
 
       const t = totals(rows);
@@ -792,7 +936,7 @@
       const byMachine = kind.includes('machine');
       const byDay = kind.startsWith('day');
       const byWeek = kind.startsWith('week');
-      const groupRows = aggregate(rows, (row) => {
+      const keyFn = (row) => {
         const parts = [];
         if (byDay) parts.push(dateKey(row.source_event_at));
         if (byWeek) parts.push(weekKey(row.source_event_at));
@@ -800,7 +944,8 @@
         if (byMachine) parts.push(row.machine_id || row.machine_name || 'Automat');
         if (byLocation) parts.push(row.location_name || 'Bez lokality');
         return parts.join(' · ');
-      }, (row) => ({
+      };
+      const seedFn = (row) => ({
         ...(byMachine ? { label: row.machine_name || 'Automat' } : {}),
         product: row.product_name || row.product_sku || 'Bez produktu',
         sku: byProduct ? (row.product_sku || '') : '',
@@ -808,17 +953,22 @@
         machine: row.machine_name || '',
         location: row.location_name || '',
         date: byDay ? dateKey(row.source_event_at) : byWeek ? weekKey(row.source_event_at) : ''
-      }));
+      });
+      const compareGroupRows = aggregate(state.filteredCompareRows, keyFn, seedFn);
+      const groupRows = attachComparison(aggregate(rows, keyFn, seedFn), compareGroupRows);
       const max = Math.max(1, ...groupRows.map((row) => row.revenue));
       const primaryColumns = byProduct && !byDay && !byWeek ? [
         { label: 'Typ produktu', key: 'typeLabel', render: (row) => `<span class="strong">${escapeHtml(row.typeLabel || 'Nezařazeno')}</span>`, csv: (row) => row.typeLabel || 'Nezařazeno' },
         { label: 'Kód', key: 'sku', render: (row) => escapeHtml(row.sku || '-'), csv: (row) => row.sku || '' },
         { label: 'Název', key: 'label', render: (row) => `<span class="strong">${escapeHtml(row.label)}</span>${row.vatFallback ? '<span class="sub">DPH sazba doplněná výchozí hodnotou</span>' : ''}`, csv: (row) => row.label },
         { label: 'Ks', key: 'quantity', num: true, render: (row) => escapeHtml(qty(row.quantity)), csv: (row) => row.quantity },
+        ...(state.compareRange ? [{ label: 'Δ ks', key: 'quantityDelta', num: true, render: (row) => deltaHtml(row.quantityDelta, signedQty), csv: (row) => row.quantityDelta }] : []),
         { label: 'Tržba s DPH', key: 'revenue', num: true, render: (row) => escapeHtml(money(row.revenue)), csv: (row) => row.revenue },
+        ...(state.compareRange ? [{ label: 'Δ tržba', key: 'revenueDelta', num: true, render: (row) => deltaHtml(row.revenueDelta, signedMoney), csv: (row) => row.revenueDelta }] : []),
         { label: 'Tržba bez DPH', key: 'revenueNet', num: true, render: (row) => escapeHtml(money(row.revenueNet)), csv: (row) => row.revenueNet },
         { label: 'Náklad bez DPH', key: 'cost', num: true, render: (row) => escapeHtml(row.missingCost ? `${money(row.cost)} *` : money(row.cost)), csv: (row) => row.cost },
         { label: 'Zisk bez DPH', key: 'profit', num: true, render: (row) => escapeHtml(money(row.profit)), csv: (row) => row.profit },
+        ...(state.compareRange ? [{ label: 'Δ zisk', key: 'profitDelta', num: true, render: (row) => deltaHtml(row.profitDelta, signedMoney), csv: (row) => row.profitDelta }] : []),
         { label: 'Prům. náklad', key: 'avgCost', num: true, render: (row) => escapeHtml(money(row.avgCost)), csv: (row) => row.avgCost },
         { label: 'Výdeje/den', key: 'vendsPerDay', num: true, render: (row) => escapeHtml(qty(row.vendsPerDay)), csv: (row) => row.vendsPerDay },
         { label: 'Marže', key: 'margin', num: true, render: (row) => escapeHtml(pct(row.margin)), csv: (row) => row.margin },
@@ -827,7 +977,9 @@
         { label: byDay ? 'Den' : byWeek ? 'Týden' : byProduct ? 'Produkt' : byMachine ? 'Automat' : 'Lokalita', key: 'label', render: (row) => `<span class="strong">${escapeHtml(row.label)}</span>${row.sku ? `<span class="sub">SKU ${escapeHtml(row.sku)}</span>` : row.machineCode ? `<span class="sub">${escapeHtml(row.machineCode)}</span>` : ''}`, csv: (row) => row.label },
         ...(byMachine ? [{ label: 'Lokalita', key: 'location', render: (row) => `<span class="strong">${escapeHtml(row.location || 'Bez lokality')}</span>`, csv: (row) => row.location || '' }] : []),
         { label: 'Ks', key: 'quantity', num: true, render: (row) => escapeHtml(qty(row.quantity)), csv: (row) => row.quantity },
+        ...(state.compareRange ? [{ label: 'Δ ks', key: 'quantityDelta', num: true, render: (row) => deltaHtml(row.quantityDelta, signedQty), csv: (row) => row.quantityDelta }] : []),
         { label: 'Tržba', key: 'revenue', num: true, render: (row) => escapeHtml(money(row.revenue)), csv: (row) => row.revenue },
+        ...(state.compareRange ? [{ label: 'Δ tržba', key: 'revenueDelta', num: true, render: (row) => deltaHtml(row.revenueDelta, signedMoney), csv: (row) => row.revenueDelta }] : []),
         { label: 'Hotově', key: 'cash', num: true, render: (row) => escapeHtml(money(row.cash)), csv: (row) => row.cash },
         { label: 'Kartou', key: 'cashless', num: true, render: (row) => escapeHtml(money(row.cashless)), csv: (row) => row.cashless },
         { label: 'Automaty', key: 'machineCount', num: true, render: (row) => escapeHtml(String(row.machineCount)), csv: (row) => row.machineCount },
@@ -849,14 +1001,19 @@
       ], rows);
     }
     function renderProfitLoss() {
-      const rows = aggregate(state.filteredRows, (row) => row.product_name || row.product_sku || 'Bez produktu', (row) => ({ sku: row.product_sku || '' }));
+      const keyFn = (row) => row.product_name || row.product_sku || 'Bez produktu';
+      const seedFn = (row) => ({ sku: row.product_sku || '' });
+      const rows = attachComparison(aggregate(state.filteredRows, keyFn, seedFn), aggregate(state.filteredCompareRows, keyFn, seedFn));
       table([
         { label: 'Produkt', key: 'label', render: (row) => `<span class="strong">${escapeHtml(row.label)}</span>${row.sku ? `<span class="sub">SKU ${escapeHtml(row.sku)}</span>` : ''}`, csv: (row) => row.label },
         { label: 'Ks', key: 'quantity', num: true, render: (row) => escapeHtml(qty(row.quantity)), csv: (row) => row.quantity },
+        ...(state.compareRange ? [{ label: 'Δ ks', key: 'quantityDelta', num: true, render: (row) => deltaHtml(row.quantityDelta, signedQty), csv: (row) => row.quantityDelta }] : []),
         { label: 'Tržba s DPH', key: 'revenue', num: true, render: (row) => escapeHtml(money(row.revenue)), csv: (row) => row.revenue },
         { label: 'Tržba bez DPH', key: 'revenueNet', num: true, render: (row) => escapeHtml(money(row.revenueNet)), csv: (row) => row.revenueNet },
+        ...(state.compareRange ? [{ label: 'Δ tržba bez DPH', key: 'revenueNetDelta', num: true, render: (row) => deltaHtml(row.revenueNetDelta, signedMoney), csv: (row) => row.revenueNetDelta }] : []),
         { label: 'Náklad bez DPH', key: 'cost', num: true, render: (row) => escapeHtml(row.missingCost ? `${money(row.cost)} *` : money(row.cost)), csv: (row) => row.cost },
         { label: 'Zisk bez DPH', key: 'profit', num: true, render: (row) => escapeHtml(money(row.profit)), csv: (row) => row.profit },
+        ...(state.compareRange ? [{ label: 'Δ zisk', key: 'profitDelta', num: true, render: (row) => deltaHtml(row.profitDelta, signedMoney), csv: (row) => row.profitDelta }] : []),
         { label: 'Marže', key: 'margin', num: true, render: (row) => escapeHtml(pct(row.margin)), csv: (row) => row.margin },
         { label: 'Poznámka', key: 'missingCost', render: (row) => escapeHtml(row.missingCost ? 'Chybí nákupní cena u části prodejů' : row.vatFallback ? `DPH fallback ${DEFAULT_VAT_RATE} %` : 'OK'), csv: (row) => row.missingCost ? 'missing purchase price' : row.vatFallback ? `VAT fallback ${DEFAULT_VAT_RATE}%` : 'ok' }
       ], rows);
@@ -867,10 +1024,12 @@
       els.title.textContent = active.title;
       els.description.textContent = active.description;
       els.tableTitle.textContent = active.label;
-      els.periodBadge.textContent = `${formatDate(els.from.value)} - ${formatDate(els.to.value)}`;
+      els.periodBadge.textContent = state.compareRange
+        ? `${formatDate(els.from.value)} - ${formatDate(els.to.value)} vs ${formatRange(state.compareRange)}`
+        : `${formatDate(els.from.value)} - ${formatDate(els.to.value)}`;
       renderTabs();
-      renderKpis(state.filteredRows);
-      renderCharts(state.filteredRows);
+      renderKpis(state.filteredRows, state.filteredCompareRows);
+      renderCharts(state.filteredRows, state.filteredCompareRows);
       renderSide(state.filteredRows);
       if (state.activeReport === 'transactions') renderTransactions();
       else if (state.activeReport === 'profit-loss') renderProfitLoss();
@@ -887,18 +1046,25 @@
       }
       return output;
     }
-    async function loadData() {
-      els.refresh.disabled = true;
-      setStatus('Načítám telemetrické reporty...');
-      const from = new Date(`${els.from.value}T00:00:00`);
-      const to = endExclusive(els.to.value);
-      const salesRows = await fetchPaged(() => supabase
+    async function fetchSalesRange(range) {
+      const from = new Date(`${range.from}T00:00:00`);
+      const to = endExclusive(range.to);
+      return fetchPaged(() => supabase
         .from('telemetry_sales_events')
         .select('id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at')
         .gte('source_event_at', from.toISOString())
         .lt('source_event_at', to.toISOString())
         .order('source_event_at', { ascending: false }));
-      const machineIds = [...new Set(salesRows.map((row) => Number(row.machine_id)).filter(Boolean))];
+    }
+    async function loadData() {
+      els.refresh.disabled = true;
+      setStatus('Načítám telemetrické reporty...');
+      state.compareRange = getCompareRange();
+      const [salesRows, compareRows] = await Promise.all([
+        fetchSalesRange(getCurrentRange()),
+        state.compareRange ? fetchSalesRange(state.compareRange) : Promise.resolve([])
+      ]);
+      const machineIds = [...new Set([...salesRows, ...compareRows].map((row) => Number(row.machine_id)).filter(Boolean))];
       const [machinesRes, productsRes] = await Promise.all([
         machineIds.length
           ? supabase.from('machines').select('id, evidence_number, name, machine_type, brand, model, location_id, active').in('id', machineIds)
@@ -917,10 +1083,12 @@
       state.machines = machines;
       state.locations = locationsRes.data || [];
       state.rows = enrichRows(salesRows, state.machines, state.locations);
+      state.compareRows = enrichRows(compareRows, state.machines, state.locations);
       populateFilters();
       render();
       const t = totals(state.rows);
-      setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období.`, 'success');
+      const compareText = state.compareRange ? ` Srovnání: ${formatRange(state.compareRange)} (${state.compareRows.length} řádků).` : '';
+      setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období.${compareText}`, 'success');
     }
     function exportCsv() {
       if (!state.currentOutput.length) {
@@ -940,12 +1108,12 @@
     applyPreset();
     renderTabs();
     els.preset.addEventListener('change', () => { applyPreset(); loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; }); });
-    [els.from, els.to].forEach((input) => input.addEventListener('change', () => loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; })));
+    [els.from, els.to, els.compare].forEach((input) => input.addEventListener('change', () => loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; })));
     [els.machine, els.location, els.search].forEach((input) => input.addEventListener('input', render));
     els.refresh.addEventListener('click', () => loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; }));
     els.export.addEventListener('click', exportCsv);
     loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; });
   </script>
-  <script src="./pwa.js?v=20260713telemetry-reports-v5" defer></script>
+  <script src="./pwa.js?v=20260713telemetry-reports-v6" defer></script>
 </body>
 </html>

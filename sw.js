@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v40-telemetry-readable-layout-assets';
+const CACHE_NAME = 'olvend-v41-telemetry-period-comparison-assets';
 const APP_SHELL = [
   './',
   './index.html',
