@@ -2515,8 +2515,9 @@
       }
 
       const stops = getRouteStops(plan)
-      const completedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
-      const nextStop = stops.find((stop) => getRouteStopStatus(stop) !== 'completed')
+      const routeAlreadyDone = ['done', 'completed'].includes(String(plan.execution_status || ''))
+      const completedStops = routeAlreadyDone ? stops.length : stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
+      const nextStop = routeAlreadyDone ? null : stops.find((stop) => getRouteStopStatus(stop) !== 'completed')
       const routeVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       els.todayRouteSection.hidden = false
       els.todayRouteSection.innerHTML = `
@@ -3150,16 +3151,37 @@
       return ['kg', 'g'].includes(refillUnit)
     }
 
+    function getProductBaseUnit(productId) {
+      const product = state.products.find((item) => String(item.id) === String(productId || ''))
+      return product?.base_unit || ''
+    }
+
+    function convertCoffeeQuantityToProductBase(quantity, fromUnit, productId) {
+      const productBaseUnit = getProductBaseUnit(productId)
+      return convertRecipeQuantity(Number(quantity || 0), fromUnit, productBaseUnit || fromUnit)
+    }
+
+    function getCoffeePackageBaseQuantity(container) {
+      return Math.max(0, convertCoffeeQuantityToProductBase(
+        Number(container?.refill_package_quantity || 0),
+        container?.refill_package_unit || container?.unit || '',
+        container?.product_id
+      ))
+    }
+
     function getCoffeeVehiclePackageCount(container, vehicleQuantity) {
       const total = Number(vehicleQuantity || 0)
-      if (isCoffeeMassPackageStock(container)) return Math.max(0, Math.floor(total))
+      if (isCoffeeMassPackageStock(container)) {
+        const packageBaseQty = getCoffeePackageBaseQuantity(container)
+        return packageBaseQty ? Math.max(0, Math.floor(total / packageBaseQty)) : Math.max(0, Math.floor(total))
+      }
       const packageQty = Number(container?.refill_package_quantity || 0)
       return packageQty ? Math.floor(total / packageQty) : Math.max(0, Math.floor(total))
     }
 
     function getCoffeeVehicleStockQuantity(container, packages) {
       const packageCount = Math.max(0, Number(packages || 0))
-      if (isCoffeeMassPackageStock(container)) return packageCount
+      if (isCoffeeMassPackageStock(container)) return packageCount * getCoffeePackageBaseQuantity(container)
       return packageCount * Number(container?.refill_package_quantity || 0)
     }
 
@@ -3175,6 +3197,23 @@
       const draft = detail?.draft?.calibration?.[String(container.id)]
       if (draft?.quantity != null) return Number(draft.quantity || 0)
       return Number(container?.current_quantity || 0)
+    }
+
+    function getCoffeeCalibrationStep(container) {
+      if (normalizeText(container?.unit || '') === 'ks') return 1
+      return Math.max(1, Number(container?.refill_package_quantity || 1))
+    }
+
+    function describeCoffeeQuantity(quantity, container) {
+      const value = Number(quantity || 0)
+      const unit = container?.unit || 'g'
+      const packageQty = Number(container?.refill_package_quantity || 0)
+      if (packageQty > 0) {
+        const packages = value / packageQty
+        if (Number.isInteger(packages)) return `${formatNumber(packages)} bal. · ${formatNumber(value)} ${unit}`
+        return `${formatNumber(packages)} bal. · ${formatNumber(value)} ${unit}`
+      }
+      return `${formatNumber(value)} ${unit}`
     }
 
     function isCoffeeContainerCalibrated(stopId, container) {
@@ -3298,8 +3337,13 @@
                       <span>reálně ${formatNumber(realQty)}/${formatNumber(capacity)} · ${realPct}%</span>
                     </div>
                     <div class="coffee-visit-actions">
-                      <button class="${calibrated ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="calibration-same" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${calibrated ? 'Kalibrace hotová' : 'Sedí podle PC'}</button>
-                      <button class="secondary-btn" type="button" data-coffee-action="calibration-edit" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Zadat reálný stav</button>
+                      <span class="inline-stepper">
+                        <button data-coffee-action="calibration-step" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">-</button>
+                        <span>${escapeHtml(describeCoffeeQuantity(realQty, container))}</span>
+                        <button data-coffee-action="calibration-step" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">+</button>
+                      </span>
+                      <button class="${calibrated ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="calibration-save" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${calibrated ? 'Stav uložen' : 'Uložit tento stav'}</button>
+                      <button class="secondary-btn" type="button" data-coffee-action="calibration-same" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Sedí podle PC</button>
                     </div>
                   </div>
                 </article>
@@ -4310,7 +4354,10 @@
                 ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
                 : suggestedPackages,
               picked: suggestedPackages <= 0 || Boolean(existing?.accepted_at),
-              accepted: suggestedPackages <= 0 || Boolean(existing?.accepted_at)
+              accepted: suggestedPackages <= 0 || Boolean(existing?.accepted_at),
+              movedPackages: existing?.accepted_at
+                ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
+                : 0
             }
           }
         }
@@ -4493,7 +4540,10 @@
     async function saveCoffeeContainerVisitItem(stopId, container, payload = {}) {
       const detail = getCoffeeDetail(stopId)
       if (!detail?.visitId || !container?.id) throw new Error('Návštěva automatu není připravená.')
-      const existing = detail.visitItems?.find((item) => String(item.coffee_container_id || '') === String(container.id))
+      const existing = detail.visitItems?.find((item) => (
+        String(item.coffee_container_id || '') === String(container.id)
+        && !String(item.operator_note || '').includes('První kalibrace')
+      ))
       const packages = getCoffeeActualPackages(stopId, container)
       const addedQty = getCoffeeAddedQuantity(stopId, container)
       const current = Number(container.current_quantity || 0)
@@ -4606,9 +4656,9 @@
       return result.data
     }
 
-    async function moveCoffeePackagesFromVehicle(stopId, container) {
+    async function moveCoffeePackagesFromVehicle(stopId, container, options = {}) {
       const detail = getCoffeeDetail(stopId)
-      const packages = getCoffeeActualPackages(stopId, container)
+      const packages = options.packages != null ? Number(options.packages || 0) : getCoffeeActualPackages(stopId, container)
       const quantity = getCoffeeVehicleStockQuantity(container, packages)
       if (!packages || !quantity || !container?.product_id) return
       const vehicleId = getCurrentVehicleId()
@@ -4621,7 +4671,7 @@
         fromStockLocationId: vehicleLocationId,
         toStockLocationId: machineLocationId,
         movementType: 'fill_machine',
-        referenceId: detail?.visitId && container?.id ? `route_visit_${detail.visitId}_container_${container.id}` : `route_stop_${stopId}_container_${container.id || container.product_id}`,
+        referenceId: detail?.visitId && container?.id ? `route_visit_${detail.visitId}_container_${container.id}${options.referenceSuffix || ''}` : `route_stop_${stopId}_container_${container.id || container.product_id}${options.referenceSuffix || ''}`,
         note: `Kávový picklist ${container.container_code || ''} · ${packages} bal.`,
         allowNegative: true
       })
@@ -4652,7 +4702,8 @@
         if (packages > 0) await moveCoffeePackagesFromVehicle(stopId, container)
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
-          picked: true
+          picked: true,
+          movedPackages: packages
         }
         showMessage(packages > 0 ? 'Surovina je vzatá k automatu a odečtená z auta.' : 'Položka je automaticky vyřízená bez doplnění.', 'success', { scroll: false })
         renderRouteMachineScreen()
@@ -4677,22 +4728,29 @@
         return
       }
 
-      if (action === 'calibration-same' && container) {
-        await saveCoffeeContainerCalibration(stopId, container, Number(container.current_quantity || 0), 'Operátor potvrdil, že PC stav sedí.')
-        showMessage('Zásobník je potvrzený pro první kalibraci.', 'success', { scroll: false })
+      if (action === 'calibration-step' && container) {
+        const capacity = Number(container.capacity_quantity || 0)
+        const current = getCoffeeCalibrationQuantity(stopId, container)
+        const step = getCoffeeCalibrationStep(container)
+        const next = Math.max(0, capacity ? Math.min(capacity, current + (Number(target.dataset.delta || 0) * step)) : current + (Number(target.dataset.delta || 0) * step))
+        detail.draft.calibration = {
+          ...(detail.draft.calibration || {}),
+          [String(container.id)]: { quantity: next, done: false }
+        }
         renderRouteMachineScreen()
         return
       }
 
-      if (action === 'calibration-edit' && container) {
-        const capacity = Number(container.capacity_quantity || 0)
-        const current = Number(container.current_quantity || 0)
-        const valueText = window.prompt(`Zadej reálný stav zásobníku ${container.container_code || ''} v ${container.unit || 'g'}${capacity ? ` (max ${formatNumber(capacity)})` : ''}.`, String(current).replace('.', ','))
-        if (valueText === null) return
-        const realQuantity = Math.max(0, Number(String(valueText).replace(',', '.')) || 0)
-        const note = window.prompt('Krátká poznámka pro kontrolora (volitelné):', 'První ruční načtení stavu') || 'První ruční načtení stavu'
-        await saveCoffeeContainerCalibration(stopId, container, realQuantity, note)
+      if (action === 'calibration-save' && container) {
+        await saveCoffeeContainerCalibration(stopId, container, getCoffeeCalibrationQuantity(stopId, container), 'První ruční načtení stavu')
         showMessage('Reálný stav zásobníku je uložený jako první kalibrace.', 'success', { scroll: false })
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'calibration-same' && container) {
+        await saveCoffeeContainerCalibration(stopId, container, Number(container.current_quantity || 0), 'Operátor potvrdil, že PC stav sedí.')
+        showMessage('Zásobník je potvrzený pro první kalibraci.', 'success', { scroll: false })
         renderRouteMachineScreen()
         return
       }
@@ -4722,7 +4780,15 @@
           picked: true,
           accepted: true
         }
-        if (packages > 0) await moveCoffeePackagesFromVehicle(stopId, container)
+        const alreadyMoved = Number(detail.draft.containers[String(container.id)]?.movedPackages || 0)
+        const extraPackages = Math.max(0, packages - alreadyMoved)
+        if (extraPackages > 0) {
+          await moveCoffeePackagesFromVehicle(stopId, container, {
+            packages: extraPackages,
+            referenceSuffix: `_extra_${packages}`
+          })
+          detail.draft.containers[String(container.id)].movedPackages = packages
+        }
         await saveCoffeeContainerVisitItem(stopId, container, { issue_type: 'telemetry_mismatch', operator_note: note })
         showMessage('Nesoulad je zapsaný ke kontrole. Množství se z auta odečetlo a můžeš pokračovat.', 'success', { scroll: false })
         renderRouteMachineScreen()
