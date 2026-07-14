@@ -6182,12 +6182,55 @@
             <td data-label="Odkud / kam"><strong>${escapeHtml(source)}</strong><span class="subtext">${escapeHtml(target)}</span></td>
             <td data-label="Položky"><strong>${escapeHtml(items || 'Bez položek')}</strong></td>
             <td data-label="Datum"><strong>${escapeHtml(formatManualTransferDate(doc.docDate))}</strong><span class="subtext">${escapeHtml(dateHint)}</span></td>
-            <td data-label="Akce"><details class="stock-action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="stock-action-list"><button class="btn secondary" type="button" data-transfer-doc-action="edit" data-transfer-doc-id="${escapeHtml(doc.referenceId)}">Opravit</button></div></details></td>
+            <td data-label="Akce"><details class="stock-action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="stock-action-list"><button class="btn secondary" type="button" data-transfer-doc-action="detail" data-transfer-doc-id="${escapeHtml(doc.referenceId)}">Detail</button><button class="btn secondary" type="button" data-transfer-doc-action="edit" data-transfer-doc-id="${escapeHtml(doc.referenceId)}">Opravit</button></div></details></td>
           </tr>
         `
       }).join('')
       manualTransferDocsEmpty.textContent = allDocs.length ? 'Žádný ruční doklad neodpovídá filtrům. Zkus změnit směr, datum dokladu nebo přepnout na všechny doklady.' : 'Zatím tu nejsou žádné ruční převodky ani prodeje.'
       manualTransferDocsEmpty.style.display = docs.length ? 'none' : 'block'
+    }
+    function openManualTransferDocDetail(referenceId) {
+      const doc = getManualTransferDocs().find((item) => String(item.referenceId) === String(referenceId))
+      if (!doc) return
+      const direction = getTransferDocDirection(doc)
+      const docLabel = doc.referenceId.replace(/^manual-(transfer|sale|issue):/, '#')
+      const docDate = getManualTransferDocDate(doc)
+      const createdLabel = doc.createdAt ? new Date(doc.createdAt).toLocaleString('cs-CZ') : 'Bez data'
+      currentDetailContext = { type: 'manual-transfer-doc', referenceId: doc.referenceId }
+      detailMoveBtn.style.display = 'none'
+      detailEditBtn.style.display = ''
+      detailEditBtn.textContent = 'Opravit doklad'
+      detailModalTitle.textContent = `Doklad ${docLabel}`
+      detailModalContent.innerHTML = `
+        <div class="detail-section">
+          <div class="detail-metric-grid">
+            <div class="detail-metric"><span>Stav</span><strong>Provedeno</strong><small>Historický pohyb už je propsaný ve skladu.</small></div>
+            <div class="detail-metric"><span>Směr</span><strong>${escapeHtml(getTransferDocDirectionLabel(direction))}</strong><small>${escapeHtml(doc.movements.length)} řádků</small></div>
+            <div class="detail-metric"><span>Datum dokladu</span><strong>${escapeHtml(formatManualTransferDate(docDate))}</strong><small>Zapsáno ${escapeHtml(createdLabel)}</small></div>
+          </div>
+          <div class="helper-line">Toto je jen náhled provedeného dokladu. Tlačítko Opravit doklad nejdřív vyrovná původní pohyby opačným zápisem a pak uloží novou opravenou verzi.</div>
+        </div>
+        <div class="detail-section">
+          <h4>Řádky dokladu</h4>
+          <div class="detail-list">
+            ${doc.movements.map((movement) => {
+              const product = movement.product || {}
+              const source = movement.fromLocation?.name || 'Bez zdroje'
+              const target = movement.toLocation?.name || (direction === 'vehicle_sale' || direction === 'machines_sale' ? 'Prodej' : 'Bez cíle')
+              return `
+                <div class="detail-list-row">
+                  <div>
+                    <strong>${escapeHtml(product.name || 'Produkt')}</strong>
+                    <span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', source, target].filter(Boolean).join(' · '))}</span>
+                  </div>
+                  <div class="detail-list-value">${escapeHtml(formatQuantityValue(movement.quantity_base_units, product.base_unit || 'ks'))}</div>
+                </div>
+              `
+            }).join('')}
+          </div>
+        </div>
+      `
+      openDetailModal()
     }
     function getMobileStockTypeLabel(type) {
       return {
@@ -10466,10 +10509,11 @@
       if (!button) {
         if (event.target.closest('button, a, input, select, textarea, summary, details')) return
         const row = event.target.closest('tr[data-transfer-doc-id]')
-        if (row?.dataset.transferDocId) openManualTransferDocCorrection(row.dataset.transferDocId)
+        if (row?.dataset.transferDocId) openManualTransferDocDetail(row.dataset.transferDocId)
         return
       }
       button.closest('.stock-action-menu')?.removeAttribute('open')
+      if (button.dataset.transferDocAction === 'detail') openManualTransferDocDetail(button.dataset.transferDocId || '')
       if (button.dataset.transferDocAction === 'edit') openManualTransferDocCorrection(button.dataset.transferDocId || '')
     })
     mobilePickRequestsBody.addEventListener('click', async (event) => {
@@ -10596,6 +10640,9 @@
       }
       if (context.type === 'audit') {
         openVehicleAuditCorrection(context.auditId)
+      }
+      if (context.type === 'manual-transfer-doc') {
+        openManualTransferDocCorrection(context.referenceId)
       }
     })
     detailMoveBtn.addEventListener('click', () => {
