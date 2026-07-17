@@ -1808,6 +1808,7 @@
       events: [],
       vehicles: [],
       products: [],
+      productPackages: [],
       locations: [],
       machines: [],
       services: [],
@@ -2957,7 +2958,13 @@
       return vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : 'Vozidlo'
     }
 
-    function getInventoryCountPackage(product) {
+    function getMobileProductPackages(productId) {
+      return state.productPackages
+        .filter((pack) => String(pack.product_id) === String(productId) && pack.active !== false && Number(pack.units_per_package || 0) > 1)
+        .sort((a, b) => Number(b.is_default === true) - Number(a.is_default === true) || String(a.package_name || '').localeCompare(String(b.package_name || ''), 'cs'))
+    }
+
+    function getLegacyInventoryCountPackage(product) {
       const id = String(product?.id || '')
       const sku = String(product?.sku || '')
       const name = String(product?.name || '').toLowerCase()
@@ -2967,11 +2974,63 @@
       return null
     }
 
-    function displayInventoryCountValue(item, product) {
+    function getInventoryCountPackage(product) {
+      const packages = getMobileProductPackages(product?.id)
+      const pack = packages.find((item) => item.is_default) || packages[0]
+      if (pack) {
+        const baseUnit = product?.base_unit || 'ks'
+        return {
+          value: `package:${pack.id}`,
+          inputUnit: pack.package_name || 'balení',
+          baseUnit,
+          factor: Number(pack.units_per_package || 1)
+        }
+      }
+      const legacy = getLegacyInventoryCountPackage(product)
+      return legacy ? { ...legacy, value: 'legacy' } : null
+    }
+
+    function getInventoryCountUnitOptions(product) {
+      const baseUnit = product?.base_unit || 'ks'
+      const options = [{ value: 'base', label: `${baseUnit} / základ`, factor: 1, inputUnit: baseUnit, baseUnit }]
+      getMobileProductPackages(product?.id).forEach((pack) => {
+        options.push({
+          value: `package:${pack.id}`,
+          label: `${pack.package_name || 'balení'} (${formatNumber(pack.units_per_package)} ${baseUnit})`,
+          factor: Number(pack.units_per_package || 1),
+          inputUnit: pack.package_name || 'balení',
+          baseUnit
+        })
+      })
+      if (options.length === 1) {
+        const legacy = getLegacyInventoryCountPackage(product)
+        if (legacy) options.push({ ...legacy, value: 'legacy', label: `${legacy.inputUnit} (${formatNumber(legacy.factor)} ${legacy.baseUnit})` })
+      }
+      return options
+    }
+
+    function getInventoryCountUnitOption(product, value = '') {
+      const options = getInventoryCountUnitOptions(product)
+      return options.find((option) => option.value === value) || getInventoryCountPackage(product) || options[0]
+    }
+
+    function inventoryCountUnitOptionsHtml(product, selectedValue = '', disabled = false) {
+      const options = getInventoryCountUnitOptions(product)
+      const selected = options.some((option) => option.value === selectedValue) ? selectedValue : (getInventoryCountPackage(product)?.value || 'base')
+      return `<select data-inventory-count-unit ${disabled ? 'disabled' : ''}>${options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}</select>`
+    }
+
+    function inventoryCountHelpText(product, unitValue = '') {
+      const option = getInventoryCountUnitOption(product, unitValue)
+      if (!option || option.value === 'base') return `Zadávej ${product?.base_unit || 'ks'}`
+      return `Zadávej ${option.inputUnit}: 1 = ${formatNumber(option.factor)} ${option.baseUnit}`
+    }
+
+    function displayInventoryCountValue(item, product, unitValue = '') {
       const counted = Number(item.counted_quantity || 0)
-      const countPackage = getInventoryCountPackage(product)
+      const countPackage = getInventoryCountUnitOption(product, unitValue || getInventoryCountPackage(product)?.value || 'base')
       if (!item.counted_at) return ''
-      return countPackage ? Number((counted / countPackage.factor).toFixed(3)) : counted
+      return countPackage?.factor > 1 ? Number((counted / countPackage.factor).toFixed(3)) : counted
     }
 
     function inventoryCountInputToBase(rawValue, factor = 1) {
@@ -3008,19 +3067,23 @@
               ${items.map((item) => {
                 const product = item.products || state.products.find((row) => String(row.id) === String(item.product_id)) || {}
                 const unit = product.base_unit || 'ks'
-                const countPackage = getInventoryCountPackage(product)
-                const inputUnit = countPackage?.inputUnit || unit
-                const value = displayInventoryCountValue(item, product)
-                const countHelp = countPackage ? ` · zadávej ${countPackage.inputUnit} (1 tyč = ${formatNumber(countPackage.factor)} ${countPackage.baseUnit})` : ''
+                const defaultUnit = getInventoryCountPackage(product)?.value || 'base'
+                const value = displayInventoryCountValue(item, product, defaultUnit)
+                const countHelp = ` · ${inventoryCountHelpText(product, defaultUnit)}`
                 return `
-                  <div class="draft-line inventory-count-line" data-inventory-item-id="${escapeHtml(String(item.id))}" data-inventory-package-factor="${escapeHtml(String(countPackage?.factor || 1))}">
+                  <div class="draft-line inventory-count-line" data-inventory-item-id="${escapeHtml(String(item.id))}" data-inventory-product-id="${escapeHtml(String(product.id || item.product_id || ''))}" data-inventory-unit-mode="${escapeHtml(defaultUnit)}">
                     <div>
                       <strong>${escapeHtml(product.name || item.product_name || 'Produkt')}</strong>
                       <span>Evidence při zadání ${escapeHtml(formatNumber(item.book_quantity || 0))} ${escapeHtml(unit)}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''}${escapeHtml(countHelp)}</span>
                     </div>
                     <label>
-                      Fyzicky (${escapeHtml(inputUnit)})
+                      Fyzicky
                       <input data-inventory-count inputmode="decimal" value="${escapeHtml(String(value))}" placeholder="0" ${locked ? 'disabled' : ''} />
+                    </label>
+                    <label>
+                      Jednotka počtu
+                      ${inventoryCountUnitOptionsHtml(product, defaultUnit, locked)}
+                      <span data-inventory-count-help>${escapeHtml(inventoryCountHelpText(product, defaultUnit))}</span>
                     </label>
                     <label>
                       Poznámka
@@ -3046,6 +3109,24 @@
       const completed = inputs.filter((input) => String(input.value || '').trim() !== '').length
       const label = card.querySelector('[data-inventory-completion]')
       if (label) label.textContent = `${completed}/${inputs.length} řádků vyplněno`
+    }
+
+    function handleInventoryCountUnitChange(select) {
+      const row = select?.closest('[data-inventory-item-id]')
+      if (!row) return
+      const product = state.products.find((item) => String(item.id) === String(row.dataset.inventoryProductId)) || {}
+      const input = row.querySelector('[data-inventory-count]')
+      const previousMode = row.dataset.inventoryUnitMode || 'base'
+      const nextMode = select.value || 'base'
+      if (input && String(input.value || '').trim() !== '') {
+        const previousFactor = Number(getInventoryCountUnitOption(product, previousMode)?.factor || 1)
+        const nextFactor = Number(getInventoryCountUnitOption(product, nextMode)?.factor || 1)
+        const baseQuantity = inventoryCountInputToBase(input.value, previousFactor)
+        input.value = nextFactor > 0 ? formatNumber(Number((baseQuantity / nextFactor).toFixed(3))) : formatNumber(baseQuantity)
+      }
+      row.dataset.inventoryUnitMode = nextMode
+      const help = row.querySelector('[data-inventory-count-help]')
+      if (help) help.textContent = inventoryCountHelpText(product, nextMode)
     }
 
     function renderEmployee() {
@@ -3775,9 +3856,10 @@
     }
 
     async function loadReferenceData() {
-      const [vehicles, products, locations, machines] = await Promise.all([
+      const [vehicles, products, productPackages, locations, machines] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
         supabase.from('products').select('id, name, sku, ean, base_unit, active').eq('active', true).order('name', { ascending: true }).limit(1000),
+        supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
         supabase.from('locations').select('id, name, city, active').order('name', { ascending: true }),
         supabase.from('machines').select('id, location_id, name, machine_type, active').order('name', { ascending: true })
       ])
@@ -3785,6 +3867,12 @@
       if (products.error) throw products.error
       state.vehicles = vehicles.data || []
       state.products = products.data || []
+      if (productPackages.error) {
+        state.productPackages = []
+        state.setupWarnings.push(`Balení zásob se nepodařilo načíst: ${productPackages.error.message}`)
+      } else {
+        state.productPackages = productPackages.data || []
+      }
       if (locations.error) {
         const { data: fallbackLocations, error: fallbackLocationsError } = await supabase
           .from('locations')
@@ -4152,8 +4240,11 @@
       if (!itemRows.length) throw new Error('Inventura nemá položky.')
       const now = new Date().toISOString()
       const updates = itemRows.map((row) => {
+        const item = state.inventoryAuditItems.find((auditItem) => String(auditItem.id) === String(row.dataset.inventoryItemId))
+        const product = item?.products || state.products.find((productRow) => String(productRow.id) === String(row.dataset.inventoryProductId || item?.product_id || '')) || {}
+        const unitMode = row.querySelector('[data-inventory-count-unit]')?.value || 'base'
         const rawCount = row.querySelector('[data-inventory-count]')?.value
-        const countedQuantity = inventoryCountInputToBase(rawCount, Number(row.dataset.inventoryPackageFactor || 1))
+        const countedQuantity = inventoryCountInputToBase(rawCount, Number(getInventoryCountUnitOption(product, unitMode)?.factor || 1))
         return supabase
           .from('inventory_audit_items')
           .update({
@@ -4171,8 +4262,11 @@
       if (missingUpdate) throw new Error('Počty se nepodařilo uložit do řádků inventury. Obnov stránku a zkus to znovu.')
       if (submit) {
         const total = itemRows.reduce((sum, row) => {
+          const item = state.inventoryAuditItems.find((auditItem) => String(auditItem.id) === String(row.dataset.inventoryItemId))
+          const product = item?.products || state.products.find((productRow) => String(productRow.id) === String(row.dataset.inventoryProductId || item?.product_id || '')) || {}
+          const unitMode = row.querySelector('[data-inventory-count-unit]')?.value || 'base'
           const rawCount = row.querySelector('[data-inventory-count]')?.value
-          return sum + inventoryCountInputToBase(rawCount, Number(row.dataset.inventoryPackageFactor || 1))
+          return sum + inventoryCountInputToBase(rawCount, Number(getInventoryCountUnitOption(product, unitMode)?.factor || 1))
         }, 0)
         const { error } = await supabase
           .from('inventory_audits')
@@ -6357,6 +6451,11 @@
       els.vehicleInventoryList?.addEventListener('input', (event) => {
         if (!event.target.closest('[data-inventory-count]')) return
         updateVehicleInventoryCompletion(event.target.closest('[data-inventory-audit-card]'))
+      })
+      els.vehicleInventoryList?.addEventListener('change', (event) => {
+        const unitSelect = event.target.closest('[data-inventory-count-unit]')
+        if (!unitSelect) return
+        handleInventoryCountUnitChange(unitSelect)
       })
       els.stockDraftList.addEventListener('click', (event) => {
         const button = event.target.closest('[data-remove-draft-index]')

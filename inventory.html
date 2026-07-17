@@ -232,6 +232,8 @@
     .detail-table td { color:#fff; font-size:14px; }
     .detail-table td strong { display:block; font-size:15px; }
     .detail-table .subtext { display:block; margin-top:4px; }
+    .audit-count-control { display:grid; grid-template-columns:minmax(90px, 1fr) minmax(140px, auto); gap:8px; align-items:center; }
+    .audit-count-control input, .audit-count-control select { width:100%; min-width:0; }
     .modal.inventory-detail-modal { max-width:1280px; }
     .inventory-detail-modal .modal-body { padding:14px; }
     .detail-spreadsheet { display:grid; gap:12px; }
@@ -2335,6 +2337,66 @@
       const product = productsV13.find((item) => String(item.id) === String(productId))
       return inferPackageFromProductName(product) || pack
     }
+    function getInventoryCountUnitOptions(product) {
+      if (!product) return [{ value: 'base', label: 'základ', factor: 1 }]
+      const baseUnit = product.base_unit || 'ks'
+      const options = [{ value: 'base', label: `${baseUnit} / základ`, factor: 1 }]
+      const added = new Set(['base'])
+      getProductPackages(product.id)
+        .filter((pack) => Number(pack.units_per_package || 0) > 0)
+        .forEach((pack) => {
+          const value = pack.id ? `package:${pack.id}` : `package:${normalizeText(pack.package_name || 'baleni')}`
+          if (added.has(value)) return
+          added.add(value)
+          const factor = convertPackageQuantityToBase(product, 1, pack)
+          options.push({
+            value,
+            label: `${pack.package_name || 'Balení'} (${formatQuantityValue(factor, getTransferBaseUnit(product))})`,
+            factor,
+            pack
+          })
+        })
+      const inferred = getEffectiveDefaultPackage(product.id)
+      if (inferred && Number(inferred.units_per_package || 0) > 0 && !inferred.id && !added.has('package:default')) {
+        const factor = convertPackageQuantityToBase(product, 1, inferred)
+        options.push({
+          value: 'package:default',
+          label: `${inferred.package_name || 'Balení'} (${formatQuantityValue(factor, getTransferBaseUnit(product))})`,
+          factor,
+          pack: inferred
+        })
+      }
+      return options
+    }
+    function getInventoryCountUnitOption(product, value) {
+      const options = getInventoryCountUnitOptions(product)
+      return options.find((option) => option.value === value) || options[0]
+    }
+    function inventoryCountToBase(product, rawValue, unitMode = 'base', fallback = 0) {
+      if (rawValue === '' || rawValue == null) return Number(fallback || 0)
+      const amount = Number(String(rawValue).replace(',', '.'))
+      if (!Number.isFinite(amount) || amount < 0) return Number.NaN
+      const factor = Number(getInventoryCountUnitOption(product, unitMode)?.factor || 1)
+      return Number((amount * factor).toFixed(3))
+    }
+    function inventoryBaseToCount(product, baseQuantity, unitMode = 'base') {
+      const factor = Number(getInventoryCountUnitOption(product, unitMode)?.factor || 1)
+      const value = factor > 0 ? Number(baseQuantity || 0) / factor : Number(baseQuantity || 0)
+      return Number(value.toFixed(3))
+    }
+    function inventoryCountUnitSelectHtml(product, selected = 'base', attr = 'data-audit-count-unit') {
+      const options = getInventoryCountUnitOptions(product)
+      const selectedValue = options.some((option) => option.value === selected) ? selected : 'base'
+      return `<select ${attr}>${options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selectedValue ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}</select>`
+    }
+    function inventoryCountHelpText(product, rawValue, unitMode = 'base', fallback = 0) {
+      const converted = inventoryCountToBase(product, rawValue, unitMode, fallback)
+      const unit = getTransferBaseUnit(product)
+      const option = getInventoryCountUnitOption(product, unitMode)
+      if (!Number.isFinite(converted)) return 'Zadej nezáporné číslo.'
+      if (!option || option.value === 'base') return `Zadáváš ${unit}; do evidence se uloží ${formatQuantityValue(converted, unit)}.`
+      return `Zadáváš ${option.pack?.package_name || 'balení'}; do evidence se uloží ${formatQuantityValue(converted, unit)}.`
+    }
     function shouldUsePackageByDefault(product) {
       if (!product) return false
       const pack = getEffectiveDefaultPackage(product.id)
@@ -3878,6 +3940,7 @@
       const rows = [...auditRowsBody.querySelectorAll('[data-audit-key]')].map((row) => ({
         key: row.dataset.auditKey,
         counted: row.querySelector('[data-audit-counted]')?.value || '',
+        unit: row.querySelector('[data-audit-count-unit]')?.value || 'base',
         note: row.querySelector('[data-audit-note]')?.value || ''
       }))
       localStorage.setItem(AUDIT_DRAFT_STORAGE_KEY, JSON.stringify({
@@ -3897,8 +3960,10 @@
       auditRowsBody.querySelectorAll('[data-audit-key]').forEach((row) => {
         const bookQty = Number(row.dataset.bookQty || 0)
         const unitCost = Number(row.dataset.unitCost || 0)
+        const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
         const countedRaw = row.querySelector('[data-audit-counted]')?.value
-        const counted = countedRaw === '' ? bookQty : Number(countedRaw || 0)
+        const unitMode = row.querySelector('[data-audit-count-unit]')?.value || 'base'
+        const counted = inventoryCountToBase(product, countedRaw, unitMode, bookQty)
         const diff = Number((counted - bookQty).toFixed(3))
         const valueDiff = diff * unitCost
         bookTotal += bookQty
@@ -3907,6 +3972,8 @@
         valueDiffTotal += valueDiff
         row.querySelector('[data-audit-diff]').textContent = `${diff.toFixed(2)}`
         row.querySelector('[data-audit-value-diff]').textContent = formatStockMoney(valueDiff)
+        const help = row.querySelector('[data-audit-count-help]')
+        if (help) help.textContent = inventoryCountHelpText(product, countedRaw, unitMode, bookQty)
       })
       auditSummary.innerHTML = [
         { label:'Účetní stav', value: bookTotal.toFixed(2), note:'Součet kusů podle evidence.' },
@@ -3915,6 +3982,19 @@
         { label:'Hodnota rozdílu', value: formatStockMoney(valueDiffTotal), note:'Rozdíl oceněný nákupní cenou.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       saveAuditDraft()
+    }
+    function handleAuditCountUnitChange(select) {
+      const row = select?.closest('[data-audit-key]')
+      if (!row) return
+      const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
+      const input = row.querySelector('[data-audit-counted]')
+      const previousMode = row.dataset.auditUnitMode || 'base'
+      const nextMode = select.value || 'base'
+      if (input && String(input.value || '').trim() !== '') {
+        const baseQuantity = inventoryCountToBase(product, input.value, previousMode, Number(row.dataset.bookQty || 0))
+        input.value = inventoryBaseToCount(product, baseQuantity, nextMode)
+      }
+      row.dataset.auditUnitMode = nextMode
     }
     function showVehicleAuditBuilder() {
       vehicleAuditBuilder?.classList.add('show')
@@ -3939,13 +4019,21 @@
         const unitCost = getStockUnitCost(row.product)
         const key = `${row.balance.stock_location_id}:${row.product.id}:${row.balance.batch_id || 'none'}`
         const saved = draftRowMap.get(key) || {}
+        const selectedUnit = saved.unit || 'base'
+        const countedValue = saved.counted ?? inventoryBaseToCount(row.product, bookQty, selectedUnit)
         return `
-          <tr data-audit-key="${escapeHtml(key)}" data-stock-location-id="${escapeHtml(String(row.location.id))}" data-product-id="${escapeHtml(String(row.product.id))}" data-batch-id="${escapeHtml(String(row.balance.batch_id || ''))}" data-book-qty="${escapeHtml(String(bookQty))}" data-unit-cost="${escapeHtml(String(unitCost))}">
+          <tr data-audit-key="${escapeHtml(key)}" data-audit-unit-mode="${escapeHtml(selectedUnit)}" data-stock-location-id="${escapeHtml(String(row.location.id))}" data-product-id="${escapeHtml(String(row.product.id))}" data-batch-id="${escapeHtml(String(row.balance.batch_id || ''))}" data-book-qty="${escapeHtml(String(bookQty))}" data-unit-cost="${escapeHtml(String(unitCost))}">
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name)}</strong><span class="subtext">${escapeHtml([getProductCategoryLabel(getProductKind(row.product)), row.product.sku ? `SKU ${row.product.sku}` : '', row.product.ean ? `EAN ${row.product.ean}` : ''].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Místo"><strong>${escapeHtml(row.location.name || 'Bez místa')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span></td>
             <td data-label="Expirace / šarže"><strong>${escapeHtml(formatBatchLabel(row.batch))}</strong></td>
             <td data-label="Účetní stav"><strong>${bookQty.toFixed(2)} ${escapeHtml(unit)}</strong></td>
-            <td data-label="Skutečnost"><input data-audit-counted type="number" step="0.001" value="${escapeHtml(saved.counted ?? bookQty)}" /></td>
+            <td data-label="Skutečnost">
+              <div class="audit-count-control">
+                <input data-audit-counted type="number" step="0.001" min="0" value="${escapeHtml(countedValue)}" />
+                ${inventoryCountUnitSelectHtml(row.product, selectedUnit)}
+              </div>
+              <span class="subtext" data-audit-count-help>${escapeHtml(inventoryCountHelpText(row.product, countedValue, selectedUnit, bookQty))}</span>
+            </td>
             <td data-label="Rozdíl"><strong data-audit-diff>0.00</strong></td>
             <td data-label="Hodnota rozdílu"><strong data-audit-value-diff>${escapeHtml(formatStockMoney(0))}</strong></td>
             <td data-label="Poznámka"><input data-audit-note type="text" value="${escapeHtml(saved.note || '')}" placeholder="Důvod rozdílu" /></td>
@@ -3976,7 +4064,8 @@
         const cells = row.querySelectorAll('td')
         const bookQty = Number(row.dataset.bookQty || 0)
         const unitCost = Number(row.dataset.unitCost || 0)
-        const counted = Number(row.querySelector('[data-audit-counted]')?.value || bookQty)
+        const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
+        const counted = inventoryCountToBase(product, row.querySelector('[data-audit-counted]')?.value, row.querySelector('[data-audit-count-unit]')?.value || 'base', bookQty)
         const diff = Number((counted - bookQty).toFixed(3))
         return [
           auditDate.value,
@@ -4098,8 +4187,9 @@
     function collectAuditSheetRows() {
       return [...auditRowsBody.querySelectorAll('[data-audit-key]')].map((row) => {
         const bookQuantity = Number(row.dataset.bookQty || 0)
+        const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
         const countedRaw = row.querySelector('[data-audit-counted]')?.value
-        const countedQuantity = countedRaw === '' ? bookQuantity : Number(countedRaw || 0)
+        const countedQuantity = inventoryCountToBase(product, countedRaw, row.querySelector('[data-audit-count-unit]')?.value || 'base', bookQuantity)
         const differenceQuantity = Number((countedQuantity - bookQuantity).toFixed(3))
         const unitCost = Number(row.dataset.unitCost || 0)
         return {
@@ -5614,7 +5704,13 @@
               } },
               { label: 'Opraveno', render: (item) => {
                 const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
-                return `<input data-audit-correction-counted data-item-id="${escapeHtml(String(item.id))}" data-original-counted="${escapeHtml(String(item.counted_quantity || 0))}" data-book-quantity="${escapeHtml(String(item.book_quantity || 0))}" data-unit-cost="${escapeHtml(String(item.unit_cost || getStockUnitCost(product) || 0))}" type="number" step="0.001" min="0" value="${escapeHtml(String(item.counted_quantity || 0))}" />`
+                const selectedUnit = 'base'
+                const countedValue = inventoryBaseToCount(product, item.counted_quantity || 0, selectedUnit)
+                return `<div class="audit-count-control">
+                    <input data-audit-correction-counted data-item-id="${escapeHtml(String(item.id))}" data-original-counted="${escapeHtml(String(item.counted_quantity || 0))}" data-book-quantity="${escapeHtml(String(item.book_quantity || 0))}" data-unit-cost="${escapeHtml(String(item.unit_cost || getStockUnitCost(product) || 0))}" type="number" step="0.001" min="0" value="${escapeHtml(String(countedValue))}" />
+                    ${inventoryCountUnitSelectHtml(product, selectedUnit, 'data-audit-correction-unit')}
+                  </div>
+                  <span class="subtext">${escapeHtml(inventoryCountHelpText(product, countedValue, selectedUnit, item.book_quantity || 0))}</span>`
               } },
               { label: 'Poznámka', render: (item) => `<input data-audit-correction-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.counted_note || item.note || '')}" placeholder="Důvod opravy" />` }
             ], items, 'Inventura zatím nemá žádné položky.')}
@@ -5637,7 +5733,11 @@
       const corrections = inputs.map((input) => {
         const item = items.find((row) => String(row.id) === String(input.dataset.itemId))
         if (!item) throw new Error('Řádek inventury už není v načtených datech.')
-        const counted = Number(input.value || 0)
+        const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
+        const unitMode = detailModalContent.querySelector(`[data-audit-correction-unit][data-item-id="${CSS.escape(String(item.id))}"]`)?.value
+          || input.closest('.audit-count-control')?.querySelector('[data-audit-correction-unit]')?.value
+          || 'base'
+        const counted = inventoryCountToBase(product, input.value, unitMode, 0)
         if (!Number.isFinite(counted) || counted < 0) throw new Error('Opravený počet musí být nezáporné číslo.')
         const book = Number(input.dataset.bookQuantity || item.book_quantity || 0)
         const unitCost = Number(input.dataset.unitCost || item.unit_cost || 0)
@@ -10175,7 +10275,13 @@
       control?.addEventListener('input', saveAuditDraft)
     })
     auditRowsBody.addEventListener('input', (event) => {
-      if (event.target.matches('[data-audit-counted], [data-audit-note]')) updateAuditDifferences()
+      if (event.target.matches('[data-audit-counted], [data-audit-count-unit], [data-audit-note]')) updateAuditDifferences()
+    })
+    auditRowsBody.addEventListener('change', (event) => {
+      if (event.target.matches('[data-audit-count-unit]')) {
+        handleAuditCountUnitChange(event.target)
+        updateAuditDifferences()
+      }
     })
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'stock'))
