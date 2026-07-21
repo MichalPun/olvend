@@ -1564,6 +1564,8 @@
               <label>
                 Množství
                 <input id="stockQuantityInput" inputmode="decimal" value="1" />
+                <select id="stockUnitSelect"></select>
+                <span class="helper-line" id="stockQuantityHelp">Vyber produkt, ukážu jednotku.</span>
               </label>
               <label>
                 Poznámka
@@ -1911,6 +1913,8 @@
       productOptions: document.getElementById('productOptions'),
       stockProductSearchPanel: document.getElementById('stockProductSearchPanel'),
       stockQuantityInput: document.getElementById('stockQuantityInput'),
+      stockUnitSelect: document.getElementById('stockUnitSelect'),
+      stockQuantityHelp: document.getElementById('stockQuantityHelp'),
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
       loadWholeVehicleButton: document.getElementById('loadWholeVehicleButton'),
@@ -2774,7 +2778,7 @@
     }
 
     function renderProducts() {
-      els.productOptions.innerHTML = state.products.map((product) => {
+      els.productOptions.innerHTML = state.products.filter((product) => product.active !== false).map((product) => {
         const label = [product.name, product.sku, product.ean].filter(Boolean).join(' · ')
         return `<option value="${escapeHtml(label)}"></option>`
       }).join('')
@@ -2783,9 +2787,10 @@
 
     function getProductSearchResults(query) {
       const normalized = query.trim().toLowerCase()
+      const searchableProducts = state.products.filter((product) => product.active !== false)
       const rows = normalized
-        ? state.products.filter((product) => [product.name, product.sku, product.ean].filter(Boolean).join(' · ').toLowerCase().includes(normalized))
-        : state.products
+        ? searchableProducts.filter((product) => [product.name, product.sku, product.ean].filter(Boolean).join(' · ').toLowerCase().includes(normalized))
+        : searchableProducts
       return rows.slice(0, 30)
     }
 
@@ -2795,7 +2800,13 @@
       const results = getProductSearchResults(query)
       els.stockProductSearchPanel.hidden = document.activeElement !== els.stockProductInput || !results.length
       els.stockProductSearchPanel.innerHTML = results.map((product) => {
-        const meta = [product.sku ? `SKU ${product.sku}` : '', product.ean ? `EAN ${product.ean}` : '', product.base_unit || 'ks'].filter(Boolean).join(' · ')
+        const defaultUnit = getStockEntryUnitOption(product, getDefaultStockEntryUnitMode(product))
+        const meta = [
+          product.sku ? `SKU ${product.sku}` : '',
+          product.ean ? `EAN ${product.ean}` : '',
+          defaultUnit?.value !== 'base' ? `zadání ${defaultUnit.unit}` : product.base_unit || 'ks',
+          defaultUnit?.value !== 'base' ? `skladově ${formatStockQuantityValue(defaultUnit.stockQuantity, product.base_unit || 'ks')}` : ''
+        ].filter(Boolean).join(' · ')
         return `
           <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}">
             <strong>${escapeHtml(product.name || 'Produkt')}</strong>
@@ -2810,7 +2821,33 @@
       if (!product) return
       els.stockProductInput.value = [product.name, product.sku, product.ean].filter(Boolean).join(' · ')
       els.stockProductSearchPanel.hidden = true
+      updateStockUnitControls(product)
       els.stockQuantityInput.focus({ preventScroll: true })
+    }
+
+    function updateStockUnitControls(product = resolveProductFromInput(els.stockProductInput.value.trim())) {
+      if (!els.stockUnitSelect || !els.stockQuantityHelp) return
+      const options = getStockEntryUnitOptions(product)
+      const current = els.stockUnitSelect.value || getDefaultStockEntryUnitMode(product)
+      const selected = options.some((option) => option.value === current) ? current : getDefaultStockEntryUnitMode(product)
+      els.stockUnitSelect.innerHTML = options
+        .map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? 'selected' : ''}>${escapeHtml(option.label)}</option>`)
+        .join('')
+      updateStockQuantityHelp(product)
+    }
+
+    function updateStockQuantityHelp(product = resolveProductFromInput(els.stockProductInput.value.trim())) {
+      if (!els.stockQuantityHelp) return
+      if (!product) {
+        els.stockQuantityHelp.textContent = 'Vyber produkt, ukážu jednotku.'
+        return
+      }
+      const quantity = parseNumber(els.stockQuantityInput.value) || 0
+      const option = getStockEntryUnitOption(product, els.stockUnitSelect?.value || getDefaultStockEntryUnitMode(product))
+      const baseQuantity = option?.pack ? convertMobilePackageQuantityToBase(product, quantity, option.pack) : quantity
+      els.stockQuantityHelp.textContent = option?.value === 'base'
+        ? `Zadáváš ${product.base_unit || 'ks'}; skladově ${formatStockQuantityValue(baseQuantity, product.base_unit || 'ks')}`
+        : `${formatNumber(quantity)} ${option.unit} = ${formatStockQuantityValue(baseQuantity, product.base_unit || 'ks')}`
     }
 
     function renderStockRequests() {
@@ -2901,7 +2938,7 @@
     function getStockRequestItemSummary(requestId) {
       return getStockRequestItems(requestId)
         .slice(0, 3)
-        .map((item) => `${item.product_name || 'Produkt'} ${Number(item.prepared_quantity ?? item.confirmed_quantity ?? item.requested_quantity ?? 0).toFixed(0)} ${item.unit || 'ks'}`)
+        .map((item) => `${item.product_name || 'Produkt'} ${formatStockRequestItemQuantity(item)}`)
         .join(' / ')
     }
 
@@ -2909,7 +2946,11 @@
       return getStockRequestItems(requestId)
         .filter((item) => item.prepared_quantity !== null && item.prepared_quantity !== undefined && Number(item.prepared_quantity) !== Number(item.requested_quantity || 0))
         .slice(0, 3)
-        .map((item) => `${item.product_name || 'Produkt'} ${Number(item.requested_quantity || 0).toFixed(0)}→${Number(item.prepared_quantity || 0).toFixed(0)} ${item.unit || 'ks'}`)
+        .map((item) => {
+          const before = formatStockRequestItemQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null })
+          const after = formatStockRequestItemQuantity(item)
+          return `${item.product_name || 'Produkt'} ${before} → ${after}`
+        })
         .join(' / ')
     }
 
@@ -2921,17 +2962,16 @@
         return
       }
 
-      const total = state.stockDraftItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
       els.stockDraftList.innerHTML = `
         <div class="section-head" style="margin: 2px 0 0;">
           <h2>Položky dokladu</h2>
-          <span>${state.stockDraftItems.length} řádků · ${formatNumber(total)} ks</span>
+          <span>${state.stockDraftItems.length} řádků</span>
         </div>
         ${state.stockDraftItems.map((item, index) => `
           <div class="draft-line">
             <div>
               <strong>${escapeHtml(item.product_name)}</strong>
-              <span>${formatNumber(item.quantity)} ${escapeHtml(item.unit || 'ks')}${item.sku ? ` · ${escapeHtml(item.sku)}` : ''}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</span>
+              <span>${escapeHtml(formatStockRequestItemQuantity(item))}${item.sku ? ` · ${escapeHtml(item.sku)}` : ''}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</span>
             </div>
             <button class="mini-btn" data-remove-draft-index="${index}" type="button">Odebrat</button>
           </div>
@@ -2962,6 +3002,77 @@
       return state.productPackages
         .filter((pack) => String(pack.product_id) === String(productId) && pack.active !== false && Number(pack.units_per_package || 0) > 1)
         .sort((a, b) => Number(b.is_default === true) - Number(a.is_default === true) || String(a.package_name || '').localeCompare(String(b.package_name || ''), 'cs'))
+    }
+
+    function getPackageQuantityUnit(baseUnit) {
+      const unit = normalizeText(baseUnit || '')
+      if (unit === 'kg') return 'g'
+      if (unit === 'l') return 'ml'
+      return baseUnit || 'ks'
+    }
+
+    function convertMobilePackageQuantityToBase(product, enteredQuantity, pack) {
+      const amount = Number(enteredQuantity || 0)
+      const unitsPerPackage = Number(pack?.units_per_package || 1)
+      const packageUnit = getPackageQuantityUnit(product?.base_unit)
+      const baseUnit = product?.base_unit || packageUnit
+      return Number(convertRecipeQuantity(amount * unitsPerPackage, packageUnit, baseUnit).toFixed(3))
+    }
+
+    function getStockEntryUnitOptions(product) {
+      if (!product) return [{ value: 'base', label: 'základ', unit: 'ks', stockQuantity: 1 }]
+      const baseUnit = product.base_unit || 'ks'
+      const options = [{ value: 'base', label: `${baseUnit} / základ`, unit: baseUnit, stockQuantity: 1 }]
+      getMobileProductPackages(product.id).forEach((pack) => {
+        options.push({
+          value: `package:${pack.id}`,
+          label: `${pack.package_name || 'balení'} (${formatNumber(convertMobilePackageQuantityToBase(product, 1, pack))} ${baseUnit})`,
+          unit: pack.package_name || 'balení',
+          stockQuantity: convertMobilePackageQuantityToBase(product, 1, pack),
+          pack
+        })
+      })
+      return options
+    }
+
+    function getDefaultStockEntryUnitMode(product) {
+      const pack = getMobileProductPackages(product?.id).find((item) => item.is_default) || getMobileProductPackages(product?.id)[0]
+      return pack?.id ? `package:${pack.id}` : 'base'
+    }
+
+    function getStockEntryUnitOption(product, value = '') {
+      const options = getStockEntryUnitOptions(product)
+      return options.find((option) => option.value === value) || options.find((option) => option.value === getDefaultStockEntryUnitMode(product)) || options[0]
+    }
+
+    function getStockRequestProduct(item) {
+      return state.products.find((product) => String(product.id) === String(item?.product_id))
+    }
+
+    function getStockRequestUnitPackage(item, product = getStockRequestProduct(item)) {
+      const unit = normalizeText(item?.unit || '')
+      if (!product || !unit) return null
+      return getMobileProductPackages(product.id).find((pack) => normalizeText(pack.package_name || '') === unit) || null
+    }
+
+    function getStockRequestQuantityBase(item) {
+      const quantity = Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
+      const product = getStockRequestProduct(item)
+      const pack = getStockRequestUnitPackage(item, product)
+      if (!product && item?.stock_quantity_base_units != null) return Number(item.stock_quantity_base_units || 0)
+      return product && pack ? convertMobilePackageQuantityToBase(product, quantity, pack) : quantity
+    }
+
+    function formatStockRequestItemQuantity(item) {
+      const quantity = Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
+      const product = getStockRequestProduct(item)
+      const unit = item?.unit || product?.base_unit || 'ks'
+      const baseUnit = product?.base_unit || unit || 'ks'
+      const baseQuantity = getStockRequestQuantityBase(item)
+      if (product && getStockRequestUnitPackage(item, product)) {
+        return `${formatNumber(quantity)} ${unit} = ${formatStockQuantityValue(baseQuantity, baseUnit)}`
+      }
+      return formatStockQuantityValue(quantity, unit)
     }
 
     function getLegacyInventoryCountPackage(product) {
@@ -3858,7 +3969,7 @@
     async function loadReferenceData() {
       const [vehicles, products, productPackages, locations, machines] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, ean, base_unit, active').eq('active', true).order('name', { ascending: true }).limit(1000),
+        supabase.from('products').select('id, name, sku, ean, base_unit, active').order('name', { ascending: true }).limit(2000),
         supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
         supabase.from('locations').select('id, name, city, active').order('name', { ascending: true }),
         supabase.from('machines').select('id, location_id, name, machine_type, active').order('name', { ascending: true })
@@ -5332,18 +5443,21 @@
       }
 
       const product = resolveProductFromInput(productText)
+      const unitOption = getStockEntryUnitOption(product, els.stockUnitSelect?.value || getDefaultStockEntryUnitMode(product))
       state.stockDraftItems.push({
         product_id: product?.id || null,
         product_name: product?.name || productText,
         sku: product?.sku || null,
-        unit: product?.base_unit || 'ks',
+        unit: unitOption?.unit || product?.base_unit || 'ks',
         quantity,
+        stock_quantity_base_units: unitOption?.pack ? convertMobilePackageQuantityToBase(product, quantity, unitOption.pack) : quantity,
         note: els.stockNoteInput.value.trim() || null
       })
 
       els.stockProductInput.value = ''
       els.stockQuantityInput.value = '1'
       els.stockNoteInput.value = ''
+      updateStockUnitControls(null)
       renderStockDraft()
       if (!options.silent) showMessage('Položka je přidaná do rozpracovaného dokladu.', 'info', { scroll: false })
       window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 20)
@@ -5730,7 +5844,7 @@
     }
 
     function getRequestQuantity(item) {
-      return Number(item.confirmed_quantity ?? item.prepared_quantity ?? item.requested_quantity ?? 0)
+      return getStockRequestQuantityBase(item)
     }
 
     function formatStockQuantityValue(quantity, unit = 'ks') {
@@ -6308,9 +6422,12 @@
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
       els.stockProductInput.addEventListener('input', () => {
         renderProductSearchPanel()
+        updateStockUnitControls()
         renderStockDraft()
       })
       els.stockProductInput.addEventListener('focus', renderProductSearchPanel)
+      els.stockQuantityInput.addEventListener('input', () => updateStockQuantityHelp())
+      els.stockUnitSelect?.addEventListener('change', () => updateStockQuantityHelp())
       els.stockProductSearchPanel.addEventListener('click', (event) => {
         const button = event.target.closest('[data-product-id]')
         if (!button) return
