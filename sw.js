@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v44-telemetry-contained-width-assets';
+const CACHE_NAME = 'olvend-v45-stock-unit-handling';
 const APP_SHELL = [
   './',
   './index.html',
