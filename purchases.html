@@ -1497,38 +1497,71 @@
       const packages = productPackages(productId).filter((item) => item.active !== false)
       return packages.find((item) => item.is_default) || packages[0] || null
     }
+    function packageQuantityUnitForBase(baseUnit) {
+      const unit = normalizeText(baseUnit || '')
+      if (unit === 'kg') return 'g'
+      if (unit === 'l') return 'ml'
+      return baseUnit || 'ks'
+    }
+    function convertInvoiceQuantityToBase(quantity, fromUnit, baseUnit) {
+      const amount = Number(quantity || 0)
+      const from = normalizeText(fromUnit || baseUnit || '')
+      const to = normalizeText(baseUnit || fromUnit || '')
+      if (from === to) return amount
+      if (from === 'g' && to === 'kg') return amount / 1000
+      if (from === 'kg' && to === 'g') return amount * 1000
+      if (from === 'ml' && to === 'l') return amount / 1000
+      if (from === 'l' && to === 'ml') return amount * 1000
+      return amount
+    }
+    function invoiceStockUnitsPerInvoiceUnit(productId, multiplier) {
+      const rawMultiplier = Number(multiplier || 0)
+      if (!rawMultiplier || rawMultiplier <= 0) return 1
+      const product = getProductById(productId)
+      const baseUnit = product?.base_unit || 'ks'
+      const pack = defaultProductPackage(productId)
+      const packageUnits = Number(pack?.units_per_package || 0)
+      if (pack && Math.abs(packageUnits - rawMultiplier) < 0.000001) {
+        return Number(convertInvoiceQuantityToBase(rawMultiplier, packageQuantityUnitForBase(baseUnit), baseUnit).toFixed(6))
+      }
+      return rawMultiplier
+    }
     function invoiceUnitMultiplier(productId, supplierId = '') {
       if (!productId) return 1
       const mapping = supplierMappingForProduct(supplierId, productId)
       const mapped = Number(mapping?.base_units_per_invoice_unit || 0)
-      if (mapped > 0 && mapped !== 1) return mapped
+      if (mapped > 0 && mapped !== 1) return invoiceStockUnitsPerInvoiceUnit(productId, mapped)
       const pack = defaultProductPackage(productId)
       const packageUnits = Number(pack?.units_per_package || 0)
-      return packageUnits > 1 ? packageUnits : 1
+      const stockUnits = invoiceStockUnitsPerInvoiceUnit(productId, packageUnits)
+      return stockUnits > 0 && Math.abs(stockUnits - 1) > 0.000001 ? stockUnits : 1
     }
     function invoiceUnitMultiplierLabel(productId, multiplier) {
       const product = getProductById(productId)
       const pack = defaultProductPackage(productId)
-      if (Number(multiplier || 1) <= 1) return `bez přepočtu`
-      return `1 ${pack?.package_name || 'balení'} = ${Number(multiplier).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'}`
+      const stockMultiplier = invoiceStockUnitsPerInvoiceUnit(productId, multiplier)
+      if (Math.abs(Number(stockMultiplier || 1) - 1) <= 0.000001) return `bez přepočtu`
+      return `1 ${pack?.package_name || 'balení'} = ${Number(stockMultiplier).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'}`
     }
     function invoiceStockQuantityLabel(productId, quantity, multiplier) {
       const product = getProductById(productId)
       const baseUnit = product?.base_unit || 'ks'
-      const stockQuantity = Number((Number(quantity || 0) * Number(multiplier || 1)).toFixed(3))
-      if (Number(multiplier || 1) <= 1) return `${stockQuantity.toLocaleString('cs-CZ')} ${baseUnit} na sklad`
+      const stockMultiplier = invoiceStockUnitsPerInvoiceUnit(productId, multiplier)
+      const stockQuantity = Number((Number(quantity || 0) * Number(stockMultiplier || 1)).toFixed(3))
+      if (Math.abs(Number(stockMultiplier || 1) - 1) <= 0.000001) return `${stockQuantity.toLocaleString('cs-CZ')} ${baseUnit} na sklad`
       const pack = defaultProductPackage(productId)
-      return `${stockQuantity.toLocaleString('cs-CZ')} ${baseUnit} na sklad · ${Number(quantity || 0).toLocaleString('cs-CZ')} × ${pack?.package_name || 'balení'} (${Number(multiplier).toLocaleString('cs-CZ')} ${baseUnit})`
+      return `${stockQuantity.toLocaleString('cs-CZ')} ${baseUnit} na sklad · ${Number(quantity || 0).toLocaleString('cs-CZ')} × ${pack?.package_name || 'balení'} (${Number(stockMultiplier).toLocaleString('cs-CZ')} ${baseUnit})`
     }
     function invoiceUnitCostHelpLabel(productId, amounts) {
       const product = getProductById(productId)
       const baseUnit = product?.base_unit || 'ks'
-      const multiplier = Number(amounts?.baseUnitsPerInvoiceUnit || 1)
+      const multiplier = invoiceStockUnitsPerInvoiceUnit(productId, Number(amounts?.baseUnitsPerInvoiceUnit || 1))
       const pack = defaultProductPackage(productId)
-      const documentUnitLabel = multiplier > 1 ? (pack?.package_name || 'jednotka dokladu') : baseUnit
+      const hasConversion = Math.abs(multiplier - 1) > 0.000001
+      const documentUnitLabel = hasConversion ? (pack?.package_name || 'jednotka dokladu') : baseUnit
       const documentCost = Number(amounts?.documentUnitCostCzk ?? amounts?.unitCost ?? 0)
       const baseCost = Number(amounts?.unitCostCzk ?? 0)
-      if (multiplier > 1) {
+      if (hasConversion) {
         if (!documentCost) return `Cena za ${documentUnitLabel} → sklad přepočítá na 1 ${baseUnit}.`
         return `Cena: ${formatCurrency(documentCost)} / ${documentUnitLabel} → sklad ${formatCurrency(baseCost)} / ${baseUnit}.`
       }
@@ -1998,9 +2031,11 @@
       return result.data
     }
     function importLineAmounts(row) {
+      const productId = row.querySelector('[data-import-product]')?.value || ''
       const quantity = parseMoneyNumber(row.querySelector('[data-import-quantity]')?.value || 0)
       const unitCost = parseMoneyNumber(row.querySelector('[data-import-unit-cost]')?.value || 0)
-      const baseUnitsPerInvoiceUnit = Math.max(parseMoneyNumber(row.querySelector('[data-import-unit-multiplier]')?.value || 1), 0.000001)
+      const rawBaseUnitsPerInvoiceUnit = Math.max(parseMoneyNumber(row.querySelector('[data-import-unit-multiplier]')?.value || 1), 0.000001)
+      const baseUnitsPerInvoiceUnit = Math.max(invoiceStockUnitsPerInvoiceUnit(productId, rawBaseUnitsPerInvoiceUnit), 0.000001)
       const baseQuantity = quantity * baseUnitsPerInvoiceUnit
       const vatRate = parseMoneyNumber(row.querySelector('[data-import-vat-rate]')?.value || 0)
       const currency = currentPurchaseCurrency()
@@ -2311,7 +2346,7 @@
         if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = purchaseCzkToDocumentAmount(lastPrice, currency, exchangeRate)
         const quantity = Number(line.quantity || 0)
         const unitCost = Number(line.unitPriceNet || 0)
-        const unitMultiplier = Number(line.baseUnitsPerInvoiceUnit || invoiceUnitMultiplier(selectedProductId, supplierId) || 1)
+        const unitMultiplier = invoiceStockUnitsPerInvoiceUnit(selectedProductId, Number(line.baseUnitsPerInvoiceUnit || invoiceUnitMultiplier(selectedProductId, supplierId) || 1))
         const hasUnitConversion = Math.abs(unitMultiplier - 1) > 0.0001
         const vatRate = Number(line.vatRate || 0)
         const totalNet = quantity * unitCost

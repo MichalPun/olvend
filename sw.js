@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v46-telemetry-periods';
+const CACHE_NAME = 'olvend-v47-purchase-package-units';
 const APP_SHELL = [
   './',
   './index.html',
