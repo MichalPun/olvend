@@ -4299,7 +4299,33 @@
       `;
     }
 
-    function renderTelemetrySales({ rows = [], totals = {}, dayRows = [], topProducts = [], topLocations = [], lowStock = [], error = "" } = {}) {
+    function renderTelemetryInitialInventory(rows) {
+      const sourceRows = rows || [];
+      if (!sourceRows.length) {
+        return '<div class="small-note">Žádný nově napojený automat teď nečeká na prvotní inventuru.</div>';
+      }
+      return `
+        <div class="telemetry-low-list">
+          ${sourceRows.map((row) => `
+            <div class="telemetry-low-row">
+              <div class="telemetry-low-top">
+                <div>
+                  <strong>${escapeHtml(row.machine_name || "Automat")}</strong>
+                  <span class="telemetry-low-meta">${escapeHtml(row.location_name || "Bez lokality")} · poslední telemetrie ${escapeHtml(formatRelativeMinutes(row.last_seen_at))}</span>
+                </div>
+                <span class="telemetry-low-badge">Prvotní inventura</span>
+              </div>
+              <div class="telemetry-low-foot">
+                <span>Nic zatím není označeno jako chybějící.</span>
+                <span>Fyzicky zapsat výchozí stav zásobníků</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderTelemetrySales({ rows = [], totals = {}, dayRows = [], topProducts = [], topLocations = [], lowStock = [], initialInventory = [], error = "" } = {}) {
       if (!telemetrySalesSummary || !telemetryCommandGrid || !telemetrySalesTable || !telemetrySalesNote) return;
       const quantity = Number(totals.quantity || 0);
       const revenue = Number(totals.revenue || 0);
@@ -4344,6 +4370,10 @@
         <section class="telemetry-panel">
           <div class="telemetry-panel-head"><h3>Automaty s nízkými zásobami</h3><span>planogram</span></div>
           ${renderTelemetryLowStock(lowStock)}
+        </section>
+        <section class="telemetry-panel">
+          <div class="telemetry-panel-head"><h3>Nutná prvotní inventura</h3><span>${escapeHtml(`${initialInventory.length} automatů`)}</span></div>
+          ${renderTelemetryInitialInventory(initialInventory)}
         </section>
       `;
 
@@ -4399,7 +4429,8 @@
       const trendStart = new Date(todayStart);
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
-      const [recentResult, trendRows, lowStockResult, coffeeContainersResult] = await Promise.all([
+      const telemetryFreshCutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const [recentResult, trendRows, lowStockResult, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
@@ -4417,12 +4448,28 @@
         supabase
           .from("machine_coffee_containers")
           .select("id, machine_id, container_code, product_name, product_sku, current_quantity, capacity_quantity, min_refill_quantity, unit, active")
-          .eq("active", true)
+          .eq("active", true),
+        supabase
+          .from("machine_external_links")
+          .select("machine_id, provider, telemetry_enabled")
+          .eq("telemetry_enabled", true),
+        supabase
+          .from("machine_telemetry_state")
+          .select("machine_id, provider, last_seen_at")
+          .gte("last_seen_at", telemetryFreshCutoff),
+        supabase
+          .from("route_machine_visit_items")
+          .select("machine_id")
+          .not("actual_before_quantity", "is", null)
+          .limit(5000)
       ]);
 
       if (recentResult.error) throw recentResult.error;
       if (lowStockResult.error) throw lowStockResult.error;
       if (coffeeContainersResult.error) throw coffeeContainersResult.error;
+      if (telemetryLinksResult.error) throw telemetryLinksResult.error;
+      if (telemetryStatesResult.error) throw telemetryStatesResult.error;
+      if (inventoriedItemsResult.error) throw inventoriedItemsResult.error;
 
       const rows = recentResult.data || [];
       const allTrendRows = trendRows || [];
@@ -4436,7 +4483,7 @@
       });
       const lowStockRaw = lowStockResult.data || [];
       const coffeeContainerRaw = coffeeContainersResult.data || [];
-      const machineIds = [...new Set([...rows, ...allTrendRows, ...lowStockRaw, ...coffeeContainerRaw].map((row) => row.machine_id))]
+      const machineIds = [...new Set([...rows, ...allTrendRows, ...lowStockRaw, ...coffeeContainerRaw, ...(telemetryStatesResult.data || [])].map((row) => row.machine_id))]
         .map(Number)
         .filter(Boolean);
 
@@ -4487,6 +4534,23 @@
         unknownQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unknown_payment_quantity || 0), 0)
       });
       const compareTotals = getTotalsForRows(compareRows);
+      const enabledTelemetryLinks = new Set((telemetryLinksResult.data || []).map((link) => `${link.machine_id}:${String(link.provider || "").toLowerCase()}`));
+      const inventoriedMachineIds = new Set((inventoriedItemsResult.data || []).map((item) => String(item.machine_id)));
+      const freshTelemetryStates = (telemetryStatesResult.data || []).filter((item) => enabledTelemetryLinks.has(`${item.machine_id}:${String(item.provider || "").toLowerCase()}`));
+      const freshTelemetryMachineIds = new Set(freshTelemetryStates.map((item) => String(item.machine_id)));
+      const initialInventory = freshTelemetryStates
+        .filter((item) => !inventoriedMachineIds.has(String(item.machine_id)))
+        .map((item) => {
+          const machine = machineMap.get(String(item.machine_id));
+          const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+          return {
+            machine_id: item.machine_id,
+            machine_name: machine?.name || `Automat ${item.machine_id}`,
+            location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+            last_seen_at: item.last_seen_at
+          };
+        })
+        .sort((a, b) => new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0));
 
       const totals = {
         ...getTotalsForRows(periodRows),
@@ -4520,7 +4584,7 @@
             low: (capacity > 0 && percent <= 25) || (desired > 0 && current <= desired)
           };
         })
-        .filter((slot) => slot.low);
+        .filter((slot) => slot.low && freshTelemetryMachineIds.has(String(slot.machine_id)) && inventoriedMachineIds.has(String(slot.machine_id)));
       const lowStockCoffeeContainers = coffeeContainerRaw
         .map((container) => {
           const machine = machineMap.get(String(container.machine_id));
@@ -4541,11 +4605,11 @@
             low: capacity > 0 && percent <= 25
           };
         })
-        .filter((container) => container.low);
+        .filter((container) => container.low && freshTelemetryMachineIds.has(String(container.machine_id)) && inventoriedMachineIds.has(String(container.machine_id)));
       const lowStock = [...lowStockSlots, ...lowStockCoffeeContainers]
         .sort((a, b) => Number(a.percent || 0) - Number(b.percent || 0));
 
-      return { rows: enrichedRows, totals, dayRows, topProducts, topLocations, lowStock };
+      return { rows: enrichedRows, totals, dayRows, topProducts, topLocations, lowStock, initialInventory };
     }
 
     async function renderTelemetrySalesDashboard() {

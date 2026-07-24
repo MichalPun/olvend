@@ -1407,6 +1407,7 @@
 
     const ROAD_FACTOR = 1.23
     const AVG_SPEED_KMH = 52
+    const TELEMETRY_FRESHNESS_HOURS = 48
     const LOCAL_STORAGE_KEY = 'olvendRoutePilotPlans'
     const GOOGLE_ROUTE_FUNCTION_URL = `${supabaseUrl}/functions/v1/google-route-plan`
 
@@ -1465,6 +1466,7 @@
       planogramSlots: [],
       machineServiceRules: new Map(),
       telemetryEligibleMachineIds: new Set(),
+      inventoriedMachineIds: new Set(),
       lastMachineVisits: new Map(),
       candidates: [],
       filteredCandidates: [],
@@ -1707,6 +1709,21 @@
       if (rule?.route_visit_rules_active === false) return null
       const criticalPercent = Math.max(0, Math.min(100, Number(rule?.stock_critical_percent ?? 19)))
       const maxVisitDays = Math.max(1, Number(rule?.max_visit_interval_days ?? 10))
+      const hasInitialInventory = state.inventoriedMachineIds.has(machineId)
+
+      if (!hasInitialInventory) {
+        return {
+          reasons: [{
+            type: 'inventory',
+            badge: 'nutná prvotní inventura',
+            note: 'Automat nově posílá telemetrii; fyzicky zkontrolovat a zapsat výchozí stav všech zásobníků',
+            priority: 'critical',
+          }],
+          priority: 'critical',
+          estimatedMinutes: 25,
+          sourceNote: 'Telemetrie je aktivní, ale chybí prvotní fyzická inventura zásobníků',
+        }
+      }
 
       const inventoryContainers = [
         ...state.coffeeContainers.map((container) => ({
@@ -3718,6 +3735,7 @@
     }
 
     async function loadTelemetryEligibility() {
+      const freshTelemetryCutoff = new Date(Date.now() - TELEMETRY_FRESHNESS_HOURS * 60 * 60 * 1000).toISOString()
       const [linksResult, statesResult] = await Promise.all([
         supabase
           .from('machine_external_links')
@@ -3726,7 +3744,7 @@
         supabase
           .from('machine_telemetry_state')
           .select('machine_id, provider, last_seen_at')
-          .not('last_seen_at', 'is', null)
+          .gte('last_seen_at', freshTelemetryCutoff)
       ])
 
       const error = linksResult.error || statesResult.error
@@ -3744,6 +3762,24 @@
           .filter((telemetryState) => enabledLinks.has(`${telemetryState.machine_id}:${normalizeText(telemetryState.provider)}`))
           .map((telemetryState) => String(telemetryState.machine_id))
       )
+    }
+
+    async function loadInventoriedMachines() {
+      const { data, error } = await supabase
+        .from('route_machine_visit_items')
+        .select('machine_id')
+        .not('actual_before_quantity', 'is', null)
+        .limit(5000)
+
+      if (error) {
+        if (/route_machine_visit_items|actual_before_quantity|schema cache/i.test(String(error.message || ''))) {
+          state.inventoriedMachineIds = new Set()
+          return
+        }
+        throw error
+      }
+
+      state.inventoriedMachineIds = new Set((data || []).map((item) => String(item.machine_id)))
     }
 
     async function loadCoffeeContainers() {
@@ -3886,6 +3922,7 @@
           loadMachines(),
           loadMachineServiceRules(),
           loadTelemetryEligibility(),
+          loadInventoriedMachines(),
           loadCoffeeContainers(),
           loadPlanogramSlots(),
           loadLastMachineVisits(),
