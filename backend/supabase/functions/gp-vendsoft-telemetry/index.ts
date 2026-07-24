@@ -467,11 +467,13 @@ async function applyPlanogramDepletion(
   }
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
+  const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta);
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
     const { slot, counter, isInitialCounter, previousTotal, delta, selection } = item;
-    const { cashDelta, cashlessDelta, unknownPaymentDelta } = allocatePaymentDelta(delta, totalVendDelta, paymentDelta);
+    const { cashDelta, cashlessDelta, unknownPaymentDelta } = paymentAllocations.get(selection) ||
+      { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
 
     const { error: counterError } = await adminClient
       .from("telemetry_planogram_counters")
@@ -617,25 +619,85 @@ function getPaymentDelta(previous: Record<string, unknown> | null | undefined, c
   return { cashQuantity, cashlessQuantity, cashAmount, cashlessAmount, totalQuantity: cashQuantity + cashlessQuantity };
 }
 
-function allocatePaymentDelta(delta: number, totalVendDelta: number, paymentDelta: ReturnType<typeof getPaymentDelta>) {
-  if (delta <= 0) return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0 };
+function priceToPaymentAmount(priceCzk: number) {
+  return Number.isFinite(priceCzk) && priceCzk > 0 ? Math.round(priceCzk * 100) : 0;
+}
+
+function emptyPaymentAllocation() {
+  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0 };
+}
+
+function allocatePaymentDeltas(
+  planned: Array<{
+    slot: Record<string, unknown>;
+    isInitialCounter: boolean;
+    selection: string;
+    delta: number;
+  }>,
+  totalVendDelta: number,
+  paymentDelta: ReturnType<typeof getPaymentDelta>,
+) {
+  const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; unknownPaymentDelta: number }>();
+  const saleUnits: Array<{ selection: string; priceAmount: number }> = [];
+
+  for (const item of planned) {
+    const quantity = item.isInitialCounter ? 0 : Math.max(0, Math.round(Number(item.delta || 0)));
+    if (quantity <= 0) continue;
+    const unitPrice = Number(item.slot.customer_price_czk ?? item.slot.dex_price_czk ?? 0);
+    const priceAmount = priceToPaymentAmount(unitPrice);
+    for (let i = 0; i < quantity; i += 1) saleUnits.push({ selection: item.selection, priceAmount });
+    allocations.set(item.selection, emptyPaymentAllocation());
+  }
+
+  const assign = (selection: string, key: "cashDelta" | "cashlessDelta" | "unknownPaymentDelta") => {
+    const current = allocations.get(selection) || emptyPaymentAllocation();
+    current[key] += 1;
+    allocations.set(selection, current);
+  };
+
+  if (!saleUnits.length) return allocations;
   if (totalVendDelta <= 0 || paymentDelta.totalQuantity !== totalVendDelta) {
-    return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
+    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
+    return allocations;
   }
   if (paymentDelta.cashQuantity === totalVendDelta && paymentDelta.cashlessQuantity === 0) {
-    return { cashDelta: delta, cashlessDelta: 0, unknownPaymentDelta: 0 };
+    saleUnits.forEach((unit) => assign(unit.selection, "cashDelta"));
+    return allocations;
   }
   if (paymentDelta.cashlessQuantity === totalVendDelta && paymentDelta.cashQuantity === 0) {
-    return { cashDelta: 0, cashlessDelta: delta, unknownPaymentDelta: 0 };
+    saleUnits.forEach((unit) => assign(unit.selection, "cashlessDelta"));
+    return allocations;
   }
-  if (totalVendDelta === 1 && delta === 1) {
-    return {
-      cashDelta: paymentDelta.cashQuantity === 1 ? 1 : 0,
-      cashlessDelta: paymentDelta.cashlessQuantity === 1 ? 1 : 0,
-      unknownPaymentDelta: paymentDelta.totalQuantity === 1 ? 0 : 1,
-    };
+
+  const cashTargetQuantity = Math.round(paymentDelta.cashQuantity);
+  const cashTargetAmount = Math.round(paymentDelta.cashAmount);
+  let cashIndexes: Set<number> | null = null;
+
+  const search = (index: number, picked: number[], pickedAmount: number) => {
+    if (cashIndexes || picked.length > cashTargetQuantity || pickedAmount > cashTargetAmount) return;
+    if (picked.length === cashTargetQuantity) {
+      if (pickedAmount === cashTargetAmount) cashIndexes = new Set(picked);
+      return;
+    }
+    if (index >= saleUnits.length) return;
+
+    search(index + 1, [...picked, index], pickedAmount + saleUnits[index].priceAmount);
+    search(index + 1, picked, pickedAmount);
+  };
+
+  if (cashTargetQuantity >= 0 && cashTargetQuantity <= saleUnits.length && cashTargetAmount > 0 && saleUnits.length <= 24) {
+    search(0, [], 0);
   }
-  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
+
+  if (!cashIndexes && cashTargetQuantity >= 0 && cashTargetQuantity <= saleUnits.length) {
+    cashIndexes = new Set(saleUnits.slice(0, cashTargetQuantity).map((_, index) => index));
+  }
+
+  saleUnits.forEach((unit, index) => {
+    assign(unit.selection, cashIndexes?.has(index) ? "cashDelta" : "cashlessDelta");
+  });
+
+  return allocations;
 }
 
 function assertIngestToken(req: Request) {
