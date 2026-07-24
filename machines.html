@@ -711,6 +711,17 @@
               <label for="fillFrequency">Frekvence doplnění</label>
               <input id="fillFrequency" name="fillFrequency" type="text" placeholder="Např. Po / St / Pá" />
             </div>
+            <div class="field">
+              <label for="stockCriticalPercent">Kritická zásoba pod (%)</label>
+              <input id="stockCriticalPercent" name="stockCriticalPercent" type="number" min="0" max="100" step="0.01" value="19" />
+            </div>
+            <div class="field">
+              <label for="maxVisitIntervalDays">Navštívit nejpozději za (dnů)</label>
+              <input id="maxVisitIntervalDays" name="maxVisitIntervalDays" type="number" min="1" max="365" step="1" value="10" />
+            </div>
+            <div class="field full">
+              <label><input id="routeVisitRulesActive" name="routeVisitRulesActive" type="checkbox" checked style="width:auto; margin-right:10px;" /> Doporučovat automat do trasy podle zásoby a intervalu návštěv</label>
+            </div>
             <div class="field full">
               <label for="serviceRuleNote">Poznámka k servisu</label>
               <textarea id="serviceRuleNote" name="serviceRuleNote" placeholder="Specifika zásahu, přístup, intervaly, citlivé body..."></textarea>
@@ -1709,6 +1720,9 @@
       document.getElementById('active').checked = true
       document.getElementById('evidenceNumber').value = ''
       document.getElementById('qrToken').value = generateQrToken()
+      document.getElementById('stockCriticalPercent').value = '19'
+      document.getElementById('maxVisitIntervalDays').value = '10'
+      document.getElementById('routeVisitRulesActive').checked = true
       modalTitle.textContent = 'Přidat stroj'
       saveBtn.textContent = 'Uložit stroj'
       isEditMode = false
@@ -1897,6 +1911,9 @@
       document.getElementById('qrToken').value = machine.qr_token || generateQrToken()
       document.getElementById('serviceFrequency').value = rule?.service_frequency || ''
       document.getElementById('fillFrequency').value = rule?.fill_frequency || ''
+      document.getElementById('stockCriticalPercent').value = rule?.stock_critical_percent ?? 19
+      document.getElementById('maxVisitIntervalDays').value = rule?.max_visit_interval_days ?? 10
+      document.getElementById('routeVisitRulesActive').checked = rule?.route_visit_rules_active !== false
       document.getElementById('serviceRuleNote').value = rule?.note || ''
       document.getElementById('note').value = machine.note || ''
       document.getElementById('active').checked = machine.active !== false
@@ -2076,6 +2093,7 @@
       const telemetryId = telemetryLink?.external_machine_id || ''
       const telemetryStatus = detailData.telemetryAvailable ? getTelemetryStatusLabel(telemetryState) : 'Čeká na DB'
       const telemetryLastSeen = telemetryState?.last_seen_at ? formatDateTime(telemetryState.last_seen_at) : 'Zatím nic'
+      const routeRulesEligible = telemetryLink?.telemetry_enabled !== false && Boolean(telemetryState?.last_seen_at)
       planogramSlots = [
         ...planogramSlots.filter((slot) => String(slot.machine_id) !== String(machine.id)),
         ...planogram
@@ -2134,6 +2152,28 @@
               <div class="machine-telemetry-status">
                 <span>${escapeHtml(telemetryStatus)}</span>
                 <small>Poslední DEX: ${escapeHtml(telemetryLastSeen)}</small>
+              </div>
+            </div>
+            <div class="machine-telemetry">
+              <div class="machine-telemetry-field">
+                <label for="detailStockCriticalPercent">Kritická zásoba pod (%)</label>
+                <input id="detailStockCriticalPercent" data-route-rule-stock type="number" min="0" max="100" step="0.01" value="${escapeHtml(rule?.stock_critical_percent ?? 19)}"${routeRulesEligible ? '' : ' disabled'} />
+              </div>
+              <div class="machine-telemetry-field">
+                <label for="detailMaxVisitIntervalDays">Nejpozději navštívit za (dnů)</label>
+                <input id="detailMaxVisitIntervalDays" data-route-rule-days type="number" min="1" max="365" step="1" value="${escapeHtml(rule?.max_visit_interval_days ?? 10)}"${routeRulesEligible ? '' : ' disabled'} />
+              </div>
+              <div class="machine-telemetry-field">
+                <label for="detailRouteVisitRulesActive">Automatické doporučení do trasy</label>
+                <select id="detailRouteVisitRulesActive" data-route-rule-active${routeRulesEligible ? '' : ' disabled'}>
+                  <option value="true"${rule?.route_visit_rules_active !== false ? ' selected' : ''}>Zapnuté</option>
+                  <option value="false"${rule?.route_visit_rules_active === false ? ' selected' : ''}>Vypnuté</option>
+                </select>
+              </div>
+              <button class="btn secondary" type="button" data-route-rule-action="save" data-machine-id="${machine.id}"${routeRulesEligible ? '' : ' disabled'}>Uložit pravidla návštěvy</button>
+              <div class="machine-telemetry-status">
+                <span>${routeRulesEligible ? 'Individuální pravidla automatu' : 'Čeká na první telemetrii'}</span>
+                <small>${routeRulesEligible ? 'Mohou se lišit podle prašnosti, provozu nebo požadavků lokality.' : 'Funkce se zpřístupní až po povoleném napojení a přijetí prvních telemetrických dat.'}</small>
               </div>
             </div>
             <div class="detail-metrics">
@@ -2220,6 +2260,9 @@
         machine_id: machineId,
         service_frequency: document.getElementById('serviceFrequency').value.trim() || null,
         fill_frequency: document.getElementById('fillFrequency').value.trim() || null,
+        stock_critical_percent: Number(document.getElementById('stockCriticalPercent').value || 19),
+        max_visit_interval_days: Number(document.getElementById('maxVisitIntervalDays').value || 10),
+        route_visit_rules_active: document.getElementById('routeVisitRulesActive').checked,
         note: document.getElementById('serviceRuleNote').value.trim() || null
       }
     }
@@ -2241,7 +2284,7 @@
         .order('created_at', { ascending: false })
       const rulesQuery = supabase
         .from('machine_service_rules')
-        .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at')
+        .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at, stock_critical_percent, max_visit_interval_days, route_visit_rules_active')
       const productsQuery = supabase
         .from('products')
         .select('id, name, sku, ean, sale_price, product_category, can_be_sold_directly, active')
@@ -2779,6 +2822,46 @@
       if (machineActionButton?.dataset.machineAction === 'transfer') {
         const machine = machines.find((item) => String(item.id) === String(machineActionButton.dataset.machineId))
         if (machine) openMachineTransfer(machine)
+        return
+      }
+      const routeRuleButton = event.target.closest('[data-route-rule-action]')
+      if (routeRuleButton?.dataset.routeRuleAction === 'save') {
+        const machineId = Number(routeRuleButton.dataset.machineId || 0)
+        const stockCriticalPercent = Number(detailModalBody.querySelector('[data-route-rule-stock]')?.value)
+        const maxVisitIntervalDays = Number(detailModalBody.querySelector('[data-route-rule-days]')?.value)
+        const routeVisitRulesActive = detailModalBody.querySelector('[data-route-rule-active]')?.value !== 'false'
+        if (!machineId || !Number.isFinite(stockCriticalPercent) || stockCriticalPercent < 0 || stockCriticalPercent > 100 || !Number.isInteger(maxVisitIntervalDays) || maxVisitIntervalDays < 1 || maxVisitIntervalDays > 365) {
+          setStatus('Zkontroluj limit zásoby (0–100 %) a interval návštěvy (1–365 dnů).', 'error')
+          return
+        }
+        try {
+          routeRuleButton.disabled = true
+          routeRuleButton.textContent = 'Ukládám...'
+          const payload = {
+            machine_id: machineId,
+            stock_critical_percent: stockCriticalPercent,
+            max_visit_interval_days: maxVisitIntervalDays,
+            route_visit_rules_active: routeVisitRulesActive
+          }
+          const existingRule = getMachineRule(machineId)
+          const result = existingRule
+            ? await supabase.from('machine_service_rules').update(payload).eq('machine_id', machineId)
+            : await supabase.from('machine_service_rules').insert([payload])
+          if (result.error) throw result.error
+          if (existingRule) {
+            Object.assign(existingRule, payload)
+          } else {
+            serviceRules.push(payload)
+          }
+          setStatus('Individuální pravidla návštěvy byla u automatu uložená.', 'success')
+          routeRuleButton.textContent = 'Uloženo'
+        } catch (error) {
+          console.error(error)
+          setStatus(`Nepodařilo se uložit pravidla návštěvy: ${error.message}`, 'error')
+          routeRuleButton.textContent = 'Uložit pravidla návštěvy'
+        } finally {
+          routeRuleButton.disabled = false
+        }
         return
       }
       const telemetryButton = event.target.closest('[data-telemetry-action]')

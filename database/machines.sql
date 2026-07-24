@@ -48,6 +48,11 @@ create table if not exists public.machine_service_rules (
   machine_id bigint not null references public.machines (id) on delete cascade,
   service_frequency text,
   fill_frequency text,
+  stock_critical_percent numeric(5,2) not null default 19
+    check (stock_critical_percent >= 0 and stock_critical_percent <= 100),
+  max_visit_interval_days integer not null default 10
+    check (max_visit_interval_days >= 1 and max_visit_interval_days <= 365),
+  route_visit_rules_active boolean not null default true,
   last_service_at timestamp with time zone,
   last_fill_at timestamp with time zone,
   note text,
@@ -55,6 +60,11 @@ create table if not exists public.machine_service_rules (
   updated_at timestamp with time zone not null default now(),
   unique (machine_id)
 );
+
+alter table public.machine_service_rules
+  add column if not exists stock_critical_percent numeric(5,2) not null default 19,
+  add column if not exists max_visit_interval_days integer not null default 10,
+  add column if not exists route_visit_rules_active boolean not null default true;
 
 create index if not exists machine_service_rules_machine_idx
   on public.machine_service_rules (machine_id);

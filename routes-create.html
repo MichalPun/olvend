@@ -1462,6 +1462,9 @@
       machines: [],
       requests: [],
       coffeeContainers: [],
+      planogramSlots: [],
+      machineServiceRules: new Map(),
+      telemetryEligibleMachineIds: new Set(),
       lastMachineVisits: new Map(),
       candidates: [],
       filteredCandidates: [],
@@ -1699,8 +1702,36 @@
     function buildOperationalRecommendation(machine) {
       const machineId = String(machine?.id || '')
       if (!machineId) return null
+      if (!state.telemetryEligibleMachineIds.has(machineId)) return null
+      const rule = state.machineServiceRules.get(machineId)
+      if (rule?.route_visit_rules_active === false) return null
+      const criticalPercent = Math.max(0, Math.min(100, Number(rule?.stock_critical_percent ?? 19)))
+      const maxVisitDays = Math.max(1, Number(rule?.max_visit_interval_days ?? 10))
 
-      const lowContainers = state.coffeeContainers
+      const inventoryContainers = [
+        ...state.coffeeContainers.map((container) => ({
+          machine_id: container.machine_id,
+          container_code: container.container_code,
+          product_name: container.product_name,
+          product_sku: container.product_sku,
+          capacity_quantity: container.capacity_quantity,
+          current_quantity: container.current_quantity,
+          active: container.active,
+          note: container.note,
+        })),
+        ...state.planogramSlots.map((slot) => ({
+          machine_id: slot.machine_id,
+          container_code: slot.slot_code,
+          product_name: slot.product_name,
+          product_sku: slot.product_sku,
+          capacity_quantity: slot.capacity_units,
+          current_quantity: slot.current_units,
+          active: slot.active,
+          note: slot.note,
+        })),
+      ]
+
+      const lowContainers = inventoryContainers
         .filter((container) => String(container.machine_id || '') === machineId)
         .filter((container) => container.active !== false)
         .filter((container) => !isExcludedContainerForRouteNeed(container))
@@ -1710,13 +1741,13 @@
           const ratio = capacity > 0 ? current / capacity : null
           return { container, capacity, current, ratio }
         })
-        .filter((item) => item.ratio != null && item.ratio <= 0.2)
+        .filter((item) => item.ratio != null && item.ratio * 100 < criticalPercent)
         .sort((a, b) => a.ratio - b.ratio)
 
       const visit = state.lastMachineVisits.get(machineId)
       const lastVisitAt = getVisitTimestamp(visit)
       const ageDays = daysSince(lastVisitAt)
-      const staleVisit = ageDays != null && ageDays > 10
+      const staleVisit = ageDays == null || ageDays >= maxVisitDays
 
       const reasons = []
       if (lowContainers.length) {
@@ -1724,17 +1755,19 @@
         const pct = Math.max(0, Math.round(Number(worst.ratio || 0) * 100))
         reasons.push({
           type: 'stock',
-          badge: `${lowContainers.length}× nízký zásobník`,
-          note: `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'zásobník'} je na ${pct} %`,
-          priority: 'high',
+          badge: `${lowContainers.length}× kritická zásoba`,
+          note: `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'zásobník'} je na ${pct} % (limit pod ${formatNumber(criticalPercent, criticalPercent % 1 ? 2 : 0)} %)`,
+          priority: 'critical',
         })
       }
       if (staleVisit) {
         reasons.push({
           type: 'hygiene',
-          badge: `bez návštěvy ${ageDays} dnů`,
-          note: `Poslední návštěva ${new Date(lastVisitAt).toLocaleDateString('cs-CZ')}; zkontrolovat a umýt`,
-          priority: 'normal',
+          badge: ageDays == null ? 'bez zaznamenané návštěvy' : `návštěva po ${ageDays} dnech`,
+          note: ageDays == null
+            ? `Chybí zaznamenaná návštěva; automat má být navštíven nejpozději každých ${maxVisitDays} dnů`
+            : `Poslední návštěva ${new Date(lastVisitAt).toLocaleDateString('cs-CZ')}; limit je ${maxVisitDays} dnů, zkontrolovat a umýt`,
+          priority: ageDays == null || ageDays > maxVisitDays ? 'high' : 'normal',
         })
       }
 
@@ -3668,6 +3701,51 @@
       state.machines = data || []
     }
 
+    async function loadMachineServiceRules() {
+      const { data, error } = await supabase
+        .from('machine_service_rules')
+        .select('machine_id, stock_critical_percent, max_visit_interval_days, route_visit_rules_active')
+
+      if (error) {
+        if (/stock_critical_percent|max_visit_interval_days|route_visit_rules_active|schema cache/i.test(String(error.message || ''))) {
+          state.machineServiceRules = new Map()
+          return
+        }
+        throw error
+      }
+
+      state.machineServiceRules = new Map((data || []).map((rule) => [String(rule.machine_id), rule]))
+    }
+
+    async function loadTelemetryEligibility() {
+      const [linksResult, statesResult] = await Promise.all([
+        supabase
+          .from('machine_external_links')
+          .select('machine_id, provider, telemetry_enabled')
+          .eq('telemetry_enabled', true),
+        supabase
+          .from('machine_telemetry_state')
+          .select('machine_id, provider, last_seen_at')
+          .not('last_seen_at', 'is', null)
+      ])
+
+      const error = linksResult.error || statesResult.error
+      if (error) {
+        if (/machine_external_links|machine_telemetry_state|schema cache/i.test(String(error.message || ''))) {
+          state.telemetryEligibleMachineIds = new Set()
+          return
+        }
+        throw error
+      }
+
+      const enabledLinks = new Set((linksResult.data || []).map((link) => `${link.machine_id}:${normalizeText(link.provider)}`))
+      state.telemetryEligibleMachineIds = new Set(
+        (statesResult.data || [])
+          .filter((telemetryState) => enabledLinks.has(`${telemetryState.machine_id}:${normalizeText(telemetryState.provider)}`))
+          .map((telemetryState) => String(telemetryState.machine_id))
+      )
+    }
+
     async function loadCoffeeContainers() {
       const { data, error } = await supabase
         .from('machine_coffee_containers')
@@ -3684,6 +3762,23 @@
         throw error
       }
       state.coffeeContainers = data || []
+    }
+
+    async function loadPlanogramSlots() {
+      const { data, error } = await supabase
+        .from('machine_planogram_slots')
+        .select('id, machine_id, slot_code, product_name, product_sku, capacity_units, current_units, active, note')
+        .eq('active', true)
+        .order('machine_id', { ascending: true })
+
+      if (error) {
+        if (/machine_planogram_slots|schema cache/i.test(String(error.message || ''))) {
+          state.planogramSlots = []
+          return
+        }
+        throw error
+      }
+      state.planogramSlots = data || []
     }
 
     async function loadLastMachineVisits() {
@@ -3789,7 +3884,10 @@
         await Promise.all([
           loadLocations(),
           loadMachines(),
+          loadMachineServiceRules(),
+          loadTelemetryEligibility(),
           loadCoffeeContainers(),
+          loadPlanogramSlots(),
           loadLastMachineVisits(),
           loadRequests(),
           loadVehicles(),
