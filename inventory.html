@@ -1886,6 +1886,7 @@
     let mobilePickRequestsCollapsed = true
     let mobilePickCompletedCollapsed = true
     const mobilePickOpenDetailIds = new Set()
+    const mobilePickBusyRequestIds = new Set()
     let mobileStockRequests = []
     let mobileStockRequestItems = []
     let mobileStockRequestEmployees = []
@@ -6895,6 +6896,22 @@
       localItem.prepared_quantity = Number(payload.prepared_quantity || 0)
       localItem.note = payload.note
     }
+    function replaceLocalMobilePickRequestItems(requestId, items) {
+      mobileStockRequestItems = [
+        ...mobileStockRequestItems.filter((item) => String(item.request_id) !== String(requestId)),
+        ...(items || [])
+      ]
+    }
+    async function refreshMobilePickRequestItems(requestId) {
+      const { data, error } = await supabase
+        .from('mobile_stock_request_items')
+        .select('*')
+        .eq('request_id', requestId)
+        .order('id', { ascending: true })
+      if (error) throw error
+      replaceLocalMobilePickRequestItems(requestId, data || [])
+      return data || []
+    }
     async function saveMobilePickPreparedItem(itemId) {
       const payload = mobilePickPreparedPayload(itemId)
       const { error } = await supabase
@@ -6940,6 +6957,7 @@
       ].filter(Boolean)
       const operationalPackage = getMobilePickOperationalPackage(selectedProduct)
       const unit = operationalPackage?.package_name || selectedProduct.base_unit || 'ks'
+      await refreshMobilePickRequestItems(requestId)
       const existingItem = getMobileRequestItems(requestId).find((item) => (
         String(item.product_id) === String(selectedProduct.id)
         && normalizeText(item.unit || selectedProduct.base_unit || 'ks') === normalizeText(unit)
@@ -6961,6 +6979,8 @@
           .single()
         if (error) throw error
         Object.assign(existingItem, data)
+        await refreshMobilePickRequestItems(requestId)
+        mobilePickOpenDetailIds.add(String(requestId))
         renderMobilePickRequests()
         setStockV13Status('Řádek už v dokladu byl, množství bylo navýšené a uložené.', 'success')
         return
@@ -6976,7 +6996,7 @@
         note: noteParts.join(' · ') || null
       }).select('*').single()
       if (error) throw error
-      if (data) mobileStockRequestItems.push(data)
+      await refreshMobilePickRequestItems(requestId)
       if (productSearch) productSearch.value = ''
       if (productSelect) productSelect.value = ''
       if (qtyInput) qtyInput.value = '1'
@@ -7207,6 +7227,7 @@
       }
       if (action === 'ready') {
         await saveMobilePickPreparedItems(requestId)
+        await refreshMobilePickRequestItems(requestId)
         const request = mobileStockRequests.find((item) => String(item.id) === String(requestId))
         if (request) {
           request.items = getMobileRequestItems(requestId)
@@ -7222,6 +7243,7 @@
       }
       if (action === 'confirm') {
         await saveMobilePickPreparedItems(requestId)
+        await refreshMobilePickRequestItems(requestId)
         await applyMobilePickRequestToStock(requestId)
         mobilePickOpenDetailIds.delete(String(requestId))
         setStockV13Status('Doklad byl potvrzený a propsaný do skladu.', 'success')
@@ -10825,8 +10847,11 @@
     mobilePickRequestsBody.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-mobile-pick-action]')
       if (!button) return
+      const requestId = button.dataset.requestId || ''
+      if (requestId && mobilePickBusyRequestIds.has(String(requestId))) return
       const originalText = button.textContent
       try {
+        if (requestId) mobilePickBusyRequestIds.add(String(requestId))
         button.disabled = true
         button.classList.add('is-loading')
         const action = button.dataset.mobilePickAction || ''
@@ -10835,11 +10860,12 @@
           : action === 'ready'
             ? 'Kontroluji...'
             : 'Ukládám...'
-        await handleMobilePickAction(button.dataset.mobilePickAction || '', button.dataset.requestId || '', button.dataset.itemId || '')
+        await handleMobilePickAction(button.dataset.mobilePickAction || '', requestId, button.dataset.itemId || '')
       } catch (error) {
         console.error(error)
         setStockV13Status(`Mobilní požadavek se nepodařilo upravit: ${error.message}`, 'error')
       } finally {
+        if (requestId) mobilePickBusyRequestIds.delete(String(requestId))
         button.disabled = false
         button.classList.remove('is-loading')
         button.textContent = originalText
