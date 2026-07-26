@@ -3079,9 +3079,11 @@
       const id = String(product?.id || '')
       const sku = String(product?.sku || '')
       const name = String(product?.name || '').toLowerCase()
-      if (id === '78' || sku === '45' || name.includes('kelímek 180')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
-      if (id === '79' || sku === '255' || name.includes('kelímek 250')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
+      if (id === '78' || sku === '45' || name.includes('kelímek 180')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 50 }
+      if (id === '79' || sku === '255' || name.includes('kelímek 250')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 50 }
       if (id === '80' || sku === '53' || name.includes('kelímek 300')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 50 }
+      if (id === '65' || sku === '183' || name.includes('víčko 150') || name.includes('vicko 150')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
+      if (id === '136' || sku === '88' || name.includes('huhtamaki')) return { inputUnit: 'tyčí', baseUnit: 'ks', factor: 100 }
       return null
     }
 
@@ -3099,6 +3101,19 @@
       }
       const legacy = getLegacyInventoryCountPackage(product)
       return legacy ? { ...legacy, value: 'legacy' } : null
+    }
+
+    function shouldDefaultInventoryCountToPackage(product, pack) {
+      const name = normalizeText([product?.name, pack?.package_name].filter(Boolean).join(' '))
+      return ['tyc', 'tyci', 'stick', 'kelimek', 'vicko', 'huhtamaki'].some((word) => name.includes(word))
+    }
+
+    function getDefaultInventoryCountUnitMode(product) {
+      const pack = getInventoryCountPackage(product)
+      if (pack && shouldDefaultInventoryCountToPackage(product, pack)) return pack.value
+      const legacy = getLegacyInventoryCountPackage(product)
+      if (legacy) return 'legacy'
+      return 'base'
     }
 
     function getInventoryCountUnitOptions(product) {
@@ -3127,7 +3142,7 @@
 
     function inventoryCountUnitOptionsHtml(product, selectedValue = '', disabled = false) {
       const options = getInventoryCountUnitOptions(product)
-      const selected = options.some((option) => option.value === selectedValue) ? selectedValue : (getInventoryCountPackage(product)?.value || 'base')
+      const selected = options.some((option) => option.value === selectedValue) ? selectedValue : getDefaultInventoryCountUnitMode(product)
       return `<select data-inventory-count-unit ${disabled ? 'disabled' : ''}>${options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}</select>`
     }
 
@@ -3139,7 +3154,7 @@
 
     function displayInventoryCountValue(item, product, unitValue = '') {
       const counted = Number(item.counted_quantity || 0)
-      const countPackage = getInventoryCountUnitOption(product, unitValue || getInventoryCountPackage(product)?.value || 'base')
+      const countPackage = getInventoryCountUnitOption(product, unitValue || getDefaultInventoryCountUnitMode(product))
       if (!item.counted_at) return ''
       return countPackage?.factor > 1 ? Number((counted / countPackage.factor).toFixed(3)) : counted
     }
@@ -3149,6 +3164,16 @@
       const quantity = Number(String(rawValue).replace(',', '.'))
       if (!Number.isFinite(quantity) || quantity < 0) throw new Error('Zadej fyzický stav jako nezáporné číslo.')
       return Number((quantity * factor).toFixed(3))
+    }
+
+    function getInventoryCountSaveNote(product, unitOption, rawValue, countedQuantity, manualNote) {
+      const note = String(manualNote || '').trim()
+      if (!unitOption || unitOption.value === 'base' || Number(unitOption.factor || 0) <= 1) return note || null
+      const entered = String(rawValue ?? '').trim().replace(',', '.')
+      if (!entered) return note || null
+      const baseUnit = product?.base_unit || unitOption.baseUnit || 'ks'
+      const autoNote = `Mobil: ${entered} × ${unitOption.inputUnit || 'balení'} = ${formatNumber(countedQuantity)} ${baseUnit}`
+      return note ? `${note} · ${autoNote}` : autoNote
     }
 
     function renderVehicleInventories() {
@@ -3178,7 +3203,7 @@
               ${items.map((item) => {
                 const product = item.products || state.products.find((row) => String(row.id) === String(item.product_id)) || {}
                 const unit = product.base_unit || 'ks'
-                const defaultUnit = getInventoryCountPackage(product)?.value || 'base'
+                const defaultUnit = getDefaultInventoryCountUnitMode(product)
                 const value = displayInventoryCountValue(item, product, defaultUnit)
                 const countHelp = ` · ${inventoryCountHelpText(product, defaultUnit)}`
                 return `
@@ -4355,12 +4380,14 @@
         const product = item?.products || state.products.find((productRow) => String(productRow.id) === String(row.dataset.inventoryProductId || item?.product_id || '')) || {}
         const unitMode = row.querySelector('[data-inventory-count-unit]')?.value || 'base'
         const rawCount = row.querySelector('[data-inventory-count]')?.value
-        const countedQuantity = inventoryCountInputToBase(rawCount, Number(getInventoryCountUnitOption(product, unitMode)?.factor || 1))
+        const unitOption = getInventoryCountUnitOption(product, unitMode)
+        const countedQuantity = inventoryCountInputToBase(rawCount, Number(unitOption?.factor || 1))
+        const manualNote = row.querySelector('[data-inventory-note]')?.value.trim() || ''
         return supabase
           .from('inventory_audit_items')
           .update({
             counted_quantity: countedQuantity,
-            counted_note: row.querySelector('[data-inventory-note]')?.value.trim() || null,
+            counted_note: getInventoryCountSaveNote(product, unitOption, rawCount, countedQuantity, manualNote),
             counted_at: now
           })
           .eq('id', row.dataset.inventoryItemId)
