@@ -451,7 +451,7 @@ async function applyPlanogramDepletion(
 
     const { data: previous, error: previousError } = await adminClient
       .from("telemetry_planogram_counters")
-      .select("last_total_count, last_cash_count, last_cashless_count")
+      .select("last_total_count, last_cash_count, last_cashless_count, last_ingest_id")
       .eq("provider", params.provider)
       .eq("machine_id", params.machineId)
       .eq("planogram_slot_id", slot.id)
@@ -460,9 +460,10 @@ async function applyPlanogramDepletion(
 
     if (previousError) throw previousError;
 
-    const isInitialCounter = !previous;
+    const isManualBaseline = Boolean(previous) && !previous?.last_ingest_id;
+    const isInitialCounter = !previous || isManualBaseline;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
-    const delta = Math.max(0, counter.totalCount - previousTotal);
+    const delta = isInitialCounter ? 0 : Math.max(0, counter.totalCount - previousTotal);
     planned.push({ slot, counter, previous, isInitialCounter, selection, previousTotal, delta });
   }
 
@@ -494,10 +495,11 @@ async function applyPlanogramDepletion(
       applied.push({
         slot_id: slot.id,
         selection_code: selection,
-        previous_total: null,
+        previous_total: previous ? previousTotal : null,
         current_total: counter.totalCount,
         vend_delta: 0,
         baseline_initialized: true,
+        manual_baseline: isManualBaseline,
         product_name: slot.product_name ?? null,
         product_sku: slot.product_sku ?? null,
       });
