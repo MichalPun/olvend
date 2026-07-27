@@ -794,47 +794,6 @@ Deno.serve(async (req) => {
     }
 
     const eventAt = dexReadDateTime || transmitTime || transactionTime || new Date().toISOString();
-    const rawEvents: Record<string, unknown>[] = [{
-      provider,
-      external_machine_id: parsedDex.external_machine_id || deviceId,
-      event_type: "dex_upload",
-      event_at: eventAt,
-      payload: {
-        ingest_id: ingest?.id ?? null,
-        customer_id: customerId,
-        transaction_id: transactionId,
-        dex_reason: dexReason,
-        terminal_id: parsedDex.terminal_id,
-        machine_number: parsedDex.machine_number,
-        raw_dex_preview: rawDex.slice(0, 1000),
-      },
-      processed: false,
-    }, {
-      provider,
-      external_machine_id: parsedDex.external_machine_id || deviceId,
-      event_type: "dex_snapshot",
-      event_at: eventAt,
-      payload: {
-        ingest_id: ingest?.id ?? null,
-        ...parsedDex,
-      },
-      processed: false,
-    }, ...parsedDex.product_counters.map((counter) => ({
-      provider,
-      external_machine_id: parsedDex.external_machine_id || deviceId,
-      event_type: "dex_product_counter",
-      event_at: String((counter as Record<string, unknown>).last_vend_at || eventAt),
-      payload: {
-        ingest_id: ingest?.id ?? null,
-        terminal_id: parsedDex.terminal_id,
-        machine_number: parsedDex.machine_number,
-        ...counter,
-      },
-      processed: false,
-    }))];
-
-    await adminClient.from("telemetry_raw_events").insert(rawEvents);
-
     const machineId = await resolveMachineId(adminClient, provider, [
       deviceId,
       parsedDex.external_machine_id,
