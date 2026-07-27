@@ -3049,6 +3049,12 @@
       return state.products.find((product) => String(product.id) === String(item?.product_id))
     }
 
+    function isFoodReadyProduct(product) {
+      const name = normalizeText(product?.name || '')
+      const category = normalizeText(product?.product_category || '')
+      return category === 'food_ready' || name.includes('baget') || name.includes('strips')
+    }
+
     function getStockRequestUnitPackage(item, product = getStockRequestProduct(item)) {
       const unit = normalizeText(item?.unit || '')
       if (!product || !unit) return null
@@ -3073,6 +3079,20 @@
         return `${formatNumber(quantity)} ${unit} = ${formatStockQuantityValue(baseQuantity, baseUnit)}`
       }
       return formatStockQuantityValue(quantity, unit)
+    }
+
+    async function cleanupFailedStockRequest(requestId, reason = '') {
+      if (!requestId) return
+      await supabase.from('mobile_stock_request_items').delete().eq('request_id', requestId)
+      const { error: deleteError } = await supabase.from('mobile_stock_requests').delete().eq('id', requestId)
+      if (!deleteError) return
+      await supabase
+        .from('mobile_stock_requests')
+        .update({
+          status: 'cancelled',
+          note: [reason, 'Automaticky zrušeno po nedokončeném mobilním zápisu.'].filter(Boolean).join(' · ') || null
+        })
+        .eq('id', requestId)
     }
 
     function getLegacyInventoryCountPackage(product) {
@@ -3994,7 +4014,7 @@
     async function loadReferenceData() {
       const [vehicles, products, productPackages, locations, machines] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, ean, base_unit, active').order('name', { ascending: true }).limit(2000),
+        supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, active').order('name', { ascending: true }).limit(2000),
         supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
         supabase.from('locations').select('id, name, city, active').order('name', { ascending: true }),
         supabase.from('machines').select('id, location_id, name, machine_type, active').order('name', { ascending: true })
@@ -5558,12 +5578,11 @@
           .insert(itemRows)
           .select('*')
         if (itemError) {
-          await supabase.from('mobile_stock_requests').delete().eq('id', request.id)
+          await cleanupFailedStockRequest(request.id, `Položky dokladu se neuložily: ${itemError.message}`)
           throw new Error(`Nepodařilo se uložit položky dokladu: ${itemError.message}`)
         }
         if (!savedItems?.length || savedItems.length !== itemRows.length) {
-          await supabase.from('mobile_stock_request_items').delete().eq('request_id', request.id)
-          await supabase.from('mobile_stock_requests').delete().eq('id', request.id)
+          await cleanupFailedStockRequest(request.id, 'Položky dokladu se neuložily kompletně.')
           throw new Error('Položky dokladu se neuložily kompletně. Doklad nebyl vytvořený, zkus ho odeslat znovu.')
         }
 
@@ -5575,8 +5594,7 @@
             const referenceId = request.stock_reference_id || `mobile-stock:${request.id}`
             const alreadyApplied = await stockReferenceAlreadyApplied(referenceId).catch(() => false)
             if (!alreadyApplied) {
-              await supabase.from('mobile_stock_request_items').delete().eq('request_id', request.id)
-              await supabase.from('mobile_stock_requests').delete().eq('id', request.id)
+              await cleanupFailedStockRequest(request.id, `Skladový pohyb se nedokončil: ${applyError.message || applyError}`)
             }
             throw applyError
           }
@@ -5662,7 +5680,7 @@
       if (missingIds.length) {
         const { data: products, error: productError } = await supabase
           .from('products')
-          .select('id, name, sku, ean, base_unit')
+          .select('id, name, sku, ean, base_unit, product_category, usage_type')
           .in('id', missingIds)
         if (productError) throw productError
         ;(products || []).forEach((product) => {
@@ -6090,7 +6108,7 @@
             movementType: 'load_vehicle',
             referenceId,
             note: `Mobilní nakládka #${request.id}`,
-            allowNegative: product?.product_category === 'food_ready'
+            allowNegative: isFoodReadyProduct(product)
           }))
         }
 
