@@ -3783,6 +3783,169 @@
         </div>
       `).join('')}</div>`
     }
+    function normalizeMachineStockSku(value) {
+      return normalizeText(value).replace(/\s+/g, '')
+    }
+    function machineStockProductMatches(row, product) {
+      if (!row || !product) return false
+      if (row.product_id && String(row.product_id) === String(product.id)) return true
+      const productSku = normalizeMachineStockSku(product.sku)
+      const rowSku = normalizeMachineStockSku(row.product_sku)
+      return Boolean(productSku && rowSku && productSku === rowSku)
+    }
+    function formatMachineLocation(machine) {
+      const location = Array.isArray(machine?.location) ? machine.location[0] : machine?.location
+      const parts = [location?.name, location?.city || location?.address].filter(Boolean)
+      return parts.length ? parts.join(' · ') : 'Bez lokality'
+    }
+    function formatMachineStockUpdated(row, telemetryState) {
+      const value = telemetryState?.last_seen_at || row.updated_at || row.created_at
+      if (!value) return 'Bez aktualizace'
+      return new Date(value).toLocaleString('cs-CZ')
+    }
+    function getMachineStockPercent(row) {
+      const current = Number(row.current || 0)
+      const capacity = Number(row.capacity || 0)
+      if (!capacity) return null
+      return Math.max(0, Math.min(999, Math.round((current / capacity) * 100)))
+    }
+    function renderMachineStockFill(row) {
+      const percent = getMachineStockPercent(row)
+      const label = percent === null ? '-' : `${percent} %`
+      const className = percent === null ? 'muted' : percent <= 20 ? 'bad' : percent <= 45 ? 'warn' : 'good'
+      return `<span class="badge ${className}">${escapeHtml(label)}</span>`
+    }
+    async function loadProductMachineStockRows(productId) {
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      if (!product) return []
+      const [coffeeResult, slotResult] = await Promise.all([
+        supabase
+          .from('machine_coffee_containers')
+          .select('id, machine_id, container_code, product_id, product_sku, product_name, current_quantity, capacity_quantity, unit, updated_at, active')
+          .eq('active', true),
+        supabase
+          .from('machine_planogram_slots')
+          .select('id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, updated_at, active')
+          .eq('active', true)
+      ])
+      if (coffeeResult.error) throw coffeeResult.error
+      if (slotResult.error) throw slotResult.error
+      const rows = [
+        ...(coffeeResult.data || [])
+          .filter((row) => machineStockProductMatches(row, product))
+          .map((row) => ({
+            id: `coffee-${row.id}`,
+            machine_id: row.machine_id,
+            source: 'Zásobník',
+            position: row.container_code || '-',
+            product_name: row.product_name || product.name,
+            product_sku: row.product_sku || product.sku,
+            current: Number(row.current_quantity || 0),
+            capacity: Number(row.capacity_quantity || 0),
+            unit: row.unit || product.base_unit || 'g',
+            updated_at: row.updated_at
+          })),
+        ...(slotResult.data || [])
+          .filter((row) => machineStockProductMatches(row, product))
+          .map((row) => ({
+            id: `slot-${row.id}`,
+            machine_id: row.machine_id,
+            source: 'Slot',
+            position: row.slot_code || '-',
+            product_name: row.product_name || product.name,
+            product_sku: row.product_sku || product.sku,
+            current: Number(row.current_units || 0),
+            capacity: Number(row.capacity_units || 0),
+            unit: product.base_unit || 'ks',
+            updated_at: row.updated_at
+          }))
+      ]
+      const machineIds = [...new Set(rows.map((row) => row.machine_id).filter(Boolean).map(String))]
+      if (!machineIds.length) return rows
+      const [machinesResult, telemetryResult] = await Promise.all([
+        supabase
+          .from('machines')
+          .select('id, evidence_number, name, location:locations(name, city, address)')
+          .in('id', machineIds),
+        supabase
+          .from('machine_telemetry_state')
+          .select('machine_id, last_seen_at, connectivity_status')
+          .in('machine_id', machineIds)
+      ])
+      if (machinesResult.error) throw machinesResult.error
+      if (telemetryResult.error) throw telemetryResult.error
+      const machineMap = new Map((machinesResult.data || []).map((machine) => [String(machine.id), machine]))
+      const telemetryMap = new Map((telemetryResult.data || []).map((state) => [String(state.machine_id), state]))
+      return rows
+        .map((row) => ({
+          ...row,
+          machine: machineMap.get(String(row.machine_id)) || null,
+          telemetryState: telemetryMap.get(String(row.machine_id)) || null
+        }))
+        .sort((a, b) => {
+          const aEvidence = Number(a.machine?.evidence_number || 0)
+          const bEvidence = Number(b.machine?.evidence_number || 0)
+          if (aEvidence !== bEvidence) return aEvidence - bEvidence
+          const machineDiff = normalizeText(a.machine?.name || '').localeCompare(normalizeText(b.machine?.name || ''), 'cs')
+          if (machineDiff) return machineDiff
+          return normalizeText(a.position).localeCompare(normalizeText(b.position), 'cs', { numeric: true })
+        })
+    }
+    function renderMachineStockTotals(rows) {
+      const totals = new Map()
+      rows.forEach((row) => {
+        const unit = row.unit || 'ks'
+        totals.set(unit, (totals.get(unit) || 0) + Number(row.current || 0))
+      })
+      return [...totals.entries()].map(([unit, quantity]) => formatQuantityValue(quantity, unit)).join(' / ') || '0'
+    }
+    function renderProductMachineStockDetail(product, rows) {
+      return `
+        <div class="detail-spreadsheet">
+          <section class="detail-spreadsheet-title">
+            <div>
+              <h4>${escapeHtml(product.name || 'Produkt')}</h4>
+              <p>${escapeHtml([product.sku ? `SKU ${product.sku}` : '', 'online stav v automatech'].filter(Boolean).join(' · '))}</p>
+            </div>
+            <span class="badge good">${escapeHtml(renderMachineStockTotals(rows))}</span>
+          </section>
+          <section class="detail-sheet-section">
+            <h5>Stav v automatech</h5>
+            ${renderDetailTable([
+              { label: 'Automat', render: (row) => `<strong>${escapeHtml(row.machine?.evidence_number ? `${row.machine.evidence_number} · ${row.machine.name || 'Automat'}` : row.machine?.name || 'Automat')}</strong><span class="subtext">${escapeHtml(formatMachineLocation(row.machine))}</span>` },
+              { label: 'Část', render: (row) => `<strong>${escapeHtml(row.source)} ${escapeHtml(row.position)}</strong><span class="subtext">${escapeHtml(row.product_sku ? `SKU ${row.product_sku}` : 'Bez SKU')}</span>` },
+              { label: 'Stav', render: (row) => `<strong>${escapeHtml(formatQuantityValue(row.current, row.unit))}</strong><span class="subtext">${escapeHtml(row.capacity ? `Kapacita ${formatQuantityValue(row.capacity, row.unit)}` : 'Bez kapacity')}</span>` },
+              { label: 'Naplnění', render: (row) => renderMachineStockFill(row) },
+              { label: 'Telemetrie', render: (row) => `<strong>${escapeHtml(row.telemetryState?.connectivity_status || 'Bez stavu')}</strong><span class="subtext">${escapeHtml(formatMachineStockUpdated(row, row.telemetryState))}</span>` }
+            ], rows, 'Tahle položka zatím není napojená na žádný online zásobník ani slot automatu.')}
+          </section>
+          <section class="detail-sheet-section">
+            <h5>Rychlé akce</h5>
+            <div class="detail-actions" style="padding:10px;">
+              <button class="btn secondary" type="button" data-detail-action="back-product-detail" data-product-id="${escapeHtml(product.id)}">Zpět na kartu</button>
+              <button class="btn secondary" type="button" data-detail-action="refresh-machine-stock" data-product-id="${escapeHtml(product.id)}">Obnovit stav</button>
+            </div>
+          </section>
+        </div>
+      `
+    }
+    async function openProductMachineStockDetail(productId) {
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      if (!product) return
+      currentDetailContext = { type: 'v13-machine-stock', productId }
+      detailModalTitle.textContent = 'Stav v automatech'
+      detailMoveBtn.style.display = 'none'
+      detailEditBtn.style.display = 'none'
+      detailModalContent.innerHTML = '<div class="detail-chart-empty">Načítám online stavy automatů...</div>'
+      openDetailModal()
+      try {
+        const rows = await loadProductMachineStockRows(productId)
+        detailModalContent.innerHTML = renderProductMachineStockDetail(product, rows)
+      } catch (error) {
+        console.error(error)
+        detailModalContent.innerHTML = `<div class="detail-chart-empty">Stav v automatech se nepodařilo načíst: ${escapeHtml(error.message || 'neznámá chyba')}</div>`
+      }
+    }
     function getV13Rows() {
       const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
       const locationMap = new Map(stockLocationsV13.map((location) => [String(location.id), location]))
@@ -9783,6 +9946,9 @@
         .reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
       currentDetailContext = { type: 'v13', productId }
       detailModalTitle.textContent = product.name || 'Detail zásoby'
+      detailMoveBtn.style.display = ''
+      detailEditBtn.style.display = ''
+      detailEditBtn.textContent = 'Upravit'
       detailModalContent.innerHTML = `
         <div class="detail-spreadsheet">
           <section class="detail-spreadsheet-title">
@@ -9845,6 +10011,7 @@
             <h5>Rychlé akce</h5>
             <div class="detail-actions" style="padding:10px;">
               <button class="btn secondary" type="button" data-detail-action="edit-product">Upravit kartu</button>
+              <button class="btn secondary" type="button" data-detail-action="machine-online-stock" data-product-id="${escapeHtml(product.id)}">Stav v automatech</button>
               <button class="btn secondary" type="button" data-detail-action="movement">Přidat pohyb</button>
               <button class="btn secondary" type="button" data-detail-action="refresh">Obnovit detail</button>
             </div>
@@ -10951,6 +11118,18 @@
           button.disabled = false
           button.textContent = 'Uložit opravu'
         }
+        return
+      }
+      if (button.dataset.detailAction === 'machine-online-stock' && currentDetailContext.type === 'v13') {
+        await openProductMachineStockDetail(button.dataset.productId || currentDetailContext.productId)
+        return
+      }
+      if (button.dataset.detailAction === 'back-product-detail' && currentDetailContext.type === 'v13-machine-stock') {
+        openV13ProductDetail(button.dataset.productId || currentDetailContext.productId)
+        return
+      }
+      if (button.dataset.detailAction === 'refresh-machine-stock' && currentDetailContext.type === 'v13-machine-stock') {
+        await openProductMachineStockDetail(button.dataset.productId || currentDetailContext.productId)
         return
       }
       if (button.dataset.detailAction === 'movement') {
