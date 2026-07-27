@@ -658,16 +658,20 @@ function allocatePaymentDeltas(
   };
 
   if (!saleUnits.length) return allocations;
-  if (totalVendDelta <= 0 || paymentDelta.totalQuantity !== totalVendDelta) {
+  if (totalVendDelta <= 0) {
     saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
     return allocations;
   }
-  if (paymentDelta.cashQuantity === totalVendDelta && paymentDelta.cashlessQuantity === 0) {
+  if (paymentDelta.cashQuantity >= totalVendDelta && paymentDelta.cashlessQuantity === 0) {
     saleUnits.forEach((unit) => assign(unit.selection, "cashDelta"));
     return allocations;
   }
-  if (paymentDelta.cashlessQuantity === totalVendDelta && paymentDelta.cashQuantity === 0) {
+  if (paymentDelta.cashlessQuantity >= totalVendDelta && paymentDelta.cashQuantity === 0) {
     saleUnits.forEach((unit) => assign(unit.selection, "cashlessDelta"));
+    return allocations;
+  }
+  if (paymentDelta.totalQuantity !== totalVendDelta) {
+    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
     return allocations;
   }
 
