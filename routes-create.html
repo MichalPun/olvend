@@ -1606,6 +1606,7 @@
       lastKnownPosition: null,
       currentPlan: null,
       savedPlans: [],
+      scheduledPlansForDate: [],
       map: null,
       mapLayer: null,
       routesTablesAvailable: true,
@@ -1665,7 +1666,7 @@
       window.location.href = 'routes.html'
     }
 
-    function hydrateEditorFromPlan(plan) {
+    async function hydrateEditorFromPlan(plan) {
       if (!plan) return
 
       const builtPlan = buildPlanFromSavedPlan(plan)
@@ -1696,6 +1697,7 @@
           .map(([machineId, minutes]) => [String(machineId), Math.min(120, Math.max(1, Math.round(Number(minutes) || 20)))])
       )
 
+      await loadScheduledStopsForDate()
       buildCandidateRows()
       state.selectedKeys.clear()
 
@@ -1724,6 +1726,7 @@
       const params = new URLSearchParams(window.location.search)
       const editKey = params.get('edit')
       if (!editKey) {
+        await loadScheduledStopsForDate()
         syncEditUi()
         return
       }
@@ -1735,7 +1738,7 @@
         return
       }
 
-      hydrateEditorFromPlan(plan)
+      await hydrateEditorFromPlan(plan)
     }
 
     function openSelectionDrawer(mode = planningMode.value) {
@@ -3203,7 +3206,10 @@
         } else if (sourceMode === 'today_window') {
           filtered = filtered.filter((candidate) => candidate.matchesSelectedDay)
         } else if (sourceMode === 'recommended') {
-          filtered = filtered.filter((candidate) => candidate.operationalRecommendations?.length)
+          filtered = filtered.filter((candidate) => (
+            candidate.operationalRecommendations?.length
+            && !isCandidateScheduledElsewhere(candidate)
+          ))
         } else if (sourceMode === 'all_active') {
           filtered = filtered
         } else if (sourceMode === 'open_service') {
@@ -3240,7 +3246,10 @@
 
       if (autoSelect && state.selectedKeys.size === 0) {
         const shouldAutoSelect = sourceMode === 'all_active'
-          ? filtered.filter((candidate) => candidate.openRequestCount > 0 || candidate.matchesSelectedDay || candidate.operationalRecommendations?.length)
+          ? filtered.filter((candidate) => (
+            (candidate.openRequestCount > 0 || candidate.matchesSelectedDay || candidate.operationalRecommendations?.length)
+            && !isCandidateScheduledElsewhere(candidate)
+          ))
           : filtered
         shouldAutoSelect.forEach((candidate) => state.selectedKeys.add(candidate.key))
       }
@@ -3899,6 +3908,67 @@
       returnToRoutesAfterSave()
     }
 
+    function getPlanStops(plan) {
+      if (Array.isArray(plan?.route_plan_stops)) return plan.route_plan_stops
+      if (Array.isArray(plan?.ordered_stops)) return plan.ordered_stops
+      if (Array.isArray(plan?.route_payload?.orderedStops)) return plan.route_payload.orderedStops
+      return []
+    }
+
+    function isCandidateScheduledElsewhere(candidate) {
+      const candidateLocationId = String(candidate?.locationId || candidate?.location_id || '')
+      const candidateMachineId = String(candidate?.machineId || candidate?.machine_id || '')
+
+      return state.scheduledPlansForDate.some((plan) => {
+        if (getPlanKey(plan) === String(state.editingPlanKey || '')) return false
+        if (String(plan.execution_status || '').toLowerCase() === 'cancelled') return false
+
+        return getPlanStops(plan).some((stop) => {
+          if (String(stop.status || '').toLowerCase() === 'skipped') return false
+          const stopLocationId = String(stop.location_id || stop.locationId || '')
+          const stopMachineId = String(stop.machine_id || stop.machineId || '')
+
+          if (candidateMachineId) {
+            return stopMachineId === candidateMachineId
+              || (!stopMachineId && Boolean(candidateLocationId) && stopLocationId === candidateLocationId)
+          }
+          return Boolean(candidateLocationId) && stopLocationId === candidateLocationId
+        })
+      })
+    }
+
+    async function loadScheduledStopsForDate() {
+      const planningDate = routeDateInput.value
+      state.scheduledPlansForDate = []
+      if (!planningDate) return
+
+      if (state.routesTablesAvailable) {
+        let result = await supabase
+          .from('route_plans')
+          .select('id, planning_date, execution_status, route_payload, route_plan_stops(location_id, machine_id, status)')
+          .eq('planning_date', planningDate)
+
+        if (result.error) {
+          result = await supabase
+            .from('route_plans')
+            .select('id, planning_date, route_payload, route_plan_stops(location_id, machine_id, status)')
+            .eq('planning_date', planningDate)
+        }
+
+        if (!result.error) {
+          state.scheduledPlansForDate = result.data || []
+          return
+        }
+
+        if (!String(result.error.message || '').includes('route_plans')) {
+          console.error('Scheduled route stops load failed:', result.error)
+        }
+      }
+
+      const localPlans = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
+      state.scheduledPlansForDate = localPlans.filter((plan) => plan.planning_date === planningDate)
+    }
+
     async function loadSavedPlans() {
       const vehicleLabels = new Map(
         state.vehicles.map((vehicle) => [
@@ -4261,6 +4331,10 @@
         applyFilters()
         await loadSavedPlans()
         await hydrateEditorFromQuery()
+        if (!state.currentPlan) {
+          buildCandidateRows()
+          applyFilters()
+        }
         if (state.currentPlan) {
           renderRouteSummary(state.currentPlan)
           renderRouteList(state.currentPlan)
@@ -4334,18 +4408,17 @@
         : 'Teď vybíráš lokality jako celek.', 'success')
       openSelectionDrawer(planningMode.value)
     })
-    routeDateInput.addEventListener('change', () => {
+    routeDateInput.addEventListener('change', async () => {
       state.machineServiceMinuteOverrides.clear()
+      state.editingPlanKey = null
+      state.currentPlan = null
+      syncEditUi()
+      await loadScheduledStopsForDate()
       buildCandidateRows()
       applyFilters()
-      state.editingPlanKey = null
-      syncEditUi()
-      if (state.currentPlan) {
-        state.currentPlan = null
-        renderRouteSummary()
-        renderRouteList()
-        renderMap()
-      }
+      renderRouteSummary()
+      renderRouteList()
+      renderMap()
     })
     sourceFilter.addEventListener('change', () => applyFilters())
     priorityFilter.addEventListener('change', () => applyFilters())
@@ -4396,6 +4469,7 @@
 
     refreshBtn.addEventListener('click', () => {
       state.currentPlan = null
+      state.editingPlanKey = null
       state.machineServiceMinuteOverrides.clear()
       initializePage()
     })
@@ -4415,8 +4489,8 @@
       state.selectedKeys.clear()
       state.currentPlan = null
       state.editingPlanKey = null
-      renderCandidates()
       syncEditUi()
+      applyFilters()
       renderRouteSummary()
       renderRouteList()
       renderMap()
