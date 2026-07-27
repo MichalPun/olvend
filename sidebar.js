@@ -326,6 +326,7 @@
           label: "Skladové hospodářství",
           children: [
             { key: "purchases", href: "purchases.html?view=received", label: "Přijaté doklady" },
+            { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" },
             { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
             { key: "budget", href: "budget.html", label: "Rozpočet" },
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
