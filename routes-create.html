@@ -580,6 +580,28 @@
       accent-color: var(--accent);
     }
 
+    .machine-time-list {
+      display: grid;
+      gap: 6px;
+      min-width: 150px;
+    }
+
+    .machine-time-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .sheet-table .machine-time-input {
+      width: 68px;
+      min-width: 68px;
+      padding: 6px 7px;
+      text-align: right;
+    }
+
     .sheet-main-cell {
       display: grid;
       gap: 2px;
@@ -1343,6 +1365,14 @@
                         <label for="preparationMinutesInput">Příprava auta (min)</label>
                         <input id="preparationMinutesInput" type="number" min="0" max="180" step="5" value="30" inputmode="numeric" />
                       </div>
+                      <div class="compact-field">
+                        <label for="coffeeServiceMinutesInput">Obsluha kávy / automat (min)</label>
+                        <input id="coffeeServiceMinutesInput" type="number" min="1" max="120" step="1" value="20" inputmode="numeric" />
+                      </div>
+                      <div class="compact-field">
+                        <label for="foodServiceMinutesInput">Obsluha potravin / automat (min)</label>
+                        <input id="foodServiceMinutesInput" type="number" min="1" max="120" step="1" value="20" inputmode="numeric" />
+                      </div>
                       <button class="btn secondary setup-advanced" id="locateBtn" type="button">Načíst moji polohu</button>
                     </div>
 
@@ -1511,6 +1541,8 @@
     const routeTimeCheck = document.getElementById('routeTimeCheck')
     const maxRouteHoursInput = document.getElementById('maxRouteHoursInput')
     const preparationMinutesInput = document.getElementById('preparationMinutesInput')
+    const coffeeServiceMinutesInput = document.getElementById('coffeeServiceMinutesInput')
+    const foodServiceMinutesInput = document.getElementById('foodServiceMinutesInput')
     const candidateList = document.getElementById('candidateList')
     const routeList = document.getElementById('routeList')
     const savedPlansList = document.getElementById('savedPlansList')
@@ -1562,6 +1594,7 @@
       coffeeContainers: [],
       planogramSlots: [],
       machineServiceRules: new Map(),
+      machineServiceMinuteOverrides: new Map(),
       telemetryEligibleMachineIds: new Set(),
       inventoriedMachineIds: new Set(),
       lastMachineVisits: new Map(),
@@ -1656,6 +1689,12 @@
         (Number(payload.route_time_budget?.maximum_minutes || 0) / 60 || 8)
       )
       preparationMinutesInput.value = String(payload.route_time_budget?.preparation_minutes ?? 30)
+      coffeeServiceMinutesInput.value = String(payload.route_time_budget?.coffee_service_minutes ?? 20)
+      foodServiceMinutesInput.value = String(payload.route_time_budget?.food_service_minutes ?? 20)
+      state.machineServiceMinuteOverrides = new Map(
+        Object.entries(payload.route_time_budget?.machine_service_overrides || {})
+          .map(([machineId, minutes]) => [String(machineId), Math.min(120, Math.max(1, Math.round(Number(minutes) || 20)))])
+      )
 
       buildCandidateRows()
       state.selectedKeys.clear()
@@ -1986,12 +2025,36 @@
       return `https://www.google.com/maps/dir/?${params.toString()}`
     }
 
+    function getConfiguredServiceMinutes(kind) {
+      const input = kind === 'coffee' ? coffeeServiceMinutesInput : foodServiceMinutesInput
+      const fallback = 20
+      return Math.min(120, Math.max(1, Math.round(Number(input?.value) || fallback)))
+    }
+
+    function isCoffeeMachine(machine) {
+      if (!machine) return false
+      const machineId = String(machine.id || machine.machineId || machine.machine_id || '')
+      if (machineId && state.coffeeContainers.some((container) => String(container.machine_id || '') === machineId)) {
+        return true
+      }
+      return normalizeText(machine.machine_type || machine.machineType || '').includes('coffee')
+    }
+
+    function getMachineServiceMinutes(machine) {
+      const machineId = String(machine?.id || machine?.machineId || machine?.machine_id || '')
+      if (machineId && state.machineServiceMinuteOverrides.has(machineId)) {
+        return state.machineServiceMinuteOverrides.get(machineId)
+      }
+      return getConfiguredServiceMinutes(isCoffeeMachine(machine) ? 'coffee' : 'food')
+    }
+
     function estimateServiceMinutes(stop) {
-      if (stop.estimatedServiceMinutes) return stop.estimatedServiceMinutes
-      if (stop.openRequestCount > 0) return Math.max(20, stop.openRequestCount * 15)
-      if (stop.effectivePriority === 'critical') return 35
-      if (stop.effectivePriority === 'high') return 25
-      return 15
+      if (Number(stop.estimatedServiceMinutes) > 0) return Number(stop.estimatedServiceMinutes)
+      if (stop.machineId) {
+        const machine = state.machines.find((item) => String(item.id) === String(stop.machineId))
+        return getMachineServiceMinutes(machine || stop)
+      }
+      return getConfiguredServiceMinutes('food')
     }
 
     function effectivePriority(stop) {
@@ -2152,6 +2215,8 @@
       const maximumHours = Math.min(14, Math.max(1, Number(maxRouteHoursInput.value) || 8))
       const maximumMinutes = Math.round(maximumHours * 60)
       const preparationMinutes = Math.min(180, Math.max(0, Math.round(Number(preparationMinutesInput.value) || 0)))
+      const coffeeServiceMinutes = getConfiguredServiceMinutes('coffee')
+      const foodServiceMinutes = getConfiguredServiceMinutes('food')
       const driveMinutes = Math.max(0, Math.round(Number(plan?.estimatedDriveMinutes || 0)))
       const serviceMinutes = Math.max(0, Math.round(Number(plan?.estimatedServiceMinutes || 0)))
       const totalMinutes = preparationMinutes + driveMinutes + serviceMinutes
@@ -2162,6 +2227,8 @@
         maximumHours,
         maximumMinutes,
         preparationMinutes,
+        coffeeServiceMinutes,
+        foodServiceMinutes,
         driveMinutes,
         serviceMinutes,
         totalMinutes,
@@ -2184,7 +2251,7 @@
             </div>
             <div class="route-time-cell"><div class="route-time-label">Příprava auta</div><div class="route-time-value">${escapeHtml(formatDuration(timing.preparationMinutes))}</div></div>
             <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">—</div></div>
-            <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">—</div></div>
+            <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">—</div><div class="route-time-note">Káva ${escapeHtml(formatDuration(timing.coffeeServiceMinutes))} · potraviny ${escapeHtml(formatDuration(timing.foodServiceMinutes))} / automat</div></div>
             <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">—</div></div>
             <div class="route-time-cell verdict"><div class="route-time-label">Limit</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div><div class="route-time-note">Vyber zastávky a klikni na Spočítat trasu.</div></div>
           </div>
@@ -2207,7 +2274,7 @@
         <div class="route-time-check-grid">
           <div class="route-time-cell"><div class="route-time-label">Příprava auta</div><div class="route-time-value">${escapeHtml(formatDuration(timing.preparationMinutes))}</div></div>
           <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">${escapeHtml(formatDuration(timing.driveMinutes))}</div><div class="route-time-note">${formatNumber(plan.estimatedDistanceKm, 1)} km</div></div>
-          <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">${escapeHtml(formatDuration(timing.serviceMinutes))}</div><div class="route-time-note">${escapeHtml(formatStopCount(plan.orderedStops?.length || 0))}</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">${escapeHtml(formatDuration(timing.serviceMinutes))}</div><div class="route-time-note">${escapeHtml(formatStopCount(plan.orderedStops?.length || 0))} · káva ${escapeHtml(formatDuration(timing.coffeeServiceMinutes))}, potraviny ${escapeHtml(formatDuration(timing.foodServiceMinutes))} / automat</div></div>
           <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">${escapeHtml(formatDuration(timing.totalMinutes))}</div></div>
           <div class="route-time-cell"><div class="route-time-label">Maximální čas</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
           <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}</div></div>
@@ -2313,6 +2380,29 @@
         })
         if (candidate.matchesSelectedDay) reasons.push('<span class="route-badge window">dnešní okno</span>')
         reasons.push(`<span class="route-badge ${escapeHtml(candidate.effectivePriority)}">${escapeHtml(priorityLabel(candidate.effectivePriority))}</span>`)
+        const machineServiceEntries = candidate.machineServiceEntries || []
+        const serviceTimeControl = machineServiceEntries.length
+          ? `
+            <div class="machine-time-list">
+              ${machineServiceEntries.map((entry) => `
+                <label class="machine-time-row">
+                  <span>${escapeHtml(entry.name)}</span>
+                  <input
+                    class="machine-time-input"
+                    type="number"
+                    min="1"
+                    max="120"
+                    step="1"
+                    value="${escapeHtml(String(entry.minutes))}"
+                    data-machine-time-id="${escapeHtml(String(entry.machineId))}"
+                    aria-label="Čas obsluhy ${escapeHtml(entry.name)} v minutách"
+                  />
+                </label>
+              `).join('')}
+              ${machineServiceEntries.length > 1 ? `<span class="sheet-muted">Celkem ${formatNumber(candidate.estimatedServiceMinutes || 0)} min</span>` : ''}
+            </div>
+          `
+          : `${formatNumber(candidate.estimatedServiceMinutes || 0)} min`
 
         return `
           <tr class="${checked ? 'selected' : ''}">
@@ -2334,7 +2424,7 @@
               </div>
             </td>
             <td>${reasons.join('')}</td>
-            <td>${formatNumber(candidate.estimatedServiceMinutes || 0)} min</td>
+            <td>${serviceTimeControl}</td>
             <td>${escapeHtml(candidate.serviceWindow || '-')}</td>
             <td><a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(candidate))}" target="_blank" rel="noopener noreferrer">Mapa</a></td>
           </tr>
@@ -2370,6 +2460,16 @@
           }
           renderCandidates()
           renderSummary()
+        })
+      })
+
+      candidateList.querySelectorAll('input[data-machine-time-id]').forEach((input) => {
+        input.addEventListener('change', (event) => {
+          const machineId = String(event.target.dataset.machineTimeId || '')
+          if (!machineId) return
+          const minutes = Math.min(120, Math.max(1, Math.round(Number(event.target.value) || 20)))
+          state.machineServiceMinuteOverrides.set(machineId, minutes)
+          refreshConfiguredServiceTimes()
         })
       })
 
@@ -2920,6 +3020,15 @@
             .map((machine) => ({ machine, recommendation: buildOperationalRecommendation(machine) }))
             .filter((item) => item.recommendation)
           const bestOperationalPriority = getPriorityMax(...operationalRecommendations.map((item) => item.recommendation.priority))
+          const configuredMachineMinutes = locationMachines.reduce((sum, machine) => {
+            const recommendation = operationalRecommendations.find((item) => String(item.machine.id) === String(machine.id))?.recommendation
+            const needsInitialInventory = recommendation?.reasons?.some((reason) => reason.type === 'inventory')
+            const hasManualTime = state.machineServiceMinuteOverrides.has(String(machine.id))
+            return sum + Math.max(
+              getMachineServiceMinutes(machine),
+              needsInitialInventory && !hasManualTime ? Number(recommendation.estimatedMinutes || 0) : 0
+            )
+          }, 0)
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
 
@@ -2948,8 +3057,8 @@
             }))),
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
-              operationalRecommendations.reduce((sum, item) => sum + Number(item.recommendation.estimatedMinutes || 0), 0),
-              relatedRequests.length ? 20 : 0
+              configuredMachineMinutes,
+              locationMachines.length ? 0 : getConfiguredServiceMinutes('food')
             ) || null,
             sourceNote: relatedRequests.length
               ? 'Servis'
@@ -2963,6 +3072,11 @@
             requests: relatedRequests,
             machineCount: locationMachines.length,
             machineLabel: locationMachines.length ? `${locationMachines.length} strojů na místě` : '',
+            machineServiceEntries: locationMachines.map((machine) => ({
+              machineId: machine.id,
+              name: machine.name || `Stroj ${machine.id}`,
+              minutes: getMachineServiceMinutes(machine),
+            })),
           }
 
           item.estimatedServiceMinutes = estimateServiceMinutes(item)
@@ -2980,6 +3094,8 @@
             return priorityRank(request.priority) > priorityRank(best) ? request.priority : best
           }, null)
           const operationalRecommendation = buildOperationalRecommendation(machine)
+          const needsInitialInventory = operationalRecommendation?.reasons?.some((reason) => reason.type === 'inventory')
+          const hasManualTime = state.machineServiceMinuteOverrides.has(String(machine.id))
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
 
@@ -3011,9 +3127,9 @@
             openRequestCount: relatedRequests.length,
             operationalRecommendations: operationalRecommendation?.reasons || [],
             estimatedServiceMinutes: Math.max(
-              relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
-              Number(operationalRecommendation?.estimatedMinutes || 0),
-              relatedRequests.length ? 20 : 15
+              hasManualTime ? 0 : relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
+              getMachineServiceMinutes(machine),
+              needsInitialInventory && !hasManualTime ? Number(operationalRecommendation?.estimatedMinutes || 0) : 0
             ) || null,
             sourceNote: relatedRequests.length
               ? 'Servis stroje'
@@ -3026,6 +3142,11 @@
                   : 'Konkrétní stroj',
             requests: relatedRequests,
             machineType: machine.machine_type || '',
+            machineServiceEntries: [{
+              machineId: machine.id,
+              name: machine.name || `Stroj ${machine.id}`,
+              minutes: getMachineServiceMinutes(machine),
+            }],
           }
 
           item.estimatedServiceMinutes = estimateServiceMinutes(item)
@@ -3592,6 +3713,9 @@
             maximum_hours: getRouteTiming(state.currentPlan).maximumHours,
             maximum_minutes: getRouteTiming(state.currentPlan).maximumMinutes,
             preparation_minutes: getRouteTiming(state.currentPlan).preparationMinutes,
+            coffee_service_minutes: getRouteTiming(state.currentPlan).coffeeServiceMinutes,
+            food_service_minutes: getRouteTiming(state.currentPlan).foodServiceMinutes,
+            machine_service_overrides: Object.fromEntries(state.machineServiceMinuteOverrides),
             estimated_total_minutes: getRouteTiming(state.currentPlan).totalMinutes,
             remaining_minutes: getRouteTiming(state.currentPlan).remainingMinutes,
             verdict: getRouteTiming(state.currentPlan).tone,
@@ -4158,6 +4282,25 @@
       }
     }
 
+    function refreshConfiguredServiceTimes() {
+      buildCandidateRows()
+
+      if (state.currentPlan?.orderedStops?.length) {
+        state.currentPlan.orderedStops = state.currentPlan.orderedStops.map((stop) => {
+          const candidate = findCandidateForRouteStop(stop)
+          return candidate
+            ? { ...stop, estimatedServiceMinutes: estimateServiceMinutes(candidate) }
+            : stop
+        })
+        state.currentPlan.estimatedServiceMinutes = state.currentPlan.orderedStops
+          .reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0)
+      }
+
+      applyFilters()
+      renderRouteSummary(state.currentPlan)
+      renderRouteList(state.currentPlan)
+    }
+
     searchInput.addEventListener('input', () => applyFilters())
     createMode.addEventListener('change', () => {
       const selectedEmployee = getSelectedEmployee()
@@ -4171,6 +4314,7 @@
         sourceFilter.value = 'assigned_service'
       }
       state.currentPlan = null
+      state.machineServiceMinuteOverrides.clear()
       buildCandidateRows()
       applyFilters()
       renderRouteSummary()
@@ -4191,6 +4335,7 @@
       openSelectionDrawer(planningMode.value)
     })
     routeDateInput.addEventListener('change', () => {
+      state.machineServiceMinuteOverrides.clear()
       buildCandidateRows()
       applyFilters()
       state.editingPlanKey = null
@@ -4246,9 +4391,12 @@
     warehouseFilter.addEventListener('change', () => {})
     maxRouteHoursInput.addEventListener('input', () => renderRouteSummary(state.currentPlan))
     preparationMinutesInput.addEventListener('input', () => renderRouteSummary(state.currentPlan))
+    coffeeServiceMinutesInput.addEventListener('change', refreshConfiguredServiceTimes)
+    foodServiceMinutesInput.addEventListener('change', refreshConfiguredServiceTimes)
 
     refreshBtn.addEventListener('click', () => {
       state.currentPlan = null
+      state.machineServiceMinuteOverrides.clear()
       initializePage()
     })
 
