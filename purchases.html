@@ -436,6 +436,10 @@
               </select>
             </div>
             <div class="field">
+              <label for="receiptSupplierId">Dodavatel</label>
+              <select id="receiptSupplierId" required><option value="">Vyber dodavatele</option></select>
+            </div>
+            <div class="field" id="receiptWarehouseField">
               <label for="receiptWarehouseId">Sklad</label>
               <select id="receiptWarehouseId" required><option value="">Vyber sklad</option></select>
             </div>
@@ -1013,6 +1017,8 @@
     const receiptForm = document.getElementById('receiptForm')
     const receiptModalTitle = document.getElementById('receiptModalTitle')
     const receiptDocumentType = document.getElementById('receiptDocumentType')
+    const receiptSupplierId = document.getElementById('receiptSupplierId')
+    const receiptWarehouseField = document.getElementById('receiptWarehouseField')
     const receiptWarehouseId = document.getElementById('receiptWarehouseId')
     const receiptDeliveryDate = document.getElementById('receiptDeliveryDate')
     const receiptDeliveryNote = document.getElementById('receiptDeliveryNote')
@@ -1168,6 +1174,7 @@
     let currentReceiptOrder = null
     let currentReceiptReadonly = false
     let currentReceiptEditOnly = false
+    let currentReceiptPendingEdit = false
     let currentReceiptMovementMap = new Map()
     let currentRecurringOrder = null
     let documentSort = { key: 'date', direction: 'desc' }
@@ -2946,22 +2953,27 @@
         if (batchInput && batch) batchInput.value = batch.lot_code || ''
       })
     }
-    function openReceiptModal(orderId, { readOnly = false, editOnly = false } = {}) {
+    function openReceiptModal(orderId, { readOnly = false, editOnly = false, pendingEdit = false } = {}) {
       const order = orders.find((item) => String(item.id) === String(orderId))
       if (!order) return
       currentReceiptOrder = order
       currentReceiptReadonly = readOnly
       currentReceiptEditOnly = editOnly
-      receiptModalTitle.textContent = `${readOnly ? 'Přijatá dodávka' : editOnly ? 'Upravit příjem' : 'Potvrdit příjem'} · ${order.supplier_name || 'Dodavatel'}`
+      currentReceiptPendingEdit = pendingEdit
+      receiptModalTitle.textContent = `${readOnly ? 'Přijatá dodávka' : pendingEdit ? 'Upravit doklad před příjmem' : editOnly ? 'Upravit příjem' : 'Potvrdit příjem'} · ${order.supplier_name || 'Dodavatel'}`
       receiptDocumentType.value = getDocumentType(order)
+      receiptSupplierId.innerHTML = '<option value="">Vyber dodavatele</option>' + suppliers.map((supplier) => `<option value="${supplier.id}">${escapeHtml(supplier.name)}</option>`).join('')
+      receiptSupplierId.value = order.supplier_id ? String(order.supplier_id) : ''
       applyDocumentTypeRules('receipt')
       receiptDeliveryDate.value = order.delivery_date || new Date().toISOString().slice(0, 10)
       receiptDeliveryNote.value = order.delivery_note_number || ''
       receiptInvoiceNumber.value = order.invoice_number || ''
       receiptDueDate.value = getDueDate(order) || ''
-      receiptNote.value = order.note || ''
+      receiptNote.value = cleanDocumentNote(order) || ''
       receiptDocumentType.disabled = readOnly
-      receiptWarehouseId.disabled = readOnly
+      receiptSupplierId.disabled = !pendingEdit
+      receiptWarehouseField.hidden = pendingEdit
+      receiptWarehouseId.disabled = readOnly || pendingEdit
       receiptDeliveryDate.disabled = readOnly
       receiptDeliveryNote.disabled = readOnly
       receiptInvoiceNumber.disabled = readOnly
@@ -2974,11 +2986,16 @@
         const product = productForReceiptItem(item)
         const needsExpiry = productNeedsExpiry(product)
         const needsBatch = productNeedsBatch(product)
-        const showExpiryFields = needsExpiry || needsBatch || editOnly
+        const showExpiryFields = !pendingEdit && (needsExpiry || needsBatch || editOnly)
         const receivedQuantity = Number(item.received_quantity || 0)
-        const defaultReceiptQuantity = readOnly || editOnly || receivedQuantity > 0
+        const defaultReceiptQuantity = pendingEdit
+          ? Number(item.ordered_quantity || 0)
+          : readOnly || editOnly || receivedQuantity > 0
           ? receivedQuantity
           : Number(item.ordered_quantity || 0)
+        const quantityDataAttribute = pendingEdit
+          ? `data-ordered-index="${index}"`
+          : `data-received-index="${index}"`
         const expiryBlock = showExpiryFields ? `
           <div class="receipt-expiry-grid">
             <div class="field">
@@ -3001,8 +3018,8 @@
                 <input value="${escapeHtml(Number(item.ordered_quantity || 0).toFixed(0))}" disabled />
               </div>
               <div class="field">
-                <label>${readOnly ? 'Přijato na sklad' : 'Skutečně přijato'}</label>
-                <input type="number" step="1" min="0" data-received-index="${index}" value="${escapeHtml(defaultReceiptQuantity.toFixed(0))}" ${readOnly || editOnly ? 'disabled' : ''} />
+                <label>${pendingEdit ? 'Objednané množství' : readOnly ? 'Přijato na sklad' : 'Skutečně přijato'}</label>
+                <input type="number" step="1" min="0" ${quantityDataAttribute} value="${escapeHtml(defaultReceiptQuantity.toFixed(0))}" ${readOnly || editOnly ? 'disabled' : ''} />
               </div>
             </div>
             ${expiryBlock}
@@ -3010,7 +3027,7 @@
         `
       }).join('')
       saveReceiptBtn.style.display = readOnly ? 'none' : 'inline-flex'
-      saveReceiptBtn.textContent = editOnly ? 'Uložit úpravy' : 'Potvrdit příjem'
+      saveReceiptBtn.textContent = editOnly || pendingEdit ? 'Uložit úpravy' : 'Potvrdit příjem'
       receiptModalBackdrop.classList.add('show')
       if (readOnly || editOnly) {
         loadReceiptBatchFields(order).catch((error) => {
@@ -3024,9 +3041,12 @@
       currentReceiptOrder = null
       currentReceiptReadonly = false
       currentReceiptEditOnly = false
+      currentReceiptPendingEdit = false
       currentReceiptMovementMap = new Map()
       receiptForm.reset()
       receiptWarehouseId.disabled = false
+      receiptWarehouseField.hidden = false
+      receiptSupplierId.disabled = false
       receiptDocumentType.disabled = false
       receiptDeliveryDate.disabled = false
       receiptDeliveryNote.disabled = false
@@ -3420,6 +3440,41 @@
       })
       if (orderError) throw orderError
     }
+    async function updatePendingReceipt() {
+      if (!currentReceiptOrder) throw new Error('Chybí doklad k úpravě.')
+      if (currentReceiptOrder.status !== 'ordered') throw new Error('Upravovat před příjmem lze jen doklad, který čeká na příjem.')
+      const documentType = receiptDocumentType.value || getDocumentType(currentReceiptOrder)
+      if (documentType === 'invoice' && !receiptInvoiceNumber.value.trim()) throw new Error('Doplň číslo faktury.')
+      if (documentType === 'delivery_note' && !receiptDeliveryNote.value.trim()) throw new Error('Doplň číslo dodacího listu.')
+      const supplierId = parseRequiredEntityId(receiptSupplierId.value, 'Dodavatel')
+
+      const lines = Array.from(receiptLineItems.querySelectorAll('[data-ordered-index]')).map((input) => ({
+        index: Number(input.dataset.orderedIndex),
+        ordered: Number(input.value || 0)
+      }))
+      for (const line of lines) {
+        const item = currentReceiptOrder.items[line.index]
+        if (!item) continue
+        const { error: itemError } = await supabase
+          .from('purchase_order_items')
+          .update({ ordered_quantity: Math.max(0, line.ordered) })
+          .eq('id', item.id)
+        if (itemError) throw itemError
+      }
+
+      const notePrefix = `[typ:${documentType}]${documentType === 'invoice' && receiptDueDate.value ? `[splatnost:${receiptDueDate.value}]` : ''}`
+      const noteBody = receiptNote.value.trim()
+      const { error } = await updatePurchaseOrder(currentReceiptOrder.id, {
+        supplier_id: supplierId,
+        document_type: documentType,
+        due_date: documentType === 'invoice' ? (receiptDueDate.value || null) : null,
+        delivery_date: receiptDeliveryDate.value || null,
+        delivery_note_number: ['invoice', 'delivery_note'].includes(documentType) ? (receiptDeliveryNote.value.trim() || null) : null,
+        invoice_number: ['invoice', 'cash_receipt'].includes(documentType) ? (receiptInvoiceNumber.value.trim() || null) : null,
+        note: `${notePrefix} ${noteBody}`.trim() || null
+      })
+      if (error) throw error
+    }
     async function updateReceiptMetadata() {
       if (!currentReceiptOrder) throw new Error('Chybí doklad k úpravě.')
       const documentType = receiptDocumentType.value || getDocumentType(currentReceiptOrder)
@@ -3625,7 +3680,7 @@
         return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Schválit</button><button class="btn secondary small" type="button" data-action="cancel-draft" data-id="${row.id}">Zrušit</button>`)
       }
       if (row.status === 'ordered') {
-        return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Přijmout</button><button class="btn secondary small" type="button" data-action="cancel-receipt" data-id="${row.id}">Zrušit</button>`)
+        return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Přijmout</button><button class="btn secondary small" type="button" data-action="edit-pending" data-id="${row.id}">Upravit</button><button class="btn secondary small" type="button" data-action="cancel-receipt" data-id="${row.id}">Zrušit</button>`)
       }
       if (row.status === 'received') {
         return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="view-receipt" data-id="${row.id}">Detail</button><button class="btn secondary small" type="button" data-action="edit-receipt" data-id="${row.id}">Upravit</button>`)
@@ -4318,6 +4373,10 @@
         openReceiptModal(id, { editOnly: true })
         return
       }
+      if (action === 'edit-pending') {
+        openReceiptModal(id, { pendingEdit: true })
+        return
+      }
       ;(async () => {
         try {
           if (action === 'order') {
@@ -4490,20 +4549,23 @@
         saveReceiptBtn.disabled = true
         saveReceiptBtn.textContent = 'Ukládám...'
         const editOnly = currentReceiptEditOnly
-        if (editOnly) {
+        const pendingEdit = currentReceiptPendingEdit
+        if (pendingEdit) {
+          await updatePendingReceipt()
+        } else if (editOnly) {
           await updateReceiptMetadata()
         } else {
           await confirmReceipt()
         }
         closeReceiptModal()
         await loadPage()
-        setStatus(editOnly ? 'Doklad byl upravený.' : 'Příjem byl potvrzen a propsal se do skladu.', 'success')
+        setStatus(editOnly || pendingEdit ? 'Doklad byl upravený.' : 'Příjem byl potvrzen a propsal se do skladu.', 'success')
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se uložit příjem: ${error.message}`, 'error')
       } finally {
         saveReceiptBtn.disabled = false
-        saveReceiptBtn.textContent = currentReceiptEditOnly ? 'Uložit úpravy' : 'Potvrdit příjem'
+        saveReceiptBtn.textContent = currentReceiptEditOnly || currentReceiptPendingEdit ? 'Uložit úpravy' : 'Potvrdit příjem'
       }
     })
     invoiceImportForm.addEventListener('submit', async (event) => {
