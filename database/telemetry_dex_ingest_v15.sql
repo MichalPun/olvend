@@ -24,6 +24,9 @@ create index if not exists telemetry_dex_ingests_device_idx
 create index if not exists telemetry_dex_ingests_status_idx
   on public.telemetry_dex_ingests (status, created_at desc);
 
+create index if not exists telemetry_dex_ingests_created_at_idx
+  on public.telemetry_dex_ingests (created_at);
+
 create or replace function public.set_telemetry_dex_ingests_updated_at()
 returns trigger
 language plpgsql

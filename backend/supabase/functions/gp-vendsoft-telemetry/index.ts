@@ -777,7 +777,9 @@ Deno.serve(async (req) => {
       transmit_time: transmitTime,
       dex_read_datetime: dexReadDateTime,
       dex_reason: dexReason,
-      raw_xml: wrappedRawDex ? body : "",
+      // The parsed DEX is the canonical short-lived diagnostic source.
+      // Keeping the XML wrapper as well duplicates the same payload at fleet scale.
+      raw_xml: "",
       raw_dex: rawDex,
       status: "parsed",
       parse_error: null,
