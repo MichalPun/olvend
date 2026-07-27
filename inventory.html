@@ -3973,6 +3973,37 @@
       })
       return [...totals.entries()].map(([unit, quantity]) => formatQuantityValue(quantity, unit)).join(' / ') || '0'
     }
+    function renderProductMachineStockTable(rows) {
+      return renderDetailTable([
+        { label: 'Automat', render: (row) => `<strong>${escapeHtml(row.machine?.evidence_number ? `${row.machine.evidence_number} · ${row.machine.name || 'Automat'}` : row.machine?.name || 'Automat')}</strong><span class="subtext">${escapeHtml(formatMachineLocation(row.machine))}</span>` },
+        { label: 'Část', render: (row) => `<strong>${escapeHtml(row.source)} ${escapeHtml(row.position)}</strong><span class="subtext">${escapeHtml(row.product_sku ? `SKU ${row.product_sku}` : 'Bez SKU')}</span>` },
+        { label: 'Stav', render: (row) => `<strong>${escapeHtml(formatQuantityValue(row.current, row.unit))}</strong><span class="subtext">${escapeHtml(row.capacity ? `Kapacita ${formatQuantityValue(row.capacity, row.unit)}` : 'Bez kapacity')}</span>` },
+        { label: 'Naplnění', render: (row) => renderMachineStockFill(row) },
+        { label: 'Telemetrie', render: (row) => `<strong>${escapeHtml(row.telemetryState?.connectivity_status || 'Bez stavu')}</strong><span class="subtext">${escapeHtml(formatMachineStockUpdated(row, row.telemetryState))}</span>` }
+      ], rows, 'Tahle položka zatím není napojená na žádný online zásobník ani slot automatu.')
+    }
+    function renderProductMachineStockInline(product, rows) {
+      return `
+        <h5>Online stav v automatech</h5>
+        <div class="helper-line">Součet online zásobníků a slotů: <strong>${escapeHtml(renderMachineStockTotals(rows))}</strong></div>
+        ${renderProductMachineStockTable(rows)}
+      `
+    }
+    async function refreshProductMachineStockInline(productId) {
+      const target = detailModalContent.querySelector('[data-product-machine-stock-inline]')
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      if (!target || !product) return
+      target.innerHTML = '<h5>Online stav v automatech</h5><div class="detail-chart-empty">Načítám online stavy automatů...</div>'
+      try {
+        const rows = await loadProductMachineStockRows(productId)
+        if (!target.isConnected || String(currentDetailContext?.productId || '') !== String(productId)) return
+        target.innerHTML = renderProductMachineStockInline(product, rows)
+      } catch (error) {
+        console.error(error)
+        if (!target.isConnected || String(currentDetailContext?.productId || '') !== String(productId)) return
+        target.innerHTML = `<h5>Online stav v automatech</h5><div class="detail-chart-empty">Online stav v automatech se nepodařilo načíst: ${escapeHtml(error.message || 'neznámá chyba')}</div>`
+      }
+    }
     function renderProductMachineStockDetail(product, rows) {
       return `
         <div class="detail-spreadsheet">
@@ -3985,13 +4016,7 @@
           </section>
           <section class="detail-sheet-section machine-stock-table">
             <h5>Stav v automatech</h5>
-            ${renderDetailTable([
-              { label: 'Automat', render: (row) => `<strong>${escapeHtml(row.machine?.evidence_number ? `${row.machine.evidence_number} · ${row.machine.name || 'Automat'}` : row.machine?.name || 'Automat')}</strong><span class="subtext">${escapeHtml(formatMachineLocation(row.machine))}</span>` },
-              { label: 'Část', render: (row) => `<strong>${escapeHtml(row.source)} ${escapeHtml(row.position)}</strong><span class="subtext">${escapeHtml(row.product_sku ? `SKU ${row.product_sku}` : 'Bez SKU')}</span>` },
-              { label: 'Stav', render: (row) => `<strong>${escapeHtml(formatQuantityValue(row.current, row.unit))}</strong><span class="subtext">${escapeHtml(row.capacity ? `Kapacita ${formatQuantityValue(row.capacity, row.unit)}` : 'Bez kapacity')}</span>` },
-              { label: 'Naplnění', render: (row) => renderMachineStockFill(row) },
-              { label: 'Telemetrie', render: (row) => `<strong>${escapeHtml(row.telemetryState?.connectivity_status || 'Bez stavu')}</strong><span class="subtext">${escapeHtml(formatMachineStockUpdated(row, row.telemetryState))}</span>` }
-            ], rows, 'Tahle položka zatím není napojená na žádný online zásobník ani slot automatu.')}
+            ${renderProductMachineStockTable(rows)}
           </section>
           <section class="detail-sheet-section">
             <h5>Rychlé akce</h5>
@@ -10096,6 +10121,10 @@
               { label: 'Minimum / cíl', render: (row) => row.profile ? `<strong>${escapeHtml(formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks'))} / ${escapeHtml(formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks'))}</strong><span class="subtext">Doplňovací profil</span>` : '<span class="subtext">Bez profilu</span>' }
             ], locatedRows, 'Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.')}
           </section>
+          <section class="detail-sheet-section" data-product-machine-stock-inline>
+            <h5>Online stav v automatech</h5>
+            <div class="detail-chart-empty">Načítám online stavy automatů...</div>
+          </section>
           <section class="detail-sheet-section">
             <h5>Vývoj prodeje v čase</h5>
             ${renderSalesTrendChart(saleMovements, product.base_unit)}
@@ -10107,6 +10136,7 @@
         </div>
       `
       openDetailModal()
+      refreshProductMachineStockInline(productId)
     }
     async function loadReferences() {
       const [{ data: warehousesData }, { data: machinesData }, { data: vehiclesData }, { data: suppliersData }, { data: purchaseProfilesData }, planogramResult] = await Promise.all([
