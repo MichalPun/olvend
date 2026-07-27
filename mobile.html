@@ -3557,6 +3557,13 @@
       const showCalibration = Boolean(detail.machineOpen && detail.needsCalibration && !calibrationComplete)
       const expectedCash = Number(detail.cash?.expected_cash_czk || 0)
       const cashDecision = detail.draft?.cashDecision || (expectedCash > 0 && expectedCash < 100 ? 'skip' : '')
+      const manualCounterMode = detail.hasTelemetry === false
+      const manualCounter = detail.manualCounter || null
+      const previousManualCounter = detail.manualCounterPrevious || null
+      const manualRevenueValue = detail.draft?.manualRevenueCounter ?? manualCounter?.revenue_counter_czk ?? ''
+      const manualPortionValue = detail.draft?.manualPortionCounter ?? manualCounter?.portion_counter ?? ''
+      const manualRevenueDelta = manualCounter ? Number(manualCounter.revenue_delta_czk || 0) : null
+      const manualPortionDelta = manualCounter ? Number(manualCounter.portion_delta || 0) : null
       const checkRows = [
         ['waste_bag', 'Vynesený odpadní sáček'],
         ['washed', 'Automat umytý'],
@@ -3745,7 +3752,30 @@
           </details>
           <div class="coffee-visit-form">
             <strong>Výběr hotovosti</strong>
-            <div class="muted-text">${expectedCash > 0 ? `Očekávaně k vybrání ${formatNumber(expectedCash)} Kč.` : 'Očekávaná hotovost zatím není z telemetrie k dispozici.'} ${expectedCash > 0 && expectedCash < 100 ? 'Doporučení: nevybírat, ale rozhodnutí zapiš.' : ''}</div>
+            <div class="muted-text">${
+              manualCounterMode
+                ? previousManualCounter
+                  ? `Bez telemetrie: opiš nemazací počitadla. Posledně bylo ${formatNumber(previousManualCounter.revenue_counter_czk || 0)} Kč a ${formatNumber(previousManualCounter.portion_counter || 0)} porcí.`
+                  : 'Bez telemetrie: první zápis nastaví základnu pro další výpočty, nebude se z něj tvořit historická tržba.'
+                : `${expectedCash > 0 ? `Očekávaně k vybrání ${formatNumber(expectedCash)} Kč.` : 'Očekávaná hotovost zatím není z telemetrie k dispozici.'} ${expectedCash > 0 && expectedCash < 100 ? 'Doporučení: nevybírat, ale rozhodnutí zapiš.' : ''}`
+            }</div>
+            ${manualCounterMode ? `
+              <label>
+                Nemazací tržba
+                <input data-manual-revenue-counter data-stop-id="${escapeHtml(stop.id)}" inputmode="decimal" value="${escapeHtml(manualRevenueValue)}" placeholder="Celková tržba z počitadla" />
+              </label>
+              <label>
+                Nemazací porce
+                <input data-manual-portion-counter data-stop-id="${escapeHtml(stop.id)}" inputmode="decimal" value="${escapeHtml(manualPortionValue)}" placeholder="Celkový počet porcí z počitadla" />
+              </label>
+              <div class="muted-text">${
+                manualCounter
+                  ? `Z tohoto zápisu vychází nově ${formatNumber(manualRevenueDelta || 0)} Kč a ${formatNumber(manualPortionDelta || 0)} porcí.`
+                  : previousManualCounter
+                    ? 'Po uložení se očekávaná hotovost dopočítá rozdílem proti předchozímu zápisu.'
+                    : 'Po prvním uložení bude další návštěva počítat už jen rozdíl.'
+              }</div>
+            ` : ''}
             <label>
               Rozhodnutí
               <select data-cash-decision data-stop-id="${escapeHtml(stop.id)}">
@@ -4636,23 +4666,35 @@
           recipeResult,
           itemsResult,
           checksResult,
-          cashResult
+          cashResult,
+          telemetryLinksResult,
+          manualCounterResult,
+          manualCountersResult
         ] = await Promise.all([
           supabase.from('machine_coffee_containers').select('*').eq('machine_id', machine.id).eq('active', true).order('sort_order', { ascending: true }),
           supabase.from('machine_coffee_buttons').select('*').eq('machine_id', machine.id).eq('active', true).order('sort_order', { ascending: true }),
           supabase.from('machine_coffee_recipe_items').select('*').eq('machine_id', machine.id).eq('active', true).order('sort_order', { ascending: true }),
           supabase.from('route_machine_visit_items').select('*').eq('visit_id', visitId),
           supabase.from('route_machine_visit_checks').select('*').eq('visit_id', visitId),
-          supabase.from('route_machine_cash_reports').select('*').eq('visit_id', visitId).maybeSingle()
+          supabase.from('route_machine_cash_reports').select('*').eq('visit_id', visitId).maybeSingle(),
+          supabase.from('machine_external_links').select('id, provider, external_machine_id, telemetry_enabled').eq('machine_id', machine.id).eq('telemetry_enabled', true),
+          supabase.from('machine_manual_counter_readings').select('*').eq('visit_id', visitId).maybeSingle(),
+          supabase.from('machine_manual_counter_readings').select('*').eq('machine_id', machine.id).order('reading_at', { ascending: false }).limit(2)
         ])
 
         const blockingError = [containersResult.error, buttonsResult.error, recipeResult.error, itemsResult.error, checksResult.error]
           .find(Boolean)
         if (blockingError) throw blockingError
         if (cashResult.error && !/0 rows|multiple|route_machine_cash_reports/i.test(String(cashResult.error.message || ''))) throw cashResult.error
+        if (telemetryLinksResult.error && !/machine_external_links/i.test(String(telemetryLinksResult.error.message || ''))) throw telemetryLinksResult.error
+        if (manualCounterResult.error && !/0 rows|multiple|machine_manual_counter_readings/i.test(String(manualCounterResult.error.message || ''))) throw manualCounterResult.error
+        if (manualCountersResult.error && !/machine_manual_counter_readings/i.test(String(manualCountersResult.error.message || ''))) throw manualCountersResult.error
 
         const containers = containersResult.data || []
         const existingItems = itemsResult.data || []
+        const currentManualCounter = manualCounterResult.data || null
+        const previousManualCounter = (manualCountersResult.data || [])
+          .find((item) => String(item.id || '') !== String(currentManualCounter?.id || '') && String(item.visit_id || '') !== String(visitId)) || null
         const draftContainers = { ...(state.routeCoffeeDetails[key]?.draft?.containers || {}) }
         const draftCalibration = { ...(state.routeCoffeeDetails[key]?.draft?.calibration || {}) }
         const calibratedContainers = {}
@@ -4734,6 +4776,9 @@
           visitItems: existingItems,
           checks: Object.fromEntries((checksResult.data || []).map((check) => [check.check_key, check.status])),
           cash: cashResult.data || null,
+          hasTelemetry: (telemetryLinksResult.data || []).length > 0,
+          manualCounter: currentManualCounter,
+          manualCounterPrevious: previousManualCounter,
           vehiclePackages,
           needsCalibration: previousCalibrationCount === 0 && containers.length > 0,
           calibratedContainers,
@@ -5185,21 +5230,64 @@
       }
 
       if (action === 'save-cash') {
-        const stopMachine = getRouteStopMachine(findRouteStop(stopId).stop)
+        const routeLookup = findRouteStop(stopId)
+        const stopMachine = getRouteStopMachine(routeLookup.stop)
         const decision = els.routeMachineContent.querySelector(`[data-cash-decision][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value || ''
         const bag = els.routeMachineContent.querySelector(`[data-cash-bag][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value?.trim() || ''
         if (!decision) throw new Error('Vyber rozhodnutí k hotovosti.')
         if (decision === 'collect' && !bag) throw new Error('Při výběru hotovosti vyplň číslo sáčku.')
+        let manualReading = null
+        let expectedCash = detail.cash?.expected_cash_czk ?? null
+        let expectedTotal = detail.cash?.expected_total_czk ?? null
+        let note = decision === 'skip' ? 'Operátorka zapsala rozhodnutí nevybírat.' : null
+        if (detail.hasTelemetry === false) {
+          const revenueCounter = parseNumber(els.routeMachineContent.querySelector(`[data-manual-revenue-counter][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value)
+          const portionCounter = parseNumber(els.routeMachineContent.querySelector(`[data-manual-portion-counter][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value)
+          if (!Number.isFinite(revenueCounter)) throw new Error('Vyplň nemazací tržbu z automatu.')
+          if (!Number.isFinite(portionCounter)) throw new Error('Vyplň nemazací porce z automatu.')
+          const previous = detail.manualCounterPrevious || null
+          const revenueDelta = previous ? Math.round((revenueCounter - Number(previous.revenue_counter_czk || 0)) * 100) / 100 : 0
+          const portionDelta = previous ? Math.round((portionCounter - Number(previous.portion_counter || 0)) * 1000) / 1000 : 0
+          if (revenueDelta < 0 || portionDelta < 0) throw new Error('Nemazací počitadlo je nižší než poslední uložený stav. Zkontroluj opsaná čísla.')
+          const readingPayload = {
+            machine_id: stopMachine?.id || null,
+            visit_id: detail.visitId,
+            route_plan_id: routeLookup.plan?.id || null,
+            route_plan_stop_id: routeLookup.stop?.id || null,
+            reading_at: new Date().toISOString(),
+            revenue_counter_czk: revenueCounter,
+            portion_counter: portionCounter,
+            previous_reading_id: previous?.id || null,
+            previous_revenue_counter_czk: previous?.revenue_counter_czk ?? null,
+            previous_portion_counter: previous?.portion_counter ?? null,
+            revenue_delta_czk: revenueDelta,
+            portion_delta: portionDelta,
+            note: previous ? `Nemazací počitadlo: +${formatNumber(revenueDelta)} Kč / +${formatNumber(portionDelta)} porcí.` : 'První zápis nemazacího počitadla jako základna.',
+            created_by: state.employee?.id || null
+          }
+          const readingResult = detail.manualCounter?.id
+            ? await supabase.from('machine_manual_counter_readings').update(readingPayload).eq('id', detail.manualCounter.id).select('*').single()
+            : await supabase.from('machine_manual_counter_readings').insert([readingPayload]).select('*').single()
+          if (readingResult.error) throw readingResult.error
+          manualReading = readingResult.data
+          detail.manualCounter = manualReading
+          expectedCash = revenueDelta
+          expectedTotal = revenueDelta
+          note = [note, previous ? `Nemazací tržba ${formatNumber(revenueCounter)} Kč, nemazací porce ${formatNumber(portionCounter)}. Nově ${formatNumber(revenueDelta)} Kč / ${formatNumber(portionDelta)} porcí.` : 'První zápis nemazacího počitadla bez vytvoření historické tržby.'].filter(Boolean).join(' · ')
+        }
         const payload = {
           visit_id: detail.visitId,
           machine_id: stopMachine?.id || null,
-          expected_cash_czk: detail.cash?.expected_cash_czk ?? null,
+          expected_cash_czk: expectedCash,
           expected_card_czk: detail.cash?.expected_card_czk ?? null,
-          expected_total_czk: detail.cash?.expected_total_czk ?? null,
+          expected_total_czk: expectedTotal,
+          manual_counter_reading_id: manualReading?.id || detail.cash?.manual_counter_reading_id || null,
+          manual_revenue_counter_czk: manualReading?.revenue_counter_czk ?? detail.cash?.manual_revenue_counter_czk ?? null,
+          manual_portion_counter: manualReading?.portion_counter ?? detail.cash?.manual_portion_counter ?? null,
           operator_bag_label: decision === 'collect' ? bag : null,
           operator_collected_confirmed: decision === 'collect',
           operator_collected_at: new Date().toISOString(),
-          note: decision === 'skip' ? 'Operátorka zapsala rozhodnutí nevybírat.' : null
+          note
         }
         const result = detail.cash?.id
           ? await supabase.from('route_machine_cash_reports').update(payload).eq('id', detail.cash.id).select('*').single()
@@ -6628,6 +6716,18 @@
           .finally(restore)
       })
       els.routeMachineContent?.addEventListener('input', (event) => {
+        const manualRevenueCounter = event.target.closest('[data-manual-revenue-counter]')
+        if (manualRevenueCounter) {
+          const detail = getCoffeeDetail(manualRevenueCounter.dataset.stopId)
+          if (detail) detail.draft.manualRevenueCounter = manualRevenueCounter.value
+          return
+        }
+        const manualPortionCounter = event.target.closest('[data-manual-portion-counter]')
+        if (manualPortionCounter) {
+          const detail = getCoffeeDetail(manualPortionCounter.dataset.stopId)
+          if (detail) detail.draft.manualPortionCounter = manualPortionCounter.value
+          return
+        }
         const range = event.target.closest('[data-coffee-calibration-range]')
         if (!range) return
         setCoffeeCalibrationDraftQuantity(range.dataset.stopId, range.dataset.containerId, parseNumber(range.value) || 0)
