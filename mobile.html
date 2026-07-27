@@ -1179,6 +1179,38 @@
       opacity: 0.95;
     }
 
+    .coffee-tube-mobile.interactive {
+      cursor: pointer;
+      touch-action: none;
+      border-color: rgba(255, 196, 87, 0.62);
+      box-shadow: 0 0 0 4px rgba(255, 196, 87, 0.08);
+    }
+
+    .coffee-calibration-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid rgba(255, 196, 87, 0.24);
+      border-radius: 14px;
+      background: rgba(255, 196, 87, 0.08);
+    }
+
+    .coffee-calibration-control input[type="range"] {
+      width: 100%;
+      accent-color: #ffc457;
+    }
+
+    .coffee-calibration-value {
+      min-width: 72px;
+      color: #ffdda0;
+      font-size: 13px;
+      font-weight: 950;
+      text-align: right;
+    }
+
     .coffee-visit-row h5 {
       margin: 0;
       font-size: 16px;
@@ -3442,6 +3474,21 @@
       return Math.max(1, Number(container?.refill_package_quantity || 1))
     }
 
+    function getCoffeeCalibrationSliderStep(container) {
+      if (normalizeText(container?.unit || '') === 'ks') return 1
+      const capacity = Number(container?.capacity_quantity || 0)
+      if (capacity >= 1000) return 10
+      if (capacity >= 100) return 5
+      return 1
+    }
+
+    function roundCoffeeCalibrationQuantity(value, container) {
+      const step = getCoffeeCalibrationSliderStep(container)
+      const capacity = Number(container?.capacity_quantity || 0)
+      const rounded = Math.round(Number(value || 0) / step) * step
+      return capacity ? Math.max(0, Math.min(capacity, rounded)) : Math.max(0, rounded)
+    }
+
     function describeCoffeeQuantity(quantity, container) {
       const value = Number(quantity || 0)
       const unit = container?.unit || 'g'
@@ -3466,13 +3513,16 @@
       return (detail.containers || []).every((container) => isCoffeeContainerCalibrated(stopId, container))
     }
 
-    function renderCoffeeTube(current, added, capacity) {
+    function renderCoffeeTube(current, added, capacity, options = {}) {
       const safeCapacity = Number(capacity || 0)
       const currentPct = safeCapacity ? Math.max(0, Math.min(100, (Number(current || 0) / safeCapacity) * 100)) : 0
       const addedPct = safeCapacity ? Math.max(0, Math.min(100 - currentPct, (Number(added || 0) / safeCapacity) * 100)) : 0
+      const interactiveAttrs = options.calibration
+        ? ` data-coffee-calibration-tube data-stop-id="${escapeHtml(options.stopId)}" data-container-id="${escapeHtml(options.containerId)}" role="slider" aria-valuemin="0" aria-valuemax="${escapeHtml(String(Math.round(safeCapacity)))}" aria-valuenow="${escapeHtml(String(Math.round(Number(current || 0))))}"`
+        : ''
       return `
-        <div class="coffee-tube-mobile" aria-label="${Math.round(currentPct + addedPct)}%">
-          <span style="height:${currentPct}%"></span>
+        <div class="coffee-tube-mobile ${options.calibration ? 'interactive' : ''}" aria-label="${Math.round(currentPct + addedPct)}%"${interactiveAttrs}>
+          <span data-coffee-tube-fill style="height:${currentPct}%"></span>
           ${addedPct > 0 ? `<span class="added" style="height:${addedPct}%; bottom:${6 + currentPct}%;"></span>` : ''}
         </div>
       `
@@ -3575,13 +3625,21 @@
               const realPct = capacity ? Math.round((realQty / capacity) * 100) : 0
               const calibrated = isCoffeeContainerCalibrated(stop.id, container)
               return `
-                <article class="coffee-visit-row ${calibrated ? 'ready' : ''}">
-                  ${renderCoffeeTube(realQty, 0, capacity)}
+                <article class="coffee-visit-row ${calibrated ? 'ready' : ''}" data-coffee-calibration-row data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">
+                  ${renderCoffeeTube(realQty, 0, capacity, {
+                    calibration: true,
+                    stopId: stop.id,
+                    containerId: container.id
+                  })}
                   <div>
                     <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
                     <div class="meta">
                       <span>PC stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}</span>
-                      <span>reálně ${formatNumber(realQty)}/${formatNumber(capacity)} · ${realPct}%</span>
+                      <span data-coffee-calibration-readout>reálně ${formatNumber(realQty)}/${formatNumber(capacity)} · ${realPct}%</span>
+                    </div>
+                    <div class="coffee-calibration-control">
+                      <input type="range" data-coffee-calibration-range data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" min="0" max="${escapeHtml(String(capacity || Math.max(realQty, 1)))}" step="${escapeHtml(String(getCoffeeCalibrationSliderStep(container)))}" value="${escapeHtml(String(realQty))}" aria-label="Reálná hladina zásobníku ${escapeHtml(container.container_code || '')}" />
+                      <span class="coffee-calibration-value" data-coffee-calibration-percent>${realPct}%</span>
                     </div>
                     <div class="coffee-visit-actions">
                       <span class="inline-stepper">
@@ -4959,6 +5017,42 @@
         allowNegative: true
       })
       await applyStockMovementsAtomically(movements)
+    }
+
+    function updateCoffeeCalibrationRowView(stopId, container, quantity) {
+      const row = els.routeMachineContent?.querySelector(`[data-coffee-calibration-row][data-stop-id="${CSS.escape(String(stopId))}"][data-container-id="${CSS.escape(String(container.id))}"]`)
+      if (!row) return
+      const capacity = Number(container.capacity_quantity || 0)
+      const pct = capacity ? Math.round((Number(quantity || 0) / capacity) * 100) : 0
+      const fill = row.querySelector('[data-coffee-tube-fill]')
+      const range = row.querySelector('[data-coffee-calibration-range]')
+      const readout = row.querySelector('[data-coffee-calibration-readout]')
+      const percent = row.querySelector('[data-coffee-calibration-percent]')
+      if (fill) fill.style.height = `${Math.max(0, Math.min(100, pct))}%`
+      if (range) range.value = String(quantity)
+      if (readout) readout.textContent = `reálně ${formatNumber(quantity)}/${formatNumber(capacity)} · ${pct}%`
+      if (percent) percent.textContent = `${pct}%`
+    }
+
+    function setCoffeeCalibrationDraftQuantity(stopId, containerId, rawQuantity, options = {}) {
+      const detail = getCoffeeDetail(stopId)
+      const container = getCoffeeContainer(stopId, containerId)
+      if (!detail || !container) return
+      const quantity = roundCoffeeCalibrationQuantity(rawQuantity, container)
+      detail.draft.calibration = {
+        ...(detail.draft.calibration || {}),
+        [String(container.id)]: { quantity, done: false }
+      }
+      if (options.render) renderRouteMachineScreen()
+      else updateCoffeeCalibrationRowView(stopId, container, quantity)
+    }
+
+    function setCoffeeCalibrationFromTube(event, tube, initialRect = null) {
+      const rect = initialRect || tube.getBoundingClientRect()
+      const container = getCoffeeContainer(tube.dataset.stopId, tube.dataset.containerId)
+      if (!container || !rect.height) return
+      const pct = Math.max(0, Math.min(1, 1 - ((event.clientY - rect.top) / rect.height)))
+      setCoffeeCalibrationDraftQuantity(tube.dataset.stopId, tube.dataset.containerId, pct * Number(container.capacity_quantity || 0))
     }
 
     async function handleCoffeeAction(action, stopId, target) {
@@ -6513,7 +6607,7 @@
         const coffeeButton = event.target.closest('[data-coffee-action]')
         if (!coffeeButton) return
         if (coffeeButton.disabled || coffeeButton.classList.contains('is-busy')) return
-        const instantActions = ['step-container', 'back-picklist']
+        const instantActions = ['step-container', 'calibration-step', 'back-picklist']
         const restore = instantActions.includes(coffeeButton.dataset.coffeeAction)
           ? () => {}
           : setButtonBusy(coffeeButton, getBusyLabel(coffeeButton.dataset.coffeeAction))
@@ -6521,7 +6615,37 @@
           .catch(handleError)
           .finally(restore)
       })
+      els.routeMachineContent?.addEventListener('input', (event) => {
+        const range = event.target.closest('[data-coffee-calibration-range]')
+        if (!range) return
+        setCoffeeCalibrationDraftQuantity(range.dataset.stopId, range.dataset.containerId, parseNumber(range.value) || 0)
+      })
+      els.routeMachineContent?.addEventListener('pointerdown', (event) => {
+        const tube = event.target.closest('[data-coffee-calibration-tube]')
+        if (!tube) return
+        event.preventDefault()
+        const rect = tube.getBoundingClientRect()
+        setCoffeeCalibrationFromTube(event, tube, rect)
+        const handleMove = (moveEvent) => {
+          moveEvent.preventDefault()
+          setCoffeeCalibrationFromTube(moveEvent, tube, rect)
+        }
+        const handleUp = () => {
+          window.removeEventListener('pointermove', handleMove)
+          window.removeEventListener('pointerup', handleUp)
+          window.removeEventListener('pointercancel', handleUp)
+          renderRouteMachineScreen()
+        }
+        window.addEventListener('pointermove', handleMove)
+        window.addEventListener('pointerup', handleUp, { once: true })
+        window.addEventListener('pointercancel', handleUp, { once: true })
+      })
       els.routeMachineContent?.addEventListener('change', (event) => {
+        const range = event.target.closest('[data-coffee-calibration-range]')
+        if (range) {
+          setCoffeeCalibrationDraftQuantity(range.dataset.stopId, range.dataset.containerId, parseNumber(range.value) || 0, { render: true })
+          return
+        }
         const check = event.target.closest('[data-coffee-check]')
         if (!check) return
         saveCoffeeCheck(check.dataset.stopId, check.dataset.coffeeCheck, check.checked).catch(handleError)
