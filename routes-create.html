@@ -222,6 +222,67 @@
       gap: 8px;
     }
 
+    .route-time-check {
+      overflow-x: auto;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(8,9,12,0.32);
+    }
+
+    .route-time-check-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(110px, 0.7fr)) minmax(260px, 1.7fr);
+      min-width: 900px;
+    }
+
+    .route-time-cell {
+      min-height: 66px;
+      padding: 9px 11px;
+      border-right: 1px solid rgba(255,255,255,0.07);
+      display: grid;
+      align-content: center;
+      gap: 4px;
+    }
+
+    .route-time-cell:last-child {
+      border-right: 0;
+    }
+
+    .route-time-label {
+      color: var(--soft);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .route-time-value {
+      font-size: 17px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .route-time-note {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+    }
+
+    .route-time-cell.verdict.good {
+      background: rgba(46,204,113,0.09);
+      color: #9be7b8;
+    }
+
+    .route-time-cell.verdict.tight {
+      background: rgba(255,182,72,0.11);
+      color: #ffd68f;
+    }
+
+    .route-time-cell.verdict.over {
+      background: rgba(255,91,102,0.11);
+      color: #ffb0b6;
+    }
+
     .setup-column .setup-card .btn {
       min-height: 38px;
       white-space: nowrap;
@@ -958,6 +1019,7 @@
 
     :root[data-olvend-theme="light"] .focus-strip,
     :root[data-olvend-theme="light"] .setup-card,
+    :root[data-olvend-theme="light"] .route-time-check,
     :root[data-olvend-theme="light"] .secondary-toggle,
     :root[data-olvend-theme="light"] .selection-summary,
     :root[data-olvend-theme="light"] .helper-line,
@@ -971,6 +1033,29 @@
       background: #ffffff;
       border-color: rgba(15,23,42,0.12);
       color: #17212b;
+    }
+
+    :root[data-olvend-theme="light"] .route-time-check {
+      background: #ffffff;
+    }
+
+    :root[data-olvend-theme="light"] .route-time-cell {
+      border-color: rgba(15,23,42,0.1);
+    }
+
+    :root[data-olvend-theme="light"] .route-time-cell.verdict.good {
+      background: #ecfdf3;
+      color: #027a48;
+    }
+
+    :root[data-olvend-theme="light"] .route-time-cell.verdict.tight {
+      background: #fffaeb;
+      color: #b54708;
+    }
+
+    :root[data-olvend-theme="light"] .route-time-cell.verdict.over {
+      background: #fef3f2;
+      color: #b42318;
     }
 
     :root[data-olvend-theme="light"] .panel {
@@ -1250,9 +1335,18 @@
                           <option value="">Bez skladu</option>
                         </select>
                       </div>
+                      <div class="compact-field">
+                        <label for="maxRouteHoursInput">Maximální čas celkem</label>
+                        <input id="maxRouteHoursInput" type="number" min="1" max="14" step="0.5" value="8" inputmode="decimal" />
+                      </div>
+                      <div class="compact-field">
+                        <label for="preparationMinutesInput">Příprava auta (min)</label>
+                        <input id="preparationMinutesInput" type="number" min="0" max="180" step="5" value="30" inputmode="numeric" />
+                      </div>
                       <button class="btn secondary setup-advanced" id="locateBtn" type="button">Načíst moji polohu</button>
                     </div>
 
+                    <div class="route-time-check" id="routeTimeCheck"></div>
                     <div class="inline-summary" id="summaryGrid"></div>
                     <div class="recent-note">
                       Uložené trasy najdeš v hlavní tabulce
@@ -1414,6 +1508,9 @@
     const statusLine = document.getElementById('statusLine')
     const summaryGrid = document.getElementById('summaryGrid')
     const routeSummaryGrid = document.getElementById('routeSummaryGrid')
+    const routeTimeCheck = document.getElementById('routeTimeCheck')
+    const maxRouteHoursInput = document.getElementById('maxRouteHoursInput')
+    const preparationMinutesInput = document.getElementById('preparationMinutesInput')
     const candidateList = document.getElementById('candidateList')
     const routeList = document.getElementById('routeList')
     const savedPlansList = document.getElementById('savedPlansList')
@@ -1554,6 +1651,11 @@
       sourceFilter.value = payload.source_filter || 'all_active'
       sortBias.value = payload.sort_bias || 'balanced'
       returnMode.value = plan.return_to_start === false ? 'one_way' : 'return'
+      maxRouteHoursInput.value = String(
+        payload.route_time_budget?.maximum_hours ??
+        (Number(payload.route_time_budget?.maximum_minutes || 0) / 60 || 8)
+      )
+      preparationMinutesInput.value = String(payload.route_time_budget?.preparation_minutes ?? 30)
 
       buildCandidateRows()
       state.selectedKeys.clear()
@@ -2031,7 +2133,90 @@
       `
     }
 
+    function formatDuration(minutes) {
+      const safeMinutes = Math.max(0, Math.round(Number(minutes) || 0))
+      const hours = Math.floor(safeMinutes / 60)
+      const remainder = safeMinutes % 60
+      if (!hours) return `${remainder} min`
+      if (!remainder) return `${hours} h`
+      return `${hours} h ${remainder} min`
+    }
+
+    function formatStopCount(count) {
+      const value = Math.max(0, Math.round(Number(count) || 0))
+      const label = value === 1 ? 'zastávka' : value >= 2 && value <= 4 ? 'zastávky' : 'zastávek'
+      return `${formatNumber(value)} ${label}`
+    }
+
+    function getRouteTiming(plan = null) {
+      const maximumHours = Math.min(14, Math.max(1, Number(maxRouteHoursInput.value) || 8))
+      const maximumMinutes = Math.round(maximumHours * 60)
+      const preparationMinutes = Math.min(180, Math.max(0, Math.round(Number(preparationMinutesInput.value) || 0)))
+      const driveMinutes = Math.max(0, Math.round(Number(plan?.estimatedDriveMinutes || 0)))
+      const serviceMinutes = Math.max(0, Math.round(Number(plan?.estimatedServiceMinutes || 0)))
+      const totalMinutes = preparationMinutes + driveMinutes + serviceMinutes
+      const remainingMinutes = maximumMinutes - totalMinutes
+      const tone = remainingMinutes < 0 ? 'over' : remainingMinutes < 30 ? 'tight' : 'good'
+
+      return {
+        maximumHours,
+        maximumMinutes,
+        preparationMinutes,
+        driveMinutes,
+        serviceMinutes,
+        totalMinutes,
+        remainingMinutes,
+        tone,
+      }
+    }
+
+    function renderRouteTimeCheck(plan = null) {
+      if (!routeTimeCheck) return
+      const timing = getRouteTiming(plan)
+
+      if (!plan) {
+        routeTimeCheck.innerHTML = `
+          <div class="route-time-check-grid">
+            <div class="route-time-cell">
+              <div class="route-time-label">Časový plán</div>
+              <div class="route-time-value">Čeká na výpočet</div>
+              <div class="route-time-note">Počítá se od začátku přípravy auta do návratu.</div>
+            </div>
+            <div class="route-time-cell"><div class="route-time-label">Příprava auta</div><div class="route-time-value">${escapeHtml(formatDuration(timing.preparationMinutes))}</div></div>
+            <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">—</div></div>
+            <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">—</div></div>
+            <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">—</div></div>
+            <div class="route-time-cell verdict"><div class="route-time-label">Limit</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div><div class="route-time-note">Vyber zastávky a klikni na Spočítat trasu.</div></div>
+          </div>
+        `
+        return
+      }
+
+      const verdict = timing.tone === 'over'
+        ? `Návrh se nevejde o ${formatDuration(Math.abs(timing.remainingMinutes))}.`
+        : timing.tone === 'tight'
+          ? `Návrh se vejde, rezerva jen ${formatDuration(timing.remainingMinutes)}.`
+          : `Návrh je v pořádku, rezerva ${formatDuration(timing.remainingMinutes)}.`
+      const recommendation = timing.tone === 'over'
+        ? 'Zkrať obsluhu, odeber zastávky nebo zvyš schválený limit.'
+        : timing.tone === 'tight'
+          ? 'Počítej s minimální rezervou na zdržení.'
+          : 'Trasu lze přiřadit v nastaveném limitu.'
+
+      routeTimeCheck.innerHTML = `
+        <div class="route-time-check-grid">
+          <div class="route-time-cell"><div class="route-time-label">Příprava auta</div><div class="route-time-value">${escapeHtml(formatDuration(timing.preparationMinutes))}</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">${escapeHtml(formatDuration(timing.driveMinutes))}</div><div class="route-time-note">${formatNumber(plan.estimatedDistanceKm, 1)} km</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">${escapeHtml(formatDuration(timing.serviceMinutes))}</div><div class="route-time-note">${escapeHtml(formatStopCount(plan.orderedStops?.length || 0))}</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">${escapeHtml(formatDuration(timing.totalMinutes))}</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Maximální čas</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
+          <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}</div></div>
+        </div>
+      `
+    }
+
     function renderRouteSummary(plan = null) {
+      renderRouteTimeCheck(plan)
       if (!plan) {
         routeSummaryGrid.innerHTML = `
           <div class="summary-box">
@@ -3403,6 +3588,14 @@
           provider: state.currentPlan.provider,
           google: state.currentPlan.google || null,
           telemetryRevenue: state.currentPlan.telemetryRevenue || null,
+          route_time_budget: {
+            maximum_hours: getRouteTiming(state.currentPlan).maximumHours,
+            maximum_minutes: getRouteTiming(state.currentPlan).maximumMinutes,
+            preparation_minutes: getRouteTiming(state.currentPlan).preparationMinutes,
+            estimated_total_minutes: getRouteTiming(state.currentPlan).totalMinutes,
+            remaining_minutes: getRouteTiming(state.currentPlan).remainingMinutes,
+            verdict: getRouteTiming(state.currentPlan).tone,
+          },
         },
         created_by: employeeId,
       }
@@ -4051,6 +4244,8 @@
       renderRouteSummary(state.currentPlan)
     })
     warehouseFilter.addEventListener('change', () => {})
+    maxRouteHoursInput.addEventListener('input', () => renderRouteSummary(state.currentPlan))
+    preparationMinutesInput.addEventListener('input', () => renderRouteSummary(state.currentPlan))
 
     refreshBtn.addEventListener('click', () => {
       state.currentPlan = null
