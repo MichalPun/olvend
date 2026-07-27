@@ -1,5 +1,5 @@
 -- Import real planogram from: Planogram [67] Luce X2 I_E-2026-07-27.xlsx
--- Machine: DB id 50, VendSoft evidence 67. TID/DeviceID is intentionally not linked yet.
+-- Machine: DB id 50, VendSoft evidence 67, TID/DeviceID 596506.
 -- Location: Jamne - SWR (location_id 29).
 -- Z1 is intentionally mapped to Barbera Tris SKU 201; the Excel still carries legacy Elite code 5.
 -- Excel button codes 263 and 269 are stale; mapped by product name to catalog SKUs 267 and 268.
@@ -13,15 +13,27 @@ begin
     location_id = 29,
     name = 'Luce X2 I/E',
     brand = 'Rheavendors',
-    note = 'Import z VendSoft exportu; puvodni kod 67; lokalita Jamne - SWR. Telemetry ID zatim nepotvrzeno; historicka hodnota 592144 zustava vyhrazena pro automat 117. Zdroj planogramu 2026-07-27.'
+    note = 'Import z VendSoft exportu; puvodni kod 67; lokalita Jamne - SWR. Telemetry ID: 596506. Historicka hodnota 592144 zustava vyhrazena pro automat 117. Zdroj planogramu 2026-07-27.'
   where id = v_machine_id;
 
   update public.machine_external_links
   set
     telemetry_enabled = false,
-    note = 'Vypnuto pri importu planogramu 67 / Jamne - SWR; TID neni potvrzene a 592144 patri automatu 117.',
+    note = 'Vypnuto pri importu planogramu 67 / Jamne - SWR; 592144 patri automatu 117.',
     updated_at = now()
-  where machine_id = v_machine_id;
+  where machine_id = v_machine_id
+    and external_machine_id <> '596506';
+
+  insert into public.machine_external_links (machine_id, provider, external_machine_id, telemetry_enabled, note)
+  values
+    (v_machine_id, 'IMA', '596506', true, 'TID 596506 pro Luce X2 I/E / automat 67 / Jamne - SWR.'),
+    (v_machine_id, 'GP', '596506', true, 'TID 596506 pro Luce X2 I/E / automat 67 / Jamne - SWR.')
+  on conflict (provider, external_machine_id) do update
+  set
+    machine_id = excluded.machine_id,
+    telemetry_enabled = excluded.telemetry_enabled,
+    note = excluded.note,
+    updated_at = now();
 
   update public.machine_coffee_containers set active = false where machine_id = v_machine_id;
   update public.machine_coffee_buttons set active = false where machine_id = v_machine_id;
