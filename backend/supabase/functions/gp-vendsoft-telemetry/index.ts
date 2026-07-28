@@ -468,7 +468,10 @@ async function applyPlanogramDepletion(
   }
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
-  const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta);
+  const availablePaymentAmounts = slots
+    .map((slot) => priceToPaymentAmount(Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0)))
+    .filter((amount) => amount > 0);
+  const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta, availablePaymentAmounts);
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
@@ -629,6 +632,30 @@ function emptyPaymentAllocation() {
   return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0 };
 }
 
+function canComposePaymentAmount(quantity: number, targetAmount: number, availableAmounts: number[]) {
+  const targetQuantity = Math.round(quantity);
+  const target = Math.round(targetAmount);
+  if (targetQuantity === 0) return target === 0;
+  if (targetQuantity < 0 || target <= 0) return false;
+
+  const prices = [...new Set(availableAmounts.map(Math.round).filter((amount) => amount > 0 && amount <= target))];
+  if (!prices.length) return false;
+
+  let reachable = new Set([0]);
+  for (let count = 0; count < targetQuantity; count += 1) {
+    const next = new Set<number>();
+    for (const subtotal of reachable) {
+      for (const price of prices) {
+        const total = subtotal + price;
+        if (total <= target) next.add(total);
+      }
+    }
+    reachable = next;
+    if (!reachable.size) return false;
+  }
+  return reachable.has(target);
+}
+
 function allocatePaymentDeltas(
   planned: Array<{
     slot: Record<string, unknown>;
@@ -638,6 +665,7 @@ function allocatePaymentDeltas(
   }>,
   totalVendDelta: number,
   paymentDelta: ReturnType<typeof getPaymentDelta>,
+  availablePaymentAmounts: number[],
 ) {
   const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; unknownPaymentDelta: number }>();
   const saleUnits: Array<{ selection: string; priceAmount: number }> = [];
@@ -670,33 +698,80 @@ function allocatePaymentDeltas(
     saleUnits.forEach((unit) => assign(unit.selection, "cashlessDelta"));
     return allocations;
   }
-  if (paymentDelta.totalQuantity !== totalVendDelta) {
+  if (paymentDelta.totalQuantity < totalVendDelta) {
     saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
     return allocations;
   }
 
   const cashTargetQuantity = Math.round(paymentDelta.cashQuantity);
   const cashTargetAmount = Math.round(paymentDelta.cashAmount);
-  let cashIndexes: Set<number> | null = null;
+  const cashlessTargetQuantity = Math.round(paymentDelta.cashlessQuantity);
+  const cashlessTargetAmount = Math.round(paymentDelta.cashlessAmount);
+  const extraPaymentQuantity = Math.max(0, Math.round(paymentDelta.totalQuantity - totalVendDelta));
+  const mappedTotalAmount = saleUnits.reduce((sum, unit) => sum + unit.priceAmount, 0);
+  const validAllocations = new Map<string, Set<number>>();
 
   const search = (index: number, picked: number[], pickedAmount: number) => {
-    if (cashIndexes || picked.length > cashTargetQuantity || pickedAmount > cashTargetAmount) return;
-    if (picked.length === cashTargetQuantity) {
-      if (pickedAmount === cashTargetAmount) cashIndexes = new Set(picked);
+    if (validAllocations.size > 1 || picked.length > cashTargetQuantity || pickedAmount > cashTargetAmount) return;
+    if (index >= saleUnits.length) {
+      const mappedCashQuantity = picked.length;
+      const mappedCashlessQuantity = saleUnits.length - mappedCashQuantity;
+      const extraCashQuantity = cashTargetQuantity - mappedCashQuantity;
+      const extraCashlessQuantity = cashlessTargetQuantity - mappedCashlessQuantity;
+      if (extraCashQuantity < 0 || extraCashlessQuantity < 0) return;
+      if (extraCashQuantity + extraCashlessQuantity !== extraPaymentQuantity) return;
+
+      const mappedCashlessAmount = mappedTotalAmount - pickedAmount;
+      const extraCashAmount = cashTargetAmount - pickedAmount;
+      const extraCashlessAmount = cashlessTargetAmount - mappedCashlessAmount;
+      if (
+        canComposePaymentAmount(extraCashQuantity, extraCashAmount, availablePaymentAmounts) &&
+        canComposePaymentAmount(extraCashlessQuantity, extraCashlessAmount, availablePaymentAmounts)
+      ) {
+        const cashBySelection = new Map<string, number>();
+        picked.forEach((pickedIndex) => {
+          const selection = saleUnits[pickedIndex].selection;
+          cashBySelection.set(selection, (cashBySelection.get(selection) || 0) + 1);
+        });
+        const signature = [...cashBySelection.entries()]
+          .filter(([, quantity]) => quantity > 0)
+          .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+          .map(([selection, quantity]) => `${selection}:${quantity}`)
+          .join("|");
+        if (!validAllocations.has(signature)) validAllocations.set(signature, new Set(picked));
+      }
       return;
     }
-    if (index >= saleUnits.length) return;
 
     search(index + 1, [...picked, index], pickedAmount + saleUnits[index].priceAmount);
     search(index + 1, picked, pickedAmount);
   };
 
-  if (cashTargetQuantity >= 0 && cashTargetQuantity <= saleUnits.length && cashTargetAmount > 0 && saleUnits.length <= 24) {
+  if (
+    cashTargetQuantity >= 0 &&
+    cashlessTargetQuantity >= 0 &&
+    cashTargetAmount >= 0 &&
+    cashlessTargetAmount >= 0 &&
+    saleUnits.length <= 24 &&
+    extraPaymentQuantity <= 12
+  ) {
     search(0, [], 0);
   }
 
-  if (!cashIndexes && cashTargetQuantity >= 0 && cashTargetQuantity <= saleUnits.length) {
+  let cashIndexes = validAllocations.size === 1 ? [...validAllocations.values()][0] : null;
+  if (
+    !cashIndexes &&
+    validAllocations.size === 0 &&
+    extraPaymentQuantity === 0 &&
+    cashTargetQuantity >= 0 &&
+    cashTargetQuantity <= saleUnits.length
+  ) {
     cashIndexes = new Set(saleUnits.slice(0, cashTargetQuantity).map((_, index) => index));
+  }
+
+  if (!cashIndexes) {
+    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
+    return allocations;
   }
 
   saleUnits.forEach((unit, index) => {
