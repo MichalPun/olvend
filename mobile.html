@@ -3416,10 +3416,22 @@
       return Math.floor(missing / packageQuantity)
     }
 
+    function getCoffeeMaxPackages(stopId, container) {
+      const capacity = Number(container?.capacity_quantity || 0)
+      const existing = getCoffeeDetail(stopId)?.visitItems?.find((item) => (
+        String(item.coffee_container_id || '') === String(container.id)
+        && !String(item.operator_note || '').includes('První kalibrace')
+      ))
+      const current = Number(existing?.system_current_quantity ?? container?.current_quantity ?? 0)
+      const packageQuantity = Number(container?.refill_package_quantity || 0)
+      if (!capacity || !packageQuantity) return Number.POSITIVE_INFINITY
+      return Math.max(0, Math.floor((capacity - current) / packageQuantity))
+    }
+
     function getCoffeeActualPackages(stopId, container) {
       const detail = getCoffeeDetail(stopId)
       const draft = detail?.draft?.containers?.[String(container.id)]
-      if (draft?.packages != null) return Number(draft.packages || 0)
+      if (draft?.packages != null) return Math.min(Number(draft.packages || 0), getCoffeeMaxPackages(stopId, container))
       if (detail?.manualCounterMode) return 0
       return getCoffeeSuggestedPackages(container)
     }
@@ -3466,6 +3478,19 @@
       const packageCount = Math.max(0, Number(packages || 0))
       if (isCoffeeMassPackageStock(container)) return packageCount * getCoffeePackageBaseQuantity(container)
       return packageCount * Number(container?.refill_package_quantity || 0)
+    }
+
+    function getCoffeeNetMovedQuantity(rows, visitId, container) {
+      const prefix = `route_visit_${visitId}_container_${container.id}`
+      return (rows || [])
+        .filter((row) => (
+          String(row.product_id || '') === String(container.product_id || '')
+          && (String(row.reference_id || '') === prefix || String(row.reference_id || '').startsWith(`${prefix}_`))
+        ))
+        .reduce((sum, row) => {
+          const quantity = Number(row.quantity_base_units || 0)
+          return sum + (row.movement_type === 'return' ? -quantity : quantity)
+        }, 0)
     }
 
     function getCoffeeAfterQuantity(stopId, container) {
@@ -3702,6 +3727,7 @@
               const capacity = Number(container.capacity_quantity || 0)
               const accepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
                 || (!manualCounterMode && packages <= 0)
+              const stockMismatch = Boolean(detail.draft?.containers?.[String(container.id)]?.stockMismatch)
               const currentPct = capacity ? Math.round((current / capacity) * 100) : 0
               const afterPct = capacity ? Math.round((after / capacity) * 100) : 0
               return `
@@ -3713,6 +3739,7 @@
                       <span>${manualCounterMode ? `evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}` : `stav z PC ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</span>
                       <span>${manualCounterMode ? `po doplnění ${formatNumber(after)}/${formatNumber(capacity)} · ${packages} bal.` : `po PC návrhu ${formatNumber(after)}/${formatNumber(capacity)} · hladina ${currentPct}% -> ${afterPct}%`}</span>
                     </div>
+                    ${stockMismatch ? '<div class="muted-text">Skladový pohyb nesedí s uloženým doplněním. Potvrzením se automaticky dorovná.</div>' : ''}
                     ${readOnly ? `
                       <div class="meta"><span>${packages > 0 ? `Doplněno ${packages} bal.` : 'Nedoplňováno'}</span></div>
                     ` : `
@@ -4686,7 +4713,8 @@
           cashResult,
           telemetryLinksResult,
           manualCounterResult,
-          manualCountersResult
+          manualCountersResult,
+          stockMovementsResult
         ] = await Promise.all([
           supabase.from('machine_coffee_containers').select('*').eq('machine_id', machine.id).eq('active', true).order('sort_order', { ascending: true }),
           supabase.from('machine_coffee_buttons').select('*').eq('machine_id', machine.id).eq('active', true).order('sort_order', { ascending: true }),
@@ -4696,10 +4724,14 @@
           supabase.from('route_machine_cash_reports').select('*').eq('visit_id', visitId).maybeSingle(),
           supabase.from('machine_external_links').select('id, provider, external_machine_id, telemetry_enabled').eq('machine_id', machine.id).eq('telemetry_enabled', true),
           supabase.from('machine_manual_counter_readings').select('*').eq('visit_id', visitId).maybeSingle(),
-          supabase.from('machine_manual_counter_readings').select('*').eq('machine_id', machine.id).order('reading_at', { ascending: false }).limit(2)
+          supabase.from('machine_manual_counter_readings').select('*').eq('machine_id', machine.id).order('reading_at', { ascending: false }).limit(2),
+          supabase.from('stock_movements_v13')
+            .select('product_id, movement_type, quantity_base_units, reference_id')
+            .eq('reference_type', 'mobile_stock_request')
+            .like('reference_id', `route_visit_${visitId}_container_%`)
         ])
 
-        const blockingError = [containersResult.error, buttonsResult.error, recipeResult.error, itemsResult.error, checksResult.error]
+        const blockingError = [containersResult.error, buttonsResult.error, recipeResult.error, itemsResult.error, checksResult.error, stockMovementsResult.error]
           .find(Boolean)
         if (blockingError) throw blockingError
         if (cashResult.error && !/0 rows|multiple|route_machine_cash_reports/i.test(String(cashResult.error.message || ''))) throw cashResult.error
@@ -4717,6 +4749,7 @@
         const draftContainers = { ...(state.routeCoffeeDetails[key]?.draft?.containers || {}) }
         const draftCalibration = { ...(state.routeCoffeeDetails[key]?.draft?.calibration || {}) }
         const calibratedContainers = {}
+        const stockMovements = stockMovementsResult.data || []
         existingItems
           .filter((item) => item.item_kind === 'coffee_container' && String(item.operator_note || '').includes('První kalibrace'))
           .forEach((item) => {
@@ -4730,19 +4763,25 @@
         for (const container of containers) {
           const existing = existingItems.find((item) => String(item.coffee_container_id || '') === String(container.id))
           const suggestedPackages = manualCounterMode ? 0 : getCoffeeSuggestedPackages(container)
-          if (!draftContainers[String(container.id)]) {
-            draftContainers[String(container.id)] = {
-              packages: existing?.actual_add_quantity != null
-                ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
-                : suggestedPackages,
-              picked: suggestedPackages <= 0 || Boolean(existing?.accepted_at),
-              accepted: manualCounterMode
-                ? Boolean(existing?.accepted_at)
-                : suggestedPackages <= 0 || Boolean(existing?.accepted_at),
-              movedPackages: existing?.accepted_at
-                ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
-                : 0
-            }
+          const existingPackages = existing?.actual_add_quantity != null
+            ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
+            : suggestedPackages
+          const expectedMovedQuantity = getCoffeeVehicleStockQuantity(container, existingPackages)
+          const movedQuantity = getCoffeeNetMovedQuantity(stockMovements, visitId, container)
+          const stockInSync = Math.abs(movedQuantity - expectedMovedQuantity) <= 0.0001
+          const currentDraft = draftContainers[String(container.id)] || {}
+          draftContainers[String(container.id)] = {
+            packages: currentDraft.packages != null ? currentDraft.packages : existingPackages,
+            picked: currentDraft.picked != null
+              ? currentDraft.picked
+              : suggestedPackages <= 0 || Boolean(existing?.accepted_at),
+            accepted: existing?.accepted_at
+              ? stockInSync
+              : (currentDraft.accepted != null ? currentDraft.accepted : (!manualCounterMode && suggestedPackages <= 0)),
+            movedPackages: getCoffeePackageBaseQuantity(container)
+              ? movedQuantity / getCoffeePackageBaseQuantity(container)
+              : 0,
+            stockMismatch: Boolean(existing?.accepted_at) && !stockInSync
           }
         }
 
@@ -5078,26 +5117,57 @@
       return result.data
     }
 
-    async function moveCoffeePackagesFromVehicle(stopId, container, options = {}) {
+    async function loadCoffeeNetMovedQuantity(detail, container) {
+      if (!detail?.visitId || !container?.id) return 0
+      const prefix = `route_visit_${detail.visitId}_container_${container.id}`
+      const { data, error } = await supabase
+        .from('stock_movements_v13')
+        .select('product_id, movement_type, quantity_base_units, reference_id')
+        .eq('reference_type', 'mobile_stock_request')
+        .eq('product_id', container.product_id)
+        .like('reference_id', `${prefix}%`)
+      if (error) throw error
+      return getCoffeeNetMovedQuantity(data || [], detail.visitId, container)
+    }
+
+    async function syncCoffeePackagesWithVehicle(stopId, container, packages = getCoffeeActualPackages(stopId, container)) {
       const detail = getCoffeeDetail(stopId)
-      const packages = options.packages != null ? Number(options.packages || 0) : getCoffeeActualPackages(stopId, container)
-      const quantity = getCoffeeVehicleStockQuantity(container, packages)
-      if (!packages || !quantity || !container?.product_id) return
+      if (!detail?.visitId || !container?.id || !container?.product_id) throw new Error('Návštěva nemá úplná skladová data.')
+      const desiredPackages = Math.min(Math.max(0, Number(packages || 0)), getCoffeeMaxPackages(stopId, container))
+      const desiredQuantity = getCoffeeVehicleStockQuantity(container, desiredPackages)
+      const movedQuantity = await loadCoffeeNetMovedQuantity(detail, container)
+      const difference = Number((desiredQuantity - movedQuantity).toFixed(3))
+      if (Math.abs(difference) <= 0.0001) {
+        detail.draft.containers[String(container.id)] = {
+          ...(detail.draft.containers[String(container.id)] || {}),
+          movedPackages: desiredPackages,
+          stockMismatch: false
+        }
+        return
+      }
+
       const vehicleId = getCurrentVehicleId()
-      if (!vehicleId) throw new Error('Pro odečet surovin chybí vozidlo směny.')
+      if (!vehicleId) throw new Error('Pro opravu odečtu chybí vozidlo směny.')
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
       const machineLocationId = await ensureStockLocation('machine', container.machine_id, `Automat ${container.machine_id}`)
+      const movingToMachine = difference > 0
+      const quantity = Math.abs(difference)
       const movements = await moveStockPreservingBatches({
         productId: container.product_id,
         quantity,
-        fromStockLocationId: vehicleLocationId,
-        toStockLocationId: machineLocationId,
-        movementType: 'fill_machine',
-        referenceId: detail?.visitId && container?.id ? `route_visit_${detail.visitId}_container_${container.id}${options.referenceSuffix || ''}` : `route_stop_${stopId}_container_${container.id || container.product_id}${options.referenceSuffix || ''}`,
-        note: `Kávový picklist ${container.container_code || ''} · ${packages} bal.`,
-        allowNegative: true
+        fromStockLocationId: movingToMachine ? vehicleLocationId : machineLocationId,
+        toStockLocationId: movingToMachine ? machineLocationId : vehicleLocationId,
+        movementType: movingToMachine ? 'fill_machine' : 'return',
+        referenceId: `route_visit_${detail.visitId}_container_${container.id}_sync_${movingToMachine ? 'in' : 'back'}_${Date.now()}`,
+        note: `Automatické dorovnání návštěvy · ${container.container_code || ''} · cílově ${desiredPackages} bal.`,
+        allowNegative: false
       })
       await applyStockMovementsAtomically(movements)
+      detail.draft.containers[String(container.id)] = {
+        ...(detail.draft.containers[String(container.id)] || {}),
+        movedPackages: desiredPackages,
+        stockMismatch: false
+      }
     }
 
     function updateCoffeeCalibrationRowView(stopId, container, quantity) {
@@ -5144,7 +5214,10 @@
 
       if (action === 'step-container' && container) {
         const current = getCoffeeActualPackages(stopId, container)
-        const next = Math.max(0, current + Number(target.dataset.delta || 0))
+        const next = Math.min(
+          getCoffeeMaxPackages(stopId, container),
+          Math.max(0, current + Number(target.dataset.delta || 0))
+        )
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
           packages: next,
@@ -5157,7 +5230,7 @@
 
       if (action === 'pick-container' && container) {
         const packages = getCoffeeActualPackages(stopId, container)
-        if (packages > 0) await moveCoffeePackagesFromVehicle(stopId, container)
+        await syncCoffeePackagesWithVehicle(stopId, container, packages)
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
           picked: true,
@@ -5223,18 +5296,8 @@
       }
 
       if (action === 'accept-container' && container) {
-        if (detail.manualCounterMode) {
-          const packages = getCoffeeActualPackages(stopId, container)
-          const alreadyMoved = Number(detail.draft.containers[String(container.id)]?.movedPackages || 0)
-          const packagesToMove = Math.max(0, packages - alreadyMoved)
-          if (packagesToMove > 0) {
-            await moveCoffeePackagesFromVehicle(stopId, container, {
-              packages: packagesToMove,
-              referenceSuffix: `_manual_${packages}`
-            })
-            detail.draft.containers[String(container.id)].movedPackages = packages
-          }
-        }
+        const packages = getCoffeeActualPackages(stopId, container)
+        await syncCoffeePackagesWithVehicle(stopId, container, packages)
         await saveCoffeeContainerVisitItem(stopId, container)
         showMessage(
           detail.manualCounterMode
@@ -5250,7 +5313,11 @@
       if (action === 'adjust-container' && container) {
         const packagesText = window.prompt('Kolik celých balení reálně doplňuješ mimo PC návrh?', String(getCoffeeActualPackages(stopId, container)))
         if (packagesText === null) return
-        const packages = Math.max(0, Math.round(Number(String(packagesText).replace(',', '.')) || 0))
+        const requestedPackages = Math.max(0, Math.round(Number(String(packagesText).replace(',', '.')) || 0))
+        const packages = Math.min(requestedPackages, getCoffeeMaxPackages(stopId, container))
+        if (packages < requestedPackages) {
+          showMessage(`Do zásobníku se vejde nejvýše ${packages} celých balení. Hodnota byla automaticky omezena.`, 'error', { scroll: false })
+        }
         const note = window.prompt('Poznámka pro kontrolora, proč nesedí stav?', '') || 'Nesedí stav zásobníku'
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
@@ -5258,15 +5325,7 @@
           picked: true,
           accepted: true
         }
-        const alreadyMoved = Number(detail.draft.containers[String(container.id)]?.movedPackages || 0)
-        const extraPackages = Math.max(0, packages - alreadyMoved)
-        if (extraPackages > 0) {
-          await moveCoffeePackagesFromVehicle(stopId, container, {
-            packages: extraPackages,
-            referenceSuffix: `_extra_${packages}`
-          })
-          detail.draft.containers[String(container.id)].movedPackages = packages
-        }
+        await syncCoffeePackagesWithVehicle(stopId, container, packages)
         await saveCoffeeContainerVisitItem(stopId, container, { issue_type: 'telemetry_mismatch', operator_note: note })
         showMessage('Nesoulad je zapsaný ke kontrole. Množství se z auta odečetlo a můžeš pokračovat.', 'success', { scroll: false })
         renderRouteMachineScreen()
