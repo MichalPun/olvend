@@ -709,10 +709,10 @@ function allocatePaymentDeltas(
   const cashlessTargetAmount = Math.round(paymentDelta.cashlessAmount);
   const extraPaymentQuantity = Math.max(0, Math.round(paymentDelta.totalQuantity - totalVendDelta));
   const mappedTotalAmount = saleUnits.reduce((sum, unit) => sum + unit.priceAmount, 0);
-  const validAllocations = new Map<string, Set<number>>();
+  let cashIndexes: Set<number> | null = null;
 
   const search = (index: number, picked: number[], pickedAmount: number) => {
-    if (validAllocations.size > 1 || picked.length > cashTargetQuantity || pickedAmount > cashTargetAmount) return;
+    if (cashIndexes || picked.length > cashTargetQuantity || pickedAmount > cashTargetAmount) return;
     if (index >= saleUnits.length) {
       const mappedCashQuantity = picked.length;
       const mappedCashlessQuantity = saleUnits.length - mappedCashQuantity;
@@ -728,17 +728,7 @@ function allocatePaymentDeltas(
         canComposePaymentAmount(extraCashQuantity, extraCashAmount, availablePaymentAmounts) &&
         canComposePaymentAmount(extraCashlessQuantity, extraCashlessAmount, availablePaymentAmounts)
       ) {
-        const cashBySelection = new Map<string, number>();
-        picked.forEach((pickedIndex) => {
-          const selection = saleUnits[pickedIndex].selection;
-          cashBySelection.set(selection, (cashBySelection.get(selection) || 0) + 1);
-        });
-        const signature = [...cashBySelection.entries()]
-          .filter(([, quantity]) => quantity > 0)
-          .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
-          .map(([selection, quantity]) => `${selection}:${quantity}`)
-          .join("|");
-        if (!validAllocations.has(signature)) validAllocations.set(signature, new Set(picked));
+        cashIndexes = new Set(picked);
       }
       return;
     }
@@ -758,10 +748,8 @@ function allocatePaymentDeltas(
     search(0, [], 0);
   }
 
-  let cashIndexes = validAllocations.size === 1 ? [...validAllocations.values()][0] : null;
   if (
     !cashIndexes &&
-    validAllocations.size === 0 &&
     extraPaymentQuantity === 0 &&
     cashTargetQuantity >= 0 &&
     cashTargetQuantity <= saleUnits.length
