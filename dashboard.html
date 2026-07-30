@@ -1785,6 +1785,23 @@
       gap: 8px;
     }
 
+    .telemetry-limited-list {
+      max-height: 302px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      scrollbar-color: rgba(100, 116, 139, 0.55) transparent;
+      scrollbar-width: thin;
+      padding-right: 4px;
+    }
+
+    .telemetry-limited-list::-webkit-scrollbar { width: 7px; }
+    .telemetry-limited-list::-webkit-scrollbar-track { background: transparent; }
+    .telemetry-limited-list::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: rgba(100, 116, 139, 0.48);
+    }
+
     .telemetry-low-location {
       border: 1px solid rgba(255,255,255,0.07);
       border-radius: 8px;
@@ -4404,7 +4421,7 @@
         .sort((a, b) => b.criticalCount - a.criticalCount || a.lowestPercent - b.lowestPercent || b.rows.length - a.rows.length);
 
       return `
-        <div class="telemetry-low-list">
+        <div class="telemetry-low-list telemetry-limited-list">
           ${inventoryRows.map((row) => `
             <div class="telemetry-low-row">
               <div class="telemetry-low-top">
@@ -4469,27 +4486,72 @@
       if (!rows.length) {
         return '<div class="small-note">V příštích 30 dnech nemá žádná evidovaná potravina expiraci.</div>';
       }
+      const openLocations = new Set(
+        Array.from(document.querySelectorAll(".telemetry-expiry-location[open]"))
+          .map((node) => node.dataset.location || "")
+          .filter(Boolean)
+      );
+      const grouped = new Map();
+      rows.forEach((row) => {
+        const location = row.location_name || "Bez lokality";
+        const current = grouped.get(location) || { location, rows: [], nearestDays: Number.POSITIVE_INFINITY };
+        current.rows.push(row);
+        current.nearestDays = Math.min(current.nearestDays, Number(row.days_remaining || 0));
+        grouped.set(location, current);
+      });
+      const locations = Array.from(grouped.values())
+        .map((group) => ({
+          ...group,
+          rows: group.rows.sort((a, b) => Number(a.days_remaining || 0) - Number(b.days_remaining || 0))
+        }))
+        .sort((a, b) => a.nearestDays - b.nearestDays || b.rows.length - a.rows.length || a.location.localeCompare(b.location, "cs"));
+
+      const getExpiryLabel = (days) => (
+        days < 0 ? `Prošlé ${Math.abs(days)} d` : days === 0 ? "Dnes" : days === 1 ? "Zítra" : `Za ${days} dní`
+      );
+
       return `
-        <div class="telemetry-low-list">
-          ${rows.map((row) => {
-            const days = Number(row.days_remaining || 0);
-            const label = days < 0 ? `Prošlé ${Math.abs(days)} d` : days === 0 ? 'Dnes' : days === 1 ? 'Zítra' : `Za ${days} dní`;
+        <div class="telemetry-low-list telemetry-limited-list">
+          ${locations.map((group) => {
+            const nearest = group.rows[0];
+            const nearestDays = Number(nearest.days_remaining || 0);
+            const isCritical = nearestDays <= 0;
+            const isOpen = openLocations.has(group.location);
             return `
-              <div class="telemetry-low-row">
-                <div class="telemetry-low-top">
-                  <div>
-                    <strong>${escapeHtml(row.product_name || 'Bez produktu')}</strong>
-                    <span class="telemetry-low-meta">${escapeHtml(row.location_name || 'Bez lokality')} · ${escapeHtml(row.machine_name || 'Automat')} · pozice ${escapeHtml(row.slot_code || '-')}</span>
+              <details class="telemetry-low-location telemetry-expiry-location" data-location="${escapeHtml(group.location)}" ${isOpen ? "open" : ""}>
+                <summary>
+                  <div class="telemetry-low-location-title">
+                    <strong>${escapeHtml(group.location)}</strong>
+                    <span>${escapeHtml(`${group.rows.length} položek · nejbližší spotřeba ${new Date(`${nearest.expiry_date}T00:00:00`).toLocaleDateString("cs-CZ")}`)}</span>
                   </div>
-                  <span class="telemetry-low-badge ${days <= 0 ? 'critical' : ''}">${escapeHtml(label)}</span>
+                  <div class="telemetry-low-location-stats">
+                    <span class="telemetry-low-count">${escapeHtml(`${group.rows.length}x`)}</span>
+                    <span class="telemetry-low-badge ${isCritical ? "critical" : ""}">${escapeHtml(getExpiryLabel(nearestDays))}</span>
+                  </div>
+                </summary>
+                <div class="telemetry-low-location-items">
+                  ${group.rows.map((row) => {
+                    const days = Number(row.days_remaining || 0);
+                    return `
+                      <div class="telemetry-low-row">
+                        <div class="telemetry-low-top">
+                          <div>
+                            <strong>${escapeHtml(row.product_name || "Bez produktu")}</strong>
+                            <span class="telemetry-low-meta">${escapeHtml(row.machine_name || "Automat")} · pozice ${escapeHtml(row.slot_code || "-")}</span>
+                          </div>
+                          <span class="telemetry-low-badge ${days <= 0 ? "critical" : ""}">${escapeHtml(getExpiryLabel(days))}</span>
+                        </div>
+                        <div class="telemetry-low-foot">
+                          <span>Datum spotřeby</span>
+                          <strong>${escapeHtml(new Date(`${row.expiry_date}T00:00:00`).toLocaleDateString("cs-CZ"))}</strong>
+                        </div>
+                      </div>
+                    `;
+                  }).join("")}
                 </div>
-                <div class="telemetry-low-foot">
-                  <span>Nejbližší datum spotřeby</span>
-                  <strong>${escapeHtml(new Date(`${row.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ'))}</strong>
-                </div>
-              </div>
+              </details>
             `;
-          }).join('')}
+          }).join("")}
         </div>
       `;
     }

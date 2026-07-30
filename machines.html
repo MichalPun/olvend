@@ -131,6 +131,8 @@
       background: rgba(255,255,255,0.05);
     }
     .badge.ok, .badge.active { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
+    .badge.active-ima { color: #bbd8ff; border-color: rgba(88,166,255,0.3); background: rgba(88,166,255,0.14); }
+    .badge.active-no-ima { color: #ffe1aa; border-color: rgba(255,182,72,0.3); background: rgba(255,182,72,0.14); }
     .badge.service_needed, .badge.return_with_part { color: #ffe1aa; border-color: rgba(255,182,72,0.24); background: rgba(255,182,72,0.12); }
     .badge.offline, .badge.inactive { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
     .badge.installing, .badge.on_site { color: #bbd8ff; border-color: rgba(88,166,255,0.22); background: rgba(88,166,255,0.12); }
@@ -634,7 +636,7 @@
                     <th>Lokalita</th>
                     <th style="width:180px;">Poslední návštěva</th>
                     <th style="width:130px;">Stav</th>
-                    <th style="width:90px;">Aktivní</th>
+                    <th style="width:130px;">Aktivní / IMA</th>
                     <th>QR</th>
                     <th style="width:56px;"></th>
                   </tr>
@@ -1584,12 +1586,14 @@
 
     function renderSummary() {
       const activeCount = machines.filter((item) => item.active !== false).length
+      const imaCount = machines.filter((item) => item.active !== false && item.ima_enabled).length
       const linkedCount = machines.filter((item) => item.location_id).length
       const serviceCount = machines.filter((item) => item.status === 'service_needed').length
       const offlineCount = machines.filter((item) => item.status === 'offline').length
       const slotCount = planogramSlots.filter((item) => item.active !== false).length
       summaryGrid.innerHTML = [
         { label: 'Aktivní stroje', value: activeCount, note: 'Stroje, se kterými počítáme v provozu.' },
+        { label: 'Aktivní s IMA', value: imaCount, note: 'Aktivní stroje s povoleným napojením IMA.' },
         { label: 'Navázané na lokaci', value: linkedCount, note: 'Stroje, které už mají konkrétní místo.' },
         { label: 'Servis potřeba', value: serviceCount, note: 'Stroje, které si říkají o zásah.' },
         { label: 'Planogram sloty', value: slotCount, note: 'Aktivní volby navázané na konkrétní produkty.' },
@@ -1642,8 +1646,11 @@
           <td data-label="Stav">
             <span class="badge ${escapeHtml(item.status || 'ok')}">${escapeHtml(getStatusLabel(item.status))}</span>
           </td>
-          <td data-label="Aktivní">
-            <span class="badge ${item.active !== false ? 'active' : 'inactive'}">${item.active !== false ? 'Ano' : 'Ne'}</span>
+          <td data-label="Aktivní / IMA">
+            <span
+              class="badge ${item.active === false ? 'inactive' : (item.ima_enabled ? 'active-ima' : 'active-no-ima')}"
+              title="${item.ima_enabled ? `IMA ${escapeHtml(item.ima_device_id || '')}` : 'Bez aktivního napojení IMA'}"
+            >${item.active === false ? 'Ne' : (item.ima_enabled ? 'Ano · IMA' : 'Ano · bez IMA')}</span>
           </td>
           <td data-label="QR">
             ${escapeHtml(item.qr_token || '')}
@@ -2306,6 +2313,10 @@
       const rulesQuery = supabase
         .from('machine_service_rules')
         .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at, stock_critical_percent, max_visit_interval_days, route_visit_rules_active')
+      const imaLinksQuery = supabase
+        .from('machine_external_links')
+        .select('machine_id, external_machine_id, telemetry_enabled')
+        .eq('provider', 'IMA')
       const productsQuery = supabase
         .from('products')
         .select('id, name, sku, ean, sale_price, product_category, can_be_sold_directly, active')
@@ -2317,9 +2328,10 @@
       const [
         { data: machinesData, error: machinesError },
         { data: rulesData, error: rulesError },
+        { data: imaLinksData, error: imaLinksError },
         { data: productsData, error: productsError },
         visitsMap
-      ] = await Promise.all([machinesQuery, rulesQuery, productsQuery, visitsQuery])
+      ] = await Promise.all([machinesQuery, rulesQuery, imaLinksQuery, productsQuery, visitsQuery])
       if (machinesError) {
         machines = []
         renderSummary()
@@ -2328,10 +2340,21 @@
         return
       }
       if (rulesError) throw rulesError
+      if (imaLinksError) throw imaLinksError
       if (productsError) throw productsError
       serviceHistory = []
       planogramSlots = []
-      machines = machinesData ?? []
+      const imaLinksByMachine = new Map(
+        (imaLinksData ?? []).map((link) => [String(link.machine_id), link])
+      )
+      machines = (machinesData ?? []).map((machine) => {
+        const imaLink = imaLinksByMachine.get(String(machine.id))
+        return {
+          ...machine,
+          ima_enabled: imaLink?.telemetry_enabled === true,
+          ima_device_id: imaLink?.external_machine_id || null
+        }
+      })
       serviceRules = rulesData ?? []
       products = productsData ?? []
       lastMachineVisits = visitsMap || new Map()
