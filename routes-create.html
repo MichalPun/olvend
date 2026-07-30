@@ -723,6 +723,38 @@
       margin-top: 6px;
     }
 
+    .route-order-controls {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      white-space: nowrap;
+    }
+
+    .route-move-btn {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.05);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .route-move-btn:hover:not(:disabled) {
+      border-color: rgba(213,16,26,0.55);
+      background: rgba(213,16,26,0.14);
+    }
+
+    .route-move-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.28;
+    }
+
     .subtext {
       display: block;
       margin-top: 4px;
@@ -1209,6 +1241,12 @@
       color: #17212b;
     }
 
+    :root[data-olvend-theme="light"] .route-move-btn {
+      color: #17212b;
+      background: #f8fafc;
+      border-color: rgba(15,23,42,0.14);
+    }
+
     :root[data-olvend-theme="light"] .map-overlay-panel {
       background: #ffffff;
       border-color: rgba(15,23,42,0.14);
@@ -1459,9 +1497,9 @@
                         <div class="panel-header">
                           <div>
                             <h2>Pořadí jízdy</h2>
-                            <p>Po výpočtu tady vznikne finální seznam zastávek.</p>
+                            <p>Po výpočtu můžeš zastávky posouvat šipkami nebo celé pořadí otočit.</p>
                           </div>
-                          <button class="btn secondary" id="openRouteDrawerBtn" type="button">Přepočítat pohled</button>
+                          <button class="btn secondary" id="openRouteDrawerBtn" type="button" title="První zastávka se stane poslední a naopak">Otočit pořadí</button>
                         </div>
                         <div class="panel-body">
                           <div class="sheet-table-wrap short">
@@ -1716,6 +1754,10 @@
 
       applyFilters()
       state.currentPlan = builtPlan
+      if (builtPlan.manuallyReordered) {
+        engineBadge.textContent = 'Ručně'
+        engineBadge.className = 'route-badge saved'
+      }
       renderRouteSummary(state.currentPlan)
       renderRouteList(state.currentPlan)
       renderMap(state.currentPlan)
@@ -2355,7 +2397,7 @@
         <div class="summary-box">
           <div class="summary-box-label">Zastávky</div>
           <div class="summary-box-value">${formatNumber(plan.orderedStops.length)}</div>
-          <div class="summary-box-note">Počet bodů v doporučeném pořadí.</div>
+          <div class="summary-box-note">${plan.manuallyReordered ? 'Počet bodů v ručně upraveném pořadí.' : 'Počet bodů v doporučeném pořadí.'}</div>
         </div>
         <div class="summary-box">
           <div class="summary-box-label">Odhad jízdy</div>
@@ -2385,7 +2427,7 @@
       `
 
       openMapsBtn.disabled = !buildMultiStopMapsUrl(plan)
-      openRouteDrawerBtn.disabled = !plan.orderedStops?.length
+      openRouteDrawerBtn.disabled = !plan.orderedStops?.length || plan.orderedStops.length < 2
     }
 
     async function getAccessToken() {
@@ -2551,6 +2593,12 @@
             </td>
             <td>${escapeHtml(distanceText)}</td>
             <td>${formatNumber(stop.estimatedServiceMinutes)} min</td>
+            <td>
+              <div class="route-order-controls">
+                <button class="route-move-btn" type="button" data-route-move="${index}" data-route-direction="-1" aria-label="Posunout zastávku ${index + 1} nahoru" title="Posunout nahoru" ${index === 0 ? 'disabled' : ''}>↑</button>
+                <button class="route-move-btn" type="button" data-route-move="${index}" data-route-direction="1" aria-label="Posunout zastávku ${index + 1} dolů" title="Posunout dolů" ${index === plan.orderedStops.length - 1 ? 'disabled' : ''}>↓</button>
+              </div>
+            </td>
             <td><a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(stop))}" target="_blank" rel="noopener noreferrer">Mapa</a></td>
           </tr>
         `
@@ -2567,12 +2615,21 @@
               <th>Důvod</th>
               <th>Vzdálenost</th>
               <th>Práce</th>
+              <th>Upravit</th>
               <th>Mapa</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
       `
+
+      routeList.querySelectorAll('[data-route-move]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const index = Number(button.dataset.routeMove)
+          const direction = Number(button.dataset.routeDirection)
+          moveRouteStop(index, direction)
+        })
+      })
     }
 
     function formatDateLabel(dateString) {
@@ -2812,6 +2869,8 @@
         ...payload,
         ...plan,
         orderedStops,
+        provider: payload.provider || plan.provider || 'heuristic',
+        manuallyReordered: Boolean(payload.manually_reordered || payload.manuallyReordered),
         estimatedDistanceKm: Number(plan.estimated_distance_km ?? payload.estimatedDistanceKm ?? 0),
         estimatedDriveMinutes: Number(plan.estimated_drive_minutes ?? payload.estimatedDriveMinutes ?? 0),
         estimatedServiceMinutes: Number(payload.estimatedServiceMinutes ?? orderedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0)),
@@ -3435,6 +3494,67 @@
       }
     }
 
+    function recalculatePlanForManualOrder(plan, orderedStops) {
+      const startPoint = plan?.startPoint
+      let current = startPoint
+      let totalAirKm = 0
+
+      const recalculatedStops = orderedStops.map((stop) => {
+        const legKm = current ? haversineKm(current, stop) : 0
+        const safeLegKm = Number.isFinite(legKm) ? legKm : 0
+        totalAirKm += safeLegKm
+        current = stop
+        return {
+          ...stop,
+          distanceFromPreviousKm: safeLegKm,
+          estimatedServiceMinutes: estimateServiceMinutes(stop),
+        }
+      })
+
+      if (plan?.returnToStart && startPoint && current) {
+        const returnKm = haversineKm(current, startPoint)
+        if (Number.isFinite(returnKm)) totalAirKm += returnKm
+      }
+
+      const estimatedDistanceKm = totalAirKm * ROAD_FACTOR
+      return {
+        ...plan,
+        orderedStops: recalculatedStops,
+        estimatedDistanceKm,
+        estimatedDriveMinutes: Math.round((estimatedDistanceKm / AVG_SPEED_KMH) * 60),
+        estimatedServiceMinutes: recalculatedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0),
+        provider: 'manual_order',
+        google: null,
+        manuallyReordered: true,
+        createdAt: new Date().toISOString(),
+      }
+    }
+
+    function applyManualRouteOrder(orderedStops, message) {
+      if (!state.currentPlan || !orderedStops?.length) return
+      state.currentPlan = recalculatePlanForManualOrder(state.currentPlan, orderedStops)
+      engineBadge.textContent = 'Ručně'
+      engineBadge.className = 'route-badge saved'
+      renderRouteSummary(state.currentPlan)
+      renderRouteList(state.currentPlan)
+      renderMap(state.currentPlan)
+      setStatus(message, 'success')
+    }
+
+    function moveRouteStop(index, direction) {
+      const stops = [...(state.currentPlan?.orderedStops || [])]
+      const targetIndex = index + direction
+      if (!Number.isInteger(index) || !Number.isInteger(direction) || targetIndex < 0 || targetIndex >= stops.length) return
+      ;[stops[index], stops[targetIndex]] = [stops[targetIndex], stops[index]]
+      applyManualRouteOrder(stops, `Zastávku jsem posunul na pozici ${targetIndex + 1}.`)
+    }
+
+    function reverseRouteOrder() {
+      const stops = [...(state.currentPlan?.orderedStops || [])]
+      if (stops.length < 2) return
+      applyManualRouteOrder(stops.reverse(), 'Pořadí celé trasy jsem otočil.')
+    }
+
     function findCandidateForRouteStop(stop) {
       if (!stop) return null
       const identifiers = [
@@ -3769,6 +3889,7 @@
           generated_at: state.currentPlan.createdAt,
           current_position: state.currentPosition,
           provider: state.currentPlan.provider,
+          manually_reordered: Boolean(state.currentPlan.manuallyReordered),
           google: state.currentPlan.google || null,
           telemetryRevenue: state.currentPlan.telemetryRevenue || null,
           route_time_budget: {
@@ -4584,7 +4705,7 @@
 
     openLocationPickerBtn.addEventListener('click', () => openSelectionDrawer('location'))
     openMachinePickerBtn.addEventListener('click', () => openSelectionDrawer('machine'))
-    openRouteDrawerBtn.addEventListener('click', () => openRouteDrawer())
+    openRouteDrawerBtn.addEventListener('click', reverseRouteOrder)
     closeSelectionDrawerBtn.addEventListener('click', () => closeSelectionDrawer())
     closeRouteDrawerBtn.addEventListener('click', () => closeRouteDrawer())
     modalBackdrop.addEventListener('click', () => {
