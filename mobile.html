@@ -3205,6 +3205,10 @@
       return category === 'food_ready' || name.includes('baget') || name.includes('strips')
     }
 
+    function isFoodExpiryTracked(product) {
+      return Boolean(product?.requires_batch_tracking || (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none'))
+    }
+
     function getStockRequestUnitPackage(item, product = getStockRequestProduct(item)) {
       const unit = normalizeText(item?.unit || '')
       if (!product || !unit) return null
@@ -4014,6 +4018,7 @@
         actualAdd: Math.max(0, Number(draft.actualAdd ?? Math.min(desired, Math.max(0, Number(slot?.capacity_units || 0) - current)))),
         wasteItems: Array.isArray(draft.wasteItems) ? draft.wasteItems : [],
         expiryDate: draft.expiryDate || '',
+        existingExpiryDate: draft.existingExpiryDate ?? slot?.expiry_date ?? '',
         assortmentMismatch: Boolean(draft.assortmentMismatch),
         note: draft.note || '',
         accepted: Boolean(draft.accepted)
@@ -4126,12 +4131,14 @@
             ${slots.map((slot) => {
               const draft = getFoodSlotDraft(stop.id, slot)
               const product = state.products.find((item) => String(item.id) === String(draft.selectedProductId))
+              const plannedProduct = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
+              const tracksExpiry = isFoodExpiryTracked(product || plannedProduct)
               const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
               const maxAdd = Math.max(0, Math.min(draft.pickedQuantity, Number(slot.capacity_units || 0) - draft.actualBefore + wasteTotal))
               const actualAdd = Math.min(draft.fillItems.reduce((sum, fill) => sum + Number(fill.quantity || 0), 0), maxAdd)
               const finalQty = Math.max(0, draft.actualBefore - wasteTotal + actualAdd)
               return `
-                <details class="coffee-visit-row ${draft.accepted ? 'ready' : ''}" ${draft.pickedQuantity > 0 && !draft.accepted ? 'open' : ''}>
+                <details class="coffee-visit-row ${draft.accepted ? 'ready' : ''}" ${(draft.pickedQuantity > 0 || (tracksExpiry && draft.actualBefore > wasteTotal && !draft.existingExpiryDate)) && !draft.accepted ? 'open' : ''}>
                   <summary>
                     <strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(product?.name || slot.product_name)}</strong>
                     <span>${escapeHtml(`${finalQty}/${slot.capacity_units || 0} ks`)} ${draft.accepted ? '✓' : ''}</span>
@@ -4147,11 +4154,20 @@
                     Skutečně bylo v automatu
                     <input type="number" min="0" max="${escapeHtml(slot.capacity_units || 0)}" step="1" value="${escapeHtml(draft.actualBefore)}" data-food-field="actual-before" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''} />
                   </label>
+                  ${tracksExpiry && draft.actualBefore > wasteTotal ? `
+                    <div class="attention-box">
+                      <strong>Nejbližší expirace zboží v pozici</strong>
+                      <span>Zapiš nejbližší datum ze zboží, které už v automatu bylo. Stačí jedno datum za pozici.</span>
+                      <label>Nejbližší datum spotřeby
+                        <input type="date" value="${escapeHtml(draft.existingExpiryDate || '')}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
+                      </label>
+                    </div>
+                  ` : ''}
                   <div class="coffee-visit-form">
                     <strong>Skutečně vkládám · celkem ${escapeHtml(actualAdd)} ks</strong>
                     ${draft.fillItems.map((fill, fillIndex) => {
                       const fillProduct = state.products.find((item) => String(item.id) === String(fill.productId))
-                      const needsExpiry = fillProduct?.requires_batch_tracking || (fillProduct?.expiry_tracking_mode && fillProduct.expiry_tracking_mode !== 'none')
+                      const needsExpiry = isFoodExpiryTracked(fillProduct)
                       return `<div>
                         <span>${escapeHtml(fillProduct?.name || 'Produkt')} · SKU ${escapeHtml(fillProduct?.sku || '')}</span>
                         <label>Počet kusů
@@ -5756,6 +5772,11 @@
       if (wasteItems.some((item) => !item.reason)) throw new Error(`Pozice ${slot.slot_code}: u každého odpisu vyber důvod.`)
       const wasteQuantity = wasteItems.reduce((sum, item) => sum + item.quantity, 0)
       if (wasteQuantity > actualBefore) throw new Error(`Pozice ${slot.slot_code}: celkový odpis nesmí být vyšší než skutečný stav ${actualBefore} ks.`)
+      const tracksExistingExpiry = isFoodExpiryTracked(plannedProduct || selectedProduct)
+      const remainingExistingQuantity = Math.max(0, actualBefore - wasteQuantity)
+      if (tracksExistingExpiry && remainingExistingQuantity > 0 && !draft.existingExpiryDate) {
+        throw new Error(`Pozice ${slot.slot_code}: zapiš nejbližší expiraci zboží, které už je v automatu.`)
+      }
       const actualAdd = fillItems.reduce((sum, fill) => sum + fill.quantity, 0)
       const maxAdd = Math.max(0, capacity - actualBefore + wasteQuantity)
       if (actualAdd > maxAdd) throw new Error(`Pozice ${slot.slot_code}: vložit lze nejvýše ${maxAdd} ks.`)
@@ -5765,9 +5786,14 @@
       }
       for (const fill of fillItems) {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
-        const needsExpiry = product?.requires_batch_tracking || (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none')
+        const needsExpiry = isFoodExpiryTracked(product)
         if (needsExpiry && !fill.expiryDate) throw new Error(`Pozice ${slot.slot_code}: potvrď expiraci produktu ${product?.name || ''}.`)
       }
+      const nextExpiryDates = [
+        remainingExistingQuantity > 0 ? draft.existingExpiryDate : '',
+        ...fillItems.map((fill) => fill.expiryDate)
+      ].filter(Boolean).sort()
+      const nextExpiryDate = nextExpiryDates[0] || null
       const finalQuantity = Math.max(0, actualBefore - wasteQuantity + actualAdd)
       const targetQuantity = Math.max(0, Math.min(capacity, Number(slot.target_units ?? capacity)))
       const vehicleId = getCurrentVehicleId()
@@ -5902,6 +5928,7 @@
           current_units: finalQuantity,
           desired_units: Math.max(0, targetQuantity - finalQuantity),
           fill_percent: capacity > 0 ? Math.round((finalQuantity / capacity) * 10000) / 100 : 0,
+          expiry_date: nextExpiryDate,
           pending_product_id: null,
           pending_product_sku: null,
           pending_product_name: null,
@@ -5913,6 +5940,7 @@
       if (slotError) throw slotError
       slot.current_units = finalQuantity
       slot.desired_units = Math.max(0, targetQuantity - finalQuantity)
+      slot.expiry_date = nextExpiryDate
       detail.visitItems = [
         ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
         result.data
@@ -5921,6 +5949,7 @@
         actualBefore,
         actualAdd,
         wasteItems,
+        existingExpiryDate: nextExpiryDate || '',
         accepted: true
       })
       renderRouteMachineScreen()
@@ -5931,7 +5960,11 @@
       if (!detail?.visitId) throw new Error('Návštěva není připravená.')
       const unchanged = (detail.slots || []).filter((slot) => {
         const draft = getFoodSlotDraft(stopId, slot)
-        return !draft.accepted && draft.pickedQuantity <= 0
+        const product = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
+        const needsInitialExpiry = isFoodExpiryTracked(product)
+          && Number(draft.actualBefore || 0) > 0
+          && !draft.existingExpiryDate
+        return !draft.accepted && draft.pickedQuantity <= 0 && !needsInitialExpiry
       })
       if (!unchanged.length) {
         showMessage('Všechny pozice bez doplnění už jsou potvrzené.', 'success', { scroll: false })
@@ -7855,6 +7888,7 @@
             'actual-add': 'actualAdd',
             'skip-reason': 'skipReason',
             expiry: 'expiryDate',
+            'existing-expiry': 'existingExpiryDate',
             'assortment-mismatch': 'assortmentMismatch',
             note: 'note'
           }
