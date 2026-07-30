@@ -4,8 +4,12 @@ import * as XLSX from "npm:xlsx@0.18.5";
 const VENDSOFT_BASE_URL = "https://secure.vendsoft.com";
 const REPORT_NAME = "usat-transaction-log";
 const PROVIDER_TIME_ZONE = "Europe/Prague";
+const SESSION_REUSE_MS = 20 * 60 * 1000;
 
 type ReportRow = Record<string, unknown>;
+
+let cachedVendSoftCookie = "";
+let cachedVendSoftCookieAt = 0;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -106,7 +110,16 @@ async function loginToVendSoft(email: string, password: string) {
 
   const cookie = cookieHeader(getSetCookieValues(response.headers));
   if (!cookie) throw new Error("VendSoft login did not return a session cookie.");
+  cachedVendSoftCookie = cookie;
+  cachedVendSoftCookieAt = Date.now();
   return cookie;
+}
+
+async function getVendSoftCookie(email: string, password: string, force = false) {
+  if (!force && cachedVendSoftCookie && Date.now() - cachedVendSoftCookieAt < SESSION_REUSE_MS) {
+    return cachedVendSoftCookie;
+  }
+  return loginToVendSoft(email, password);
 }
 
 async function downloadReport(cookie: string, day: string) {
@@ -129,6 +142,9 @@ async function downloadReport(cookie: string, day: string) {
     }),
   });
 
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("VENDSOFT_SESSION_EXPIRED");
+  }
   if (!response.ok) throw new Error(`VendSoft report failed (${response.status}).`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) throw new Error("VendSoft report is empty.");
@@ -179,8 +195,15 @@ Deno.serve(async (req) => {
 
     const startedAt = new Date(state.started_at);
     const day = localDateString();
-    const cookie = await loginToVendSoft(email, password);
-    const report = await downloadReport(cookie, day);
+    let cookie = await getVendSoftCookie(email, password);
+    let report: Uint8Array;
+    try {
+      report = await downloadReport(cookie, day);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "VENDSOFT_SESSION_EXPIRED") throw error;
+      cookie = await getVendSoftCookie(email, password, true);
+      report = await downloadReport(cookie, day);
+    }
     const rows = parseReport(report);
 
     const candidates = [];
