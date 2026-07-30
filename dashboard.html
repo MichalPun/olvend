@@ -4493,7 +4493,7 @@
 
     function renderTelemetryExpiry(rows = []) {
       if (!rows.length) {
-        return '<div class="small-note">V příštích 2 dnech nemá žádná evidovaná potravina expiraci.</div>';
+        return '<div class="small-note">Žádná evidovaná potravina není v nastaveném upozorňovacím období.</div>';
       }
       const openLocations = new Set(
         Array.from(document.querySelectorAll(".telemetry-expiry-location[open]"))
@@ -4616,7 +4616,7 @@
           ${renderTelemetryLowStock(lowStock, initialInventory)}
         </section>
         <section class="telemetry-panel">
-          <div class="telemetry-panel-head"><h3>Blížící se expirace potravin</h3><span>dnes a následující 2 dny</span></div>
+          <div class="telemetry-panel-head"><h3>Blížící se expirace potravin</h3><span>bagety 2 dny · cukrovinky 30 dní</span></div>
           ${renderTelemetryExpiry(expiryRows)}
         </section>
       `;
@@ -4674,7 +4674,7 @@
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
       const telemetryFreshCutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-      const [recentResult, trendRows, lowStockResult, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult] = await Promise.all([
+      const [recentResult, trendRows, lowStockResult, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
@@ -4705,7 +4705,11 @@
           .from("route_machine_visit_items")
           .select("machine_id")
           .not("actual_before_quantity", "is", null)
-          .limit(5000)
+          .limit(5000),
+        supabase
+          .from("products")
+          .select("sku, product_category, expiry_tracking_mode, expiry_warning_days")
+          .eq("active", true)
       ]);
 
       if (recentResult.error) throw recentResult.error;
@@ -4714,6 +4718,7 @@
       if (telemetryLinksResult.error) throw telemetryLinksResult.error;
       if (telemetryStatesResult.error) throw telemetryStatesResult.error;
       if (inventoriedItemsResult.error) throw inventoriedItemsResult.error;
+      if (productsResult.error) throw productsResult.error;
 
       const rows = recentResult.data || [];
       const allTrendRows = trendRows || [];
@@ -4727,6 +4732,11 @@
       });
       const lowStockRaw = lowStockResult.data || [];
       const coffeeContainerRaw = coffeeContainersResult.data || [];
+      const productBySku = new Map(
+        (productsResult.data || [])
+          .filter((product) => product.sku != null)
+          .map((product) => [String(product.sku), product])
+      );
       const machineIds = [...new Set([...rows, ...allTrendRows, ...lowStockRaw, ...coffeeContainerRaw, ...(telemetryStatesResult.data || [])].map((row) => row.machine_id))]
         .map(Number)
         .filter(Boolean);
@@ -4818,6 +4828,7 @@
         .map((slot) => {
           const machine = machineMap.get(String(slot.machine_id));
           const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+          const product = productBySku.get(String(slot.product_sku || ""));
           const current = Number(slot.current_units ?? 0);
           const capacity = Number(slot.capacity_units || 0);
           const percent = capacity > 0 ? Math.max(0, Math.min(100, Math.round((current / capacity) * 100))) : Number(slot.fill_percent || 0);
@@ -4830,6 +4841,8 @@
             selection_code: slot.slot_code,
             machine_name: machine?.name || `Automat ${slot.machine_id || ""}`.trim(),
             machine_type: machine?.machine_type || "",
+            product_category: product?.product_category || "",
+            is_food_planogram: ["food_ready", "snack_ready"].includes(String(product?.product_category || "").trim().toLowerCase()),
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
             service_suspended_until: location?.service_suspended_until || null,
             unit_label: "ks",
@@ -4839,7 +4852,8 @@
         .filter((slot) => {
           if (!slot.low) return false;
           const isFoodMachine = String(slot.machine_type || "").trim().toLowerCase() === "snack";
-          return isFoodMachine
+          return slot.is_food_planogram
+            || isFoodMachine
             || (
               freshTelemetryMachineIds.has(String(slot.machine_id))
               && inventoriedMachineIds.has(String(slot.machine_id))
@@ -4881,15 +4895,20 @@
           const expiryDate = new Date(`${slot.expiry_date}T00:00:00`);
           const machine = machineMap.get(String(slot.machine_id));
           const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+          const product = productBySku.get(String(slot.product_sku || ""));
+          const warningDays = Math.max(0, Number(product?.expiry_warning_days ?? 30));
           return {
             ...slot,
             days_remaining: Math.round((expiryDate.getTime() - expiryToday.getTime()) / 86400000),
+            expiry_warning_days: warningDays,
+            expiry_tracking_mode: product?.expiry_tracking_mode || "",
             machine_name: machine?.name || `Automat ${slot.machine_id || ""}`.trim(),
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
             service_suspended_until: location?.service_suspended_until || null
           };
         })
-        .filter((slot) => slot.days_remaining <= 2)
+        .filter((slot) => String(slot.expiry_tracking_mode || "").toLowerCase() !== "none")
+        .filter((slot) => slot.days_remaining <= slot.expiry_warning_days)
         .filter((slot) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(slot))
         .filter((slot) => !isServiceSuspendedUntil(slot.service_suspended_until))
         .sort((a, b) => Number(a.days_remaining || 0) - Number(b.days_remaining || 0));
