@@ -6,6 +6,9 @@ const TARGET_URL = process.env.SUPABASE_TELEMETRY_URL || 'https://rerjlkrhiytgsc
 const INGEST_TOKEN = process.env.TELEMETRY_INGEST_TOKEN || ''
 const PROXY_TOKEN = process.env.TELEMETRY_PROXY_TOKEN || ''
 const BODY_LIMIT_BYTES = Number(process.env.TELEMETRY_BODY_LIMIT_BYTES || 5 * 1024 * 1024)
+const VENDSOFT_SYNC_URL = process.env.VENDSOFT_SYNC_URL ||
+  'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/vendsoft-food-sync'
+const VENDSOFT_SYNC_INTERVAL_MS = Math.max(60_000, Number(process.env.VENDSOFT_SYNC_INTERVAL_MS || 60_000))
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === 'string' ? body : JSON.stringify(body)
@@ -123,3 +126,30 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`OLVEND telemetry proxy listening on ${PORT}, path ${PROXY_PATH}`)
 })
+
+let vendsoftSyncRunning = false
+
+async function runVendSoftSync() {
+  if (!INGEST_TOKEN || vendsoftSyncRunning) return
+  vendsoftSyncRunning = true
+  try {
+    const response = await fetch(VENDSOFT_SYNC_URL, {
+      method: 'POST',
+      headers: {
+        'x-olvend-telemetry-token': INGEST_TOKEN
+      }
+    })
+    const body = await response.text()
+    if (!response.ok) {
+      console.error(`VendSoft food sync failed (${response.status}): ${body.slice(0, 500)}`)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`VendSoft food sync request failed: ${message}`)
+  } finally {
+    vendsoftSyncRunning = false
+  }
+}
+
+setTimeout(runVendSoftSync, 5_000)
+setInterval(runVendSoftSync, VENDSOFT_SYNC_INTERVAL_MS)
