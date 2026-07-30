@@ -1878,14 +1878,15 @@
     function buildOperationalRecommendation(machine) {
       const machineId = String(machine?.id || '')
       if (!machineId) return null
-      if (!state.telemetryEligibleMachineIds.has(machineId)) return null
+      const isFoodMachine = normalizeText(machine?.machine_type) === 'snack'
+      if (!isFoodMachine && !state.telemetryEligibleMachineIds.has(machineId)) return null
       const rule = state.machineServiceRules.get(machineId)
       if (rule?.route_visit_rules_active === false) return null
       const criticalPercent = Math.max(0, Math.min(100, Number(rule?.stock_critical_percent ?? 19)))
       const maxVisitDays = Math.max(1, Number(rule?.max_visit_interval_days ?? 10))
       const hasInitialInventory = state.inventoriedMachineIds.has(machineId)
 
-      if (!hasInitialInventory) {
+      if (!isFoodMachine && !hasInitialInventory) {
         return {
           reasons: [{
             type: 'inventory',
@@ -1909,6 +1910,7 @@
           current_quantity: container.current_quantity,
           active: container.active,
           note: container.note,
+          source_kind: 'coffee',
         })),
         ...state.planogramSlots.map((slot) => ({
           machine_id: slot.machine_id,
@@ -1919,6 +1921,7 @@
           current_quantity: slot.current_units,
           active: slot.active,
           note: slot.note,
+          source_kind: 'planogram',
         })),
       ]
 
@@ -1930,25 +1933,36 @@
           const capacity = Number(container.capacity_quantity || 0)
           const current = Number(container.current_quantity || 0)
           const ratio = capacity > 0 ? current / capacity : null
-          return { container, capacity, current, ratio }
+          const foodLow = isFoodMachine && container.source_kind === 'planogram' && capacity > 0
+            ? capacity <= 6
+              ? current <= Math.min(2, Math.max(0, capacity - 1))
+              : ratio * 100 <= 25
+            : false
+          const coffeeLow = !isFoodMachine && ratio != null && ratio * 100 < criticalPercent
+          return { container, capacity, current, ratio, low: foodLow || coffeeLow }
         })
-        .filter((item) => item.ratio != null && item.ratio * 100 < criticalPercent)
+        .filter((item) => item.low)
         .sort((a, b) => a.ratio - b.ratio)
 
       const visit = state.lastMachineVisits.get(machineId)
       const lastVisitAt = getVisitTimestamp(visit)
       const ageDays = daysSince(lastVisitAt)
-      const staleVisit = ageDays == null || ageDays >= maxVisitDays
+      const staleVisit = isFoodMachine
+        ? ageDays != null && ageDays >= maxVisitDays
+        : ageDays == null || ageDays >= maxVisitDays
 
       const reasons = []
       if (lowContainers.length) {
         const worst = lowContainers[0]
         const pct = Math.max(0, Math.round(Number(worst.ratio || 0) * 100))
+        const isCriticalStock = Number(worst.current || 0) <= 0 || pct <= 10
         reasons.push({
           type: 'stock',
-          badge: `${lowContainers.length}× kritická zásoba`,
-          note: `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'zásobník'} je na ${pct} % (limit pod ${formatNumber(criticalPercent, criticalPercent % 1 ? 2 : 0)} %)`,
-          priority: 'critical',
+          badge: `${lowContainers.length}× ${isCriticalStock ? 'kritická' : 'nízká'} zásoba`,
+          note: isFoodMachine
+            ? `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'pozice'} má ${worst.current} z ${worst.capacity} ks`
+            : `${worst.container.container_code || 'Z'} ${worst.container.product_name || 'zásobník'} je na ${pct} % (limit pod ${formatNumber(criticalPercent, criticalPercent % 1 ? 2 : 0)} %)`,
+          priority: isCriticalStock ? 'critical' : 'high',
         })
       }
       if (staleVisit) {
@@ -4249,20 +4263,29 @@
     }
 
     async function loadPlanogramSlots() {
-      const { data, error } = await supabase
-        .from('machine_planogram_slots')
-        .select('id, machine_id, slot_code, product_name, product_sku, capacity_units, current_units, active, note')
-        .eq('active', true)
-        .order('machine_id', { ascending: true })
+      const rows = []
+      const pageSize = 1000
+      for (let page = 0; page < 20; page += 1) {
+        const from = page * pageSize
+        const to = from + pageSize - 1
+        const { data, error } = await supabase
+          .from('machine_planogram_slots')
+          .select('id, machine_id, slot_code, product_name, product_sku, capacity_units, current_units, active, note')
+          .eq('active', true)
+          .order('machine_id', { ascending: true })
+          .range(from, to)
 
-      if (error) {
-        if (/machine_planogram_slots|schema cache/i.test(String(error.message || ''))) {
-          state.planogramSlots = []
-          return
+        if (error) {
+          if (/machine_planogram_slots|schema cache/i.test(String(error.message || ''))) {
+            state.planogramSlots = []
+            return
+          }
+          throw error
         }
-        throw error
+        rows.push(...(data || []))
+        if ((data || []).length < pageSize) break
       }
-      state.planogramSlots = data || []
+      state.planogramSlots = rows
     }
 
     async function loadLastMachineVisits() {
