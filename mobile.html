@@ -4831,7 +4831,7 @@
 
       const visitsResult = await supabase
         .from('route_machine_visits')
-        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, machine_kind, status, arrived_at, completed_at, skipped_at, skip_reason, operator_note, route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, note)')
+        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, machine_kind, status, work_phase, food_preparation, arrived_at, completed_at, skipped_at, skip_reason, operator_note, route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, note)')
         .in('route_plan_id', routeIds)
         .order('created_at', { ascending: false })
 
@@ -5423,11 +5423,40 @@
             .filter(Boolean)
         }
         const existingItems = itemsResult.data || []
+        const visit = getRouteVisitForStop(stop)
+        const savedPreparation = visit?.food_preparation && typeof visit.food_preparation === 'object'
+          ? visit.food_preparation
+          : {}
         const previousDraft = state.routeFoodDetails[key]?.draft || { phase: 'picklist', slots: {} }
         const draftSlots = { ...(previousDraft.slots || {}) }
         for (const slot of slots) {
           const existing = existingItems.find((item) => String(item.planogram_slot_id || '') === String(slot.id))
-          if (!existing) continue
+          if (!existing) {
+            const prepared = savedPreparation[String(slot.id)]
+            if (!prepared || typeof prepared !== 'object') continue
+            const preparedFills = Array.isArray(prepared.fillItems)
+              ? prepared.fillItems
+                .map((fill) => ({
+                  productId: fill.productId || null,
+                  quantity: Math.max(0, Number(fill.quantity || 0)),
+                  expiryDate: fill.expiryDate || ''
+                }))
+                .filter((fill) => fill.productId)
+              : []
+            draftSlots[String(slot.id)] = {
+              ...(draftSlots[String(slot.id)] || {}),
+              selectedProductId: prepared.selectedProductId || preparedFills[0]?.productId || null,
+              fillItems: preparedFills,
+              pickedQuantity: Number(prepared.preparedQuantity || 0),
+              preparedQuantity: Number(prepared.preparedQuantity || 0),
+              picked: Boolean(prepared.picked),
+              skipped: Boolean(prepared.skipped),
+              skipReason: prepared.skipReason || '',
+              actualAdd: Number(prepared.preparedQuantity || 0),
+              accepted: false
+            }
+            continue
+          }
           const existingFills = (fillsResult.data || []).filter((fill) => String(fill.planogram_slot_id) === String(slot.id))
           const wasteItems = [...String(existing.operator_note || '').matchAll(/Odpis:\s*([0-9.,]+)\s*ks\s*·\s*([^·\n]+)/gi)]
             .map((match) => ({ quantity: Number(String(match[1]).replace(',', '.')), reason: String(match[2]).trim() }))
@@ -5482,7 +5511,7 @@
           vehicleStock,
           draft: {
             ...previousDraft,
-            phase: existingItems.length ? 'machine' : (previousDraft.phase || 'picklist'),
+            phase: existingItems.length || visit?.work_phase === 'machine' ? 'machine' : (previousDraft.phase || 'picklist'),
             slots: draftSlots
           }
         }
@@ -6272,6 +6301,35 @@
           const draft = getFoodSlotDraft(stopId, item)
           updateFoodSlotDraft(stopId, item.id, { preparedQuantity: draft.skipped ? 0 : draft.pickedQuantity })
         }
+        const preparation = Object.fromEntries((detail.slots || []).map((item) => {
+          const draft = getFoodSlotDraft(stopId, item)
+          return [String(item.id), {
+            selectedProductId: draft.selectedProductId || null,
+            fillItems: draft.fillItems.map((fill) => ({
+              productId: fill.productId || null,
+              quantity: draft.skipped ? 0 : Math.max(0, Number(fill.quantity || 0)),
+              expiryDate: fill.expiryDate || ''
+            })),
+            preparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.pickedQuantity || 0)),
+            picked: Boolean(draft.picked),
+            skipped: Boolean(draft.skipped),
+            skipReason: draft.skipReason || ''
+          }]
+        }))
+        const { error: phaseError } = await supabase
+          .from('route_machine_visits')
+          .update({
+            work_phase: 'machine',
+            food_preparation: preparation,
+            synced_at: new Date().toISOString()
+          })
+          .eq('id', detail.visitId)
+        if (phaseError) throw phaseError
+        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+        if (currentVisit) {
+          currentVisit.work_phase = 'machine'
+          currentVisit.food_preparation = preparation
+        }
         detail.draft.phase = 'machine'
         renderRouteMachineScreen()
         return
@@ -6280,6 +6338,13 @@
         if ((detail.slots || []).some((item) => getFoodSlotDraft(stopId, item).accepted)) {
           throw new Error('Po potvrzení první pozice už se nelze vrátit k přípravě.')
         }
+        const { error: phaseError } = await supabase
+          .from('route_machine_visits')
+          .update({ work_phase: 'picklist', synced_at: new Date().toISOString() })
+          .eq('id', detail.visitId)
+        if (phaseError) throw phaseError
+        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+        if (currentVisit) currentVisit.work_phase = 'picklist'
         detail.draft.phase = 'picklist'
         renderRouteMachineScreen()
         return
