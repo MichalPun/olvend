@@ -1,7 +1,7 @@
 -- Ruční planogram EV 12 / Europa Snack SIDE / Microtechnic.
 -- Zdroj: Planogram [12] Europa Snack SIDE-2026-07-30.xlsx.
--- TID 592145 je ponecháno pouze jako identifikátor. Telemetrie IMA/GP je
--- záměrně vypnutá, protože pro tento automat posílá nespolehlivé hodnoty.
+-- TID 592145 patří kávovému EV 37 na stejné lokalitě. EV 12 nemá
+-- telemetrickou vazbu a jeho potravinové zásoby se vedou ručně.
 --
 -- current_units je výchozí orientační stav ze souboru, omezený fyzickou
 -- kapacitou pozice. desired_units je ručně nastavená standardní servisní
@@ -21,6 +21,18 @@ begin
   ) then
     raise exception 'EV 12 / Microtechnic nebyl nalezen na očekávaném DB záznamu.';
   end if;
+
+  if not exists (
+    select 1
+    from public.machines
+    where id = 31
+      and evidence_number = 37
+      and qr_token = 'vendsoft-37'
+      and location_id = 44
+      and machine_type = 'Coffee'
+  ) then
+    raise exception 'EV 37 / Microtechnic nebyl nalezen na očekávaném DB záznamu.';
+  end if;
 end
 $$;
 
@@ -29,7 +41,7 @@ set
   name = 'Europa Snack SIDE',
   machine_type = 'Snack',
   sales_tracking_mode = 'none',
-  note = 'Import z VendSoft exportu; původní kód 12; lokalita Microtechnic POTRAVINY. TID 592145 je pouze identifikační, telemetrie zásob/prodejů je nespolehlivá a automat se obsluhuje ručně.',
+  note = 'Import z VendSoft exportu; původní kód 12; lokalita Microtechnic POTRAVINY. Bez spolehlivé telemetrie; automat se obsluhuje ručně.',
   updated_at = now()
 where id = 9;
 
@@ -37,12 +49,12 @@ insert into public.machine_external_links (
   machine_id, provider, external_machine_id, telemetry_enabled, note
 )
 values
-  (9, 'IMA', '592145', false, 'EV 12 / Microtechnic: telemetrie záměrně vypnuta, data jsou nespolehlivá; ruční obsluha.'),
-  (9, 'GP',  '592145', false, 'EV 12 / Microtechnic: telemetrie záměrně vypnuta, data jsou nespolehlivá; ruční obsluha.')
+  (31, 'IMA', '592145', true, 'TID 592145 patří EV 37 / Luce X1 I/E / Microtechnic KÁVA.'),
+  (31, 'GP',  '592145', true, 'TID 592145 patří EV 37 / Luce X1 I/E / Microtechnic KÁVA.')
 on conflict (provider, external_machine_id) do update
 set
   machine_id = excluded.machine_id,
-  telemetry_enabled = false,
+  telemetry_enabled = true,
   note = excluded.note,
   updated_at = now();
 
