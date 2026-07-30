@@ -4395,17 +4395,59 @@
       `;
     }
 
+    const TELEMETRY_DISCLOSURE_STATE_KEY = "olvendTelemetryDisclosureStateV1";
+
+    function readTelemetryDisclosureState() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(TELEMETRY_DISCLOSURE_STATE_KEY) || "{}");
+        return {
+          lowStock: Array.isArray(saved.lowStock) ? saved.lowStock : [],
+          expiry: Array.isArray(saved.expiry) ? saved.expiry : []
+        };
+      } catch (_) {
+        return { lowStock: [], expiry: [] };
+      }
+    }
+
+    function getOpenTelemetryLocations(kind) {
+      const selector = kind === "expiry"
+        ? ".telemetry-expiry-location[open]"
+        : ".telemetry-low-location:not(.telemetry-expiry-location)[open]";
+      const openLocations = new Set(readTelemetryDisclosureState()[kind] || []);
+      document.querySelectorAll(selector).forEach((node) => {
+        if (node.dataset.location) openLocations.add(node.dataset.location);
+      });
+      return openLocations;
+    }
+
+    function bindTelemetryDisclosurePersistence() {
+      const saveState = () => {
+        const state = {
+          lowStock: Array.from(document.querySelectorAll(".telemetry-low-location:not(.telemetry-expiry-location)[open]"))
+            .map((node) => node.dataset.location || "")
+            .filter(Boolean),
+          expiry: Array.from(document.querySelectorAll(".telemetry-expiry-location[open]"))
+            .map((node) => node.dataset.location || "")
+            .filter(Boolean)
+        };
+        try {
+          localStorage.setItem(TELEMETRY_DISCLOSURE_STATE_KEY, JSON.stringify(state));
+        } catch (_) {
+          // Nástěnka zůstane funkční i v prohlížeči se zakázaným úložištěm.
+        }
+      };
+      document.querySelectorAll(".telemetry-low-location").forEach((node) => {
+        node.addEventListener("toggle", saveState);
+      });
+    }
+
     function renderTelemetryLowStock(rows, initialInventory = []) {
       const sourceRows = rows || [];
       const inventoryRows = initialInventory || [];
       if (!sourceRows.length && !inventoryRows.length) {
         return '<div class="small-note">Z napojených planogramů zatím nevychází žádný nízký stav.</div>';
       }
-      const openLocations = new Set(
-        Array.from(document.querySelectorAll(".telemetry-low-location[open]"))
-          .map((node) => node.dataset.location || "")
-          .filter(Boolean)
-      );
+      const openLocations = getOpenTelemetryLocations("lowStock");
       const grouped = new Map();
       sourceRows.forEach((row) => {
         const location = row.location_name || "Bez lokality";
@@ -4495,11 +4537,7 @@
       if (!rows.length) {
         return '<div class="small-note">Žádná evidovaná potravina není v nastaveném upozorňovacím období.</div>';
       }
-      const openLocations = new Set(
-        Array.from(document.querySelectorAll(".telemetry-expiry-location[open]"))
-          .map((node) => node.dataset.location || "")
-          .filter(Boolean)
-      );
+      const openLocations = getOpenTelemetryLocations("expiry");
       const grouped = new Map();
       rows.forEach((row) => {
         const location = row.location_name || "Bez lokality";
@@ -4620,6 +4658,7 @@
           ${renderTelemetryExpiry(expiryRows)}
         </section>
       `;
+      bindTelemetryDisclosurePersistence();
 
       const body = rows.length
         ? rows.map((row) => `
@@ -4832,6 +4871,10 @@
           const capacity = Number(slot.capacity_units || 0);
           const percent = capacity > 0 ? Math.max(0, Math.min(100, Math.round((current / capacity) * 100))) : Number(slot.fill_percent || 0);
           const desired = Number(slot.desired_units || 0);
+          const isFoodPlanogram = ["food_ready", "snack_ready"].includes(String(product?.product_category || "").trim().toLowerCase());
+          const isSmallFoodSlot = isFoodPlanogram
+            && capacity > 0
+            && capacity <= 6;
           return {
             ...slot,
             current,
@@ -4841,11 +4884,13 @@
             machine_name: machine?.name || `Automat ${slot.machine_id || ""}`.trim(),
             machine_type: machine?.machine_type || "",
             product_category: product?.product_category || "",
-            is_food_planogram: ["food_ready", "snack_ready"].includes(String(product?.product_category || "").trim().toLowerCase()),
+            is_food_planogram: isFoodPlanogram,
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
             service_suspended_until: location?.service_suspended_until || null,
             unit_label: "ks",
-            low: (capacity > 0 && percent <= 25) || (desired > 0 && current <= desired)
+            low: isFoodPlanogram
+              ? (isSmallFoodSlot ? current <= 2 : capacity > 0 && percent <= 25)
+              : (capacity > 0 && percent <= 25) || (desired > 0 && current <= desired)
           };
         })
         .filter((slot) => {
