@@ -4395,6 +4395,7 @@
       const readOnly = state.routeMachineReadOnly || visit?.status === 'completed'
       const phase = readOnly ? 'machine' : (detail.draft?.phase || 'picklist')
       const slots = detail.slots || []
+      const manualStockMode = detail.manualStockMode === true
       const checks = detail.checks || {}
       const savedCashDecision = detail.cash?.operator_collected_at
         ? (detail.cash.operator_collected_confirmed ? 'collect' : 'skip')
@@ -4439,8 +4440,10 @@
         return `
           <div class="coffee-visit-detail">
             <div class="attention-box">
-              <strong>Příprava u auta · ${escapeHtml(`${neededSlots.length} pozic k doplnění`)}</strong>
-              <span>Vyber skutečnou příchuť a potvrď „Beru k automatu“. K automatu půjdeš jen jednou.</span>
+              <strong>${manualStockMode ? 'Ruční automat' : 'Příprava u auta'} · ${escapeHtml(`${neededSlots.length} pozic k doplnění`)}</strong>
+              <span>${manualStockMode
+                ? 'Telemetrie zásob je vypnutá. Množství níže je standardní servisní zásoba, ne online stav. Vyber skutečnou příchuť a potvrď „Beru k automatu“.'
+                : 'Vyber skutečnou příchuť a potvrď „Beru k automatu“. K automatu půjdeš jen jednou.'}</span>
             </div>
             <div class="coffee-visit-grid">
               ${neededSlots.length ? neededSlots.map((slot) => {
@@ -4453,8 +4456,8 @@
                   <article class="food-pick-card ${draft.picked || draft.skipped ? 'ready' : ''}">
                     <h5>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(selected?.name || slot.product_name)}</h5>
                     <div class="food-pick-stats">
-                      <div class="food-pick-stat"><span>Stav</span><strong>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0}`)}</strong></div>
-                      <div class="food-pick-stat"><span>Návrh</span><strong>${escapeHtml(`${desired} ks`)}</strong></div>
+                      <div class="food-pick-stat"><span>${manualStockMode ? 'Poslední kontrola' : 'Stav'}</span><strong>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0}`)}</strong></div>
+                      <div class="food-pick-stat"><span>${manualStockMode ? 'Servisní zásoba' : 'Návrh'}</span><strong>${escapeHtml(`${desired} ks`)}</strong></div>
                       <div class="food-pick-stat"><span>V autě</span><strong>${escapeHtml(`${vehicleQty} ks`)}</strong></div>
                     </div>
                     ${draft.fillItems.map((fill, fillIndex) => {
@@ -5804,6 +5807,7 @@
           loading: false,
           error: '',
           visitId,
+          manualStockMode: machine.sales_tracking_mode === 'none',
           slots,
           visitItems: existingItems,
           checks: Object.fromEntries((checksResult.data || []).map((check) => [check.check_key, check.status])),
@@ -6328,6 +6332,9 @@
       const nextExpiryDate = nextExpiryDates[0] || null
       const finalQuantity = Math.max(0, actualBefore - wasteQuantity + actualAdd)
       const targetQuantity = Math.max(0, Math.min(capacity, Number(slot.target_units ?? capacity)))
+      const nextDesiredQuantity = detail.manualStockMode
+        ? Math.max(0, Number(slot.desired_units || 0))
+        : Math.max(0, targetQuantity - finalQuantity)
       const vehicleId = getCurrentVehicleId()
       if (!vehicleId) throw new Error('Směna nemá přiřazené vozidlo.')
       const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
@@ -6458,7 +6465,7 @@
             planned_price_czk: slot.pending_price_czk
           } : {}),
           current_units: finalQuantity,
-          desired_units: Math.max(0, targetQuantity - finalQuantity),
+          desired_units: nextDesiredQuantity,
           fill_percent: capacity > 0 ? Math.round((finalQuantity / capacity) * 10000) / 100 : 0,
           expiry_date: nextExpiryDate,
           pending_product_id: null,
@@ -6471,7 +6478,7 @@
         .eq('id', slot.id)
       if (slotError) throw slotError
       slot.current_units = finalQuantity
-      slot.desired_units = Math.max(0, targetQuantity - finalQuantity)
+      slot.desired_units = nextDesiredQuantity
       slot.expiry_date = nextExpiryDate
       detail.visitItems = [
         ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
