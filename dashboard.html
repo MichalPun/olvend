@@ -4260,6 +4260,15 @@
       return !(month === 6 || (month === 7 && day < 24));
     }
 
+    function isServiceSuspendedUntil(value, date = new Date()) {
+      if (!value) return false;
+      const suspendedUntil = new Date(`${value}T00:00:00`);
+      if (Number.isNaN(suspendedUntil.getTime())) return false;
+      const currentDate = new Date(date);
+      currentDate.setHours(0, 0, 0, 0);
+      return currentDate.getTime() < suspendedUntil.getTime();
+    }
+
     function aggregateTelemetryRows(rows, getKey) {
       const map = new Map();
       (rows || []).forEach((row) => {
@@ -4738,7 +4747,7 @@
         if (locationIds.length) {
           const { data: locations, error: locationsError } = await supabase
             .from("locations")
-            .select("id, name, city")
+            .select("id, name, city, service_suspended_until")
             .in("id", locationIds);
           if (locationsError) throw locationsError;
           locationMap = new Map((locations || []).map((location) => [String(location.id), location]));
@@ -4783,10 +4792,12 @@
             machine_id: item.machine_id,
             machine_name: machine?.name || `Automat ${item.machine_id}`,
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+            service_suspended_until: location?.service_suspended_until || null,
             last_seen_at: item.last_seen_at
           };
         })
         .filter((item) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(item))
+        .filter((item) => !isServiceSuspendedUntil(item.service_suspended_until))
         .sort((a, b) => new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0));
 
       const totals = {
@@ -4819,6 +4830,7 @@
             selection_code: slot.slot_code,
             machine_name: machine?.name || `Automat ${slot.machine_id || ""}`.trim(),
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+            service_suspended_until: location?.service_suspended_until || null,
             unit_label: "ks",
             low: (capacity > 0 && percent <= 25) || (desired > 0 && current <= desired)
           };
@@ -4840,6 +4852,7 @@
             selection_code: container.container_code,
             machine_name: machine?.name || `Automat ${container.machine_id || ""}`.trim(),
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+            service_suspended_until: location?.service_suspended_until || null,
             unit_label: unit,
             low: capacity > 0 && percent <= 25
           };
@@ -4848,6 +4861,7 @@
       const lowStock = [...lowStockSlots, ...lowStockCoffeeContainers]
         .filter((item) => !isTelemetryLidItem(item))
         .filter((item) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(item))
+        .filter((item) => !isServiceSuspendedUntil(item.service_suspended_until))
         .sort((a, b) => Number(a.percent || 0) - Number(b.percent || 0));
 
       const expiryToday = new Date();
@@ -4862,11 +4876,13 @@
             ...slot,
             days_remaining: Math.round((expiryDate.getTime() - expiryToday.getTime()) / 86400000),
             machine_name: machine?.name || `Automat ${slot.machine_id || ""}`.trim(),
-            location_name: [location?.city, location?.name].filter(Boolean).join(" · ")
+            location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+            service_suspended_until: location?.service_suspended_until || null
           };
         })
         .filter((slot) => slot.days_remaining <= 30)
         .filter((slot) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(slot))
+        .filter((slot) => !isServiceSuspendedUntil(slot.service_suspended_until))
         .sort((a, b) => Number(a.days_remaining || 0) - Number(b.days_remaining || 0));
 
       return { rows: enrichedRows, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, expiryRows, initialInventory };
