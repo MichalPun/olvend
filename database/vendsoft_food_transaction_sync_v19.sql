@@ -190,15 +190,14 @@ begin
     return jsonb_build_object('status', 'duplicate', 'machine_id', v_machine.id, 'slot_id', v_slot.id);
   end if;
 
-  if v_cashless_amount > 0 then
-    v_cashless_quantity := v_quantity;
-  elsif p_credit_card_amount_czk is null then
-    v_cash_quantity := v_quantity;
-    v_cash_amount := greatest(coalesce(p_total_amount_czk, p_unit_price_czk * v_quantity, 0), 0);
-  else
-    v_unknown_quantity := v_quantity;
-    v_unknown_amount := greatest(coalesce(p_total_amount_czk, p_unit_price_czk * v_quantity, 0), 0);
-  end if;
+  -- The temporary VendSoft report does not reliably identify payment method.
+  -- Keep the sale value, but classify every imported quantity and amount as unknown.
+  v_cashless_quantity := 0;
+  v_cash_quantity := 0;
+  v_unknown_quantity := v_quantity;
+  v_cashless_amount := 0;
+  v_cash_amount := 0;
+  v_unknown_amount := greatest(coalesce(p_total_amount_czk, p_unit_price_czk * v_quantity, 0), 0);
 
   v_next_units := greatest(0, coalesce(v_slot.current_units, 0) - v_quantity);
   v_next_fill := case
