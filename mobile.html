@@ -2210,6 +2210,7 @@
       activeRouteStopId: null,
       routeCoffeeDetails: {},
       routeFoodDetails: {},
+      foodProgressSaveTimers: {},
       selectedStockType: 'vehicle_load',
       manualVehicleLoad: false,
       stockDraftItems: [],
@@ -5595,6 +5596,7 @@
           if (!existing) {
             const prepared = savedPreparation[String(slot.id)]
             if (!prepared || typeof prepared !== 'object') continue
+            const liveDraft = draftSlots[String(slot.id)] || {}
             const preparedFills = Array.isArray(prepared.fillItems)
               ? prepared.fillItems
                 .map((fill) => ({
@@ -5605,7 +5607,6 @@
                 .filter((fill) => fill.productId)
               : []
             draftSlots[String(slot.id)] = {
-              ...(draftSlots[String(slot.id)] || {}),
               selectedProductId: prepared.selectedProductId || preparedFills[0]?.productId || null,
               fillItems: preparedFills,
               pickedQuantity: Number(prepared.preparedQuantity || 0),
@@ -5613,8 +5614,14 @@
               picked: Boolean(prepared.picked),
               skipped: Boolean(prepared.skipped),
               skipReason: prepared.skipReason || '',
+              actualBefore: Number(prepared.actualBefore ?? slot.current_units ?? 0),
               actualAdd: Number(prepared.preparedQuantity || 0),
-              accepted: false
+              wasteItems: Array.isArray(prepared.wasteItems) ? prepared.wasteItems : [],
+              existingExpiryDate: prepared.existingExpiryDate || '',
+              assortmentMismatch: Boolean(prepared.assortmentMismatch),
+              note: prepared.note || '',
+              accepted: false,
+              ...liveDraft
             }
             continue
           }
@@ -6065,6 +6072,62 @@
       }
     }
 
+    function serializeFoodPreparation(stopId, detail) {
+      return Object.fromEntries((detail?.slots || []).map((slot) => {
+        const draft = getFoodSlotDraft(stopId, slot)
+        return [String(slot.id), {
+          selectedProductId: draft.selectedProductId || null,
+          fillItems: draft.fillItems.map((fill) => ({
+            productId: fill.productId || null,
+            quantity: draft.skipped ? 0 : Math.max(0, Number(fill.quantity || 0)),
+            expiryDate: fill.expiryDate || ''
+          })),
+          preparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.preparedQuantity || draft.pickedQuantity || 0)),
+          picked: Boolean(draft.picked),
+          skipped: Boolean(draft.skipped),
+          skipReason: draft.skipReason || '',
+          actualBefore: Math.max(0, Number(draft.actualBefore || 0)),
+          wasteItems: draft.wasteItems.map((item) => ({
+            quantity: Math.max(0, Number(item.quantity || 0)),
+            reason: item.reason || ''
+          })),
+          existingExpiryDate: draft.existingExpiryDate || '',
+          assortmentMismatch: Boolean(draft.assortmentMismatch),
+          note: draft.note || ''
+        }]
+      }))
+    }
+
+    function scheduleFoodWorkProgressSave(stopId) {
+      const detail = getFoodDetail(stopId)
+      if (!detail?.visitId) return
+      const key = String(stopId)
+      if (state.foodProgressSaveTimers[key]) window.clearTimeout(state.foodProgressSaveTimers[key])
+      state.foodProgressSaveTimers[key] = window.setTimeout(async () => {
+        delete state.foodProgressSaveTimers[key]
+        try {
+          const preparation = serializeFoodPreparation(stopId, detail)
+          const workPhase = detail.draft?.phase === 'machine' ? 'machine' : 'picklist'
+          const { error } = await supabase
+            .from('route_machine_visits')
+            .update({
+              work_phase: workPhase,
+              food_preparation: preparation,
+              synced_at: new Date().toISOString()
+            })
+            .eq('id', detail.visitId)
+          if (error) throw error
+          const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+          if (currentVisit) {
+            currentVisit.work_phase = workPhase
+            currentVisit.food_preparation = preparation
+          }
+        } catch (error) {
+          console.warn('Food work progress autosave failed:', error)
+        }
+      }, 450)
+    }
+
     function refreshFoodMachineTotals(stopId, slot) {
       const card = els.routeMachineContent?.querySelector(
         `[data-food-machine-card][data-stop-id="${CSS.escape(String(stopId))}"][data-slot-id="${CSS.escape(String(slot?.id || ''))}"]`
@@ -6494,21 +6557,7 @@
             } : {})
           })
         }
-        const preparation = Object.fromEntries((detail.slots || []).map((item) => {
-          const draft = getFoodSlotDraft(stopId, item)
-          return [String(item.id), {
-            selectedProductId: draft.selectedProductId || null,
-            fillItems: draft.fillItems.map((fill) => ({
-              productId: fill.productId || null,
-              quantity: draft.skipped ? 0 : Math.max(0, Number(fill.quantity || 0)),
-              expiryDate: fill.expiryDate || ''
-            })),
-            preparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.pickedQuantity || 0)),
-            picked: Boolean(draft.picked),
-            skipped: Boolean(draft.skipped),
-            skipReason: draft.skipReason || ''
-          }]
-        }))
+        const preparation = serializeFoodPreparation(stopId, detail)
         const { error: phaseError } = await supabase
           .from('route_machine_visits')
           .update({
@@ -8244,6 +8293,7 @@
               : item)
             updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
             refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
+            scheduleFoodWorkProgressSave(foodFillField.dataset.stopId)
           }
           return
         }
@@ -8262,6 +8312,7 @@
               : item)
             updateFoodSlotDraft(foodWasteField.dataset.stopId, foodWasteField.dataset.slotId, { wasteItems, accepted: false })
             refreshFoodMachineTotals(foodWasteField.dataset.stopId, slot)
+            scheduleFoodWorkProgressSave(foodWasteField.dataset.stopId)
           }
           return
         }
@@ -8295,6 +8346,7 @@
             })
             const slot = getFoodSlot(foodField.dataset.stopId, foodField.dataset.slotId)
             if (slot) refreshFoodMachineTotals(foodField.dataset.stopId, slot)
+            scheduleFoodWorkProgressSave(foodField.dataset.stopId)
           }
           return
         }
