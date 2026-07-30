@@ -3438,6 +3438,43 @@
       return Boolean(product?.requires_batch_tracking || (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none'))
     }
 
+    function normalizeFoodExpiryDate(value) {
+      const raw = String(value || '').trim()
+      if (!raw) return ''
+      let year
+      let month
+      let day
+      let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+      if (match) {
+        year = Number(match[1])
+        month = Number(match[2])
+        day = Number(match[3])
+      } else {
+        match = raw.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/)
+        if (!match) return ''
+        day = Number(match[1])
+        month = Number(match[2])
+        year = Number(match[3])
+      }
+      const date = new Date(year, month - 1, day)
+      if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return ''
+      return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+
+    function formatFoodExpiryDateInput(value) {
+      const iso = normalizeFoodExpiryDate(value)
+      if (!iso) return String(value || '')
+      const [year, month, day] = iso.split('-')
+      return `${day}.${month}.${year}`
+    }
+
+    function formatFoodExpiryTyping(value) {
+      const digits = String(value || '').replace(/\D/g, '').slice(0, 8)
+      if (digits.length <= 2) return digits
+      if (digits.length <= 4) return `${digits.slice(0, 2)}.${digits.slice(2)}`
+      return `${digits.slice(0, 2)}.${digits.slice(2, 4)}.${digits.slice(4)}`
+    }
+
     function getStockRequestUnitPackage(item, product = getStockRequestProduct(item)) {
       const unit = normalizeText(item?.unit || '')
       if (!product || !unit) return null
@@ -4396,7 +4433,7 @@
                     </label>
                     ${tracksExpiry && draft.actualBefore > wasteTotal ? `
                       <label>Nejbližší datum spotřeby zboží, které už uvnitř bylo
-                        <input type="date" value="${escapeHtml(draft.existingExpiryDate || '')}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
+                        <input type="text" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(draft.existingExpiryDate || ''))}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                       </label>
                     ` : ''}
                   </section>
@@ -4411,7 +4448,7 @@
                           <input type="number" min="0" max="${escapeHtml(fill.quantity || 0)}" step="1" value="${escapeHtml(fill.quantity || 0)}" data-food-fill-field="quantity" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                         </label>
                         ${needsExpiry && Number(fill.quantity || 0) > 0 ? `<label>Datum spotřeby vkládaných kusů
-                          <input type="date" value="${escapeHtml(fill.expiryDate || '')}" data-food-fill-field="expiryDate" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
+                          <input type="text" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(fill.expiryDate || ''))}" data-food-fill-field="expiryDate" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                         </label>` : ''}
                       </div>`
                     }).join('')}
@@ -6071,8 +6108,9 @@
       if (wasteQuantity > actualBefore) throw new Error(`Pozice ${slot.slot_code}: celkový odpis nesmí být vyšší než skutečný stav ${actualBefore} ks.`)
       const tracksExistingExpiry = isFoodExpiryTracked(plannedProduct || selectedProduct)
       const remainingExistingQuantity = Math.max(0, actualBefore - wasteQuantity)
-      if (tracksExistingExpiry && remainingExistingQuantity > 0 && !draft.existingExpiryDate) {
-        throw new Error(`Pozice ${slot.slot_code}: zapiš nejbližší expiraci zboží, které už je v automatu.`)
+      const existingExpiryDate = normalizeFoodExpiryDate(draft.existingExpiryDate)
+      if (tracksExistingExpiry && remainingExistingQuantity > 0 && !existingExpiryDate) {
+        throw new Error(`Pozice ${slot.slot_code}: zapiš nejbližší expiraci ve formátu DD.MM.RRRR.`)
       }
       const actualAdd = fillItems.reduce((sum, fill) => sum + fill.quantity, 0)
       const maxAdd = Math.max(0, capacity - actualBefore + wasteQuantity)
@@ -6084,10 +6122,12 @@
       for (const fill of fillItems) {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
         const needsExpiry = isFoodExpiryTracked(product)
-        if (needsExpiry && !fill.expiryDate) throw new Error(`Pozice ${slot.slot_code}: potvrď expiraci produktu ${product?.name || ''}.`)
+        const normalizedExpiry = normalizeFoodExpiryDate(fill.expiryDate)
+        if (needsExpiry && !normalizedExpiry) throw new Error(`Pozice ${slot.slot_code}: zapiš expiraci produktu ${product?.name || ''} ve formátu DD.MM.RRRR.`)
+        fill.expiryDate = normalizedExpiry
       }
       const nextExpiryDates = [
-        remainingExistingQuantity > 0 ? draft.existingExpiryDate : '',
+        remainingExistingQuantity > 0 ? existingExpiryDate : '',
         ...fillItems.map((fill) => fill.expiryDate)
       ].filter(Boolean).sort()
       const nextExpiryDate = nextExpiryDates[0] || null
@@ -8190,12 +8230,16 @@
           const slot = getFoodSlot(foodFillField.dataset.stopId, foodFillField.dataset.slotId)
           if (slot) {
             const draft = getFoodSlotDraft(foodFillField.dataset.stopId, slot)
+            const fillValue = foodFillField.dataset.foodFillField === 'quantity'
+              ? Math.max(0, Math.round(parseNumber(foodFillField.value) || 0))
+              : foodFillField.dataset.foodFillField === 'expiryDate'
+                ? formatFoodExpiryTyping(foodFillField.value)
+                : foodFillField.value
+            if (foodFillField.dataset.foodFillField === 'expiryDate') foodFillField.value = fillValue
             const fillItems = draft.fillItems.map((item, index) => index === Number(foodFillField.dataset.fillIndex)
               ? {
                   ...item,
-                  [foodFillField.dataset.foodFillField]: foodFillField.dataset.foodFillField === 'quantity'
-                    ? Math.max(0, Math.round(parseNumber(foodFillField.value) || 0))
-                    : foodFillField.value
+                  [foodFillField.dataset.foodFillField]: fillValue
                 }
               : item)
             updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
@@ -8236,12 +8280,16 @@
           const key = fieldMap[foodField.dataset.foodField]
           if (key) {
             const numeric = ['actualBefore', 'actualAdd', 'wasteQuantity'].includes(key)
+            const fieldValue = numeric
+              ? Math.max(0, Math.round(parseNumber(foodField.value) || 0))
+              : key === 'assortmentMismatch'
+                ? foodField.value === 'yes'
+                : key === 'existingExpiryDate'
+                  ? formatFoodExpiryTyping(foodField.value)
+                  : foodField.value
+            if (key === 'existingExpiryDate') foodField.value = fieldValue
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
-              [key]: numeric
-                ? Math.max(0, Math.round(parseNumber(foodField.value) || 0))
-                : key === 'assortmentMismatch'
-                  ? foodField.value === 'yes'
-                  : foodField.value,
+              [key]: fieldValue,
               accepted: false,
               ...(key === 'selectedProductId' ? { picked: false } : {})
             })
