@@ -20,9 +20,12 @@ function json(body: unknown, status = 200) {
 
 function assertIngestToken(req: Request) {
   const expectedToken = Deno.env.get("TELEMETRY_INGEST_TOKEN")?.trim();
-  if (!expectedToken) return true;
+  const expectedCronToken = Deno.env.get("VENDSOFT_CRON_TOKEN")?.trim();
   const providedToken = req.headers.get("x-olvend-telemetry-token") || "";
-  return providedToken === expectedToken;
+  const providedCronToken = req.headers.get("x-olvend-cron-token") || "";
+  if (expectedToken && providedToken === expectedToken) return true;
+  if (expectedCronToken && providedCronToken === expectedCronToken) return true;
+  return !expectedToken && !expectedCronToken;
 }
 
 function localDateString(date = new Date()) {
@@ -57,8 +60,69 @@ function parseMachine(value: unknown) {
   };
 }
 
+function wallClockInProviderZoneToIso(parts: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}) {
+  const localTimestamp = [
+      String(parts.year).padStart(4, "0"),
+      String(parts.month).padStart(2, "0"),
+      String(parts.day).padStart(2, "0"),
+    ].join("-") + "T" + [
+      String(parts.hour).padStart(2, "0"),
+      String(parts.minute).padStart(2, "0"),
+      String(Math.floor(parts.second)).padStart(2, "0"),
+    ].join(":");
+  const utcGuess = new Date(`${localTimestamp}Z`);
+  const localParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PROVIDER_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(utcGuess);
+  const values = Object.fromEntries(localParts.map((part) => [part.type, part.value]));
+  const representedAsUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second),
+  );
+  return new Date(utcGuess.getTime() - (representedAsUtc - utcGuess.getTime())).toISOString();
+}
+
 function parseVendSoftTimestamp(value: unknown) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return wallClockInProviderZoneToIso({
+      year: value.getUTCFullYear(),
+      month: value.getUTCMonth() + 1,
+      day: value.getUTCDate(),
+      hour: value.getUTCHours(),
+      minute: value.getUTCMinutes(),
+      second: value.getUTCSeconds(),
+    });
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parts = XLSX.SSF.parse_date_code(value);
+    if (!parts) return null;
+    return wallClockInProviderZoneToIso({
+      year: parts.y,
+      month: parts.m,
+      day: parts.d,
+      hour: parts.H,
+      minute: parts.M,
+      second: parts.S,
+    });
+  }
   const raw = asText(value);
   if (!raw) return null;
 
@@ -156,11 +220,23 @@ function parseReport(bytes: Uint8Array) {
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) return [];
   const sheet = workbook.Sheets[sheetName];
-  return XLSX.utils.sheet_to_json<ReportRow>(sheet, {
-    raw: false,
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
+    raw: true,
     defval: "",
-    range: 2,
+    range: 3,
   });
+  return rows.map((row) => ({
+    Timestamp: row[0],
+    Location: row[1],
+    Machine: row[2],
+    Product: row[3],
+    Selection: row[4],
+    Price: row[5],
+    Quantity: row[6],
+    Total: row[7],
+    "Credit Card": row[8],
+  }));
 }
 
 Deno.serve(async (req) => {
