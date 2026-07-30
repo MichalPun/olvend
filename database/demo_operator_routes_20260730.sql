@@ -27,14 +27,6 @@ begin
         40::bigint,
         72::bigint,
         6::bigint
-      ),
-      (
-        'f1a8c845-b25e-437d-9d46-c7c79280db98'::uuid,
-        'Sandra Svobodová'::text,
-        5::bigint,
-        60::bigint,
-        60::bigint,
-        58::bigint
       )
     ) as x(employee_id, employee_name, vehicle_id, location_id, coffee_machine_id, food_machine_id)
   loop
@@ -145,8 +137,8 @@ begin
     from public.route_plans
     where planning_date = '2026-07-30'::date
       and route_payload ->> 'demo_key' = 'operator-meeting-20260730'
-  ) <> 3 then
-    raise exception 'Očekávány tři ukázkové trasy pro poradu.';
+  ) <> 2 then
+    raise exception 'Očekávány dvě ukázkové trasy pro poradu.';
   end if;
 
   raise notice 'Vytvořeno nových ukázkových tras: %.', v_created_count;
