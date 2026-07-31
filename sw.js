@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v49-mobile-offline-3s';
+const CACHE_NAME = 'olvend-v50-live-api-no-cache';
 const APP_SHELL = [
   './',
   './index.html',
@@ -53,6 +53,10 @@ self.addEventListener('fetch', (event) => {
 
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) {
+    if (requestUrl.hostname.endsWith('.supabase.co')) {
+      event.respondWith(fetch(event.request, { cache: 'no-store' }));
+      return;
+    }
     event.respondWith(
       caches.match(event.request).then((cachedResponse) => {
         if (cachedResponse) return cachedResponse;
