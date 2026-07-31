@@ -5972,20 +5972,33 @@
         }
       }
 
-      const { error: visitError } = await supabase
-        .from('route_machine_visits')
-        .update({ status: 'completed', completed_at: nowIso, synced_at: nowIso })
-        .eq('id', visitId)
+      const pendingBeforeCompletion = getOfflineRequestCount()
+      const [visitResult, stopResult] = await Promise.all([
+        supabase
+          .from('route_machine_visits')
+          .update({ status: 'completed', completed_at: nowIso, synced_at: nowIso })
+          .eq('id', visitId),
+        supabase
+          .from('route_plan_stops')
+          .update({ status: 'done', completed_at: nowIso })
+          .eq('id', stop.id)
+      ])
+      const visitError = visitResult.error
       if (visitError) throw visitError
-
-      const { error: stopError } = await supabase
-        .from('route_plan_stops')
-        .update({ status: 'done', completed_at: nowIso })
-        .eq('id', stop.id)
+      const stopError = stopResult.error
       if (stopError) throw stopError
 
-      await loadAssignedRoutePlans()
-      const updatedPlan = getAssignedRoutePlan()
+      const currentVisit = getRouteVisitForStop(stop)
+      if (currentVisit) {
+        currentVisit.status = 'completed'
+        currentVisit.completed_at = nowIso
+        currentVisit.synced_at = nowIso
+      }
+      stop.status = 'done'
+      stop.completed_at = nowIso
+
+      let completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
+      const updatedPlan = getAssignedRoutePlan() || plan
       const stops = getRouteStops(updatedPlan)
       const allDone = stops.length > 0 && stops.every((item) => getRouteStopStatus(item) === 'completed')
       if (allDone && updatedPlan?.id) {
@@ -5994,7 +6007,9 @@
           .update({ execution_status: 'done', completed_at: nowIso })
           .eq('id', updatedPlan.id)
         if (planError) throw planError
-        await loadAssignedRoutePlans()
+        completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
+        updatedPlan.execution_status = 'done'
+        updatedPlan.completed_at = nowIso
       }
 
       renderAssignedRoute()
@@ -6002,7 +6017,8 @@
       const nextStop = getRouteStops(getAssignedRoutePlan()).find((item) => getRouteStopStatus(item) !== 'completed')
       const targetId = nextStop?.id || stop.id
       setTimeout(() => document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
-      showMessage(allDone ? 'Automat je hotový a celá trasa je dokončená.' : 'Automat je hotový. Pokračuj další zastávkou.', 'success')
+      const queuedSuffix = completionQueued ? ' Uloženo offline, odešle se automaticky po návratu signálu.' : ''
+      showMessage(`${allDone ? 'Automat je hotový a celá trasa je dokončená.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
     }
 
     async function finishAssignedRoute() {
