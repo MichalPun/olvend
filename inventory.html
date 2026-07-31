@@ -405,6 +405,9 @@
     .audit-start-card span { display:block; margin-top:2px; color:var(--muted); font-size:12px; line-height:1.35; }
     .audit-workbench { display:none; margin-bottom:10px; }
     .audit-workbench.show { display:block; }
+    .audit-category-row td { padding:11px 12px 8px; border-top:2px solid rgba(96,165,250,0.32); border-bottom:1px solid rgba(96,165,250,0.2); background:rgba(59,130,246,0.11); color:#dbeafe; font-size:13px; font-weight:900; letter-spacing:0.025em; }
+    .audit-category-row:first-child td { border-top-width:1px; }
+    .audit-category-row span { margin-left:8px; color:var(--muted); font-size:11px; font-weight:700; }
     .audit-category-picker { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.025); }
     .audit-category-picker label { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid rgba(255,255,255,0.08); border-radius:999px; background:rgba(255,255,255,0.035); color:var(--text); font-size:12px; font-weight:800; cursor:pointer; }
     .audit-category-picker input { width:14px; height:14px; margin:0; }
@@ -2222,9 +2225,9 @@
     function getProductCategoryLabel(value) {
       return {
         beverage_ready: 'Spotřební materiál',
-        water_product: 'Vody',
-        hot_drink: 'Teplý nápoj',
-        snack_ready: 'Cukrovinky',
+        water_product: 'Nápoje / vody',
+        hot_drink: 'Káva / teplé nápoje',
+        snack_ready: 'Snacky / cukrovinky',
         food_ready: 'Bagety / hotová jídla',
         ingredient: 'Suroviny',
         consumable: 'Spotřební materiál',
@@ -4188,7 +4191,7 @@
       auditLocationFilter.innerHTML = '<option value="">Všechna konkrétní místa</option>' + locations.map((location) => `<option value="${escapeHtml(String(location.id))}">${escapeHtml(`${getLocationTypeLabel(location.location_type)} · ${location.name || 'Bez názvu'}`)}</option>`).join('')
     }
     function getAuditCategoryRank(product) {
-      const kind = getProductKind(product)
+      const kind = getAuditCategoryKind(product)
       const order = {
         ingredient: 10,
         hot_drink: 20,
@@ -4200,6 +4203,12 @@
         spare_part: 80
       }
       return order[kind] || 999
+    }
+    function getAuditCategoryKind(product) {
+      const kind = getProductKind(product)
+      if (kind === 'beverage_ready' && isAuditExpiryTracked(product)) return 'water_product'
+      if (kind === 'beverage_ready') return 'hot_drink'
+      return kind
     }
     function getAuditRows() {
       const productMap = new Map(productsV13.map((product) => [String(product.id), product]))
@@ -4226,7 +4235,7 @@
           if (locationDiff) return locationDiff
           const categoryDiff = getAuditCategoryRank(a.product) - getAuditCategoryRank(b.product)
           if (categoryDiff) return categoryDiff
-          const categoryLabelDiff = normalizeText(getProductCategoryLabel(getProductKind(a.product))).localeCompare(normalizeText(getProductCategoryLabel(getProductKind(b.product))), 'cs')
+          const categoryLabelDiff = normalizeText(getProductCategoryLabel(getAuditCategoryKind(a.product))).localeCompare(normalizeText(getProductCategoryLabel(getAuditCategoryKind(b.product))), 'cs')
           if (categoryLabelDiff) return categoryLabelDiff
           const productDiff = normalizeText(a.product.name).localeCompare(normalizeText(b.product.name), 'cs')
           if (productDiff) return productDiff
@@ -4322,6 +4331,7 @@
       const draft = getAuditDraft()
       const draftRowMap = new Map((draft.rows || []).map((row) => [row.key, row]))
       const rows = getAuditRows()
+      let previousGroupKey = ''
       auditRowsBody.innerHTML = rows.map((row) => {
         const unit = row.product.base_unit || 'ks'
         const bookQty = Number(row.balance.quantity_on_hand || 0)
@@ -4338,9 +4348,15 @@
           loose: looseCount,
           unknown: !existingExpiry
         }] : [])
-        return `
+        const categoryLabel = getProductCategoryLabel(getAuditCategoryKind(row.product)) || 'Ostatní'
+        const groupKey = `${row.location.id}:${categoryLabel}`
+        const categoryHeader = groupKey !== previousGroupKey
+          ? `<tr class="audit-category-row"><td colspan="8">${escapeHtml(categoryLabel)}<span>${escapeHtml(row.location.name || 'Bez místa')}</span></td></tr>`
+          : ''
+        previousGroupKey = groupKey
+        return `${categoryHeader}
           <tr data-audit-key="${escapeHtml(key)}" data-stock-location-id="${escapeHtml(String(row.location.id))}" data-product-id="${escapeHtml(String(row.product.id))}" data-batch-id="${escapeHtml(String(row.balance.batch_id || ''))}" data-book-qty="${escapeHtml(String(bookQty))}" data-unit-cost="${escapeHtml(String(unitCost))}">
-            <td data-label="Produkt"><strong>${escapeHtml(row.product.name)}</strong><span class="subtext">${escapeHtml([getProductCategoryLabel(getProductKind(row.product)), row.product.sku ? `SKU ${row.product.sku}` : '', row.product.ean ? `EAN ${row.product.ean}` : ''].filter(Boolean).join(' · '))}</span></td>
+            <td data-label="Produkt"><strong>${escapeHtml(row.product.name)}</strong><span class="subtext">${escapeHtml([categoryLabel, row.product.sku ? `SKU ${row.product.sku}` : '', row.product.ean ? `EAN ${row.product.ean}` : ''].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Místo"><strong>${escapeHtml(row.location.name || 'Bez místa')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span></td>
             <td data-label="Expirace / šarže">
               <strong>${escapeHtml(formatBatchLabel(row.batch))}</strong>
