@@ -6314,6 +6314,36 @@
       `
       openDetailModal()
     }
+    function getDesktopAuditDraftKey(auditId) {
+      return `olvend.desktopAuditDraft.v1:${auditId}`
+    }
+    function getDesktopAuditDraft(auditId) {
+      try {
+        return JSON.parse(localStorage.getItem(getDesktopAuditDraftKey(auditId)) || '{}') || {}
+      } catch {
+        return {}
+      }
+    }
+    function saveDesktopAuditDraftFromModal(auditId) {
+      if (!auditId) return
+      const itemDrafts = {}
+      detailModalContent.querySelectorAll('[data-desktop-audit-item]').forEach((row) => {
+        itemDrafts[row.dataset.itemId] = {
+          packages: row.querySelector('[data-desktop-audit-packages]')?.value || '',
+          loose: row.querySelector('[data-desktop-audit-loose]')?.value || '',
+          note: row.querySelector('[data-desktop-audit-note]')?.value || '',
+          expiries: [...row.querySelectorAll('[data-audit-expiry-row]')].map((expiryRow) => ({
+            date: expiryRow.querySelector('[data-audit-expiry-date]')?.value || '',
+            packages: expiryRow.querySelector('[data-audit-expiry-packages]')?.value || '',
+            loose: expiryRow.querySelector('[data-audit-expiry-loose]')?.value || '',
+            unknown: Boolean(expiryRow.querySelector('[data-audit-expiry-unknown]')?.checked)
+          }))
+        }
+      })
+      localStorage.setItem(getDesktopAuditDraftKey(auditId), JSON.stringify({ savedAt: new Date().toISOString(), items: itemDrafts }))
+      const status = detailModalContent.querySelector('[data-desktop-audit-status]')
+      if (status && !status.classList.contains('error')) status.textContent = `Průběžně uloženo v tomto prohlížeči · ${new Date().toLocaleTimeString('cs-CZ')}`
+    }
     async function openAssignedAuditDesktopCount(audit, items) {
       const itemIds = items.map((item) => item.id)
       let expiryRows = []
@@ -6322,6 +6352,7 @@
         if (error) throw error
         expiryRows = data || []
       }
+      const localDraft = getDesktopAuditDraft(audit.id)
       const sortedItems = [...items].sort((a, b) => {
         const productA = getAuditItemProduct(a)
         const productB = getAuditItemProduct(b)
@@ -6340,18 +6371,19 @@
       const renderItem = (item) => {
         const product = getAuditItemProduct(item)
         const pack = getAuditDefaultPackage(product)
+        const draftItem = localDraft.items?.[String(item.id)] || null
         const savedExpiries = expiryRows.filter((row) => String(row.audit_item_id) === String(item.id)).map((row) => ({
           date: row.expiry_date || '', packages: row.package_count, loose: row.loose_quantity, unknown: row.expiry_unknown
         }))
-        const packageValue = item.counted_at ? Number(item.counted_package_count || 0) : ''
-        const looseValue = item.counted_at ? Number(item.counted_loose_quantity ?? item.counted_quantity ?? 0) : ''
-        const initialExpiries = savedExpiries.length ? savedExpiries : [{ date: '', packages: '', loose: '', unknown: false }]
+        const packageValue = draftItem ? draftItem.packages : (item.counted_at ? Number(item.counted_package_count || 0) : '')
+        const looseValue = draftItem ? draftItem.loose : (item.counted_at ? Number(item.counted_loose_quantity ?? item.counted_quantity ?? 0) : '')
+        const initialExpiries = draftItem?.expiries?.length ? draftItem.expiries : (savedExpiries.length ? savedExpiries : [{ date: '', packages: '', loose: '', unknown: false }])
         return `<div class="audit-desktop-count-row" data-desktop-audit-item data-item-id="${escapeHtml(String(item.id))}" data-product-id="${escapeHtml(String(item.product_id))}" data-book-quantity="${escapeHtml(String(item.book_quantity || 0))}" data-unit-cost="${escapeHtml(String(item.unit_cost || getStockUnitCost(product) || 0))}">
           <div class="audit-desktop-count-head"><div><strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span>${escapeHtml([product.sku ? `SKU ${product.sku}` : '', `evidence ${formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks')}`].filter(Boolean).join(' · '))}</span></div></div>
           <div class="audit-desktop-count-fields">
             ${pack ? `<label>Celá balení<input data-desktop-audit-packages type="number" step="0.001" min="0" value="${escapeHtml(packageValue)}"><span>${escapeHtml(`${pack.pack?.package_name || 'balení'} × ${formatQuantityValue(pack.factor, getTransferBaseUnit(product))}`)}</span></label>` : ''}
             <label>Volné ${escapeHtml(getTransferBaseUnit(product))}<input data-desktop-audit-loose type="number" step="0.001" min="0" value="${escapeHtml(looseValue)}"></label>
-            <label>Poznámka<input data-desktop-audit-note type="text" value="${escapeHtml(getAuditManualCountNote(item))}" placeholder="Nepovinné"></label>
+            <label>Poznámka<input data-desktop-audit-note type="text" value="${escapeHtml(draftItem ? draftItem.note : getAuditManualCountNote(item))}" placeholder="Nepovinné"></label>
           </div>
           ${isAuditExpiryTracked(product) ? `<div class="audit-desktop-expiry"><strong>Rozdělení podle expirací</strong><div data-audit-expiry-list>${initialExpiries.map((expiry) => renderAuditExpiryRow(expiry, product, pack)).join('')}</div><button class="mini-btn" type="button" data-audit-expiry-add>+ další expirace</button><span class="subtext">Součet expirací musí odpovídat napočítanému množství.</span></div>` : ''}
         </div>`
@@ -6522,7 +6554,10 @@
       }).eq('id', audit.id)
       if (auditError) throw auditError
       await loadInventoryV13Overview()
-      if (finalize) openVehicleAuditDetail(audit.id)
+      if (finalize) {
+        localStorage.removeItem(getDesktopAuditDraftKey(audit.id))
+        openVehicleAuditDetail(audit.id)
+      }
       else {
         await openAssignedAuditDesktopCount(vehicleInventoryAudits.find((row) => String(row.id) === String(audit.id)) || audit, getVehicleAuditItems(audit.id))
         const inlineStatus = detailModalContent.querySelector('[data-desktop-audit-status]')
@@ -11634,7 +11669,11 @@
         scheduleInitialStockDraftSave()
       }
     })
-    detailModalBackdrop.addEventListener('click', (event) => { if (event.target === detailModalBackdrop) closeDetailModal() })
+    detailModalBackdrop.addEventListener('click', (event) => {
+      if (event.target !== detailModalBackdrop) return
+      if (currentDetailContext?.type === 'audit-edit') return
+      closeDetailModal()
+    })
     bagettePilotModalBackdrop.addEventListener('click', (event) => { if (event.target === bagettePilotModalBackdrop) closeBagettePilotModal() })
     itemsTableBody.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action]')
@@ -11839,6 +11878,7 @@
         const product = productsV13.find((item) => String(item.id) === String(itemRow?.dataset.productId || ''))
         const list = itemRow?.querySelector('[data-audit-expiry-list]')
         if (product && list) list.insertAdjacentHTML('beforeend', renderAuditExpiryRow({}, product, getAuditDefaultPackage(product)))
+        saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
         return
       }
       const expiryRemove = event.target.closest('[data-audit-expiry-remove]')
@@ -11846,6 +11886,7 @@
         const list = expiryRemove.closest('[data-audit-expiry-list]')
         const rows = list?.querySelectorAll('[data-audit-expiry-row]') || []
         if (rows.length > 1) expiryRemove.closest('[data-audit-expiry-row]')?.remove()
+        saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
         return
       }
       const button = event.target.closest('[data-detail-action]')
@@ -11919,6 +11960,12 @@
         dateInput.disabled = unknown.checked
         if (unknown.checked) dateInput.value = ''
       }
+      saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
+    })
+    detailModalContent.addEventListener('input', (event) => {
+      if (currentDetailContext?.type !== 'audit-edit') return
+      if (!event.target.matches('[data-desktop-audit-packages], [data-desktop-audit-loose], [data-desktop-audit-note], [data-audit-expiry-date], [data-audit-expiry-packages], [data-audit-expiry-loose]')) return
+      saveDesktopAuditDraftFromModal(currentDetailContext.auditId)
     })
     detailEditBtn.addEventListener('click', () => {
       if (!currentDetailContext) return
