@@ -30,6 +30,12 @@ Nové celé balení se doporučí naložit pouze tehdy, když se na trase oček�
 - U posledního dalšího balení se samostatně posoudí jeho využití; pokud je pod 75 %, zůstane jen jako viditelné upozornění.
 - Možná potřeba se nesmí skrýt, aby dispečer viděl riziko nedostatku a mohl rozhodnutí ručně změnit.
 
+### Výjimka při hrozícím vyprodání
+
+Pravidlo 75 % se nepoužije, pokud telemetrie předpokládá, že při příjezdu bude konkrétní slot nebo zásobník na nule.
+
+V takovém případě systém doporučí naložit potřebné množství vždy. Pokud celé balení nedává smysl, vytvoří řádek v základní jednotce a dovolí vychystat pouze potřebné kusy, gramy nebo kilogramy z rozbaleného balení. Řádek se označí **Hrozí nula — naložit i rozbalené**.
+
 ## Čas příjezdu
 
 Při vytvoření trasy se zadává **předpokládaný čas odjezdu**. Předpokládaný příjezd se počítá podle data a času odjezdu, pořadí zastávky, odhadované doby jízdy a kumulované doby obsluhy předchozích zastávek. Každá zastávka proto může mít jiný prodejní horizont.

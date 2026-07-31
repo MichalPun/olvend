@@ -5084,13 +5084,19 @@
         const horizonHours = Math.max(0, (arrival.getTime() - Date.now()) / 3600000)
         const forecastSales = Math.max(0, Number(((sold28Days / 28) * (horizonHours / 24)).toFixed(3)))
         const needAtArrival = Math.min(capacity, Number((missingNow + forecastSales).toFixed(3)))
+        const projectedAtArrival = Math.max(0, Number((current - forecastSales).toFixed(3)))
+        const stockoutRisk = capacity > 0 && projectedAtArrival <= 0.0001
         if (needAtArrival <= 0) return
         const productKey = String(product.id)
         autoLoadRouteNeeds.set(productKey, Number(((autoLoadRouteNeeds.get(productKey) || 0) + needAtArrival).toFixed(3)))
-        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, needAtArrival: 0 }
+        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0 }
         detail.missingNow = Number((detail.missingNow + missingNow).toFixed(3))
         detail.forecastSales = Number((detail.forecastSales + forecastSales).toFixed(3))
         detail.needAtArrival = Number((detail.needAtArrival + needAtArrival).toFixed(3))
+        if (stockoutRisk) {
+          detail.stockoutNeed = Number((detail.stockoutNeed + needAtArrival).toFixed(3))
+          detail.stockoutMachines += 1
+        }
         autoLoadRouteForecasts.set(productKey, detail)
       })
       return { route, machineCount: machineIds.length }
@@ -5188,8 +5194,10 @@
         summary.missingNow = Number((summary.missingNow + Number(detail.missingNow || 0)).toFixed(3))
         summary.forecastSales = Number((summary.forecastSales + Number(detail.forecastSales || 0)).toFixed(3))
         summary.needAtArrival = Number((summary.needAtArrival + Number(detail.needAtArrival || 0)).toFixed(3))
+        summary.stockoutNeed = Number((summary.stockoutNeed + Number(detail.stockoutNeed || 0)).toFixed(3))
+        summary.stockoutMachines += Number(detail.stockoutMachines || 0)
         return summary
-      }, { missingNow: 0, forecastSales: 0, needAtArrival: 0 })
+      }, { missingNow: 0, forecastSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0 })
     }
     function getPendingAutoLoadQuantity(vehicleId, targetDate, productId) {
       const requestIds = new Set(mobileStockRequests
@@ -5508,11 +5516,28 @@
           const minRatio = 0.75
           const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
           let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
+          let stockoutOverride = false
+          if (routeForecast.stockoutMachines > 0 && requiredFromNew > 0.0001 && Number(packagePlan.deferredAfterLoadQty || 0) > 0.0001) {
+            stockoutOverride = true
+            packagePlan = {
+              ...packagePlan,
+              packageCount: 0,
+              suggestedQty: requiredFromNew,
+              approvedPackageCount: 0,
+              approvedQty: requiredFromNew,
+              usageRatio: packageQty > 0 ? Math.min(1, Number((requiredFromNew / packageQty).toFixed(3))) : 1,
+              deferredAfterLoadQty: 0,
+              blockedPackageCount: 0,
+              blockedQty: 0,
+              blockedUsageRatio: 0,
+              looseStockoutLoad: true
+            }
+          }
           let skippedDeferredCarry = false
           const tripUsageRatio = packagePlan.approvedQty > 0
             ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
             : Number(packagePlan.usageRatio || 0)
-          if (packagePlan.approvedQty > 0 && stockoutBonusQty <= 0.0001 && tripUsageRatio + 0.0001 < minRatio) {
+          if (packagePlan.approvedQty > 0 && !stockoutOverride && stockoutBonusQty <= 0.0001 && tripUsageRatio + 0.0001 < minRatio) {
             packagePlan = {
               ...packagePlan,
               packageCount: 0,
@@ -5565,6 +5590,9 @@
           if (routeNeed > 0.0001) {
             reasons.push(`chybí nyní ${formatQuantityValue(routeForecast.missingNow, product.base_unit || 'ks')}`)
             if (routeForecast.forecastSales > 0.0001) reasons.push(`do příjezdu se může prodat ${formatQuantityValue(routeForecast.forecastSales, product.base_unit || 'ks')}`)
+          }
+          if (stockoutOverride) {
+            reasons.push(`hrozí nulový stav u ${routeForecast.stockoutMachines} automatů — naložit potřebné množství i rozbalené`)
           }
           if (stockoutBonusQty > 0.0001) {
             reasons.push(`balení navíc, po minulé jízdě zůstalo auto na 0`)
@@ -5643,6 +5671,7 @@
             usageRatio,
             minRatio,
             packagePlanBlockedUsageRatio: Number(packagePlan.blockedUsageRatio || 0),
+            stockoutOverride,
             approvedPackageCount,
             approvedQty,
             deferredAfterLoadQty,
@@ -5671,7 +5700,9 @@
       autoLoadRowsBody.innerHTML = visibleRows.map((row) => {
         const unit = row.product.base_unit || 'ks'
         const statusClass = row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
-        const suggestedLabel = row.approvedQty > 0
+        const suggestedLabel = row.stockoutOverride
+          ? `${formatQuantityValue(row.approvedQty, unit)} · i rozbalené`
+          : row.approvedQty > 0
           ? `${row.approvedPackageCount} bal. / ${formatQuantityValue(row.approvedQty, unit)}`
           : row.missingPackage
             ? 'chybí balení'
@@ -5680,7 +5711,9 @@
             : row.suggestedQty > 0
               ? 'nenakládat'
               : 'nenakládat'
-        const suggestedNote = row.approvedQty > 0
+        const suggestedNote = row.stockoutOverride
+          ? 'naložit povinně, hrozí nulový stav'
+          : row.approvedQty > 0
           ? `po jízdě cca ${formatQuantityValue(row.projectedVehicleAfterTrip, unit)}`
           : row.requiredFromNew > 0
             ? `chybí cca ${formatQuantityValue(row.requiredFromNew, unit)}`
@@ -5692,7 +5725,7 @@
             <td data-label="Potřeba při příjezdu"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([`chybí nyní ${formatQuantityValue(row.routeForecast?.missingNow || 0, unit)}`, `prodej do příjezdu ${formatQuantityValue(row.routeForecast?.forecastSales || 0, unit)}`, `donaložit ${formatQuantityValue(row.requiredFromNew, unit)}`].join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
-            <td data-label="Využití nového"><strong>${escapeHtml(row.status === 'blocked' ? `${(row.packagePlanBlockedUsageRatio * 100).toFixed(0)} %` : row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
+            <td data-label="Využití nového"><strong>${escapeHtml(row.status === 'blocked' ? `${(row.packagePlanBlockedUsageRatio * 100).toFixed(0)} %` : row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">${row.stockoutOverride ? 'výjimka: hrozí nula' : `minimum ${(row.minRatio * 100).toFixed(0)} %`}</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
         `
@@ -5785,7 +5818,9 @@
           requested_quantity: storeAsPackage ? packageCount : row.approvedQty,
           prepared_quantity: storeAsPackage ? packageCount : row.approvedQty,
           note: [
-            `auto návrh: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
+            row.stockoutOverride
+              ? `výjimka hrozící nuly: vychystat ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')} i z rozbaleného balení`
+              : `auto návrh: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
             storeAsPackage ? `skladově ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}` : '',
             `odhad jízdy ${row.expectedDemand}`,
             `auto teď ${row.currentVehicleQty}`,
