@@ -2091,20 +2091,31 @@
       const opensAt = parseClockMinutes(timeMatch[1])
       const closesAt = parseClockMinutes(timeMatch[2])
       if (opensAt == null || closesAt == null) return null
-      return { opensAt, closesAt, label: raw }
+      return { opensAt, closesAt, intervals: [{ opensAt, closesAt }], label: raw }
     }
 
     function getStructuredAccessWindow(location, dateString) {
       const hours = location?.route_access_hours
       if (!hours || typeof hours !== 'object') return null
+      const closedDates = Array.isArray(hours.closed_dates) ? hours.closed_dates : []
+      if (closedDates.includes(dateString)) return null
       const key = ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa'][new Date(`${dateString}T12:00:00`).getDay()]
-      const intervals = Array.isArray(hours[key]) ? hours[key] : []
-      const first = intervals[0]
-      if (!Array.isArray(first) || first.length < 2) return null
-      const opensAt = parseClockMinutes(first[0])
-      const closesAt = parseClockMinutes(first[1])
-      if (opensAt == null || closesAt == null) return null
-      return { opensAt, closesAt, label: `${first[0]}–${first[1]}` }
+      const period = (Array.isArray(hours.periods) ? hours.periods : []).find((item) => (
+        (!item.from || dateString >= item.from) && (!item.to || dateString <= item.to)
+      ))
+      const weeklyHours = period?.hours || hours.default || hours
+      const rawIntervals = Array.isArray(weeklyHours[key]) ? weeklyHours[key] : []
+      const intervals = rawIntervals.map((interval) => ({
+        opensAt: parseClockMinutes(interval?.[0]),
+        closesAt: parseClockMinutes(interval?.[1]),
+      })).filter((interval) => interval.opensAt != null && interval.closesAt != null)
+      if (!intervals.length) return null
+      return {
+        opensAt: intervals[0].opensAt,
+        closesAt: intervals[intervals.length - 1].closesAt,
+        intervals,
+        label: rawIntervals.map((item) => `${item[0]}–${item[1]}`).join(', '),
+      }
     }
 
     function getLocationAccessForDate(location, dateString) {
@@ -2402,13 +2413,13 @@
 
         if (window) {
           const minuteOfDay = cursor.getHours() * 60 + cursor.getMinutes()
-          openingStatus = 'open'
-          if (minuteOfDay < window.opensAt) {
-            waitingMinutes = window.opensAt - minuteOfDay
+          const intervals = window.intervals?.length ? window.intervals : [window]
+          const usableInterval = intervals.find((interval) => minuteOfDay <= interval.closesAt)
+          openingStatus = usableInterval ? 'open' : 'closed'
+          if (usableInterval && minuteOfDay < usableInterval.opensAt) {
+            waitingMinutes = usableInterval.opensAt - minuteOfDay
             cursor.setMinutes(cursor.getMinutes() + waitingMinutes)
             openingStatus = 'wait'
-          } else if (minuteOfDay > window.closesAt) {
-            openingStatus = 'closed'
           }
         }
 
