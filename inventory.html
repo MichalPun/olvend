@@ -414,6 +414,9 @@
     .audit-desktop-count-list { display:grid; border:1px solid var(--border); border-radius:0 0 8px 8px; overflow:hidden; }
     .audit-desktop-count-row { padding:12px; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02); }
     .audit-desktop-count-row:last-child { border-bottom:0; }
+    .audit-desktop-count-row.is-valid { border-left:4px solid #22c55e; }
+    .audit-desktop-count-row.is-invalid { border-left:4px solid #ef4444; background:rgba(239,68,68,0.06); }
+    .audit-desktop-count-row.is-empty { border-left:4px solid transparent; }
     .audit-desktop-count-head strong,.audit-desktop-count-head span { display:block; }
     .audit-desktop-count-head span { margin-top:3px; color:var(--muted); font-size:11px; }
     .audit-desktop-count-fields { display:grid; grid-template-columns:repeat(3,minmax(150px,1fr)); gap:8px; margin-top:9px; }
@@ -421,6 +424,10 @@
     .audit-desktop-count-fields input { margin-top:4px; }
     .audit-desktop-expiry { margin-top:10px; padding:10px; border:1px solid rgba(245,158,11,0.3); border-radius:8px; background:rgba(245,158,11,0.06); }
     .audit-desktop-expiry > .subtext { display:block; margin-top:6px; }
+    .audit-desktop-row-status { display:block; margin-top:8px; font-size:12px; font-weight:800; }
+    .audit-desktop-row-status.good { color:#86efac; }
+    .audit-desktop-row-status.bad { color:#fca5a5; }
+    .audit-desktop-row-status.muted { color:var(--muted); }
     @media (max-width:760px){.audit-desktop-count-fields{grid-template-columns:1fr;}}
     .audit-category-picker { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.025); }
     .audit-category-picker label { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid rgba(255,255,255,0.08); border-radius:999px; background:rgba(255,255,255,0.035); color:var(--text); font-size:12px; font-weight:800; cursor:pointer; }
@@ -6386,6 +6393,7 @@
             <label>Poznámka<input data-desktop-audit-note type="text" value="${escapeHtml(draftItem ? draftItem.note : getAuditManualCountNote(item))}" placeholder="Nepovinné"></label>
           </div>
           ${isAuditExpiryTracked(product) ? `<div class="audit-desktop-expiry"><strong>Rozdělení podle expirací</strong><div data-audit-expiry-list>${initialExpiries.map((expiry) => renderAuditExpiryRow(expiry, product, pack)).join('')}</div><button class="mini-btn" type="button" data-audit-expiry-add>+ další expirace</button><span class="subtext">Součet expirací musí odpovídat napočítanému množství.</span></div>` : ''}
+          <span class="audit-desktop-row-status muted" data-desktop-audit-row-status>Nevyplněno</span>
         </div>`
       }
       currentDetailContext = { type: 'audit-edit', auditId: audit.id }
@@ -6393,7 +6401,53 @@
       detailEditBtn.style.display = 'none'
       detailModalTitle.textContent = `Počítání inventury #${audit.id}`
       detailModalContent.innerHTML = `<div class="detail-spreadsheet"><section class="detail-spreadsheet-title"><div><h4>Inventura skladu #${escapeHtml(String(audit.id))}</h4><p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit)].filter(Boolean).join(' · '))}</p></div><span class="badge warn">Počítání na PC</span></section><section class="detail-sheet-section"><div class="status-line" data-desktop-audit-status>Vyplň celá balení a volné kusy. Rozpracované můžeš průběžně ukládat; dokončení zkontroluje všech ${items.length} položek.</div>${groups.map((group) => `<div class="audit-detail-category"><h6>${escapeHtml(group.label)} · ${group.items.length} položek</h6><div class="audit-desktop-count-list">${group.items.map(renderItem).join('')}</div></div>`).join('')}<div class="action-row" style="justify-content:flex-end;margin-top:14px;"><button class="btn secondary" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zpět</button><button class="btn secondary" type="button" data-detail-action="save-audit-draft" data-audit-id="${escapeHtml(String(audit.id))}">Uložit rozpracované</button><button class="btn" type="button" data-detail-action="save-audit-correction" data-audit-id="${escapeHtml(String(audit.id))}">Dokončit inventuru</button></div></section></div>`
+      validateAllDesktopAuditRows()
       openDetailModal()
+    }
+    function validateDesktopAuditRow(row) {
+      const product = productsV13.find((item) => String(item.id) === String(row?.dataset.productId || '')) || null
+      const status = row?.querySelector('[data-desktop-audit-row-status]')
+      if (!row || !product || !status) return { state: 'invalid', message: 'Produkt se nepodařilo načíst.' }
+      const packageInput = row.querySelector('[data-desktop-audit-packages]')
+      const looseInput = row.querySelector('[data-desktop-audit-loose]')
+      const hasValue = Boolean((packageInput && packageInput.value !== '') || (looseInput && looseInput.value !== ''))
+      let state = 'empty'
+      let message = 'Nevyplněno'
+      if (hasValue) {
+        const counted = auditDualCountToBase(product, packageInput?.value || '', looseInput?.value || '')
+        if (!Number.isFinite(counted) || counted < 0) {
+          state = 'invalid'; message = 'Množství musí být nezáporné číslo.'
+        } else {
+          state = 'valid'; message = `Připraveno · celkem ${formatQuantityValue(counted, getTransferBaseUnit(product))}`
+          if (isAuditExpiryTracked(product) && counted > 0) {
+            const expiries = [...row.querySelectorAll('[data-audit-expiry-row]')].map((expiryRow) => ({
+              date: expiryRow.querySelector('[data-audit-expiry-date]')?.value || '',
+              unknown: Boolean(expiryRow.querySelector('[data-audit-expiry-unknown]')?.checked),
+              quantity: auditDualCountToBase(product, expiryRow.querySelector('[data-audit-expiry-packages]')?.value || '', expiryRow.querySelector('[data-audit-expiry-loose]')?.value || '')
+            })).filter((expiry) => expiry.quantity > 0)
+            if (!expiries.length) {
+              state = 'invalid'; message = 'Chybí rozdělení množství podle expirací.'
+            } else if (expiries.some((expiry) => !expiry.date && !expiry.unknown)) {
+              state = 'invalid'; message = 'U expirace chybí datum nebo označení „neznámá“.'
+            } else {
+              const expiryTotal = expiries.reduce((sum, expiry) => sum + expiry.quantity, 0)
+              if (Math.abs(expiryTotal - counted) > 0.0001) {
+                state = 'invalid'; message = `Nesedí expirace: celkem ${formatQuantityValue(counted, getTransferBaseUnit(product))}, rozděleno ${formatQuantityValue(expiryTotal, getTransferBaseUnit(product))}.`
+              }
+            }
+          }
+        }
+      }
+      row.classList.toggle('is-valid', state === 'valid')
+      row.classList.toggle('is-invalid', state === 'invalid')
+      row.classList.toggle('is-empty', state === 'empty')
+      status.className = `audit-desktop-row-status ${state === 'valid' ? 'good' : state === 'invalid' ? 'bad' : 'muted'}`
+      status.textContent = message
+      return { state, message }
+    }
+    function validateAllDesktopAuditRows() {
+      const rows = [...detailModalContent.querySelectorAll('[data-desktop-audit-item]')]
+      return rows.map((row) => validateDesktopAuditRow(row))
     }
     function openVehicleAuditCorrection(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
@@ -11878,6 +11932,7 @@
         const product = productsV13.find((item) => String(item.id) === String(itemRow?.dataset.productId || ''))
         const list = itemRow?.querySelector('[data-audit-expiry-list]')
         if (product && list) list.insertAdjacentHTML('beforeend', renderAuditExpiryRow({}, product, getAuditDefaultPackage(product)))
+        validateDesktopAuditRow(itemRow)
         saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
         return
       }
@@ -11886,6 +11941,7 @@
         const list = expiryRemove.closest('[data-audit-expiry-list]')
         const rows = list?.querySelectorAll('[data-audit-expiry-row]') || []
         if (rows.length > 1) expiryRemove.closest('[data-audit-expiry-row]')?.remove()
+        validateDesktopAuditRow(expiryRemove.closest('[data-desktop-audit-item]'))
         saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
         return
       }
@@ -11960,11 +12016,13 @@
         dateInput.disabled = unknown.checked
         if (unknown.checked) dateInput.value = ''
       }
+      validateDesktopAuditRow(unknown.closest('[data-desktop-audit-item]'))
       saveDesktopAuditDraftFromModal(currentDetailContext?.auditId)
     })
     detailModalContent.addEventListener('input', (event) => {
       if (currentDetailContext?.type !== 'audit-edit') return
       if (!event.target.matches('[data-desktop-audit-packages], [data-desktop-audit-loose], [data-desktop-audit-note], [data-audit-expiry-date], [data-audit-expiry-packages], [data-audit-expiry-loose]')) return
+      validateDesktopAuditRow(event.target.closest('[data-desktop-audit-item]'))
       saveDesktopAuditDraftFromModal(currentDetailContext.auditId)
     })
     detailEditBtn.addEventListener('click', () => {
