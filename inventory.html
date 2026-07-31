@@ -6325,7 +6325,7 @@
       detailMoveBtn.style.display = 'none'
       detailEditBtn.style.display = 'none'
       detailModalTitle.textContent = `Počítání inventury #${audit.id}`
-      detailModalContent.innerHTML = `<div class="detail-spreadsheet"><section class="detail-spreadsheet-title"><div><h4>Inventura skladu #${escapeHtml(String(audit.id))}</h4><p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit)].filter(Boolean).join(' · '))}</p></div><span class="badge warn">Počítání na PC</span></section><section class="detail-sheet-section"><div class="status-line">Vyplň celá balení a volné kusy. U zboží s expirací rozděl stejné množství také podle jednotlivých dat.</div>${groups.map((group) => `<div class="audit-detail-category"><h6>${escapeHtml(group.label)} · ${group.items.length} položek</h6><div class="audit-desktop-count-list">${group.items.map(renderItem).join('')}</div></div>`).join('')}<div class="action-row" style="justify-content:flex-end;margin-top:14px;"><button class="btn secondary" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zpět</button><button class="btn" type="button" data-detail-action="save-audit-correction" data-audit-id="${escapeHtml(String(audit.id))}">Uložit počty</button></div></section></div>`
+      detailModalContent.innerHTML = `<div class="detail-spreadsheet"><section class="detail-spreadsheet-title"><div><h4>Inventura skladu #${escapeHtml(String(audit.id))}</h4><p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit)].filter(Boolean).join(' · '))}</p></div><span class="badge warn">Počítání na PC</span></section><section class="detail-sheet-section"><div class="status-line" data-desktop-audit-status>Vyplň celá balení a volné kusy. Rozpracované můžeš průběžně ukládat; dokončení zkontroluje všech ${items.length} položek.</div>${groups.map((group) => `<div class="audit-detail-category"><h6>${escapeHtml(group.label)} · ${group.items.length} položek</h6><div class="audit-desktop-count-list">${group.items.map(renderItem).join('')}</div></div>`).join('')}<div class="action-row" style="justify-content:flex-end;margin-top:14px;"><button class="btn secondary" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zpět</button><button class="btn secondary" type="button" data-detail-action="save-audit-draft" data-audit-id="${escapeHtml(String(audit.id))}">Uložit rozpracované</button><button class="btn" type="button" data-detail-action="save-audit-correction" data-audit-id="${escapeHtml(String(audit.id))}">Dokončit inventuru</button></div></section></div>`
       openDetailModal()
     }
     function openVehicleAuditCorrection(auditId) {
@@ -6403,9 +6403,15 @@
       `
       openDetailModal()
     }
-    async function saveAssignedAuditDesktopCount(audit, items) {
-      const rows = [...detailModalContent.querySelectorAll('[data-desktop-audit-item]')]
-      if (rows.length !== items.length) throw new Error('Nenačetly se všechny položky inventury.')
+    async function saveAssignedAuditDesktopCount(audit, items, finalize = false) {
+      const allRows = [...detailModalContent.querySelectorAll('[data-desktop-audit-item]')]
+      const rows = allRows.filter((row) => {
+        const packageInput = row.querySelector('[data-desktop-audit-packages]')
+        const looseInput = row.querySelector('[data-desktop-audit-loose]')
+        return Boolean((packageInput && packageInput.value !== '') || (looseInput && looseInput.value !== ''))
+      })
+      if (!rows.length) throw new Error('Zatím není vyplněná žádná položka k uložení.')
+      if (finalize && rows.length !== items.length) throw new Error(`Pro dokončení doplň všechny položky. Vyplněno je ${rows.length} z ${items.length}; nulový stav zadej jako 0.`)
       const now = new Date().toISOString()
       const counts = rows.map((row) => {
         const item = items.find((candidate) => String(candidate.id) === String(row.dataset.itemId))
@@ -6413,7 +6419,6 @@
         const product = getAuditItemProduct(item)
         const packageInput = row.querySelector('[data-desktop-audit-packages]')
         const looseInput = row.querySelector('[data-desktop-audit-loose]')
-        if ((packageInput && packageInput.value === '') && (!looseInput || looseInput.value === '')) throw new Error(`Doplň množství u položky ${product.name || item.product_id}. Pro nulový stav zadej 0.`)
         const packageRaw = packageInput?.value || ''
         const looseRaw = looseInput?.value || ''
         const counted = auditDualCountToBase(product, packageRaw, looseRaw)
@@ -6467,24 +6472,36 @@
           if (expiryError) throw expiryError
         }
       }
-      const totals = counts.reduce((sum, count) => ({ book: sum.book + count.book, counted: sum.counted + count.counted, diff: sum.diff + count.difference, value: sum.value + count.difference * count.unitCost }), { book: 0, counted: 0, diff: 0, value: 0 })
+      const nextItems = items.map((item) => {
+        const saved = counts.find((count) => String(count.item.id) === String(item.id))
+        return saved ? { ...item, counted_quantity: saved.counted, difference_quantity: saved.difference, difference_value: saved.difference * saved.unitCost, counted_at: now } : item
+      })
+      const totals = nextItems.reduce((sum, item) => ({ book: sum.book + Number(item.book_quantity || 0), counted: sum.counted + Number(item.counted_quantity || 0), diff: sum.diff + Number(item.difference_quantity || 0), value: sum.value + Number(item.difference_value || 0) }), { book: 0, counted: 0, diff: 0, value: 0 })
       const { error: auditError } = await supabase.from('inventory_audits').update({
-        status: 'counted',
+        status: finalize ? 'counted' : 'assigned',
         book_quantity_total: Number(totals.book.toFixed(3)),
         counted_quantity_total: Number(totals.counted.toFixed(3)),
         difference_quantity_total: Number(totals.diff.toFixed(3)),
         difference_value_total: Number(totals.value.toFixed(2)),
-        counted_at: now
+        counted_at: finalize ? now : null
       }).eq('id', audit.id)
       if (auditError) throw auditError
       await loadInventoryV13Overview()
-      openVehicleAuditDetail(audit.id)
+      if (finalize) openVehicleAuditDetail(audit.id)
+      else {
+        await openAssignedAuditDesktopCount(vehicleInventoryAudits.find((row) => String(row.id) === String(audit.id)) || audit, getVehicleAuditItems(audit.id))
+        const inlineStatus = detailModalContent.querySelector('[data-desktop-audit-status]')
+        if (inlineStatus) {
+          inlineStatus.textContent = `Rozpracované počty byly uložené: ${counts.length} položek.`
+          inlineStatus.className = 'status-line success'
+        }
+      }
     }
-    async function saveVehicleAuditCorrection(auditId) {
+    async function saveVehicleAuditCorrection(auditId, finalizeAssigned = true) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
       if (!audit) throw new Error('Inventura už není v načteném seznamu.')
       const items = getVehicleAuditItems(auditId)
-      if (audit.status === 'assigned') return saveAssignedAuditDesktopCount(audit, items)
+      if (audit.status === 'assigned') return saveAssignedAuditDesktopCount(audit, items, finalizeAssigned)
       if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) throw new Error('Tahle inventura zatím nejde opravovat.')
       const inputs = [...detailModalContent.querySelectorAll('[data-audit-correction-counted]')]
       if (!inputs.length) throw new Error('Není co uložit.')
@@ -11806,19 +11823,26 @@
         openVehicleAuditCorrection(button.dataset.auditId)
         return
       }
-      if (button.dataset.detailAction === 'save-audit-correction') {
+      if (button.dataset.detailAction === 'save-audit-correction' || button.dataset.detailAction === 'save-audit-draft') {
         try {
           button.disabled = true
           button.textContent = 'Ukládám...'
-          await saveVehicleAuditCorrection(button.dataset.auditId)
-          auditStatus.textContent = 'Oprava inventury byla uložená.'
+          const finalizeAssigned = button.dataset.detailAction !== 'save-audit-draft'
+          await saveVehicleAuditCorrection(button.dataset.auditId, finalizeAssigned)
+          auditStatus.textContent = finalizeAssigned ? 'Inventura byla uložená.' : 'Rozpracované počty byly uložené.'
           auditStatus.className = 'status-line success'
         } catch (error) {
           console.error(error)
           auditStatus.textContent = error.message || 'Opravu inventury se nepodařilo uložit.'
           auditStatus.className = 'status-line error'
+          const inlineStatus = detailModalContent.querySelector('[data-desktop-audit-status]')
+          if (inlineStatus) {
+            inlineStatus.textContent = error.message || 'Inventuru se nepodařilo uložit.'
+            inlineStatus.className = 'status-line error'
+            inlineStatus.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }
           button.disabled = false
-          button.textContent = 'Uložit opravu'
+          button.textContent = button.dataset.detailAction === 'save-audit-draft' ? 'Uložit rozpracované' : 'Dokončit inventuru'
         }
         return
       }
