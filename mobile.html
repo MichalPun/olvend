@@ -4130,6 +4130,7 @@
               const capacity = Number(container.capacity_quantity || 0)
               const picked = suggested <= 0 || detail.draft?.containers?.[String(container.id)]?.picked
               const vehiclePackages = detail.vehiclePackages?.[String(container.product_id)] ?? null
+              const vehicleShortage = vehiclePackages != null && packages > Number(vehiclePackages)
               return `
                 <article class="coffee-visit-row ${picked ? 'ready' : ''}">
                   ${renderCoffeeTube(current, added, capacity)}
@@ -4139,6 +4140,7 @@
                       <span>${packages > 0 ? `${packages} bal. x ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')} · vezmu ${formatNumber(packages * packageQty)} ${escapeHtml(container.unit || 'g')}` : 'automaticky neberu · podle PC není celé balení potřeba'}</span>
                       <span>${picked && packages > 0 ? 'potvrzeno · z auta odečteno' : ''}${vehiclePackages != null ? ` · v autě ${formatNumber(vehiclePackages)} bal.` : ''}</span>
                     </div>
+                    ${vehicleShortage ? `<div class="muted-text">Pozor: evidence auta nestačí. Po potvrzení půjde zásoba o ${escapeHtml(formatNumber(packages - Number(vehiclePackages)))} bal. do mínusu.</div>` : ''}
                     <div class="coffee-visit-actions">
                       <span class="inline-stepper">
                         <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">-</button>
@@ -4471,6 +4473,7 @@
                     ${draft.fillItems.map((fill, fillIndex) => {
                       const fillProduct = state.products.find((product) => String(product.id) === String(fill.productId))
                       const fillVehicleQty = Number(detail.vehicleStock?.[String(fill.productId)] || 0)
+                      const fillShortage = Number(fill.quantity || 0) > fillVehicleQty
                       return `<div class="food-fill-line ${options.length > 1 ? '' : 'single'}">
                         ${options.length > 1 ? `<label>Produkt
                           <select data-food-fill-field="productId" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.picked ? 'disabled' : ''}>
@@ -4480,6 +4483,7 @@
                         <label>${options.length > 1 ? `Beru z auta k automatu (ks) · v autě ${escapeHtml(fillVehicleQty)}` : 'Beru z auta k automatu (ks)'}
                           <input type="number" min="0" max="${escapeHtml(desired)}" value="${escapeHtml(fill.quantity || 0)}" data-food-fill-field="quantity" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.picked ? 'disabled' : ''}>
                         </label>
+                        ${fillShortage ? `<div class="muted-text">Evidence auta nestačí. Po doplnění bude nejméně ${escapeHtml(Number(fill.quantity || 0) - fillVehicleQty)} ks v mínusu; potvrzení je přesto možné.</div>` : ''}
                         ${draft.fillItems.length > 1 && !draft.picked ? `<button class="secondary-btn" type="button" data-food-action="remove-fill" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Odebrat řádek</button>` : ''}
                       </div>`
                     }).join('')}
@@ -6153,7 +6157,7 @@
         movementType: movingToMachine ? 'fill_machine' : 'return',
         referenceId: `route_visit_${detail.visitId}_container_${container.id}_sync_${movingToMachine ? 'in' : 'back'}_${Date.now()}`,
         note: `Automatické dorovnání návštěvy · ${container.container_code || ''} · cílově ${desiredPackages} bal.`,
-        allowNegative: false
+        allowNegative: movingToMachine
       })
       await applyStockMovementsAtomically(movements)
       detail.draft.containers[String(container.id)] = {
@@ -6360,7 +6364,7 @@
             movementType: 'fill_machine',
             referenceId: fillReference,
             note: `Potravinový automat · pozice ${slot.slot_code} · ${fillProduct?.name || 'produkt'} · vloženo ${fill.quantity} ks`,
-            allowNegative: isFoodReadyProduct(fillProduct)
+            allowNegative: true
           })
           await applyStockMovementsAtomically(fillMovements)
         }
@@ -6589,7 +6593,7 @@
             const available = Number(detail.vehicleStock?.[productId] || 0)
             if (quantity > available) {
               const product = state.products.find((item) => String(item.id) === productId)
-              throw new Error(`${product?.name || 'Produkt'}: v autě ${available} ks, připravuješ ${quantity} ks.`)
+              showMessage(`${product?.name || 'Produkt'}: v autě je evidováno ${available} ks, připravuješ ${quantity} ks. Rozdíl se uloží jako záporná zásoba vozidla.`, 'error', { scroll: false })
             }
           }
         }
@@ -6663,7 +6667,9 @@
           const product = state.products.find((item) => String(item.id) === productId)
           return [`${product?.name || 'produkt'}: v autě ${available}, potřeba ${requested}`]
         })
-        if (shortages.length) throw new Error(`Nedostatek v autě · ${shortages.join(' · ')}`)
+        if (shortages.length) {
+          showMessage(`Evidence auta nestačí · ${shortages.join(' · ')}. Rozdíl se uloží jako záporná zásoba vozidla.`, 'error', { scroll: false })
+        }
         for (const item of detail.slots || []) {
           if (getFoodSlotDraft(stopId, item).pickedQuantity > 0) updateFoodSlotDraft(stopId, item.id, { picked: true, skipped: false, skipReason: '' })
         }
@@ -7906,7 +7912,8 @@
           reference_type: 'mobile_stock_request',
           reference_id: referenceId,
           created_by: state.employee?.id || null,
-          note: [note, 'část bez dohledané šarže'].filter(Boolean).join(' · ') || null
+          note: [note, 'část bez dohledané šarže · záporná zásoba povolena z mobilního doplnění'].filter(Boolean).join(' · ') || null,
+          allow_negative_source: true
         })
       }
       return movements
