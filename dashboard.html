@@ -4657,10 +4657,10 @@
           <div class="telemetry-panel-head"><h3>Blížící se expirace potravin</h3><span>bagety 2 dny · cukrovinky 30 dní</span></div>
           ${renderTelemetryExpiry(expiryRows)}
         </section>
-        <section class="telemetry-panel span-2">
-          <div class="telemetry-panel-head"><h3>Kontrola příjmu DEX podle TID</h3><span>${escapeHtml(telemetryCoverage ? `${telemetryCoverage.fresh} z ${telemetryCoverage.total} čerstvých` : "načítám")}</span></div>
-          ${telemetryCoverage?.problems?.length
-            ? `<div class="telemetry-ranked-list">${telemetryCoverage.problems.map((item) => `
+        <section class="telemetry-panel">
+          <div class="telemetry-panel-head"><h3>Kontrola příjmu DEX podle TID</h3><span>${escapeHtml(telemetryCoverage ? `${telemetryCoverage.fresh} z ${telemetryCoverage.total} čerstvých${telemetryCoverage.paused ? ` · ${telemetryCoverage.paused} prázdniny` : ""}` : "načítám")}</span></div>
+          ${telemetryCoverage?.items?.length
+            ? `<div class="telemetry-ranked-list">${telemetryCoverage.items.map((item) => `
                 <div class="telemetry-ranked-row">
                   <strong>${escapeHtml(item.machine_label)}</strong>
                   <span>${escapeHtml(item.status_label)}</span>
@@ -5011,21 +5011,29 @@
       const coverageItems = Array.from(directLinksByMachine.values()).map((link) => {
         const machine = machineMap.get(String(link.machine_id));
         const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+        const currentMonth = new Date().getMonth() + 1;
+        const schoolHoliday = [7, 8].includes(currentMonth)
+          && ["18", "35"].includes(String(machine?.evidence_number || "").trim());
         const stateRow = telemetryStateByMachine.get(String(link.machine_id));
         const lastSeenMs = new Date(stateRow?.last_seen_at || 0).getTime();
         const ageMinutes = lastSeenMs ? Math.max(0, Math.round((Date.now() - lastSeenMs) / 60000)) : null;
         const fresh = ageMinutes != null && ageMinutes <= 15;
         return {
           fresh,
+          schoolHoliday,
           machine_label: `${machine?.evidence_number ? `EV ${machine.evidence_number}` : `Automat ${link.machine_id}`} · TID ${link.external_machine_id || "chybí"}`,
           location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
-          status_label: ageMinutes == null ? "DEX zatím nepřišel" : ageMinutes <= 15 ? `před ${ageMinutes} min` : `bez DEX ${ageMinutes} min`
+          status_label: schoolHoliday ? "školní prázdniny" : ageMinutes == null ? "DEX zatím nepřišel" : ageMinutes <= 15 ? `před ${ageMinutes} min` : `bez DEX ${ageMinutes} min`
         };
       });
+      const monitoredCoverageItems = coverageItems.filter((item) => !item.schoolHoliday);
+      const pausedCoverageItems = coverageItems.filter((item) => item.schoolHoliday);
+      const problemCoverageItems = monitoredCoverageItems.filter((item) => !item.fresh);
       const telemetryCoverage = {
-        total: coverageItems.length,
-        fresh: coverageItems.filter((item) => item.fresh).length,
-        problems: coverageItems.filter((item) => !item.fresh).sort((a, b) => a.machine_label.localeCompare(b.machine_label, "cs"))
+        total: monitoredCoverageItems.length,
+        fresh: monitoredCoverageItems.filter((item) => item.fresh).length,
+        paused: pausedCoverageItems.length,
+        items: [...problemCoverageItems, ...pausedCoverageItems].sort((a, b) => a.machine_label.localeCompare(b.machine_label, "cs"))
       };
 
       return { rows: enrichedRows, coffeeRows, foodRows, telemetryCoverage, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, expiryRows, initialInventory };
