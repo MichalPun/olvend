@@ -1,7 +1,9 @@
-const CACHE_NAME = 'olvend-v47-purchase-package-units';
+const CACHE_NAME = 'olvend-v48-mobile-offline';
 const APP_SHELL = [
   './',
   './index.html',
+  './mobile.html',
+  './supabase.js',
   './dashboard.html',
   './attendance.html',
   './hr.html',
@@ -50,7 +52,19 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   const requestUrl = new URL(event.request.url);
-  if (requestUrl.origin !== self.location.origin) return;
+  if (requestUrl.origin !== self.location.origin) {
+    event.respondWith(
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) return cachedResponse;
+        return fetch(event.request).then((response) => {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+          return response;
+        });
+      })
+    );
+    return;
+  }
 
   const isFreshAsset =
     event.request.mode === 'navigate'

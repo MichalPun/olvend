@@ -2277,8 +2277,9 @@
     </nav>
   </div>
 
+  <script src="./pwa.js?v=20260731-mobile-offline-v1" defer></script>
   <script type="module">
-    import { supabase } from './supabase.js'
+    import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260731-mobile-offline-v1'
 
     const state = {
       employee: null,
@@ -2328,6 +2329,7 @@
     const monthStartIso = `${todayIso.slice(0, 7)}-01`
     const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV17'
+    const MOBILE_SNAPSHOT_KEY = 'olvendMobileSnapshotV1'
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
@@ -2470,6 +2472,39 @@
     function showMessage(text, type = 'info', options = {}) {
       els.messageArea.innerHTML = text ? `<div class="message ${type === 'error' ? 'error' : ''}">${escapeHtml(text)}</div>` : ''
       if (text && options.scroll !== false) els.messageArea.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+
+    function persistMobileSnapshot() {
+      if (!state.employee?.id) return
+      try {
+        localStorage.setItem(MOBILE_SNAPSHOT_KEY, JSON.stringify({
+          savedAt: new Date().toISOString(),
+          todayIso,
+          state: { ...state, foodProgressSaveTimers: {} }
+        }))
+      } catch (error) {
+        console.warn('Mobilní offline kopii se nepodařilo uložit:', error)
+      }
+    }
+
+    function restoreMobileSnapshot() {
+      try {
+        const snapshot = JSON.parse(localStorage.getItem(MOBILE_SNAPSHOT_KEY) || 'null')
+        if (!snapshot?.state || snapshot.todayIso !== todayIso) return false
+        Object.assign(state, snapshot.state, { foodProgressSaveTimers: {} })
+        return Boolean(state.employee?.id)
+      } catch (_) {
+        return false
+      }
+    }
+
+    function showConnectivityState() {
+      const pending = getOfflineRequestCount()
+      if (!navigator.onLine) {
+        showMessage(`Offline režim: pokračuj v práci. ${pending ? `${pending} změn čeká na odeslání.` : 'Změny se odešlou po návratu signálu.'}`, 'info', { scroll: false })
+      } else if (pending) {
+        showMessage(`Připojení je zpět, odesílám ${pending} uložených změn…`, 'info', { scroll: false })
+      }
     }
 
     function setButtonBusy(button, label = 'Pracuji...') {
@@ -6218,6 +6253,7 @@
         ...(detail.draft.slots[String(slot.id)] || {}),
         ...patch
       }
+      persistMobileSnapshot()
     }
 
     function serializeFoodPreparation(stopId, detail) {
@@ -7122,6 +7158,7 @@
         loadVehicleInventories()
       ])
       renderAll()
+      persistMobileSnapshot()
     }
 
     async function acknowledgeRequiredInstructions() {
@@ -8691,17 +8728,34 @@
 
     async function init() {
       bindEvents()
+      window.addEventListener('offline', showConnectivityState)
+      window.addEventListener('olvend-offline-queue', showConnectivityState)
+      window.addEventListener('online', async () => {
+        showConnectivityState()
+        const result = await syncOfflineRequests()
+        if (!result.pending) {
+          showMessage(result.synced ? `${result.synced} offline změn bylo synchronizováno.` : 'Připojení je zpět.', 'success', { scroll: false })
+          await reloadData().catch(console.warn)
+        }
+      })
       try {
         const hasUser = await hydrateCurrentUser()
         if (!hasUser) return
         await reloadData()
         openScreen(getStartupScreen())
         showStartupMessage()
+        if (!navigator.onLine || getOfflineRequestCount()) showConnectivityState()
         window.setInterval(() => {
           if (isShiftRunning()) renderShiftState()
         }, 30000)
       } catch (error) {
-        handleError(error)
+        if (restoreMobileSnapshot()) {
+          renderAll()
+          openScreen(getStartupScreen())
+          showConnectivityState()
+        } else {
+          handleError(error)
+        }
       }
     }
 
