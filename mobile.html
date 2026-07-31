@@ -2029,6 +2029,7 @@
                 Vozidlo
                 <select id="stockVehicleSelect"></select>
               </label>
+              <div class="attention-box" id="freshRouteRecommendation" hidden></div>
               <label id="stockRequestDateLabel">
                 Termín
                 <input id="stockRequestDateInput" type="date" />
@@ -2303,6 +2304,7 @@
       routePlans: [],
       routeMachineVisits: [],
       routePlanDiagnostics: null,
+      freshRouteRecommendation: [],
       activeRouteStopId: null,
       routeCoffeeDetails: {},
       routeFoodDetails: {},
@@ -2397,6 +2399,7 @@
       stockQuantityInput: document.getElementById('stockQuantityInput'),
       stockUnitSelect: document.getElementById('stockUnitSelect'),
       stockQuantityHelp: document.getElementById('stockQuantityHelp'),
+      freshRouteRecommendation: document.getElementById('freshRouteRecommendation'),
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
       loadWholeVehicleButton: document.getElementById('loadWholeVehicleButton'),
@@ -3364,6 +3367,7 @@
       els.stockRequestCount.textContent = `${state.stockRequests.length} dokladů`
       const isPreparedLoadMode = state.selectedStockType === 'vehicle_load' && !state.manualVehicleLoad
       const isManualLoadMode = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad
+      renderFreshRouteRecommendation()
       const currentVehicleId = getCurrentVehicleId() || els.stockVehicleSelect?.value || ''
       const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(currentVehicleId))
       if (els.stockVehicleLabel) {
@@ -3563,6 +3567,103 @@
       const name = normalizeText(product?.name || '')
       const category = normalizeText(product?.product_category || '')
       return category === 'food_ready' || name.includes('baget') || name.includes('strips')
+    }
+
+    function renderFreshRouteRecommendation() {
+      if (!els.freshRouteRecommendation) return
+      const rows = state.freshRouteRecommendation || []
+      els.freshRouteRecommendation.hidden = !state.manualVehicleLoad
+      if (!state.manualVehicleLoad) return
+      if (!rows.length) {
+        els.freshRouteRecommendation.innerHTML = '<strong>Bagety pro dnešní trasu</strong><span>Pro dnešní trasu telemetrie neukazuje žádné fresh zboží k naložení.</span>'
+        return
+      }
+      els.freshRouteRecommendation.innerHTML = `
+        <strong>Doporučení pro dnešní trasu</strong>
+        <span>Aktuální stav automatů + očekávaný prodej do příjezdu. Potvrď skutečné množství, které bereš z lednice.</span>
+        <div class="stock-draft">
+          ${rows.map((row) => `<div class="draft-line"><div><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml(formatNumber(row.quantity))} ${escapeHtml(row.unit)} · nyní chybí ${escapeHtml(formatNumber(row.missingNow))} · do příjezdu ${escapeHtml(formatNumber(row.forecastSales))}</span></div></div>`).join('')}
+        </div>
+        <button class="secondary-btn" data-load-fresh-recommendation type="button">Načíst doporučení do ranní nakládky</button>
+      `
+    }
+
+    async function loadFreshRouteRecommendation() {
+      state.freshRouteRecommendation = []
+      const plan = getAssignedRoutePlan()
+      const stops = getRouteStops(plan)
+      const machineIds = [...new Set(stops.map((stop) => stop.machine_id).filter(Boolean))]
+      if (!plan || !machineIds.length) {
+        renderFreshRouteRecommendation()
+        return
+      }
+      const salesFrom = new Date()
+      salesFrom.setDate(salesFrom.getDate() - 28)
+      const [slotsResult, salesResult] = await Promise.all([
+        supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, current_units, capacity_units, active').in('machine_id', machineIds).eq('active', true),
+        supabase.from('telemetry_sales_events').select('machine_id, product_sku, product_name, quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString())
+      ])
+      if (slotsResult.error) throw slotsResult.error
+      if (salesResult.error) throw salesResult.error
+      const soldByMachineProduct = new Map()
+      ;(salesResult.data || []).forEach((sale) => {
+        const key = `${sale.machine_id}::${normalizeText(sale.product_sku || sale.product_name || '')}`
+        soldByMachineProduct.set(key, Number(((soldByMachineProduct.get(key) || 0) + Number(sale.quantity || 0)).toFixed(3)))
+      })
+      const routeStart = new Date(`${todayIso}T${String(plan.planned_departure_time || '07:00').slice(0, 5)}:00`)
+      const drivePerStop = stops.length ? Number(plan.estimated_drive_minutes || 0) / stops.length : 0
+      const arrivalByMachine = new Map()
+      let serviceMinutes = 0
+      stops.forEach((stop, index) => {
+        if (stop.machine_id) arrivalByMachine.set(String(stop.machine_id), new Date(routeStart.getTime() + ((index + 1) * drivePerStop + serviceMinutes) * 60000))
+        serviceMinutes += Number(stop.estimated_service_minutes || 0)
+      })
+      const rowsByProduct = new Map()
+      ;(slotsResult.data || []).forEach((slot) => {
+        const keyText = normalizeText(slot.product_sku || slot.product_name || '')
+        const product = state.products.find((item) => keyText && normalizeText(item.sku || '') === normalizeText(slot.product_sku || ''))
+          || state.products.find((item) => normalizeText(item.name || '') === normalizeText(slot.product_name || ''))
+        if (!product || !isFoodReadyProduct(product)) return
+        const capacity = Number(slot.capacity_units || 0)
+        const current = Number(slot.current_units || 0)
+        const missingNow = Math.max(0, capacity - current)
+        const arrival = arrivalByMachine.get(String(slot.machine_id)) || routeStart
+        const horizonHours = Math.max(0, (arrival.getTime() - Date.now()) / 3600000)
+        const sold28Days = Number(soldByMachineProduct.get(`${slot.machine_id}::${keyText}`) || 0)
+        const forecastSales = Math.max(0, Number(((sold28Days / 28) * (horizonHours / 24)).toFixed(3)))
+        const quantity = Math.ceil(Math.min(capacity, missingNow + forecastSales))
+        if (quantity <= 0) return
+        const existing = rowsByProduct.get(String(product.id)) || { product_id: product.id, product_name: product.name, sku: product.sku || null, unit: product.base_unit || 'ks', quantity: 0, missingNow: 0, forecastSales: 0 }
+        existing.quantity += quantity
+        existing.missingNow = Number((existing.missingNow + missingNow).toFixed(3))
+        existing.forecastSales = Number((existing.forecastSales + forecastSales).toFixed(3))
+        rowsByProduct.set(String(product.id), existing)
+      })
+      state.freshRouteRecommendation = [...rowsByProduct.values()].sort((a, b) => String(a.product_name).localeCompare(String(b.product_name), 'cs'))
+      renderFreshRouteRecommendation()
+    }
+
+    function addFreshRecommendationToDraft() {
+      state.freshRouteRecommendation.forEach((row) => {
+        const existing = state.stockDraftItems.find((item) => String(item.product_id) === String(row.product_id))
+        if (existing) {
+          existing.quantity = row.quantity
+          existing.stock_quantity_base_units = row.quantity
+          existing.note = 'Doporučení z telemetrie pro dnešní trasu'
+          return
+        }
+        state.stockDraftItems.push({
+          product_id: row.product_id,
+          product_name: row.product_name,
+          sku: row.sku,
+          unit: row.unit,
+          quantity: row.quantity,
+          stock_quantity_base_units: row.quantity,
+          note: 'Doporučení z telemetrie pro dnešní trasu'
+        })
+      })
+      renderStockDraft()
+      showMessage('Doporučené bagety jsou načtené. Uprav množství podle toho, co skutečně bereš.', 'success')
     }
 
     function isFoodExpiryTracked(product) {
@@ -5071,7 +5172,7 @@
       let error = null
       const primaryRoutes = await supabase
         .from('route_plans')
-        .select('id, planning_date, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes, note)')
+        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes, note)')
         .gte('planning_date', fromDate)
         .lte('planning_date', toDate)
         .order('created_at', { ascending: false })
@@ -5082,7 +5183,7 @@
       if (error) {
         const fallbackRoutes = await supabase
           .from('route_plans')
-          .select('id, planning_date, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, route_payload, created_at')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, route_payload, created_at')
           .gte('planning_date', fromDate)
           .lte('planning_date', toDate)
           .order('created_at', { ascending: false })
@@ -5468,6 +5569,15 @@
       els.stockRequestDetails.open = false
       els.stockFormDetails.open = true
       showMessage(state.manualVehicleLoad ? 'Vyber auto, přidej bagety/stripsy a potvrď naložení na vozidlo.' : stockTypeHelp[type] || 'Vyber položku a zadej množství.')
+      if (state.manualVehicleLoad) {
+        loadFreshRouteRecommendation().catch((error) => {
+          console.error(error)
+          if (els.freshRouteRecommendation) {
+            els.freshRouteRecommendation.hidden = false
+            els.freshRouteRecommendation.innerHTML = '<strong>Doporučení se nepodařilo načíst</strong><span>Zkontroluj telemetrii a dnešní přiřazenou trasu. Množství můžeš zadat ručně.</span>'
+          }
+        })
+      }
       window.setTimeout(() => {
         els.stockFormDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
         els.stockProductInput.focus({ preventScroll: true })
@@ -8408,7 +8518,10 @@
         }
       })
       els.createServiceButton?.addEventListener('click', () => createMobileServiceRequest().catch(handleError))
-      els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
+    els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
+    els.freshRouteRecommendation?.addEventListener('click', (event) => {
+      if (event.target.closest('[data-load-fresh-recommendation]')) addFreshRecommendationToDraft()
+    })
       els.loadWholeVehicleButton?.addEventListener('click', () => loadWholeVehicleForUnload().catch(handleError))
       els.createStockRequestButton.addEventListener('click', () => createStockRequest().catch(handleError))
       els.stockProductInput.addEventListener('input', () => {
