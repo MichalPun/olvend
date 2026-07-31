@@ -408,6 +408,9 @@
     .audit-category-row td { padding:11px 12px 8px; border-top:2px solid rgba(96,165,250,0.32); border-bottom:1px solid rgba(96,165,250,0.2); background:rgba(59,130,246,0.11); color:#dbeafe; font-size:13px; font-weight:900; letter-spacing:0.025em; }
     .audit-category-row:first-child td { border-top-width:1px; }
     .audit-category-row span { margin-left:8px; color:var(--muted); font-size:11px; font-weight:700; }
+    .audit-detail-category { margin-top:12px; }
+    .audit-detail-category:first-child { margin-top:0; }
+    .audit-detail-category h6 { margin:0; padding:10px 12px; border:1px solid rgba(96,165,250,0.28); border-bottom:0; border-radius:8px 8px 0 0; background:rgba(59,130,246,0.11); color:#dbeafe; font-size:13px; }
     .audit-category-picker { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.025); }
     .audit-category-picker label { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid rgba(255,255,255,0.08); border-radius:999px; background:rgba(255,255,255,0.035); color:var(--text); font-size:12px; font-weight:800; cursor:pointer; }
     .audit-category-picker input { width:14px; height:14px; margin:0; }
@@ -5958,6 +5961,53 @@
       if (status === 'cancelled') return 'bad'
       return 'warn'
     }
+    function getAuditItemProduct(item) {
+      return productsV13.find((row) => String(row.id) === String(item.product_id)) || item.products || {}
+    }
+    function renderCategorizedAuditDetail(items, audit) {
+      const sortedItems = [...items].sort((a, b) => {
+        const productA = getAuditItemProduct(a)
+        const productB = getAuditItemProduct(b)
+        const categoryDiff = getAuditCategoryRank(productA) - getAuditCategoryRank(productB)
+        if (categoryDiff) return categoryDiff
+        return normalizeText(productA.name || '').localeCompare(normalizeText(productB.name || ''), 'cs')
+      })
+      const groups = []
+      sortedItems.forEach((item) => {
+        const product = getAuditItemProduct(item)
+        const label = getProductCategoryLabel(getAuditCategoryKind(product)) || 'Ostatní'
+        let group = groups.find((row) => row.label === label)
+        if (!group) {
+          group = { label, items: [] }
+          groups.push(group)
+        }
+        group.items.push(item)
+      })
+      const columns = [
+        { label: 'Produkt', render: (item) => {
+          const product = getAuditItemProduct(item)
+          return `<strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', item.note || ''].filter(Boolean).join(' · ') || 'Bez poznámky')}</span>`
+        } },
+        { label: 'Evidence', render: (item) => {
+          const product = getAuditItemProduct(item)
+          return `<strong>${escapeHtml(formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks'))}</strong>`
+        } },
+        { label: 'Spočítáno', render: (item) => {
+          const product = getAuditItemProduct(item)
+          const mobileHint = getAuditMobileCountHint(item, product)
+          return item.counted_at ? `<strong>${escapeHtml(formatQuantityValue(item.counted_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(mobileHint || new Date(item.counted_at).toLocaleString('cs-CZ'))}</span>` : '<span class="subtext">Čeká na operátorku</span>'
+        } },
+        { label: 'Rozdíl', render: (item) => {
+          const product = getAuditItemProduct(item)
+          return item.counted_at || ['evaluated', 'closed'].includes(audit.status)
+            ? `<strong>${escapeHtml(formatQuantityValue(item.difference_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(formatStockMoney(item.difference_value || 0))}</span>`
+            : '<span class="subtext">Zatím bez rozdílu</span>'
+        } },
+        { label: 'Poznámka počtu', render: (item) => `<span>${escapeHtml(getAuditManualCountNote(item) || '—')}</span>` }
+      ]
+      return groups.map((group) => `<div class="audit-detail-category"><h6>${escapeHtml(group.label)} · ${group.items.length} položek</h6>${renderDetailTable(columns, group.items, 'V kategorii nejsou žádné položky.')}</div>`).join('')
+        || renderDetailTable(columns, [], 'Inventura zatím nemá žádné položky.')
+    }
     function openVehicleAuditDetail(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
       if (!audit) {
@@ -5998,28 +6048,7 @@
           </section>
           <section class="detail-sheet-section">
             <h5>Položky k počítání</h5>
-            ${renderDetailTable([
-              { label: 'Produkt', render: (item) => {
-                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
-                return `<strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span class="subtext">${escapeHtml([product.sku ? `SKU ${product.sku}` : '', item.note || ''].filter(Boolean).join(' · ') || 'Bez poznámky')}</span>`
-              } },
-              { label: 'Evidence', render: (item) => {
-                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
-                return `<strong>${escapeHtml(formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks'))}</strong>`
-              } },
-              { label: 'Spočítáno', render: (item) => {
-                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
-                const mobileHint = getAuditMobileCountHint(item, product)
-                return item.counted_at ? `<strong>${escapeHtml(formatQuantityValue(item.counted_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(mobileHint || new Date(item.counted_at).toLocaleString('cs-CZ'))}</span>` : '<span class="subtext">Čeká na operátorku</span>'
-              } },
-              { label: 'Rozdíl', render: (item) => {
-                const product = item.products || productsV13.find((row) => String(row.id) === String(item.product_id)) || {}
-                return item.counted_at || ['evaluated', 'closed'].includes(audit.status)
-                  ? `<strong>${escapeHtml(formatQuantityValue(item.difference_quantity || 0, product.base_unit || 'ks'))}</strong><span class="subtext">${escapeHtml(formatStockMoney(item.difference_value || 0))}</span>`
-                  : '<span class="subtext">Zatím bez rozdílu</span>'
-              } },
-              { label: 'Poznámka počtu', render: (item) => `<span>${escapeHtml(getAuditManualCountNote(item) || '—')}</span>` }
-            ], items, 'Inventura zatím nemá žádné položky.')}
+            ${renderCategorizedAuditDetail(items, audit)}
           </section>
         </div>
       `
