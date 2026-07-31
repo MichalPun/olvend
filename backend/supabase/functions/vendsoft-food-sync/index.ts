@@ -306,12 +306,61 @@ Deno.serve(async (req) => {
 
     candidates.sort((a, b) => a.eventAt.localeCompare(b.eventAt));
 
+    // VendSoft is only a temporary fallback for food machines that do not yet
+    // deliver usable sales through IMA. A machine is protected as soon as it
+    // has produced at least one direct IMA sale and its IMA connection is
+    // currently fresh. This prevents the same vend from decrementing stock a
+    // second time when it later appears in the VendSoft transaction report.
+    const freshImaCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: freshImaStates, error: freshImaStatesError } = await admin
+      .from("machine_telemetry_state")
+      .select("machine_id")
+      .ilike("provider", "ima")
+      .gte("last_seen_at", freshImaCutoff);
+    if (freshImaStatesError) throw freshImaStatesError;
+
+    const freshImaMachineIds = [...new Set(
+      (freshImaStates || []).map((row) => Number(row.machine_id)).filter(Boolean),
+    )];
+    const directImaMachineIds = new Set<number>();
+    if (freshImaMachineIds.length) {
+      const { data: directImaSales, error: directImaSalesError } = await admin
+        .from("telemetry_sales_events")
+        .select("machine_id")
+        .ilike("provider", "ima")
+        .in("machine_id", freshImaMachineIds)
+        .gte("source_event_at", startedAt.toISOString());
+      if (directImaSalesError) throw directImaSalesError;
+      (directImaSales || []).forEach((row) => directImaMachineIds.add(Number(row.machine_id)));
+    }
+
+    const protectedVendSoftCodes = new Set<string>();
+    if (directImaMachineIds.size) {
+      const { data: protectedMachines, error: protectedMachinesError } = await admin
+        .from("machines")
+        .select("id, evidence_number")
+        .in("id", [...directImaMachineIds]);
+      if (protectedMachinesError) throw protectedMachinesError;
+      (protectedMachines || []).forEach((machine) => {
+        const code = asText(machine.evidence_number);
+        if (code) protectedVendSoftCodes.add(code);
+      });
+    }
+
     let imported = 0;
     let skipped = 0;
+    let skippedDirectIma = 0;
     let unmatched = 0;
     let lastSeenEventAt: string | null = null;
 
     for (const item of candidates) {
+      if (protectedVendSoftCodes.has(item.machine.code)) {
+        skipped += 1;
+        skippedDirectIma += 1;
+        if (!lastSeenEventAt || item.eventAt > lastSeenEventAt) lastSeenEventAt = item.eventAt;
+        continue;
+      }
+
       const eventKey = await sha256([
         item.machine.code,
         item.eventAt,
@@ -366,6 +415,7 @@ Deno.serve(async (req) => {
       candidates: candidates.length,
       imported,
       skipped,
+      skipped_direct_ima: skippedDirectIma,
       unmatched,
       last_seen_event_at: lastSeenEventAt,
     });

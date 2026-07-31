@@ -3071,7 +3071,7 @@
           <div class="widget-header">
             <div class="widget-title-wrap">
               <h2>Prodeje automatů</h2>
-              <p id="telemetrySalesSubtitle">Kávové prodeje z DEX a potravinové transakce z VendSoftu na jednom místě.</p>
+              <p id="telemetrySalesSubtitle">Přímé IMA/DEX prodeje; VendSoft se používá jen jako dočasná záloha tam, kde IMA neposílá použitelné prodeje.</p>
             </div>
             <div class="widget-actions">
               <button class="widget-action" data-action="smaller">−</button>
@@ -4284,6 +4284,37 @@
       return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
     }
 
+    function dedupeTelemetryRows(rows = []) {
+      const source = [...rows];
+      const direct = source
+        .filter((row) => String(row.provider || "").toLowerCase() === "ima")
+        .map((row, index) => ({ row, index, used: false }));
+      const duplicateIds = new Set();
+      source
+        .filter((row) => String(row.provider || "").toLowerCase() === "vendsoft")
+        .forEach((fallback) => {
+          const fallbackAt = new Date(fallback.source_event_at || 0).getTime();
+          let best = null;
+          direct.forEach((candidate) => {
+            if (candidate.used) return;
+            const row = candidate.row;
+            if (String(row.machine_id) !== String(fallback.machine_id)) return;
+            if (String(row.selection_code || "") !== String(fallback.selection_code || "")) return;
+            if (String(row.product_sku || "") !== String(fallback.product_sku || "")) return;
+            if (Number(row.quantity || 0) !== Number(fallback.quantity || 0)) return;
+            if (Math.abs(Number(row.total_amount_czk || 0) - Number(fallback.total_amount_czk || 0)) > 0.01) return;
+            const distance = Math.abs(new Date(row.source_event_at || 0).getTime() - fallbackAt);
+            if (distance > 20 * 60 * 1000) return;
+            if (!best || distance < best.distance) best = { candidate, distance };
+          });
+          if (best) {
+            best.candidate.used = true;
+            duplicateIds.add(String(fallback.id));
+          }
+        });
+      return source.filter((row) => !duplicateIds.has(String(row.id)));
+    }
+
     function renderTelemetryRankedList(rows, emptyText = "Zatím bez dat", metric = "revenue") {
       const topRows = (rows || []).slice(0, 5);
       const max = Math.max(1, ...topRows.map((row) => Number(row?.[metric] || 0)));
@@ -4679,7 +4710,7 @@
 
       telemetrySalesTable.innerHTML = `
         <div class="table-scroll">
-          <div class="telemetry-panel-head"><h3>Poslední transakce</h3><span>posledních 10 výdejů + poslední potravinové IMA</span></div>
+          <div class="telemetry-panel-head"><h3>Poslední transakce</h3><span>IMA/DEX + dočasná záloha VendSoft · posledních 10 výdejů</span></div>
           <table class="dashboard-table telemetry-sales-table">
             <thead>
               <tr>
@@ -4778,9 +4809,10 @@
       }
       const recentByEventId = new Map((recentResult.data || []).map((row) => [String(row.id), row]));
       directFoodImaRows.forEach((row) => recentByEventId.set(String(row.id), row));
-      const recentRows = Array.from(recentByEventId.values())
-        .sort((a, b) => new Date(b.source_event_at || 0) - new Date(a.source_event_at || 0));
-      const allTrendRows = trendRows || [];
+      const recentRows = dedupeTelemetryRows(Array.from(recentByEventId.values()))
+        .sort((a, b) => new Date(b.source_event_at || 0) - new Date(a.source_event_at || 0))
+        .slice(0, 10);
+      const allTrendRows = dedupeTelemetryRows(trendRows || []);
       const periodRows = allTrendRows.filter((row) => {
         const date = new Date(row.source_event_at);
         return date >= range.start && date < range.end;

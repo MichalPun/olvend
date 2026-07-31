@@ -383,7 +383,7 @@
         <section class="topbar">
           <div>
             <h1>Telemetrické reporty</h1>
-            <p class="lead">Sestavy nad DEX prodeji po vzoru VendSoftu, ale přizpůsobené pro OLVEND: produkty, automaty, lokality, denní a týdenní trendy, poslední transakce a hrubá ziskovost.</p>
+            <p class="lead">Sestavy nad přímými IMA/DEX prodeji. VendSoft zůstává jen jako dočasná záloha u potravinových automatů, které ještě neposílají použitelné prodejní čítače.</p>
             <div class="status-line" id="statusLine">Připraveno k načtení telemetrie.</div>
           </div>
           <div class="top-actions">
@@ -545,6 +545,36 @@
     }
     function normalize(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    }
+    function dedupeTelemetryRows(rows = []) {
+      const source = [...rows];
+      const direct = source
+        .filter((row) => normalize(row.provider) === 'ima')
+        .map((row) => ({ row, used: false }));
+      const duplicateIds = new Set();
+      source
+        .filter((row) => normalize(row.provider) === 'vendsoft')
+        .forEach((fallback) => {
+          const fallbackAt = new Date(fallback.source_event_at || 0).getTime();
+          let best = null;
+          direct.forEach((candidate) => {
+            if (candidate.used) return;
+            const row = candidate.row;
+            if (String(row.machine_id) !== String(fallback.machine_id)) return;
+            if (String(row.selection_code || '') !== String(fallback.selection_code || '')) return;
+            if (String(row.product_sku || '') !== String(fallback.product_sku || '')) return;
+            if (Number(row.quantity || 0) !== Number(fallback.quantity || 0)) return;
+            if (Math.abs(Number(row.total_amount_czk || 0) - Number(fallback.total_amount_czk || 0)) > 0.01) return;
+            const distance = Math.abs(new Date(row.source_event_at || 0).getTime() - fallbackAt);
+            if (distance > 20 * 60 * 1000) return;
+            if (!best || distance < best.distance) best = { candidate, distance };
+          });
+          if (best) {
+            best.candidate.used = true;
+            duplicateIds.add(String(fallback.id));
+          }
+        });
+      return source.filter((row) => !duplicateIds.has(String(row.id)));
     }
     function money(value) {
       return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 }).format(Number(value || 0));
@@ -1267,12 +1297,13 @@
     async function fetchSalesRange(range) {
       const from = new Date(`${range.from}T00:00:00`);
       const to = endExclusive(range.to);
-      return fetchPaged(() => supabase
+      const rows = await fetchPaged(() => supabase
         .from('telemetry_sales_events')
         .select('id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at')
         .gte('source_event_at', from.toISOString())
         .lt('source_event_at', to.toISOString())
         .order('source_event_at', { ascending: false }));
+      return dedupeTelemetryRows(rows);
     }
     async function fetchFillRange(range) {
       const from = new Date(`${range.from}T00:00:00`);
