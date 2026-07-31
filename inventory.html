@@ -411,6 +411,17 @@
     .audit-detail-category { margin-top:12px; }
     .audit-detail-category:first-child { margin-top:0; }
     .audit-detail-category h6 { margin:0; padding:10px 12px; border:1px solid rgba(96,165,250,0.28); border-bottom:0; border-radius:8px 8px 0 0; background:rgba(59,130,246,0.11); color:#dbeafe; font-size:13px; }
+    .audit-desktop-count-list { display:grid; border:1px solid var(--border); border-radius:0 0 8px 8px; overflow:hidden; }
+    .audit-desktop-count-row { padding:12px; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02); }
+    .audit-desktop-count-row:last-child { border-bottom:0; }
+    .audit-desktop-count-head strong,.audit-desktop-count-head span { display:block; }
+    .audit-desktop-count-head span { margin-top:3px; color:var(--muted); font-size:11px; }
+    .audit-desktop-count-fields { display:grid; grid-template-columns:repeat(3,minmax(150px,1fr)); gap:8px; margin-top:9px; }
+    .audit-desktop-count-fields label,.audit-expiry-row label { color:var(--muted); font-size:11px; font-weight:800; }
+    .audit-desktop-count-fields input { margin-top:4px; }
+    .audit-desktop-expiry { margin-top:10px; padding:10px; border:1px solid rgba(245,158,11,0.3); border-radius:8px; background:rgba(245,158,11,0.06); }
+    .audit-desktop-expiry > .subtext { display:block; margin-top:6px; }
+    @media (max-width:760px){.audit-desktop-count-fields{grid-template-columns:1fr;}}
     .audit-category-picker { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.025); }
     .audit-category-picker label { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid rgba(255,255,255,0.08); border-radius:999px; background:rgba(255,255,255,0.035); color:var(--text); font-size:12px; font-weight:800; cursor:pointer; }
     .audit-category-picker input { width:14px; height:14px; margin:0; }
@@ -5938,7 +5949,7 @@
       }
       const { data, error } = await supabase
         .from('inventory_audit_items')
-        .select('id, audit_id, stock_location_id, product_id, batch_id, book_quantity, counted_quantity, difference_quantity, unit_cost, difference_value, note, counted_note, counted_at, products(id, name, sku, base_unit)')
+        .select('id, audit_id, stock_location_id, product_id, batch_id, book_quantity, counted_quantity, counted_package_id, counted_package_count, counted_loose_quantity, difference_quantity, unit_cost, difference_value, note, counted_note, counted_at, products(id, name, sku, base_unit)')
         .in('audit_id', ids)
         .order('id', { ascending: true })
       vehicleInventoryAuditItems = error ? [] : (data ?? [])
@@ -6023,8 +6034,8 @@
       const valueTotal = Number(audit.difference_value_total || items.reduce((sum, item) => sum + Number(item.difference_value || 0), 0))
       currentDetailContext = { type: 'audit', auditId }
       detailMoveBtn.style.display = 'none'
-      detailEditBtn.style.display = ['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? '' : 'none'
-      detailEditBtn.textContent = 'Opravit počty'
+      detailEditBtn.style.display = ['assigned', 'counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? '' : 'none'
+      detailEditBtn.textContent = audit.status === 'assigned' ? 'Spočítat na PC' : 'Opravit počty'
       detailModalTitle.textContent = `Inventura #${audit.id}`
       detailModalContent.innerHTML = `
         <div class="detail-spreadsheet">
@@ -6054,6 +6065,55 @@
       `
       openDetailModal()
     }
+    async function openAssignedAuditDesktopCount(audit, items) {
+      const itemIds = items.map((item) => item.id)
+      let expiryRows = []
+      if (itemIds.length) {
+        const { data, error } = await supabase.from('inventory_audit_expiry_counts').select('*').in('audit_item_id', itemIds).order('id')
+        if (error) throw error
+        expiryRows = data || []
+      }
+      const sortedItems = [...items].sort((a, b) => {
+        const productA = getAuditItemProduct(a)
+        const productB = getAuditItemProduct(b)
+        const categoryDiff = getAuditCategoryRank(productA) - getAuditCategoryRank(productB)
+        if (categoryDiff) return categoryDiff
+        return normalizeText(productA.name || '').localeCompare(normalizeText(productB.name || ''), 'cs')
+      })
+      const groups = []
+      sortedItems.forEach((item) => {
+        const product = getAuditItemProduct(item)
+        const label = getProductCategoryLabel(getAuditCategoryKind(product)) || 'Ostatní'
+        let group = groups.find((row) => row.label === label)
+        if (!group) groups.push(group = { label, items: [] })
+        group.items.push(item)
+      })
+      const renderItem = (item) => {
+        const product = getAuditItemProduct(item)
+        const pack = getAuditDefaultPackage(product)
+        const savedExpiries = expiryRows.filter((row) => String(row.audit_item_id) === String(item.id)).map((row) => ({
+          date: row.expiry_date || '', packages: row.package_count, loose: row.loose_quantity, unknown: row.expiry_unknown
+        }))
+        const packageValue = item.counted_at ? Number(item.counted_package_count || 0) : ''
+        const looseValue = item.counted_at ? Number(item.counted_loose_quantity ?? item.counted_quantity ?? 0) : ''
+        const initialExpiries = savedExpiries.length ? savedExpiries : [{ date: '', packages: '', loose: '', unknown: false }]
+        return `<div class="audit-desktop-count-row" data-desktop-audit-item data-item-id="${escapeHtml(String(item.id))}" data-product-id="${escapeHtml(String(item.product_id))}" data-book-quantity="${escapeHtml(String(item.book_quantity || 0))}" data-unit-cost="${escapeHtml(String(item.unit_cost || getStockUnitCost(product) || 0))}">
+          <div class="audit-desktop-count-head"><div><strong>${escapeHtml(product.name || `Produkt ${item.product_id}`)}</strong><span>${escapeHtml([product.sku ? `SKU ${product.sku}` : '', `evidence ${formatQuantityValue(item.book_quantity || 0, product.base_unit || 'ks')}`].filter(Boolean).join(' · '))}</span></div></div>
+          <div class="audit-desktop-count-fields">
+            ${pack ? `<label>Celá balení<input data-desktop-audit-packages type="number" step="0.001" min="0" value="${escapeHtml(packageValue)}"><span>${escapeHtml(`${pack.pack?.package_name || 'balení'} × ${formatQuantityValue(pack.factor, getTransferBaseUnit(product))}`)}</span></label>` : ''}
+            <label>Volné ${escapeHtml(getTransferBaseUnit(product))}<input data-desktop-audit-loose type="number" step="0.001" min="0" value="${escapeHtml(looseValue)}"></label>
+            <label>Poznámka<input data-desktop-audit-note type="text" value="${escapeHtml(getAuditManualCountNote(item))}" placeholder="Nepovinné"></label>
+          </div>
+          ${isAuditExpiryTracked(product) ? `<div class="audit-desktop-expiry"><strong>Rozdělení podle expirací</strong><div data-audit-expiry-list>${initialExpiries.map((expiry) => renderAuditExpiryRow(expiry, product, pack)).join('')}</div><button class="mini-btn" type="button" data-audit-expiry-add>+ další expirace</button><span class="subtext">Součet expirací musí odpovídat napočítanému množství.</span></div>` : ''}
+        </div>`
+      }
+      currentDetailContext = { type: 'audit-edit', auditId: audit.id }
+      detailMoveBtn.style.display = 'none'
+      detailEditBtn.style.display = 'none'
+      detailModalTitle.textContent = `Počítání inventury #${audit.id}`
+      detailModalContent.innerHTML = `<div class="detail-spreadsheet"><section class="detail-spreadsheet-title"><div><h4>Inventura skladu #${escapeHtml(String(audit.id))}</h4><p>${escapeHtml([audit.audit_date || '', getAuditTargetLabel(audit)].filter(Boolean).join(' · '))}</p></div><span class="badge warn">Počítání na PC</span></section><section class="detail-sheet-section"><div class="status-line">Vyplň celá balení a volné kusy. U zboží s expirací rozděl stejné množství také podle jednotlivých dat.</div>${groups.map((group) => `<div class="audit-detail-category"><h6>${escapeHtml(group.label)} · ${group.items.length} položek</h6><div class="audit-desktop-count-list">${group.items.map(renderItem).join('')}</div></div>`).join('')}<div class="action-row" style="justify-content:flex-end;margin-top:14px;"><button class="btn secondary" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zpět</button><button class="btn" type="button" data-detail-action="save-audit-correction" data-audit-id="${escapeHtml(String(audit.id))}">Uložit počty</button></div></section></div>`
+      openDetailModal()
+    }
     function openVehicleAuditCorrection(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
       if (!audit) {
@@ -6062,6 +6122,14 @@
         return
       }
       const items = getVehicleAuditItems(auditId)
+      if (audit.status === 'assigned') {
+        openAssignedAuditDesktopCount(audit, items).catch((error) => {
+          console.error(error)
+          auditStatus.textContent = `Počítání na PC se nepodařilo otevřít: ${error.message}`
+          auditStatus.className = 'status-line error'
+        })
+        return
+      }
       if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) {
         auditStatus.textContent = 'Tahle inventura zatím nemá uložené fyzické počty k opravě.'
         auditStatus.className = 'status-line error'
@@ -6121,10 +6189,88 @@
       `
       openDetailModal()
     }
+    async function saveAssignedAuditDesktopCount(audit, items) {
+      const rows = [...detailModalContent.querySelectorAll('[data-desktop-audit-item]')]
+      if (rows.length !== items.length) throw new Error('Nenačetly se všechny položky inventury.')
+      const now = new Date().toISOString()
+      const counts = rows.map((row) => {
+        const item = items.find((candidate) => String(candidate.id) === String(row.dataset.itemId))
+        if (!item) throw new Error('Položka inventury už není dostupná.')
+        const product = getAuditItemProduct(item)
+        const packageInput = row.querySelector('[data-desktop-audit-packages]')
+        const looseInput = row.querySelector('[data-desktop-audit-loose]')
+        if ((packageInput && packageInput.value === '') && (!looseInput || looseInput.value === '')) throw new Error(`Doplň množství u položky ${product.name || item.product_id}. Pro nulový stav zadej 0.`)
+        const packageRaw = packageInput?.value || ''
+        const looseRaw = looseInput?.value || ''
+        const counted = auditDualCountToBase(product, packageRaw, looseRaw)
+        if (!Number.isFinite(counted) || counted < 0) throw new Error(`Neplatné množství u položky ${product.name || item.product_id}.`)
+        const pack = getAuditDefaultPackage(product)
+        const expiryCounts = [...row.querySelectorAll('[data-audit-expiry-row]')].map((expiryRow) => ({
+          expiryDate: expiryRow.querySelector('[data-audit-expiry-date]')?.value || null,
+          expiryUnknown: Boolean(expiryRow.querySelector('[data-audit-expiry-unknown]')?.checked),
+          packageCount: Number(String(expiryRow.querySelector('[data-audit-expiry-packages]')?.value || 0).replace(',', '.')),
+          looseQuantity: Number(String(expiryRow.querySelector('[data-audit-expiry-loose]')?.value || 0).replace(',', '.')),
+          quantityBaseUnits: auditDualCountToBase(product, expiryRow.querySelector('[data-audit-expiry-packages]')?.value || '', expiryRow.querySelector('[data-audit-expiry-loose]')?.value || '')
+        })).filter((expiry) => expiry.quantityBaseUnits > 0)
+        if (isAuditExpiryTracked(product) && counted > 0) {
+          if (!expiryCounts.length) throw new Error(`Rozděl množství podle expirací u položky ${product.name || item.product_id}.`)
+          const invalid = expiryCounts.find((expiry) => (!expiry.expiryDate && !expiry.expiryUnknown) || !Number.isFinite(expiry.quantityBaseUnits))
+          if (invalid) throw new Error(`Doplň datum expirace nebo označ neznámou expiraci u položky ${product.name || item.product_id}.`)
+          const expiryTotal = expiryCounts.reduce((sum, expiry) => sum + expiry.quantityBaseUnits, 0)
+          if (Math.abs(expiryTotal - counted) > 0.0001) throw new Error(`U položky ${product.name || item.product_id} je napočítáno ${counted}, ale mezi expirace rozděleno ${expiryTotal}.`)
+        }
+        const book = Number(row.dataset.bookQuantity || item.book_quantity || 0)
+        const unitCost = Number(row.dataset.unitCost || item.unit_cost || 0)
+        const difference = Number((counted - book).toFixed(3))
+        return { item, product, pack, counted, book, unitCost, difference, packageCount: Number(String(packageRaw || 0).replace(',', '.')), looseQuantity: Number(String(looseRaw || 0).replace(',', '.')), expiryCounts, note: row.querySelector('[data-desktop-audit-note]')?.value?.trim() || '' }
+      })
+      for (const count of counts) {
+        const { error: itemError } = await supabase.from('inventory_audit_items').update({
+          counted_quantity: count.counted,
+          difference_quantity: count.difference,
+          unit_cost: count.unitCost || null,
+          difference_value: Number((count.difference * count.unitCost).toFixed(2)),
+          counted_package_id: count.pack?.pack?.id || null,
+          counted_package_count: count.packageCount,
+          counted_loose_quantity: count.looseQuantity,
+          counted_note: count.note || null,
+          counted_at: now
+        }).eq('id', count.item.id)
+        if (itemError) throw itemError
+        const { error: deleteError } = await supabase.from('inventory_audit_expiry_counts').delete().eq('audit_item_id', count.item.id)
+        if (deleteError) throw deleteError
+        if (count.expiryCounts.length) {
+          const { error: expiryError } = await supabase.from('inventory_audit_expiry_counts').insert(count.expiryCounts.map((expiry) => ({
+            audit_item_id: count.item.id,
+            product_id: count.item.product_id,
+            package_id: count.pack?.pack?.id || null,
+            package_count: expiry.packageCount,
+            loose_quantity: expiry.looseQuantity,
+            quantity_base_units: expiry.quantityBaseUnits,
+            expiry_date: expiry.expiryDate,
+            expiry_unknown: expiry.expiryUnknown
+          })))
+          if (expiryError) throw expiryError
+        }
+      }
+      const totals = counts.reduce((sum, count) => ({ book: sum.book + count.book, counted: sum.counted + count.counted, diff: sum.diff + count.difference, value: sum.value + count.difference * count.unitCost }), { book: 0, counted: 0, diff: 0, value: 0 })
+      const { error: auditError } = await supabase.from('inventory_audits').update({
+        status: 'counted',
+        book_quantity_total: Number(totals.book.toFixed(3)),
+        counted_quantity_total: Number(totals.counted.toFixed(3)),
+        difference_quantity_total: Number(totals.diff.toFixed(3)),
+        difference_value_total: Number(totals.value.toFixed(2)),
+        counted_at: now
+      }).eq('id', audit.id)
+      if (auditError) throw auditError
+      await loadInventoryV13Overview()
+      openVehicleAuditDetail(audit.id)
+    }
     async function saveVehicleAuditCorrection(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
       if (!audit) throw new Error('Inventura už není v načteném seznamu.')
       const items = getVehicleAuditItems(auditId)
+      if (audit.status === 'assigned') return saveAssignedAuditDesktopCount(audit, items)
       if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) throw new Error('Tahle inventura zatím nejde opravovat.')
       const inputs = [...detailModalContent.querySelectorAll('[data-audit-correction-counted]')]
       if (!inputs.length) throw new Error('Není co uložit.')
@@ -11401,6 +11547,21 @@
       item.prepared_quantity = Number(qtyInput.value || 0)
     })
     detailModalContent.addEventListener('click', async (event) => {
+      const expiryAdd = event.target.closest('[data-audit-expiry-add]')
+      if (expiryAdd) {
+        const itemRow = expiryAdd.closest('[data-desktop-audit-item]')
+        const product = productsV13.find((item) => String(item.id) === String(itemRow?.dataset.productId || ''))
+        const list = itemRow?.querySelector('[data-audit-expiry-list]')
+        if (product && list) list.insertAdjacentHTML('beforeend', renderAuditExpiryRow({}, product, getAuditDefaultPackage(product)))
+        return
+      }
+      const expiryRemove = event.target.closest('[data-audit-expiry-remove]')
+      if (expiryRemove) {
+        const list = expiryRemove.closest('[data-audit-expiry-list]')
+        const rows = list?.querySelectorAll('[data-audit-expiry-row]') || []
+        if (rows.length > 1) expiryRemove.closest('[data-audit-expiry-row]')?.remove()
+        return
+      }
       const button = event.target.closest('[data-detail-action]')
       if (!button || !currentDetailContext) return
       if (button.dataset.detailAction === 'open-audit') {
@@ -11451,6 +11612,15 @@
       if (button.dataset.detailAction === 'refresh' && currentDetailContext.type === 'v13') {
         await loadInventoryV13Overview()
         openV13ProductDetail(currentDetailContext.productId)
+      }
+    })
+    detailModalContent.addEventListener('change', (event) => {
+      const unknown = event.target.closest('[data-audit-expiry-unknown]')
+      if (!unknown) return
+      const dateInput = unknown.closest('[data-audit-expiry-row]')?.querySelector('[data-audit-expiry-date]')
+      if (dateInput) {
+        dateInput.disabled = unknown.checked
+        if (unknown.checked) dateInput.value = ''
       }
     })
     detailEditBtn.addEventListener('click', () => {
