@@ -2336,7 +2336,7 @@
             <input type="number" step="1" min="0" data-expiry-quantity value="${escapeHtml(String(Number(quantity || 0)))}" ${disabled ? 'disabled' : ''} />
           </div>
           <div class="field">
-            <label>Expirace *</label>
+            <label>Expirace</label>
             <input type="date" data-expiry-date value="${escapeHtml(expiryDate || '')}" ${disabled ? 'disabled' : ''} />
           </div>
           ${!disabled && removable ? '<button class="btn secondary small" type="button" data-action="remove-expiry-allocation">Odebrat</button>' : '<span></span>'}
@@ -2725,10 +2725,7 @@
         ...line,
         unitCost: line.receivedQuantity > 0 ? Number((line.costTotal / line.receivedQuantity).toFixed(4)) : null
       }))
-      const requiresReceiptDetails = groupedLines.some((line) => {
-        const product = getProductById(line.productId)
-        return productNeedsExpiry(product) || productNeedsBatch(product)
-      })
+      const requiresReceiptDetails = false
       const shouldReceiveNow = autoReceive && !requiresReceiptDetails
       const importSource = currentInvoiceImport.sourceType || (currentInvoiceImport.lines.some((line) => line.supplierCode || line.ean) ? 'ISDOC XML' : '')
       const sourceNote = importSource ? `Importováno z ${importSource}.` : 'Ručně zadaný doklad.'
@@ -3045,7 +3042,7 @@
           <div class="receipt-expiry-grid">
             <div>
               <strong>${escapeHtml(productExpiryLabel(product))}</strong>
-              <div class="expiry-hint">${escapeHtml(editOnly ? 'Uprav datum u jednotlivých částí příjmu.' : 'Rozděl přijaté množství podle expirací. Součet musí odpovídat skutečně přijatému množství.')}</div>
+              <div class="expiry-hint">${escapeHtml(editOnly ? 'Expiraci můžeš doplnit nebo upravit; lze ji také nechat na skladovou inventuru.' : 'Nepovinné: expiraci můžeš zadat teď, nebo ji doplnit později při skladové inventuře.')}</div>
             </div>
             <div data-expiry-allocations-index="${index}">
               ${receiptExpiryAllocationHtml(index, { quantity: defaultReceiptQuantity, disabled: readOnly, removable: false })}
@@ -3365,7 +3362,9 @@
       const needsExpiry = productNeedsExpiry(product)
       const needsBatch = productNeedsBatch(product)
       const hasManualBatchData = Boolean(expiryDate || lotCode.trim())
-      if (!needsExpiry && !needsBatch && !hasManualBatchData) return null
+      // Bez zadané expirace přijmeme zásobu nezařazenou do šarže. Skladová
+      // inventura ji později rozdělí podle skutečně nalezených expirací.
+      if (!hasManualBatchData) return null
       if (needsExpiry && !expiryDate) throw new Error(`Doplň expiraci u položky ${product?.name || 'zásoby'}.`)
       if (needsBatch && !lotCode.trim()) throw new Error(`Doplň šarži u položky ${product?.name || 'zásoby'}.`)
       const payload = {
@@ -3439,8 +3438,10 @@
         const product = productForReceiptItem(item)
         if (!productNeedsExpiry(product)) return
         const allocations = line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
-        if (!allocations.length || allocations.some((allocation) => !allocation.expiryDate)) {
-          throw new Error(`Rozděl přijaté množství podle expirací u položky ${product.name || item.product_name || 'zásoby'}.`)
+        const datedAllocations = allocations.filter((allocation) => allocation.expiryDate)
+        if (!datedAllocations.length) return
+        if (datedAllocations.length !== allocations.length) {
+          throw new Error(`Buď doplň všechny expirace u položky ${product.name || item.product_name || 'zásoby'}, nebo je ponech prázdné pro skladovou inventuru.`)
         }
         const allocatedQuantity = allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0)
         if (Math.abs(allocatedQuantity - line.received) > 0.0001) {
@@ -3453,8 +3454,9 @@
         if (itemError) throw itemError
         if (line.received > 0) {
           const product = productForReceiptItem(item)
-          const allocations = productNeedsExpiry(product)
-            ? line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
+          const enteredAllocations = line.expiryAllocations.filter((allocation) => allocation.quantity > 0 && allocation.expiryDate)
+          const allocations = productNeedsExpiry(product) && enteredAllocations.length
+            ? enteredAllocations
             : [{ quantity: line.received, expiryDate: '' }]
           for (const allocation of allocations) {
             const batchId = await ensureInventoryBatch(product, {
@@ -3600,8 +3602,10 @@
         if (Number(line.received || 0) <= 0) continue
         if (!productNeedsExpiry(product)) continue
         const allocations = line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
-        if (!allocations.length || allocations.some((allocation) => !allocation.expiryDate)) {
-          throw new Error(`Doplň expirace u položky ${product.name || item.product_name || 'zásoby'}.`)
+        const datedAllocations = allocations.filter((allocation) => allocation.expiryDate)
+        if (!datedAllocations.length) continue
+        if (datedAllocations.length !== allocations.length) {
+          throw new Error(`Buď doplň všechny expirace u položky ${product.name || item.product_name || 'zásoby'}, nebo je ponech prázdné pro skladovou inventuru.`)
         }
         let movements = currentReceiptMovementMap.get(String(line.index)) || []
         if (!movements.length) {
