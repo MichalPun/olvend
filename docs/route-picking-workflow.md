@@ -21,6 +21,15 @@ Potřeba k vychystání na vozidlo je:
 
 `součet potřeb automatů na trase − použitelný stav vozidla`
 
+## Pravidlo celého balení
+
+Nové celé balení se doporučí naložit pouze tehdy, když se na trase očekává využití alespoň **75 % balení**.
+
+- Potřeba 1 ks při balení 42 ks se zobrazí jako možná potřeba, ale systém doporučí nenakládat.
+- Plná potřebná balení se naloží vždy.
+- U posledního dalšího balení se samostatně posoudí jeho využití; pokud je pod 75 %, zůstane jen jako viditelné upozornění.
+- Možná potřeba se nesmí skrýt, aby dispečer viděl riziko nedostatku a mohl rozhodnutí ručně změnit.
+
 ## Čas příjezdu
 
 Při vytvoření trasy se zadává **předpokládaný čas odjezdu**. Předpokládaný příjezd se počítá podle data a času odjezdu, pořadí zastávky, odhadované doby jízdy a kumulované doby obsluhy předchozích zastávek. Každá zastávka proto může mít jiný prodejní horizont.

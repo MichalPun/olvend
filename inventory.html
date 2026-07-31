@@ -5490,9 +5490,9 @@
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
           const canCarryDeferredNeed = pendingBeforeTarget.pending > 0.0001 || projectedVehicleBeforeTarget <= 0.0001
-          const minRatio = 0
+          const minRatio = 0.75
           const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
-          let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, 0)
+          let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
           let skippedDeferredCarry = false
           const tripUsageRatio = packagePlan.approvedQty > 0
             ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
@@ -5571,9 +5571,11 @@
           }
           if (estimate.samples <= 0) reasons.push('telemetrie neukazuje potřebu pro tuto trasu')
           if (packagePlan.blockedByTripUsage) {
-            reasons.push(`nenakládat, z nového balení by se na jízdě využilo jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} %`)
+            reasons.push(`možná potřeba ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, ale z nového balení by se na trase využilo jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} %`)
           } else if (packagePlan.blockedQty > 0) {
-            reasons.push(`další balení nenakládat, zbytek ${formatQuantityValue(deferredAfterLoadQty || requiredFromNew, product.base_unit || 'ks')} by využil jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} % balení`)
+            reasons.push(approvedQty > 0
+              ? `další balení jen jako možnost: zbytek ${formatQuantityValue(deferredAfterLoadQty || requiredFromNew, product.base_unit || 'ks')} využije pouze ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} % balení`
+              : `možná potřeba ${formatQuantityValue(requiredFromNew, product.base_unit || 'ks')}, nenakládat: využití balení by bylo jen ${(packagePlan.blockedUsageRatio * 100).toFixed(0)} %`)
           }
           if (skippedDeferredCarry) {
             reasons.push('odklad nezakládám, po skutečné jízdě zůstává položka na autě')
@@ -5625,6 +5627,7 @@
             suggestedQty,
             usageRatio,
             minRatio,
+            packagePlanBlockedUsageRatio: Number(packagePlan.blockedUsageRatio || 0),
             approvedPackageCount,
             approvedQty,
             deferredAfterLoadQty,
@@ -5657,6 +5660,8 @@
           ? `${row.approvedPackageCount} bal. / ${formatQuantityValue(row.approvedQty, unit)}`
           : row.missingPackage
             ? 'chybí balení'
+            : row.status === 'blocked' && row.requiredFromNew > 0
+              ? `možná ${formatQuantityValue(row.requiredFromNew, unit)} · nenakládat`
             : row.suggestedQty > 0
               ? 'nenakládat'
               : 'nenakládat'
@@ -5672,7 +5677,7 @@
             <td data-label="Potřeba při příjezdu"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([`chybí nyní ${formatQuantityValue(row.routeForecast?.missingNow || 0, unit)}`, `prodej do příjezdu ${formatQuantityValue(row.routeForecast?.forecastSales || 0, unit)}`, `donaložit ${formatQuantityValue(row.requiredFromNew, unit)}`].join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
-            <td data-label="Využití nového"><strong>${escapeHtml(row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
+            <td data-label="Využití nového"><strong>${escapeHtml(row.status === 'blocked' ? `${(row.packagePlanBlockedUsageRatio * 100).toFixed(0)} %` : row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">minimum ${(row.minRatio * 100).toFixed(0)} %</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
         `
@@ -5690,7 +5695,7 @@
         { label: 'Doporučeno', value: recommended.length, note: `${recommended.reduce((sum, row) => sum + row.approvedQty, 0).toFixed(0)} ks v celých baleních.` },
         { label: 'Chybí balení', value: missingPackages.length, note: 'Doplň počet ks v balení v kartě zásoby.' },
         { label: 'Rizika inventury', value: risks.length, note: 'Zůstatky na autě bez pohybu.' },
-        { label: 'Nenakládat', value: blocked.length, note: 'Nové celé balení by se na jízdě nevyužilo dost.' },
+        { label: 'Možná potřeba', value: blocked.length, note: 'Nenakládat: využití nového balení je pod 75 %.' },
         { label: autoLoadOnlyActionable?.checked ? 'Zobrazeno' : 'Řádků celkem', value: visibleRows.length, note: autoLoadOnlyActionable?.checked ? `Skryto bez akce: ${rows.length - visibleRows.length}.` : 'Aktivní sortiment s historií nebo stavem.' }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
       if (autoLoadStatus) {
