@@ -2411,10 +2411,11 @@
         let waitingMinutes = 0
         let openingStatus = stop.routeAccessStatus === 'needs_confirmation' ? 'needs_confirmation' : (stop.serviceWindow ? 'unverified' : 'unknown')
 
+        const serviceMinutes = Math.max(0, Number(stop.estimatedServiceMinutes) || 0)
         if (window) {
           const minuteOfDay = cursor.getHours() * 60 + cursor.getMinutes()
           const intervals = window.intervals?.length ? window.intervals : [window]
-          const usableInterval = intervals.find((interval) => minuteOfDay <= interval.closesAt)
+          const usableInterval = intervals.find((interval) => Math.max(minuteOfDay, interval.opensAt) + serviceMinutes <= interval.closesAt)
           openingStatus = usableInterval ? 'open' : 'closed'
           if (usableInterval && minuteOfDay < usableInterval.opensAt) {
             waitingMinutes = usableInterval.opensAt - minuteOfDay
@@ -2425,7 +2426,7 @@
 
         totalWaitingMinutes += waitingMinutes
         const arrival = new Date(cursor)
-        cursor.setMinutes(cursor.getMinutes() + Math.max(0, Number(stop.estimatedServiceMinutes) || 0))
+        cursor.setMinutes(cursor.getMinutes() + serviceMinutes)
         return {
           ...stop,
           driveMinutesFromPrevious: legDriveMinutes,
@@ -2438,6 +2439,29 @@
       })
 
       return { ...plan, orderedStops, totalWaitingMinutes }
+    }
+
+    function getRouteFeasibility(plan) {
+      const scheduled = applyRouteSchedule(plan)
+      const inaccessibleStops = (scheduled?.orderedStops || []).filter((stop) => stop.openingStatus === 'closed')
+      const timing = getRouteTiming(scheduled)
+      return {
+        plan: scheduled,
+        inaccessibleStops,
+        fitsShift: timing.totalMinutes <= timing.maximumMinutes,
+        timing,
+      }
+    }
+
+    function assertRouteFeasible(plan) {
+      const feasibility = getRouteFeasibility(plan)
+      if (feasibility.inaccessibleStops.length) {
+        throw new Error(`Do otevírací doby se nevejde: ${feasibility.inaccessibleStops.map((stop) => stop.name).join(', ')}. Uprav výběr nebo čas odjezdu.`)
+      }
+      if (!feasibility.fitsShift) {
+        throw new Error(`Vybrané zastávky se nevejdou do limitu směny o ${formatDuration(Math.abs(feasibility.timing.remainingMinutes))}. Odeber zastávku nebo změň limit.`)
+      }
+      return feasibility.plan
     }
 
     function formatStopCount(count) {
@@ -3647,30 +3671,58 @@
       const orderedStops = []
       let current = { latitude: startPoint.latitude, longitude: startPoint.longitude }
       let totalAirKm = 0
+      const planningDate = routeDateInput.value
+      const departure = routeDepartureTimeInput.value || '07:00'
+      const cursor = new Date(`${planningDate}T${departure}:00`)
+      cursor.setMinutes(cursor.getMinutes() + Math.max(0, Number(preparationMinutesInput.value) || 0))
 
       while (remaining.length) {
-        let bestIndex = 0
+        let bestIndex = -1
         let bestScore = Infinity
+        let bestTiming = null
 
         remaining.forEach((stop, index) => {
-          const distanceKm = haversineKm(current, stop)
-          const score = distanceKm - calcPriorityBonus(stop, biasMode)
+          const airKm = haversineKm(current, stop)
+          const roadKm = airKm * ROAD_FACTOR
+          const driveMinutes = Math.round((roadKm / AVG_SPEED_KMH) * 60)
+          const arrival = new Date(cursor)
+          arrival.setMinutes(arrival.getMinutes() + driveMinutes)
+          const arrivalMinute = arrival.getHours() * 60 + arrival.getMinutes()
+          const window = stop.accessWindow || parseOpeningWindow(stop.serviceWindow, planningDate)
+          const serviceMinutes = estimateServiceMinutes(stop)
+          let waitingMinutes = 0
+          let deadlineSlack = 720
+
+          if (window) {
+            const intervals = window.intervals?.length ? window.intervals : [window]
+            const interval = intervals.find((item) => Math.max(arrivalMinute, item.opensAt) + serviceMinutes <= item.closesAt)
+            if (!interval) return
+            waitingMinutes = Math.max(0, interval.opensAt - arrivalMinute)
+            deadlineSlack = interval.closesAt - (arrivalMinute + waitingMinutes + serviceMinutes)
+          }
+
+          const score = driveMinutes + waitingMinutes + (deadlineSlack * 0.015) - calcPriorityBonus(stop, biasMode)
 
           if (score < bestScore) {
             bestScore = score
             bestIndex = index
+            bestTiming = { airKm, roadKm, driveMinutes, waitingMinutes, serviceMinutes }
           }
         })
 
+        if (bestIndex < 0 || !bestTiming) {
+          throw new Error(`Do otevírací doby už nelze vložit: ${remaining.map((stop) => stop.name).join(', ')}. Zkus dřívější odjezd nebo méně zastávek.`)
+        }
+
         const [nextStop] = remaining.splice(bestIndex, 1)
-        const legKm = haversineKm(current, nextStop)
-        totalAirKm += legKm
+        totalAirKm += bestTiming.airKm
         orderedStops.push({
           ...nextStop,
-          distanceFromPreviousKm: legKm * ROAD_FACTOR,
-          driveMinutesFromPrevious: Math.round(((legKm * ROAD_FACTOR) / AVG_SPEED_KMH) * 60),
-          estimatedServiceMinutes: estimateServiceMinutes(nextStop),
+          distanceFromPreviousKm: bestTiming.roadKm,
+          driveMinutesFromPrevious: bestTiming.driveMinutes,
+          estimatedServiceMinutes: bestTiming.serviceMinutes,
         })
+        cursor.setMinutes(cursor.getMinutes() + bestTiming.driveMinutes + bestTiming.waitingMinutes + bestTiming.serviceMinutes)
         current = nextStop
       }
 
@@ -3682,7 +3734,7 @@
       const estimatedDriveMinutes = Math.round((estimatedDistanceKm / AVG_SPEED_KMH) * 60)
       const estimatedServiceMinutes = orderedStops.reduce((sum, stop) => sum + stop.estimatedServiceMinutes, 0)
 
-      return {
+      return assertRouteFeasible({
         orderedStops,
         startPoint,
         returnToStart: returnMode.value === 'return',
@@ -3691,7 +3743,7 @@
         estimatedServiceMinutes,
         provider: 'heuristic',
         createdAt: new Date().toISOString(),
-      }
+      })
     }
 
     function recalculatePlanLegs(plan, orderedStops) {
@@ -4957,7 +5009,7 @@
         let plan
 
         try {
-          plan = await optimizeStopsWithGoogle()
+          plan = assertRouteFeasible(await optimizeStopsWithGoogle())
           engineBadge.textContent = 'Google'
           engineBadge.className = 'route-badge live'
           setStatus('Pořadí je spočítané přes Google.', 'success')
@@ -4974,9 +5026,12 @@
           }
 
           plan = optimizeStops()
-          engineBadge.textContent = 'Odhad'
-          engineBadge.className = 'route-badge heuristic'
-          setStatus(`Google teď není dostupný, takže jsem použil přibližný výpočet. ${message}`, 'warning')
+          const wasTimeWindowConflict = message.includes('otevírací doby') || message.includes('limitu směny')
+          engineBadge.textContent = wasTimeWindowConflict ? 'Časová okna' : 'Odhad'
+          engineBadge.className = wasTimeWindowConflict ? 'route-badge window' : 'route-badge heuristic'
+          setStatus(wasTimeWindowConflict
+            ? 'Původní pořadí se nevešlo do otevíracích dob, proto jsem zastávky přeuspořádal podle dostupnosti.'
+            : `Google teď není dostupný, takže jsem použil přibližný výpočet. ${message}`, 'warning')
         }
 
         try {
