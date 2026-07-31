@@ -10,13 +10,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css'"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
+  <link rel="stylesheet" href="./vendor/leaflet/leaflet.css?v=1.9.4" />
   <title>OLVEND | Trasy</title>
 
   <style>
@@ -1462,9 +1456,9 @@
                       <div class="compact-field">
                         <label for="sourceFilter">Rozsah</label>
                         <select id="sourceFilter">
+                          <option value="recommended">Dostupné pro zvolený den</option>
                           <option value="all_active">Všechny zastávky</option>
                           <option value="open_service">Jen otevřené servisy</option>
-                          <option value="recommended">Doporučené provozem</option>
                           <option value="assigned_service">Servisy přiřazené technikovi</option>
                           <option value="unassigned_service">Servisy bez technika</option>
                           <option value="today_window">Jen dnešní okna</option>
@@ -1571,12 +1565,7 @@
   </div>
 
   <script src="./sidebar.js?v=20260712lightfix2"></script>
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <script src="./vendor/leaflet/leaflet.js?v=1.9.4"></script>
   <script type="module">
     import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js'
 
@@ -2051,7 +2040,79 @@
 
     function matchesServiceWindow(serviceWindow, dateString) {
       if (!serviceWindow) return false
+      const parsed = parseOpeningWindow(serviceWindow, dateString)
+      if (parsed) return true
       return String(serviceWindow).toUpperCase().includes(weekdayToken(dateString))
+    }
+
+    const CZECH_DAY_INDEX = { ne: 0, po: 1, ut: 2, st: 3, ct: 4, pa: 5, so: 6 }
+
+    function normalizeOpeningText(value) {
+      return normalizeText(value)
+        .replace(/pondeli/g, 'po').replace(/utery/g, 'ut').replace(/streda/g, 'st')
+        .replace(/ctvrtek/g, 'ct').replace(/patek/g, 'pa').replace(/sobota/g, 'so').replace(/nedele/g, 'ne')
+        .replace(/[–—]/g, '-')
+    }
+
+    function parseClockMinutes(value) {
+      const match = String(value || '').match(/^(\d{1,2})(?::(\d{2}))?$/)
+      if (!match) return null
+      const hours = Number(match[1])
+      const minutes = Number(match[2] || 0)
+      if (hours > 24 || minutes > 59 || (hours === 24 && minutes !== 0)) return null
+      return hours * 60 + minutes
+    }
+
+    function openingDaysFromText(text) {
+      const days = new Set()
+      const dayMatches = [...text.matchAll(/\b(po|ut|st|ct|pa|so|ne)(?:\s*-\s*(po|ut|st|ct|pa|so|ne))?\b/g)]
+      dayMatches.forEach((match) => {
+        const start = CZECH_DAY_INDEX[match[1]]
+        const end = CZECH_DAY_INDEX[match[2] || match[1]]
+        let current = start
+        for (let guard = 0; guard < 7; guard += 1) {
+          days.add(current)
+          if (current === end) break
+          current = (current + 1) % 7
+        }
+      })
+      return days
+    }
+
+    function parseOpeningWindow(value, dateString) {
+      const raw = String(value || '').trim()
+      if (!raw || isLegacyImportedServiceWindow(raw)) return null
+      const normalized = normalizeOpeningText(raw)
+      const days = openingDaysFromText(normalized)
+      const date = new Date(`${dateString}T12:00:00`)
+      if (days.size && !days.has(date.getDay())) return null
+      const timeMatch = normalized.match(/(\d{1,2}(?::\d{2})?)\s*-\s*(\d{1,2}(?::\d{2})?)/)
+      if (!timeMatch) return null
+      const opensAt = parseClockMinutes(timeMatch[1])
+      const closesAt = parseClockMinutes(timeMatch[2])
+      if (opensAt == null || closesAt == null) return null
+      return { opensAt, closesAt, label: raw }
+    }
+
+    function getStructuredAccessWindow(location, dateString) {
+      const hours = location?.route_access_hours
+      if (!hours || typeof hours !== 'object') return null
+      const key = ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa'][new Date(`${dateString}T12:00:00`).getDay()]
+      const intervals = Array.isArray(hours[key]) ? hours[key] : []
+      const first = intervals[0]
+      if (!Array.isArray(first) || first.length < 2) return null
+      const opensAt = parseClockMinutes(first[0])
+      const closesAt = parseClockMinutes(first[1])
+      if (opensAt == null || closesAt == null) return null
+      return { opensAt, closesAt, label: `${first[0]}–${first[1]}` }
+    }
+
+    function getLocationAccessForDate(location, dateString) {
+      const status = location?.route_access_status || 'needs_confirmation'
+      if (status === 'unrestricted') return { eligible: true, status, window: null }
+      if (status !== 'confirmed') return { eligible: false, status: 'needs_confirmation', window: null }
+      const window = getStructuredAccessWindow(location, dateString)
+      return { eligible: Boolean(window), status: window ? 'confirmed' : 'closed', window }
     }
 
     function isLegacyImportedServiceWindow(value) {
@@ -2317,6 +2378,57 @@
       return `${hours} h ${remainder} min`
     }
 
+    function formatTimeOfDay(value) {
+      if (!(value instanceof Date) || Number.isNaN(value.getTime())) return '—'
+      return value.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+    }
+
+    function applyRouteSchedule(plan) {
+      if (!plan?.orderedStops?.length) return plan
+      const planningDate = plan.planning_date || routeDateInput.value
+      const departure = String(plan.planned_departure_time || plan.route_payload?.planned_departure_time || routeDepartureTimeInput.value || '07:00').slice(0, 5)
+      const cursor = new Date(`${planningDate}T${departure}:00`)
+      if (Number.isNaN(cursor.getTime())) return plan
+      cursor.setMinutes(cursor.getMinutes() + Math.max(0, Number(preparationMinutesInput.value) || 0))
+      let totalWaitingMinutes = 0
+
+      const orderedStops = plan.orderedStops.map((stop) => {
+        const legDriveMinutes = Math.max(0, Math.round(Number(stop.driveMinutesFromPrevious) || ((Number(stop.distanceFromPreviousKm) || 0) / AVG_SPEED_KMH) * 60))
+        cursor.setMinutes(cursor.getMinutes() + legDriveMinutes)
+        const rawArrival = new Date(cursor)
+        const window = stop.accessWindow || parseOpeningWindow(stop.serviceWindow, planningDate)
+        let waitingMinutes = 0
+        let openingStatus = stop.routeAccessStatus === 'needs_confirmation' ? 'needs_confirmation' : (stop.serviceWindow ? 'unverified' : 'unknown')
+
+        if (window) {
+          const minuteOfDay = cursor.getHours() * 60 + cursor.getMinutes()
+          openingStatus = 'open'
+          if (minuteOfDay < window.opensAt) {
+            waitingMinutes = window.opensAt - minuteOfDay
+            cursor.setMinutes(cursor.getMinutes() + waitingMinutes)
+            openingStatus = 'wait'
+          } else if (minuteOfDay > window.closesAt) {
+            openingStatus = 'closed'
+          }
+        }
+
+        totalWaitingMinutes += waitingMinutes
+        const arrival = new Date(cursor)
+        cursor.setMinutes(cursor.getMinutes() + Math.max(0, Number(stop.estimatedServiceMinutes) || 0))
+        return {
+          ...stop,
+          driveMinutesFromPrevious: legDriveMinutes,
+          rawArrivalAt: rawArrival.toISOString(),
+          estimatedArrivalAt: arrival.toISOString(),
+          estimatedDepartureAt: cursor.toISOString(),
+          waitingMinutes,
+          openingStatus,
+        }
+      })
+
+      return { ...plan, orderedStops, totalWaitingMinutes }
+    }
+
     function formatStopCount(count) {
       const value = Math.max(0, Math.round(Number(count) || 0))
       const label = value === 1 ? 'zastávka' : value >= 2 && value <= 4 ? 'zastávky' : 'zastávek'
@@ -2331,7 +2443,8 @@
       const foodServiceMinutes = getConfiguredServiceMinutes('food')
       const driveMinutes = Math.max(0, Math.round(Number(plan?.estimatedDriveMinutes || 0)))
       const serviceMinutes = Math.max(0, Math.round(Number(plan?.estimatedServiceMinutes || 0)))
-      const totalMinutes = preparationMinutes + driveMinutes + serviceMinutes
+      const waitingMinutes = Math.max(0, Math.round(Number(plan?.totalWaitingMinutes || applyRouteSchedule(plan)?.totalWaitingMinutes || 0)))
+      const totalMinutes = preparationMinutes + driveMinutes + serviceMinutes + waitingMinutes
       const remainingMinutes = maximumMinutes - totalMinutes
       const tone = remainingMinutes < 0 ? 'over' : remainingMinutes < 30 ? 'tight' : 'good'
 
@@ -2343,6 +2456,7 @@
         foodServiceMinutes,
         driveMinutes,
         serviceMinutes,
+        waitingMinutes,
         totalMinutes,
         remainingMinutes,
         tone,
@@ -2387,6 +2501,7 @@
           <div class="route-time-cell"><div class="route-time-label">Příprava auta</div><div class="route-time-value">${escapeHtml(formatDuration(timing.preparationMinutes))}</div></div>
           <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">${escapeHtml(formatDuration(timing.driveMinutes))}</div><div class="route-time-note">${formatNumber(plan.estimatedDistanceKm, 1)} km</div></div>
           <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">${escapeHtml(formatDuration(timing.serviceMinutes))}</div><div class="route-time-note">${escapeHtml(formatStopCount(plan.orderedStops?.length || 0))} · káva ${escapeHtml(formatDuration(timing.coffeeServiceMinutes))}, potraviny ${escapeHtml(formatDuration(timing.foodServiceMinutes))} / automat</div></div>
+          ${timing.waitingMinutes ? `<div class="route-time-cell"><div class="route-time-label">Čekání na otevření</div><div class="route-time-value">${escapeHtml(formatDuration(timing.waitingMinutes))}</div></div>` : ''}
           <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">${escapeHtml(formatDuration(timing.totalMinutes))}</div></div>
           <div class="route-time-cell"><div class="route-time-label">Maximální čas</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
           <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}</div></div>
@@ -2491,6 +2606,8 @@
           reasons.push(`<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(label)}</span>`)
         })
         if (candidate.matchesSelectedDay) reasons.push('<span class="route-badge window">dnešní okno</span>')
+        if (candidate.routeAccessStatus === 'needs_confirmation') reasons.push('<span class="route-badge heuristic">ověřit přístup</span>')
+        if (candidate.routeAccessStatus === 'closed') reasons.push('<span class="route-badge critical">v tento den zavřeno</span>')
         reasons.push(`<span class="route-badge ${escapeHtml(candidate.effectivePriority)}">${escapeHtml(priorityLabel(candidate.effectivePriority))}</span>`)
         const machineServiceEntries = candidate.machineServiceEntries || []
         const serviceTimeControl = machineServiceEntries.length
@@ -2594,8 +2711,17 @@
         return
       }
 
-      const rows = plan.orderedStops.map((stop, index) => {
-        const distanceText = index === 0 ? 'První zastávka po startu' : `${formatNumber(stop.distanceFromPreviousKm, 1)} km od předchozí`
+      const scheduledPlan = applyRouteSchedule(plan)
+      const rows = scheduledPlan.orderedStops.map((stop, index) => {
+        const distanceText = `${formatNumber(stop.distanceFromPreviousKm, 1)} km · ${formatDuration(stop.driveMinutesFromPrevious)}`
+        const arrival = stop.estimatedArrivalAt ? new Date(stop.estimatedArrivalAt) : null
+        const openingBadge = stop.openingStatus === 'closed'
+          ? '<span class="route-badge critical">mimo otevírací dobu</span>'
+          : stop.openingStatus === 'wait'
+            ? `<span class="route-badge window">čekání ${formatDuration(stop.waitingMinutes)}</span>`
+            : ['unknown', 'needs_confirmation'].includes(stop.openingStatus)
+              ? '<span class="route-badge heuristic">dobu ověřit</span>'
+              : ''
 
         return `
           <tr>
@@ -2622,7 +2748,8 @@
               ${(stop.operationalRecommendations || []).slice(0, 2).map((reason) => `<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(reason.badge)}</span>`).join('')}
               ${stop.matchesSelectedDay ? '<span class="route-badge window">okno</span>' : ''}
             </td>
-            <td>${escapeHtml(distanceText)}</td>
+            <td><div class="sheet-main-cell"><span>${escapeHtml(distanceText)}</span><span class="sheet-muted">ze ${index === 0 ? 'startu' : `zastávky ${index}`}</span></div></td>
+            <td><div class="sheet-main-cell"><strong>${escapeHtml(formatTimeOfDay(arrival))}</strong>${openingBadge}<span class="sheet-muted">${escapeHtml(stop.serviceWindow || 'otevírací doba není potvrzena')}</span></div></td>
             <td>${formatNumber(stop.estimatedServiceMinutes)} min</td>
             <td><a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(stop))}" target="_blank" rel="noopener noreferrer">Mapa</a></td>
           </tr>
@@ -2639,6 +2766,7 @@
               <th>Adresa</th>
               <th>Důvod</th>
               <th>Vzdálenost</th>
+              <th>Příjezd / otevřeno</th>
               <th>Práce</th>
               <th>Mapa</th>
             </tr>
@@ -2851,10 +2979,11 @@
         const machineId = stop.machine_id || stop.machineId || null
         const machine = machineId ? state.machines.find((item) => String(item.id) === String(machineId)) : null
         const location = state.locations.find((item) => String(item.id) === String(locationId || machine?.location_id || '')) || null
+        const routeAccess = getLocationAccessForDate(location, plan.planning_date || routeDateInput.value)
         const serviceWindow =
+          getPlanningServiceWindow(location) ||
           stop.serviceWindow ||
           stop.service_window_snapshot ||
-          getPlanningServiceWindow(location) ||
           location?.route_window_hint ||
           ''
         const requests = machineId
@@ -2878,6 +3007,9 @@
           machineType: stop.machineType || machine?.machine_type || '',
           routeNote: stop.routeNote || stop.note || machine?.note || location?.route_note || location?.service_plan_note || '',
           serviceWindow,
+          routeAccessStatus: routeAccess.status,
+          routeAccessEligible: routeAccess.eligible,
+          accessWindow: routeAccess.window,
           matchesSelectedDay: matchesServiceWindow(serviceWindow, plan.planning_date || routeDateInput.value),
           openRequestCount: stop.openRequestCount != null ? Number(stop.openRequestCount) : requests.length,
           requests,
@@ -2889,10 +3021,26 @@
         .sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
         .map(hydrateStop)
 
-      return {
+      const warehouse = plan.warehouse_id
+        ? state.warehouses.find((item) => String(item.id) === String(plan.warehouse_id))
+        : null
+      const storedStartPoint = payload.startPoint || (
+        plan.start_latitude != null && plan.start_longitude != null
+          ? {
+              latitude: Number(plan.start_latitude),
+              longitude: Number(plan.start_longitude),
+              label: warehouse?.name || 'Uložený start trasy',
+              note: warehouse ? [warehouse.address, warehouse.city].filter(Boolean).join(', ') : '',
+            }
+          : null
+      )
+
+      const builtPlan = {
         ...payload,
         ...plan,
         orderedStops,
+        startPoint: storedStartPoint,
+        returnToStart: plan.return_to_start ?? payload.returnToStart ?? true,
         provider: payload.provider || plan.provider || 'heuristic',
         manuallyReordered: Boolean(payload.manually_reordered || payload.manuallyReordered),
         estimatedDistanceKm: Number(plan.estimated_distance_km ?? payload.estimatedDistanceKm ?? 0),
@@ -2900,6 +3048,10 @@
         estimatedServiceMinutes: Number(payload.estimatedServiceMinutes ?? orderedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0)),
         telemetryRevenue: payload.telemetryRevenue || plan.telemetryRevenue || null,
       }
+      const hasMissingLegs = orderedStops.some((stop) => !(Number(stop.distanceFromPreviousKm) > 0))
+      return hasMissingLegs && builtPlan.startPoint
+        ? recalculatePlanLegs(builtPlan, orderedStops)
+        : applyRouteSchedule(builtPlan)
     }
 
     function renderSavedPlans() {
@@ -3156,6 +3308,7 @@
           )
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
+          const routeAccess = getLocationAccessForDate(location, routeDateInput.value)
 
           const item = {
             key: `location-${location.id}`,
@@ -3173,6 +3326,9 @@
             operationalPriority: bestOperationalPriority,
             effectivePriority: getPriorityMax(maxRequestPriority, bestOperationalPriority, location.service_priority) || 'normal',
             serviceWindow: planningWindow || historicalWindowHint || '',
+            routeAccessStatus: routeAccess.status,
+            routeAccessEligible: routeAccess.eligible,
+            accessWindow: routeAccess.window,
             serviceSuspendedUntil: location.service_suspended_until || null,
             routeNote: location.route_note || location.service_plan_note || '',
             matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
@@ -3223,6 +3379,7 @@
           const hasManualTime = state.machineServiceMinuteOverrides.has(String(machine.id))
           const planningWindow = getPlanningServiceWindow(location)
           const historicalWindowHint = location.route_window_hint || ''
+          const routeAccess = getLocationAccessForDate(location, routeDateInput.value)
 
           const item = {
             key: `machine-${machine.id}`,
@@ -3247,6 +3404,9 @@
               location.service_priority
             ) || 'normal',
             serviceWindow: planningWindow || historicalWindowHint || '',
+            routeAccessStatus: routeAccess.status,
+            routeAccessEligible: routeAccess.eligible,
+            accessWindow: routeAccess.window,
             serviceSuspendedUntil: location.service_suspended_until || null,
             routeNote: machine.note || location.route_note || location.service_plan_note || '',
             matchesSelectedDay: matchesServiceWindow(planningWindow || historicalWindowHint, routeDateInput.value),
@@ -3291,6 +3451,10 @@
       const template = getSelectedTemplate()
 
       let filtered = [...state.candidates]
+
+      if (sourceMode !== 'all_active') {
+        filtered = filtered.filter((candidate) => candidate.routeAccessEligible)
+      }
 
       if (sourceMode === 'recommended' && !schoolsAreVisibleForPlanningDate()) {
         filtered = filtered.filter((candidate) => !isSchoolCandidate(candidate))
@@ -3492,7 +3656,8 @@
         totalAirKm += legKm
         orderedStops.push({
           ...nextStop,
-          distanceFromPreviousKm: legKm,
+          distanceFromPreviousKm: legKm * ROAD_FACTOR,
+          driveMinutesFromPrevious: Math.round(((legKm * ROAD_FACTOR) / AVG_SPEED_KMH) * 60),
           estimatedServiceMinutes: estimateServiceMinutes(nextStop),
         })
         current = nextStop
@@ -3518,19 +3683,21 @@
       }
     }
 
-    function recalculatePlanForManualOrder(plan, orderedStops) {
+    function recalculatePlanLegs(plan, orderedStops) {
       const startPoint = plan?.startPoint
       let current = startPoint
       let totalAirKm = 0
 
       const recalculatedStops = orderedStops.map((stop) => {
-        const legKm = current ? haversineKm(current, stop) : 0
-        const safeLegKm = Number.isFinite(legKm) ? legKm : 0
-        totalAirKm += safeLegKm
+        const airKm = current ? haversineKm(current, stop) : 0
+        const safeAirKm = Number.isFinite(airKm) ? airKm : 0
+        const safeLegKm = safeAirKm * ROAD_FACTOR
+        totalAirKm += safeAirKm
         current = stop
         return {
           ...stop,
           distanceFromPreviousKm: safeLegKm,
+          driveMinutesFromPrevious: Math.round((safeLegKm / AVG_SPEED_KMH) * 60),
           estimatedServiceMinutes: estimateServiceMinutes(stop),
         }
       })
@@ -3547,10 +3714,17 @@
         estimatedDistanceKm,
         estimatedDriveMinutes: Math.round((estimatedDistanceKm / AVG_SPEED_KMH) * 60),
         estimatedServiceMinutes: recalculatedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0),
+        provider: plan?.provider || 'heuristic',
+        createdAt: new Date().toISOString(),
+      }
+    }
+
+    function recalculatePlanForManualOrder(plan, orderedStops) {
+      return {
+        ...recalculatePlanLegs(plan, orderedStops),
         provider: 'manual_order',
         google: null,
         manuallyReordered: true,
-        createdAt: new Date().toISOString(),
       }
     }
 
@@ -3751,6 +3925,7 @@
         return {
           ...enrichedStop,
           distanceFromPreviousKm: Number(sourceStop.googleLegDistanceMeters || 0) / 1000,
+          driveMinutesFromPrevious: Math.round(Number(sourceStop.googleLegDurationSeconds || 0) / 60),
           estimatedServiceMinutes: estimateServiceMinutes(enrichedStop),
         }
       })
@@ -4205,7 +4380,7 @@
 
         const primary = await supabase
           .from('route_plans')
-          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, start_latitude, start_longitude, end_latitude, end_longitude, return_to_start, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
           .order('planning_date', { ascending: false })
           .order('created_at', { ascending: false })
           .limit(12)
@@ -4216,7 +4391,7 @@
         if (error) {
           const fallback = await supabase
             .from('route_plans')
-            .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
+            .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, start_latitude, start_longitude, end_latitude, end_longitude, return_to_start, optimization_provider, provider_status, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at')
             .order('planning_date', { ascending: false })
             .order('created_at', { ascending: false })
             .limit(12)
@@ -4252,7 +4427,7 @@
 
     async function loadLocations() {
       const baseSelect = 'id, name, city, address, service_window, route_note, active'
-      const extendedSelect = `${baseSelect}, service_priority, service_plan_note, service_suspended_until, latitude, longitude`
+      const extendedSelect = `${baseSelect}, service_priority, service_plan_note, service_suspended_until, latitude, longitude, route_access_hours, route_access_status, route_access_source, route_access_verified_at`
 
       let data = null
       let error = null
@@ -4282,6 +4457,10 @@
           service_suspended_until: null,
           latitude: null,
           longitude: null,
+          route_access_hours: null,
+          route_access_status: 'needs_confirmation',
+          route_access_source: null,
+          route_access_verified_at: null,
         }))
       }
 
