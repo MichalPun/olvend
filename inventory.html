@@ -5014,14 +5014,16 @@
       if (!machineIds.length) throw new Error('Trasa neobsahuje žádný automat. Vychystání by nemělo z čeho počítat potřebu.')
       const salesFrom = new Date()
       salesFrom.setDate(salesFrom.getDate() - 28)
-      const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }] = await Promise.all([
+      const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }] = await Promise.all([
         supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('machine_coffee_containers').select('machine_id, product_sku, product_name, capacity_quantity, current_quantity, unit, active').in('machine_id', machineIds).eq('active', true),
-        supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString())
+        supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString()),
+        supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true)
       ])
       if (slotsError && !/product_sku|capacity_units|current_units|schema cache/i.test(String(slotsError.message || ''))) throw slotsError
       if (containersError && !/machine_coffee_containers|schema cache/i.test(String(containersError.message || ''))) throw containersError
       if (salesError && !/telemetry_sales_events|schema cache/i.test(String(salesError.message || ''))) throw salesError
+      if (machineRecipeError && !/machine_coffee_recipe_items|schema cache/i.test(String(machineRecipeError.message || ''))) throw machineRecipeError
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
       const routeStart = new Date(`${route.planning_date}T${String(route.planned_departure_time || '07:00').slice(0, 5)}:00`)
@@ -5044,15 +5046,19 @@
           const directKey = `${sale.machine_id}::${directProduct.id}`
           salesByMachineProduct.set(directKey, Number(((salesByMachineProduct.get(directKey) || 0) + Number(sale.quantity || 0)).toFixed(3)))
         }
-        recipesV13
-          .filter((recipe) => String(recipe.machine_id || '') === String(sale.machine_id)
-            && normalizeText(recipe.selection_code || '') === normalizeText(sale.selection_code || ''))
-          .forEach((recipe) => {
-            recipeItemsV13.filter((item) => String(item.recipe_id) === String(recipe.id)).forEach((item) => {
-              const recipeKey = `${sale.machine_id}::${item.product_id}`
-              const consumption = Number(sale.quantity || 0) * Number(item.quantity || 0)
-              salesByMachineProduct.set(recipeKey, Number(((salesByMachineProduct.get(recipeKey) || 0) + consumption).toFixed(3)))
-            })
+        ;(machineRecipeItems || [])
+          .filter((item) => String(item.machine_id || '') === String(sale.machine_id)
+            && normalizeText(item.machine_coffee_buttons?.selection_code || '') === normalizeText(sale.selection_code || ''))
+          .forEach((item) => {
+            const ingredient = productsV13.find((product) => String(product.id) === String(item.product_id))
+            const recipeKey = `${sale.machine_id}::${item.product_id}`
+            const quantityPerVend = convertRecipeQuantityToBase(
+              Number(item.quantity_per_vend || 0),
+              item.unit || ingredient?.base_unit,
+              ingredient?.base_unit || item.unit
+            )
+            const consumption = Number(sale.quantity || 0) * quantityPerVend
+            salesByMachineProduct.set(recipeKey, Number(((salesByMachineProduct.get(recipeKey) || 0) + consumption).toFixed(3)))
           })
       })
       ;[...(slots || []), ...(containers || [])].forEach((item) => {
@@ -5060,8 +5066,17 @@
         const product = productsV13.find((candidate) => sku && normalizeText(candidate.sku || '') === sku)
           || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(item.product_name || ''))
         if (!product) return
-        const capacity = Number(item.capacity_units ?? item.capacity_quantity ?? 0)
-        const current = Number(item.current_units ?? item.current_quantity ?? 0)
+        const sourceUnit = item.unit || product.base_unit
+        const capacity = Number(convertRecipeQuantityToBase(
+          Number(item.capacity_units ?? item.capacity_quantity ?? 0),
+          sourceUnit,
+          product.base_unit || sourceUnit
+        ).toFixed(3))
+        const current = Number(convertRecipeQuantityToBase(
+          Number(item.current_units ?? item.current_quantity ?? 0),
+          sourceUnit,
+          product.base_unit || sourceUnit
+        ).toFixed(3))
         const missingNow = Math.max(0, Number((capacity - current).toFixed(3)))
         const saleKey = `${item.machine_id}::${product.id}`
         const sold28Days = Number(salesByMachineProduct.get(saleKey) || 0)
