@@ -426,7 +426,7 @@ async function applyPlanogramDepletion(
 
   const { data: slots, error: slotsError } = await adminClient
     .from("machine_planogram_slots")
-    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, dex_price_czk, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
+    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, dex_price_czk, planned_product_name, planned_product_sku, planned_price_czk, changeover_old_units, changeover_new_units, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
     .eq("machine_id", params.machineId)
     .eq("active", true);
 
@@ -510,34 +510,49 @@ async function applyPlanogramDepletion(
     }
     if (delta <= 0) continue;
 
-    const unitPrice = Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0);
-    const { error: salesEventError } = await adminClient
-      .from("telemetry_sales_events")
-      .upsert({
+    const oldUnits = Math.max(0, Number(slot.changeover_old_units ?? slot.current_units ?? 0));
+    const newUnits = Math.max(0, Number(slot.changeover_new_units ?? 0));
+    const mixedChangeover = newUnits > 0 && String(slot.planned_product_sku || '') !== '';
+    const oldSold = mixedChangeover ? Math.min(delta, oldUnits) : delta;
+    const newSold = mixedChangeover ? Math.max(0, delta - oldSold) : 0;
+    const allocate = (value: number, quantity: number) => delta > 0 ? Math.round(value * quantity / delta * 1000) / 1000 : 0;
+    const saleParts = [
+      oldSold > 0 ? {
+        event_part: 1, product_name: slot.product_name ?? null, product_sku: slot.product_sku ?? null,
+        quantity: oldSold, cash_quantity: allocate(cashDelta, oldSold),
+        cashless_quantity: allocate(cashlessDelta, oldSold), unknown_payment_quantity: allocate(unknownPaymentDelta, oldSold),
+        unit_price_czk: Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
+      } : null,
+      newSold > 0 ? {
+        event_part: 2, product_name: slot.planned_product_name ?? null, product_sku: slot.planned_product_sku ?? null,
+        quantity: newSold, cash_quantity: allocate(cashDelta, newSold),
+        cashless_quantity: allocate(cashlessDelta, newSold), unknown_payment_quantity: allocate(unknownPaymentDelta, newSold),
+        unit_price_czk: Number(slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
+      } : null,
+    ].filter(Boolean).map((part: any) => ({
         provider: params.provider,
         ingest_id: params.ingestId,
         machine_id: params.machineId,
         planogram_slot_id: slot.id,
         selection_code: selection,
-        product_name: slot.product_name ?? null,
-        product_sku: slot.product_sku ?? null,
-        quantity: delta,
-        cash_quantity: cashDelta,
-        cashless_quantity: cashlessDelta,
-        unknown_payment_quantity: unknownPaymentDelta,
-        unit_price_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
-        total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(delta * unitPrice * 100) / 100 : null,
-        cash_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(cashDelta * unitPrice * 100) / 100 : null,
-        cashless_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(cashlessDelta * unitPrice * 100) / 100 : null,
-        unknown_payment_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(unknownPaymentDelta * unitPrice * 100) / 100 : null,
+        ...part,
+        total_amount_czk: part.unit_price_czk ? Math.round(part.quantity * part.unit_price_czk * 100) / 100 : null,
+        cash_amount_czk: part.unit_price_czk ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
+        cashless_amount_czk: part.unit_price_czk ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
+        unknown_payment_amount_czk: part.unit_price_czk ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
         source_event_at: counter.eventAt,
-      }, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code" });
+      }));
+    const { error: salesEventError } = await adminClient
+      .from("telemetry_sales_events")
+      .upsert(saleParts, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code,event_part" });
 
     if (salesEventError) throw salesEventError;
 
     const currentUnits = slot.current_units == null ? null : Number(slot.current_units);
     const capacityUnits = slot.capacity_units == null ? null : Number(slot.capacity_units);
-    const nextUnits = currentUnits == null ? null : Math.max(0, currentUnits - delta);
+    const nextOldUnits = mixedChangeover ? Math.max(0, oldUnits - oldSold) : null;
+    const nextNewUnits = mixedChangeover ? Math.max(0, newUnits - newSold) : null;
+    const nextUnits = currentUnits == null ? null : Math.max(0, currentUnits - oldSold - newSold);
     const nextFillPercent = nextUnits != null && capacityUnits && capacityUnits > 0
       ? Math.round((nextUnits / capacityUnits) * 10000) / 100
       : null;
@@ -545,6 +560,25 @@ async function applyPlanogramDepletion(
     const slotPatch: Record<string, unknown> = {};
     if (nextUnits != null) slotPatch.current_units = nextUnits;
     if (nextFillPercent != null) slotPatch.fill_percent = nextFillPercent;
+    if (mixedChangeover) {
+      slotPatch.changeover_old_units = nextOldUnits;
+      slotPatch.changeover_new_units = nextNewUnits;
+      if (nextOldUnits === 0) {
+        slotPatch.product_sku = slot.planned_product_sku;
+        slotPatch.product_name = slot.planned_product_name || slot.product_name;
+        if (slot.planned_price_czk != null) {
+          slotPatch.price_czk = slot.planned_price_czk;
+          slotPatch.customer_price_czk = slot.planned_price_czk;
+          slotPatch.dex_price_czk = slot.planned_price_czk;
+        }
+        slotPatch.planned_product_sku = null;
+        slotPatch.planned_product_name = null;
+        slotPatch.planned_price_czk = null;
+        slotPatch.changeover_old_units = null;
+        slotPatch.changeover_new_units = null;
+        slotPatch.changeover_started_at = null;
+      }
+    }
 
     if (Object.keys(slotPatch).length) {
       const { error: updateError } = await adminClient

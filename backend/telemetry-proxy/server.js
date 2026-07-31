@@ -9,6 +9,7 @@ const BODY_LIMIT_BYTES = Number(process.env.TELEMETRY_BODY_LIMIT_BYTES || 5 * 10
 const VENDSOFT_SYNC_URL = process.env.VENDSOFT_SYNC_URL ||
   'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/vendsoft-food-sync'
 const VENDSOFT_SYNC_INTERVAL_MS = Math.max(60_000, Number(process.env.VENDSOFT_SYNC_INTERVAL_MS || 60_000))
+const VENDSOFT_SYNC_ENABLED = String(process.env.VENDSOFT_SYNC_ENABLED || 'false').toLowerCase() === 'true'
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === 'string' ? body : JSON.stringify(body)
@@ -151,5 +152,7 @@ async function runVendSoftSync() {
   }
 }
 
-setTimeout(runVendSoftSync, 5_000)
-setInterval(runVendSoftSync, VENDSOFT_SYNC_INTERVAL_MS)
+if (VENDSOFT_SYNC_ENABLED) {
+  setTimeout(runVendSoftSync, 5_000)
+  setInterval(runVendSoftSync, VENDSOFT_SYNC_INTERVAL_MS)
+}
