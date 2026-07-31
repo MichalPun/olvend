@@ -139,7 +139,12 @@
     .price-watch { min-height:18px; margin-top:6px; font-size:12px; color:var(--muted); line-height:1.4; }
     .price-watch.warn { color:#f8b4b4; font-weight:800; }
     .price-watch.good { color:#9ae6b4; font-weight:800; }
-    .receipt-expiry-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin-top:12px; }
+    .receipt-expiry-grid { display:grid; gap:10px; margin-top:12px; padding:14px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,0.025); }
+    .receipt-expiry-allocation { display:grid; grid-template-columns:minmax(120px,.7fr) minmax(170px,1fr) auto; gap:10px; align-items:end; }
+    [data-expiry-allocations-index] { display:grid; gap:10px; }
+    .receipt-expiry-allocation .field { margin:0; }
+    .receipt-expiry-allocation .btn { min-height:44px; }
+    .receipt-expiry-actions { display:flex; justify-content:flex-start; margin-top:2px; }
     .expiry-hint { color:var(--muted); font-size:12px; line-height:1.45; margin-top:4px; }
     .file-input-hidden { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
     :root[data-olvend-theme="light"] .title h1,
@@ -191,7 +196,7 @@
     :root[data-olvend-theme="light"] .badge.bad { color:#b42318; border-color:rgba(255,91,102,0.18); background:rgba(255,91,102,0.1); }
     :root[data-olvend-theme="light"] .badge.info { color:#175cd3; border-color:rgba(88,166,255,0.18); background:rgba(88,166,255,0.12); }
     @media (max-width:1100px){ .layout{grid-template-columns:1fr;} .sidebar{display:none;} .main{padding:18px;} .mobile-nav-shell{display:block;} .weekday-qty-grid{grid-template-columns:repeat(4,minmax(0,1fr));} .import-line,.import-line.has-source{grid-template-columns:repeat(2,minmax(0,1fr));} .import-line.has-source > div:first-child{grid-column:1 / -1;} }
-    @media (max-width:760px){ .filters,.form-grid,.weekday-qty-grid,.import-line,.import-line.has-source,.inline-field-action,.receipt-expiry-grid{grid-template-columns:1fr;} .topbar,.focus-strip{grid-template-columns:1fr; display:grid;} table{min-width:0;} thead{display:none;} tbody,tr,td{display:block;width:100%;} tr{padding:14px 0;border-bottom:1px solid rgba(255,255,255,0.06);} td{border:none;padding:6px 0;} td::before{content:attr(data-label);display:block;color:var(--soft);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;} }
+    @media (max-width:760px){ .filters,.form-grid,.weekday-qty-grid,.import-line,.import-line.has-source,.inline-field-action,.receipt-expiry-grid,.receipt-expiry-allocation{grid-template-columns:1fr;} .topbar,.focus-strip{grid-template-columns:1fr; display:grid;} table{min-width:0;} thead{display:none;} tbody,tr,td{display:block;width:100%;} tr{padding:14px 0;border-bottom:1px solid rgba(255,255,255,0.06);} td{border:none;padding:6px 0;} td::before{content:attr(data-label);display:block;color:var(--soft);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;} }
   </style>
 </head>
 <body>
@@ -2308,12 +2313,44 @@
       return product && product.expiry_tracking_mode && product.expiry_tracking_mode !== 'none'
     }
     function productNeedsBatch(product) {
-      return product?.requires_batch_tracking === true
+      // Provoz sleduje expiraci, nikoli výrobní číslo šarže.
+      // Databázový batch zůstává jen interní technický nosič data expirace.
+      return false
     }
     function productExpiryLabel(product) {
       if (product?.expiry_tracking_mode === 'use_by') return 'Spotřebovat do'
       if (product?.expiry_tracking_mode === 'best_before') return 'Minimální trvanlivost'
       return 'Expirace'
+    }
+    function receiptExpiryAllocationHtml(index, {
+      quantity = 0,
+      expiryDate = '',
+      disabled = false,
+      removable = true,
+      movementId = ''
+    } = {}) {
+      return `
+        <div class="receipt-expiry-allocation" data-expiry-allocation data-movement-id="${escapeHtml(String(movementId || ''))}">
+          <div class="field">
+            <label>Počet kusů *</label>
+            <input type="number" step="1" min="0" data-expiry-quantity value="${escapeHtml(String(Number(quantity || 0)))}" ${disabled ? 'disabled' : ''} />
+          </div>
+          <div class="field">
+            <label>Expirace *</label>
+            <input type="date" data-expiry-date value="${escapeHtml(expiryDate || '')}" ${disabled ? 'disabled' : ''} />
+          </div>
+          ${!disabled && removable ? '<button class="btn secondary small" type="button" data-action="remove-expiry-allocation">Odebrat</button>' : '<span></span>'}
+        </div>
+      `
+    }
+    function receiptExpiryAllocations(index) {
+      const container = receiptLineItems.querySelector(`[data-expiry-allocations-index="${index}"]`)
+      if (!container) return []
+      return Array.from(container.querySelectorAll('[data-expiry-allocation]')).map((row) => ({
+        quantity: Number(row.querySelector('[data-expiry-quantity]')?.value || 0),
+        expiryDate: row.querySelector('[data-expiry-date]')?.value || '',
+        movementId: row.dataset.movementId || ''
+      }))
     }
     function updateInvoiceImportTotals() {
       let totalNet = 0
@@ -2943,14 +2980,23 @@
         batchMap = new Map((batches || []).map((batch) => [String(batch.id), batch]))
       }
       ;(order.items || []).forEach((item, index) => {
-        const movement = (movements || []).find((row) => String(row.product_id) === String(item.product_id))
-        if (!movement) return
-        const batch = movement.batch_id ? batchMap.get(String(movement.batch_id)) : null
-        currentReceiptMovementMap.set(String(index), { ...movement, batch })
-        const expiryInput = receiptLineItems.querySelector(`[data-received-expiry-index="${index}"]`)
-        const batchInput = receiptLineItems.querySelector(`[data-received-batch-index="${index}"]`)
-        if (expiryInput && batch) expiryInput.value = batch.best_before_date || batch.use_by_date || ''
-        if (batchInput && batch) batchInput.value = batch.lot_code || ''
+        const itemMovements = (movements || [])
+          .filter((row) => String(row.product_id) === String(item.product_id))
+          .map((movement) => ({
+            ...movement,
+            batch: movement.batch_id ? batchMap.get(String(movement.batch_id)) : null
+          }))
+        if (!itemMovements.length) return
+        currentReceiptMovementMap.set(String(index), itemMovements)
+        const allocationContainer = receiptLineItems.querySelector(`[data-expiry-allocations-index="${index}"]`)
+        if (!allocationContainer) return
+        allocationContainer.innerHTML = itemMovements.map((movement) => receiptExpiryAllocationHtml(index, {
+          quantity: movement.quantity_base_units,
+          expiryDate: movement.batch?.best_before_date || movement.batch?.use_by_date || '',
+          disabled: currentReceiptReadonly,
+          removable: false,
+          movementId: movement.id
+        })).join('')
       })
     }
     function openReceiptModal(orderId, { readOnly = false, editOnly = false, pendingEdit = false } = {}) {
@@ -2985,8 +3031,7 @@
       receiptLineItems.innerHTML = order.items.map((item, index) => {
         const product = productForReceiptItem(item)
         const needsExpiry = productNeedsExpiry(product)
-        const needsBatch = productNeedsBatch(product)
-        const showExpiryFields = !pendingEdit && (needsExpiry || needsBatch || editOnly)
+        const showExpiryFields = !pendingEdit && (needsExpiry || editOnly)
         const receivedQuantity = Number(item.received_quantity || 0)
         const defaultReceiptQuantity = pendingEdit
           ? Number(item.ordered_quantity || 0)
@@ -2998,15 +3043,14 @@
           : `data-received-index="${index}"`
         const expiryBlock = showExpiryFields ? `
           <div class="receipt-expiry-grid">
-            <div class="field">
-              <label>${escapeHtml(productExpiryLabel(product))}${needsExpiry ? ' *' : ''}</label>
-              <input type="date" data-received-expiry-index="${index}" ${needsExpiry ? 'required' : ''} ${readOnly ? 'disabled' : ''} />
-              <div class="expiry-hint">${escapeHtml(editOnly ? 'Úprava se uloží ke skladové šarži.' : needsExpiry ? 'Datum se uloží na šarži a propíše do skladové evidence.' : 'Uložení šarže bez povinné expirace.')}</div>
+            <div>
+              <strong>${escapeHtml(productExpiryLabel(product))}</strong>
+              <div class="expiry-hint">${escapeHtml(editOnly ? 'Uprav datum u jednotlivých částí příjmu.' : 'Rozděl přijaté množství podle expirací. Součet musí odpovídat skutečně přijatému množství.')}</div>
             </div>
-            <div class="field">
-              <label>Šarže${needsBatch ? ' *' : ''}</label>
-              <input data-received-batch-index="${index}" ${needsBatch ? 'required' : ''} ${readOnly ? 'disabled' : ''} placeholder="Např. LOT / výrobní šarže" />
+            <div data-expiry-allocations-index="${index}">
+              ${receiptExpiryAllocationHtml(index, { quantity: defaultReceiptQuantity, disabled: readOnly, removable: false })}
             </div>
+            ${!readOnly && !editOnly ? `<div class="receipt-expiry-actions"><button class="btn secondary small" type="button" data-action="add-expiry-allocation" data-index="${index}">+ Další expirace</button></div>` : ''}
           </div>
         ` : ''
         return `
@@ -3384,8 +3428,7 @@
       const lines = Array.from(receiptLineItems.querySelectorAll('[data-received-index]')).map((input) => ({
         index: Number(input.dataset.receivedIndex),
         received: Number(input.value || 0),
-        expiryDate: receiptLineItems.querySelector(`[data-received-expiry-index="${input.dataset.receivedIndex}"]`)?.value || '',
-        lotCode: receiptLineItems.querySelector(`[data-received-batch-index="${input.dataset.receivedIndex}"]`)?.value?.trim() || ''
+        expiryAllocations: receiptExpiryAllocations(Number(input.dataset.receivedIndex))
       }))
       const documentType = receiptDocumentType.value || getDocumentType(currentReceiptOrder)
       if (documentType === 'invoice' && !receiptInvoiceNumber.value.trim()) throw new Error('Doplň číslo faktury.')
@@ -3394,8 +3437,15 @@
         if (line.received <= 0) return
         const item = currentReceiptOrder.items[line.index]
         const product = productForReceiptItem(item)
-        if (productNeedsExpiry(product) && !line.expiryDate) throw new Error(`Doplň expiraci u položky ${product.name || item.product_name || 'zásoby'}.`)
-        if (productNeedsBatch(product) && !line.lotCode) throw new Error(`Doplň šarži u položky ${product.name || item.product_name || 'zásoby'}.`)
+        if (!productNeedsExpiry(product)) return
+        const allocations = line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
+        if (!allocations.length || allocations.some((allocation) => !allocation.expiryDate)) {
+          throw new Error(`Rozděl přijaté množství podle expirací u položky ${product.name || item.product_name || 'zásoby'}.`)
+        }
+        const allocatedQuantity = allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0)
+        if (Math.abs(allocatedQuantity - line.received) > 0.0001) {
+          throw new Error(`U položky ${product.name || item.product_name || 'zásoby'} je přijato ${line.received} ks, ale k expiracím je rozděleno ${allocatedQuantity} ks.`)
+        }
       })
       for (const line of lines) {
         const item = currentReceiptOrder.items[line.index]
@@ -3403,26 +3453,30 @@
         if (itemError) throw itemError
         if (line.received > 0) {
           const product = productForReceiptItem(item)
-          const batchId = await ensureInventoryBatch(product, {
-            expiryDate: line.expiryDate,
-            lotCode: line.lotCode,
-            supplierName: currentReceiptOrder.supplier_name || '',
-            receivedAt: new Date().toISOString(),
-            note: `Příjem dokladu ${currentReceiptOrder.id}`
-          })
-          const { error: movementError } = await supabase.from('stock_movements_v13').insert([{
-            product_id: item.product_id,
-            batch_id: batchId,
-            to_stock_location_id: stockLocationId,
-            movement_type: 'receipt',
-            quantity_base_units: line.received,
-            unit_price: item.unit_cost,
-            reference_type: 'purchase_order',
-            reference_id: String(currentReceiptOrder.id),
-            note: receiptNote.value.trim() || null
-          }])
-          if (movementError) throw movementError
-          await upsertBalance(stockLocationId, item.product_id, line.received, batchId)
+          const allocations = productNeedsExpiry(product)
+            ? line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
+            : [{ quantity: line.received, expiryDate: '' }]
+          for (const allocation of allocations) {
+            const batchId = await ensureInventoryBatch(product, {
+              expiryDate: allocation.expiryDate,
+              supplierName: currentReceiptOrder.supplier_name || '',
+              receivedAt: new Date().toISOString(),
+              note: `Příjem dokladu ${currentReceiptOrder.id}`
+            })
+            const { error: movementError } = await supabase.from('stock_movements_v13').insert([{
+              product_id: item.product_id,
+              batch_id: batchId,
+              to_stock_location_id: stockLocationId,
+              movement_type: 'receipt',
+              quantity_base_units: allocation.quantity,
+              unit_price: item.unit_cost,
+              reference_type: 'purchase_order',
+              reference_id: String(currentReceiptOrder.id),
+              note: receiptNote.value.trim() || null
+            }])
+            if (movementError) throw movementError
+            await upsertBalance(stockLocationId, item.product_id, allocation.quantity, batchId)
+          }
         }
       }
       const notePrefix = `[typ:${documentType}]${documentType === 'invoice' && receiptDueDate.value ? `[splatnost:${receiptDueDate.value}]` : ''}`
@@ -3538,19 +3592,19 @@
       const lines = Array.from(receiptLineItems.querySelectorAll('[data-received-index]')).map((input) => ({
         index: Number(input.dataset.receivedIndex),
         received: Number(input.value || 0),
-        expiryDate: receiptLineItems.querySelector(`[data-received-expiry-index="${input.dataset.receivedIndex}"]`)?.value || '',
-        lotCode: receiptLineItems.querySelector(`[data-received-batch-index="${input.dataset.receivedIndex}"]`)?.value?.trim() || ''
+        expiryAllocations: receiptExpiryAllocations(Number(input.dataset.receivedIndex))
       }))
       for (const line of lines) {
         const item = currentReceiptOrder.items[line.index]
         const product = productForReceiptItem(item)
-        const hasManualBatchData = Boolean(line.expiryDate || line.lotCode)
-        if (!productNeedsExpiry(product) && !productNeedsBatch(product) && !hasManualBatchData) continue
         if (Number(line.received || 0) <= 0) continue
-        if (productNeedsExpiry(product) && !line.expiryDate) throw new Error(`Doplň expiraci u položky ${product.name || item.product_name || 'zásoby'}.`)
-        if (productNeedsBatch(product) && !line.lotCode) throw new Error(`Doplň šarži u položky ${product.name || item.product_name || 'zásoby'}.`)
-        let movement = currentReceiptMovementMap.get(String(line.index))
-        if (!movement) {
+        if (!productNeedsExpiry(product)) continue
+        const allocations = line.expiryAllocations.filter((allocation) => allocation.quantity > 0)
+        if (!allocations.length || allocations.some((allocation) => !allocation.expiryDate)) {
+          throw new Error(`Doplň expirace u položky ${product.name || item.product_name || 'zásoby'}.`)
+        }
+        let movements = currentReceiptMovementMap.get(String(line.index)) || []
+        if (!movements.length) {
           const { data: movements, error: movementError } = await supabase
             .from('stock_movements_v13')
             .select('id, product_id, batch_id, to_stock_location_id, quantity_base_units')
@@ -3558,36 +3612,38 @@
             .eq('reference_id', String(currentReceiptOrder.id))
             .eq('movement_type', 'receipt')
             .eq('product_id', item.product_id)
-            .limit(1)
           if (movementError) throw movementError
-          movement = movements?.[0] || null
+          currentReceiptMovementMap.set(String(line.index), movements || [])
         }
-        if (!movement) continue
-        if (movement.batch_id) {
-          await updateInventoryBatch(movement.batch_id, product, {
-            expiryDate: line.expiryDate,
-            lotCode: line.lotCode,
-            note: `Upraveno z dokladu ${currentReceiptOrder.id}`
+        movements = currentReceiptMovementMap.get(String(line.index)) || []
+        for (const allocation of allocations) {
+          const movement = movements.find((row) => String(row.id) === String(allocation.movementId))
+            || movements.find((row) => Math.abs(Number(row.quantity_base_units || 0) - Number(allocation.quantity || 0)) < 0.0001)
+          if (!movement) continue
+          if (movement.batch_id) {
+            await updateInventoryBatch(movement.batch_id, product, {
+              expiryDate: allocation.expiryDate,
+              note: `Upraveno z dokladu ${currentReceiptOrder.id}`
+            })
+            continue
+          }
+          const batchId = await ensureInventoryBatch(product, {
+            expiryDate: allocation.expiryDate,
+            supplierName: currentReceiptOrder.supplier_name || '',
+            receivedAt: currentReceiptOrder.received_at || new Date().toISOString(),
+            note: `Doplněno z úpravy dokladu ${currentReceiptOrder.id}`
           })
-          continue
-        }
-        const batchId = await ensureInventoryBatch(product, {
-          expiryDate: line.expiryDate,
-          lotCode: line.lotCode,
-          supplierName: currentReceiptOrder.supplier_name || '',
-          receivedAt: currentReceiptOrder.received_at || new Date().toISOString(),
-          note: `Doplněno z úpravy dokladu ${currentReceiptOrder.id}`
-        })
-        const { error: movementUpdateError } = await supabase
-          .from('stock_movements_v13')
-          .update({ batch_id: batchId })
-          .eq('id', movement.id)
-        if (movementUpdateError) throw movementUpdateError
-        const quantity = Number(movement.quantity_base_units || line.received || 0)
-        const balanceStockLocationId = currentReceiptOrder.received_stock_location_id || movement.to_stock_location_id
-        if (balanceStockLocationId && quantity > 0) {
-          await upsertBalance(balanceStockLocationId, item.product_id, -quantity, null)
-          await upsertBalance(balanceStockLocationId, item.product_id, quantity, batchId)
+          const { error: movementUpdateError } = await supabase
+            .from('stock_movements_v13')
+            .update({ batch_id: batchId })
+            .eq('id', movement.id)
+          if (movementUpdateError) throw movementUpdateError
+          const quantity = Number(movement.quantity_base_units || allocation.quantity || 0)
+          const balanceStockLocationId = currentReceiptOrder.received_stock_location_id || movement.to_stock_location_id
+          if (balanceStockLocationId && quantity > 0) {
+            await upsertBalance(balanceStockLocationId, item.product_id, -quantity, null)
+            await upsertBalance(balanceStockLocationId, item.product_id, quantity, batchId)
+          }
         }
       }
     }
@@ -4240,6 +4296,23 @@
     invoiceImportExchangeRate.addEventListener('input', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     invoiceImportVatMode.addEventListener('change', () => { syncInvoiceImportLinesFromDom(); renderInvoiceImport() })
     receiptDocumentType.addEventListener('change', () => applyDocumentTypeRules('receipt'))
+    receiptLineItems.addEventListener('click', (event) => {
+      const addButton = event.target.closest('button[data-action="add-expiry-allocation"]')
+      if (addButton) {
+        const index = Number(addButton.dataset.index)
+        const container = receiptLineItems.querySelector(`[data-expiry-allocations-index="${index}"]`)
+        if (!container) return
+        container.insertAdjacentHTML('beforeend', receiptExpiryAllocationHtml(index, {
+          quantity: 0,
+          removable: true
+        }))
+        container.lastElementChild?.querySelector('[data-expiry-quantity]')?.focus()
+        return
+      }
+      const removeButton = event.target.closest('button[data-action="remove-expiry-allocation"]')
+      if (!removeButton) return
+      removeButton.closest('[data-expiry-allocation]')?.remove()
+    })
     invoiceImportLines.addEventListener('input', (event) => {
       const row = event.target.closest('[data-import-line]')
       if (!row) return
@@ -4581,7 +4654,7 @@
         } else {
           openReceiptModal(preparedReceipt.orderId)
           receiptWarehouseId.value = String(preparedReceipt.warehouseId)
-          setStatus('Doklad má položku s povinnou expirací nebo šarží. Množství je předvyplněné, doplň jen povinné údaje a potvrď příjem.', 'success')
+          setStatus('Doklad má potraviny se sledovanou expirací. Množství je předvyplněné; případně ho rozděl podle více expirací a potvrď příjem.', 'success')
         }
       } catch (error) {
         console.error(error)
