@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v48-mobile-offline';
+const CACHE_NAME = 'olvend-v49-mobile-offline-3s';
 const APP_SHELL = [
   './',
   './index.html',

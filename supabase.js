@@ -32,7 +32,8 @@ async function offlineAwareFetch(input, init = {}) {
     body: init.body
   }
   const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), 12000)
+  const timeoutMs = canQueueRequest(url, requestInit) ? 3000 : 12000
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     return await fetch(input, { ...init, signal: init.signal || controller.signal })
   } catch (error) {
