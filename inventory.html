@@ -232,8 +232,12 @@
     .detail-table td { color:#fff; font-size:14px; }
     .detail-table td strong { display:block; font-size:15px; }
     .detail-table .subtext { display:block; margin-top:4px; }
-    .audit-count-control { display:grid; grid-template-columns:minmax(90px, 1fr) minmax(140px, auto); gap:8px; align-items:center; }
+    .audit-count-control { display:grid; grid-template-columns:repeat(2,minmax(90px,1fr)); gap:8px; align-items:end; }
     .audit-count-control input, .audit-count-control select { width:100%; min-width:0; }
+    .audit-count-control label, .audit-expiry-row label { display:grid; gap:4px; color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; }
+    .audit-expiry-list { display:grid; gap:6px; min-width:360px; }
+    .audit-expiry-row { display:grid; grid-template-columns:minmax(125px,1fr) 76px 76px auto; gap:6px; align-items:end; padding:7px; border:1px solid var(--border); border-radius:7px; background:rgba(255,255,255,.025); }
+    .audit-expiry-row .subtext { grid-column:1 / -1; }
     .modal.inventory-detail-modal { width:min(1560px, calc(100vw - 56px)); max-width:none; }
     .inventory-detail-modal .modal-header { padding:16px 20px; }
     .inventory-detail-modal .modal-body { padding:18px; }
@@ -2444,6 +2448,29 @@
       const value = factor > 0 ? Number(baseQuantity || 0) / factor : Number(baseQuantity || 0)
       return Number(value.toFixed(3))
     }
+    function getAuditDefaultPackage(product) {
+      const options = getInventoryCountUnitOptions(product).filter((option) => option.value !== 'base' && Number(option.factor || 0) > 1)
+      return options.find((option) => option.pack?.is_default) || options[0] || null
+    }
+    function auditDualCountToBase(product, packageRaw, looseRaw) {
+      const pack = getAuditDefaultPackage(product)
+      const packages = packageRaw === '' || packageRaw == null ? 0 : Number(String(packageRaw).replace(',', '.'))
+      const loose = looseRaw === '' || looseRaw == null ? 0 : Number(String(looseRaw).replace(',', '.'))
+      if (!Number.isFinite(packages) || packages < 0 || !Number.isFinite(loose) || loose < 0) return Number.NaN
+      return Number((packages * Number(pack?.factor || 1) + loose).toFixed(3))
+    }
+    function isAuditExpiryTracked(product) {
+      return Boolean(product?.requires_batch_tracking || (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none'))
+    }
+    function renderAuditExpiryRow(expiry = {}, product, pack) {
+      return `<div class="audit-expiry-row" data-audit-expiry-row>
+        <label>Expirace<input type="date" data-audit-expiry-date value="${escapeHtml(expiry.date || '')}" ${expiry.unknown ? 'disabled' : ''}></label>
+        ${pack ? `<label>Balení<input type="number" min="0" step="0.001" data-audit-expiry-packages value="${escapeHtml(expiry.packages ?? '')}" placeholder="0"></label>` : ''}
+        <label>Volné<input type="number" min="0" step="0.001" data-audit-expiry-loose value="${escapeHtml(expiry.loose ?? '')}" placeholder="0"></label>
+        <button class="mini-btn" type="button" data-audit-expiry-remove>×</button>
+        <span class="subtext"><label style="display:inline-flex;grid-auto-flow:column;justify-content:start;align-items:center;"><input type="checkbox" data-audit-expiry-unknown ${expiry.unknown ? 'checked' : ''}> Nečitelná / neznámá</label></span>
+      </div>`
+    }
     function getAuditMobileCountHint(item, product) {
       if (!item?.counted_at) return ''
       const note = String(item.counted_note || '').trim()
@@ -4217,8 +4244,14 @@
     function saveAuditDraft() {
       const rows = [...auditRowsBody.querySelectorAll('[data-audit-key]')].map((row) => ({
         key: row.dataset.auditKey,
-        counted: row.querySelector('[data-audit-counted]')?.value || '',
-        unit: row.querySelector('[data-audit-count-unit]')?.value || 'base',
+        packages: row.querySelector('[data-audit-package-count]')?.value || '',
+        loose: row.querySelector('[data-audit-loose-count]')?.value || '',
+        expiries: [...row.querySelectorAll('[data-audit-expiry-row]')].map((expiryRow) => ({
+          date: expiryRow.querySelector('[data-audit-expiry-date]')?.value || '',
+          packages: expiryRow.querySelector('[data-audit-expiry-packages]')?.value || '',
+          loose: expiryRow.querySelector('[data-audit-expiry-loose]')?.value || '',
+          unknown: Boolean(expiryRow.querySelector('[data-audit-expiry-unknown]')?.checked)
+        })),
         note: row.querySelector('[data-audit-note]')?.value || ''
       }))
       localStorage.setItem(AUDIT_DRAFT_STORAGE_KEY, JSON.stringify({
@@ -4239,9 +4272,7 @@
         const bookQty = Number(row.dataset.bookQty || 0)
         const unitCost = Number(row.dataset.unitCost || 0)
         const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
-        const countedRaw = row.querySelector('[data-audit-counted]')?.value
-        const unitMode = row.querySelector('[data-audit-count-unit]')?.value || 'base'
-        const counted = inventoryCountToBase(product, countedRaw, unitMode, bookQty)
+        const counted = auditDualCountToBase(product, row.querySelector('[data-audit-package-count]')?.value || '', row.querySelector('[data-audit-loose-count]')?.value || '')
         const diff = Number((counted - bookQty).toFixed(3))
         const valueDiff = diff * unitCost
         bookTotal += bookQty
@@ -4251,7 +4282,7 @@
         row.querySelector('[data-audit-diff]').textContent = `${diff.toFixed(2)}`
         row.querySelector('[data-audit-value-diff]').textContent = formatStockMoney(valueDiff)
         const help = row.querySelector('[data-audit-count-help]')
-        if (help) help.textContent = inventoryCountHelpText(product, countedRaw, unitMode, bookQty)
+        if (help) help.textContent = Number.isFinite(counted) ? `Celkem ${formatQuantityValue(counted, getTransferBaseUnit(product))}.` : 'Zadej nezáporná čísla.'
       })
       auditSummary.innerHTML = [
         { label:'Účetní stav', value: bookTotal.toFixed(2), note:'Součet kusů podle evidence.' },
@@ -4297,20 +4328,31 @@
         const unitCost = getStockUnitCost(row.product)
         const key = `${row.balance.stock_location_id}:${row.product.id}:${row.balance.batch_id || 'none'}`
         const saved = draftRowMap.get(key) || {}
-        const selectedUnit = saved.unit || 'base'
-        const countedValue = saved.counted ?? inventoryBaseToCount(row.product, bookQty, selectedUnit)
+        const pack = getAuditDefaultPackage(row.product)
+        const packageCount = saved.packages ?? (pack ? Math.floor(bookQty / Number(pack.factor || 1)) : '')
+        const looseCount = saved.loose ?? (pack ? Number((bookQty - Number(packageCount || 0) * Number(pack.factor || 1)).toFixed(3)) : bookQty)
+        const existingExpiry = row.batch?.use_by_date || row.batch?.best_before_date || ''
+        const expiryDraft = saved.expiries?.length ? saved.expiries : (isAuditExpiryTracked(row.product) ? [{
+          date: existingExpiry,
+          packages: packageCount,
+          loose: looseCount,
+          unknown: !existingExpiry
+        }] : [])
         return `
-          <tr data-audit-key="${escapeHtml(key)}" data-audit-unit-mode="${escapeHtml(selectedUnit)}" data-stock-location-id="${escapeHtml(String(row.location.id))}" data-product-id="${escapeHtml(String(row.product.id))}" data-batch-id="${escapeHtml(String(row.balance.batch_id || ''))}" data-book-qty="${escapeHtml(String(bookQty))}" data-unit-cost="${escapeHtml(String(unitCost))}">
+          <tr data-audit-key="${escapeHtml(key)}" data-stock-location-id="${escapeHtml(String(row.location.id))}" data-product-id="${escapeHtml(String(row.product.id))}" data-batch-id="${escapeHtml(String(row.balance.batch_id || ''))}" data-book-qty="${escapeHtml(String(bookQty))}" data-unit-cost="${escapeHtml(String(unitCost))}">
             <td data-label="Produkt"><strong>${escapeHtml(row.product.name)}</strong><span class="subtext">${escapeHtml([getProductCategoryLabel(getProductKind(row.product)), row.product.sku ? `SKU ${row.product.sku}` : '', row.product.ean ? `EAN ${row.product.ean}` : ''].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Místo"><strong>${escapeHtml(row.location.name || 'Bez místa')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span></td>
-            <td data-label="Expirace / šarže"><strong>${escapeHtml(formatBatchLabel(row.batch))}</strong></td>
+            <td data-label="Expirace / šarže">
+              <strong>${escapeHtml(formatBatchLabel(row.batch))}</strong>
+              ${isAuditExpiryTracked(row.product) ? `<div class="audit-expiry-list" data-audit-expiry-list>${expiryDraft.map((expiry) => renderAuditExpiryRow(expiry, row.product, pack)).join('')}</div><button class="mini-btn" type="button" data-audit-expiry-add>+ expirace</button>` : '<span class="subtext">Produkt expiraci nesleduje.</span>'}
+            </td>
             <td data-label="Účetní stav"><strong>${bookQty.toFixed(2)} ${escapeHtml(unit)}</strong></td>
             <td data-label="Skutečnost">
               <div class="audit-count-control">
-                <input data-audit-counted type="number" step="0.001" min="0" value="${escapeHtml(countedValue)}" />
-                ${inventoryCountUnitSelectHtml(row.product, selectedUnit)}
+                ${pack ? `<label>Celá balení<input data-audit-package-count type="number" step="0.001" min="0" value="${escapeHtml(packageCount)}"><span>${escapeHtml(`${pack.pack?.package_name || 'balení'} × ${formatQuantityValue(pack.factor, getTransferBaseUnit(row.product))}`)}</span></label>` : ''}
+                <label>Volné ${escapeHtml(getTransferBaseUnit(row.product))}<input data-audit-loose-count type="number" step="0.001" min="0" value="${escapeHtml(looseCount)}"></label>
               </div>
-              <span class="subtext" data-audit-count-help>${escapeHtml(inventoryCountHelpText(row.product, countedValue, selectedUnit, bookQty))}</span>
+              <span class="subtext" data-audit-count-help></span>
             </td>
             <td data-label="Rozdíl"><strong data-audit-diff>0.00</strong></td>
             <td data-label="Hodnota rozdílu"><strong data-audit-value-diff>${escapeHtml(formatStockMoney(0))}</strong></td>
@@ -4343,7 +4385,7 @@
         const bookQty = Number(row.dataset.bookQty || 0)
         const unitCost = Number(row.dataset.unitCost || 0)
         const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
-        const counted = inventoryCountToBase(product, row.querySelector('[data-audit-counted]')?.value, row.querySelector('[data-audit-count-unit]')?.value || 'base', bookQty)
+        const counted = auditDualCountToBase(product, row.querySelector('[data-audit-package-count]')?.value || '', row.querySelector('[data-audit-loose-count]')?.value || '')
         const diff = Number((counted - bookQty).toFixed(3))
         return [
           auditDate.value,
@@ -4466,8 +4508,15 @@
       return [...auditRowsBody.querySelectorAll('[data-audit-key]')].map((row) => {
         const bookQuantity = Number(row.dataset.bookQty || 0)
         const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId)) || null
-        const countedRaw = row.querySelector('[data-audit-counted]')?.value
-        const countedQuantity = inventoryCountToBase(product, countedRaw, row.querySelector('[data-audit-count-unit]')?.value || 'base', bookQuantity)
+        const countedQuantity = auditDualCountToBase(product, row.querySelector('[data-audit-package-count]')?.value || '', row.querySelector('[data-audit-loose-count]')?.value || '')
+        const pack = getAuditDefaultPackage(product)
+        const expiryCounts = [...row.querySelectorAll('[data-audit-expiry-row]')].map((expiryRow) => ({
+          expiryDate: expiryRow.querySelector('[data-audit-expiry-date]')?.value || null,
+          expiryUnknown: Boolean(expiryRow.querySelector('[data-audit-expiry-unknown]')?.checked),
+          packageCount: Number(String(expiryRow.querySelector('[data-audit-expiry-packages]')?.value || 0).replace(',', '.')),
+          looseQuantity: Number(String(expiryRow.querySelector('[data-audit-expiry-loose]')?.value || 0).replace(',', '.')),
+          quantityBaseUnits: auditDualCountToBase(product, expiryRow.querySelector('[data-audit-expiry-packages]')?.value || '', expiryRow.querySelector('[data-audit-expiry-loose]')?.value || '')
+        })).filter((expiry) => expiry.quantityBaseUnits > 0)
         const differenceQuantity = Number((countedQuantity - bookQuantity).toFixed(3))
         const unitCost = Number(row.dataset.unitCost || 0)
         return {
@@ -4476,6 +4525,10 @@
           batchId: row.dataset.batchId ? Number(row.dataset.batchId) : null,
           bookQuantity,
           countedQuantity,
+          countedPackageId: pack?.pack?.id || null,
+          countedPackageCount: Number(String(row.querySelector('[data-audit-package-count]')?.value || 0).replace(',', '.')),
+          countedLooseQuantity: Number(String(row.querySelector('[data-audit-loose-count]')?.value || 0).replace(',', '.')),
+          expiryCounts,
           differenceQuantity,
           unitCost,
           differenceValue: Number((differenceQuantity * unitCost).toFixed(2)),
@@ -4488,6 +4541,27 @@
           unitLabel: row.querySelector('td[data-label="Účetní stav"] strong')?.textContent?.replace(/^[\d\s.,-]+/, '').trim() || ''
         }
       }).filter((row) => row.stockLocationId && row.productId && Number.isFinite(row.countedQuantity))
+    }
+    async function ensureAuditInventoryBatch(product, expiry, auditId) {
+      let query = supabase.from('inventory_batches').select('id').eq('product_id', product.id).is('lot_code', null)
+      if (expiry.expiryUnknown) {
+        query = query.is('best_before_date', null).is('use_by_date', null)
+      } else if (product.expiry_tracking_mode === 'use_by') {
+        query = query.eq('use_by_date', expiry.expiryDate).is('best_before_date', null)
+      } else {
+        query = query.eq('best_before_date', expiry.expiryDate).is('use_by_date', null)
+      }
+      const { data: existing, error: findError } = await query.limit(1).maybeSingle()
+      if (findError) throw findError
+      if (existing?.id) return existing.id
+      const { data: created, error: createError } = await supabase.from('inventory_batches').insert([{
+        product_id: product.id,
+        best_before_date: !expiry.expiryUnknown && product.expiry_tracking_mode !== 'use_by' ? expiry.expiryDate : null,
+        use_by_date: !expiry.expiryUnknown && product.expiry_tracking_mode === 'use_by' ? expiry.expiryDate : null,
+        note: expiry.expiryUnknown ? `Expirace nezjištěná při inventuře #${auditId}` : `Založeno inventurou #${auditId}`
+      }]).select('id').single()
+      if (createError) throw createError
+      return created.id
     }
     function getVehicleAuditEmployeeLabel(employeeId) {
       const employee = employeesDirectory.find((item) => String(item.id) === String(employeeId))
@@ -6303,6 +6377,16 @@
       const rows = collectAuditSheetRows()
       if (!rows.length) throw new Error('Nejdřív vytvoř inventurní soupis.')
       if (!auditDate.value) throw new Error('Doplň datum inventury.')
+      for (const row of rows) {
+        const product = productsV13.find((item) => String(item.id) === String(row.productId))
+        if (!isAuditExpiryTracked(product)) continue
+        const expiryTotal = row.expiryCounts.reduce((sum, expiry) => sum + Number(expiry.quantityBaseUnits || 0), 0)
+        if (Math.abs(expiryTotal - row.countedQuantity) > 0.001) {
+          throw new Error(`${row.productLabel}: součet množství u expirací (${formatQuantityValue(expiryTotal, getTransferBaseUnit(product))}) musí odpovídat celkovému počtu (${formatQuantityValue(row.countedQuantity, getTransferBaseUnit(product))}).`)
+        }
+        const missingExpiry = row.expiryCounts.find((expiry) => !expiry.expiryDate && !expiry.expiryUnknown)
+        if (missingExpiry) throw new Error(`${row.productLabel}: u každého množství vyplň expiraci nebo označ „nečitelná / neznámá“.`)
+      }
       const hasDifference = rows.some((row) => Math.abs(row.differenceQuantity) > 0.0001)
       if (!hasDifference && !window.confirm('Inventura nemá žádný rozdíl. Chceš ji přesto uložit do databáze?')) return
       if (hasDifference && !window.confirm('Uzavřením inventury se rozdíly zapíšou do skladu a přepíšou skutečný stav. Pokračovat?')) return
@@ -6366,6 +6450,9 @@
           batch_id: row.batchId,
           book_quantity: row.bookQuantity,
           counted_quantity: row.countedQuantity,
+          counted_package_id: row.countedPackageId,
+          counted_package_count: row.countedPackageCount,
+          counted_loose_quantity: row.countedLooseQuantity,
           difference_quantity: row.differenceQuantity,
           unit_cost: row.unitCost || null,
           difference_value: row.differenceValue,
@@ -6373,8 +6460,42 @@
           movement_id: movementId
         })
       }
-      const { error: itemsError } = await supabase.from('inventory_audit_items').insert(auditItems)
+      const { data: savedAuditItems, error: itemsError } = await supabase.from('inventory_audit_items').insert(auditItems).select('id, product_id, stock_location_id')
       if (itemsError) throw itemsError
+      const expiryRows = []
+      rows.forEach((row, index) => {
+        const auditItem = savedAuditItems?.[index]
+        if (!auditItem?.id) return
+        row.expiryCounts.forEach((expiry) => expiryRows.push({
+          audit_item_id: auditItem.id,
+          product_id: row.productId,
+          package_id: row.countedPackageId,
+          package_count: expiry.packageCount,
+          loose_quantity: expiry.looseQuantity,
+          quantity_base_units: expiry.quantityBaseUnits,
+          expiry_date: expiry.expiryDate,
+          expiry_unknown: expiry.expiryUnknown
+        }))
+      })
+      if (expiryRows.length) {
+        const { error: expiryError } = await supabase.from('inventory_audit_expiry_counts').insert(expiryRows)
+        if (expiryError) throw expiryError
+      }
+      for (const row of rows.filter((item) => !item.batchId && item.expiryCounts.length)) {
+        const product = productsV13.find((item) => String(item.id) === String(row.productId))
+        if (!product) continue
+        const { error: clearError } = await supabase
+          .from('stock_location_balances')
+          .update({ quantity_on_hand: 0, updated_at: new Date().toISOString() })
+          .eq('stock_location_id', row.stockLocationId)
+          .eq('product_id', row.productId)
+          .is('batch_id', null)
+        if (clearError) throw clearError
+        for (const expiry of row.expiryCounts) {
+          const batchId = await ensureAuditInventoryBatch(product, expiry, audit.id)
+          await addBalanceToBatch(row.stockLocationId, row.productId, batchId, expiry.quantityBaseUnits)
+        }
+      }
 
       localStorage.removeItem(AUDIT_DRAFT_STORAGE_KEY)
       auditStatus.textContent = `Inventura #${audit.id} byla uzavřená a skladové stavy jsou přepsané.`
@@ -10692,11 +10813,30 @@
       control?.addEventListener('input', saveAuditDraft)
     })
     auditRowsBody.addEventListener('input', (event) => {
-      if (event.target.matches('[data-audit-counted], [data-audit-count-unit], [data-audit-note]')) updateAuditDifferences()
+      if (event.target.matches('[data-audit-package-count], [data-audit-loose-count], [data-audit-expiry-date], [data-audit-expiry-packages], [data-audit-expiry-loose], [data-audit-note]')) updateAuditDifferences()
     })
     auditRowsBody.addEventListener('change', (event) => {
-      if (event.target.matches('[data-audit-count-unit]')) {
-        handleAuditCountUnitChange(event.target)
+      if (event.target.matches('[data-audit-expiry-unknown]')) {
+        const expiryRow = event.target.closest('[data-audit-expiry-row]')
+        const dateInput = expiryRow?.querySelector('[data-audit-expiry-date]')
+        if (dateInput) {
+          dateInput.disabled = event.target.checked
+          if (event.target.checked) dateInput.value = ''
+        }
+        updateAuditDifferences()
+      }
+    })
+    auditRowsBody.addEventListener('click', (event) => {
+      const row = event.target.closest('[data-audit-key]')
+      if (!row) return
+      if (event.target.closest('[data-audit-expiry-add]')) {
+        const product = productsV13.find((item) => String(item.id) === String(row.dataset.productId))
+        const list = row.querySelector('[data-audit-expiry-list]')
+        if (product && list) list.insertAdjacentHTML('beforeend', renderAuditExpiryRow({}, product, getAuditDefaultPackage(product)))
+        updateAuditDifferences()
+      }
+      if (event.target.closest('[data-audit-expiry-remove]')) {
+        event.target.closest('[data-audit-expiry-row]')?.remove()
         updateAuditDifferences()
       }
     })
