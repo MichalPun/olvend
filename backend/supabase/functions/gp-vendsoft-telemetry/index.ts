@@ -971,6 +971,22 @@ Deno.serve(async (req) => {
     }
 
     const eventAt = dexReadDateTime || transmitTime || transactionTime || new Date().toISOString();
+    let previousDexPaymentCounters: Record<string, unknown> | null = null;
+    if (ingest?.id && deviceId) {
+      const { data: previousIngest, error: previousIngestError } = await adminClient
+        .from("telemetry_dex_ingests")
+        .select("raw_dex")
+        .eq("provider", provider)
+        .eq("device_id", deviceId)
+        .lt("id", ingest.id)
+        .order("id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (previousIngestError) throw previousIngestError;
+      if (previousIngest?.raw_dex) {
+        previousDexPaymentCounters = parseDexSummary(String(previousIngest.raw_dex), deviceId).payment_counters as Record<string, unknown>;
+      }
+    }
     const machineId = await resolveMachineId(adminClient, provider, [
       deviceId,
       parsedDex.external_machine_id,
@@ -1022,7 +1038,7 @@ Deno.serve(async (req) => {
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
         paymentCounters: parsedDex.payment_counters as Record<string, unknown>,
-        previousPaymentCounters: (previousState?.counters_payload as Record<string, unknown> | null | undefined)?.payment_counters as Record<string, unknown> | null | undefined,
+        previousPaymentCounters: previousDexPaymentCounters || (previousState?.counters_payload as Record<string, unknown> | null | undefined)?.payment_counters as Record<string, unknown> | null | undefined,
       });
 
       coffeeRecipeDepletion = [];
