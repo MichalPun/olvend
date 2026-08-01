@@ -7018,8 +7018,11 @@
             } : {})
           })
         }
+        detail.draft.phase = 'machine'
+        persistMobileSnapshot()
+        renderRouteMachineScreen()
         const preparation = serializeFoodPreparation(stopId, detail)
-        const { error: phaseError } = await supabase
+        const { data: savedPhase, error: phaseError } = await supabase
           .from('route_machine_visits')
           .update({
             work_phase: 'machine',
@@ -7027,29 +7030,43 @@
             synced_at: new Date().toISOString()
           })
           .eq('id', detail.visitId)
-        if (phaseError) throw phaseError
+          .select('id, work_phase, food_preparation')
+          .maybeSingle()
+        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'machine') {
+          scheduleFoodWorkProgressSave(stopId)
+          showMessage('Doplňování je bezpečně uložené v telefonu. Serverové uložení se zopakuje automaticky po obnovení spojení.', 'error', { scroll: false })
+          return
+        }
         const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
         if (currentVisit) {
           currentVisit.work_phase = 'machine'
-          currentVisit.food_preparation = preparation
+          currentVisit.food_preparation = savedPhase.food_preparation || preparation
         }
-        detail.draft.phase = 'machine'
-        renderRouteMachineScreen()
+        persistMobileSnapshot()
         return
       }
       if (action === 'back-picklist') {
         if ((detail.slots || []).some((item) => getFoodSlotDraft(stopId, item).accepted)) {
           throw new Error('Po potvrzení první pozice už se nelze vrátit k přípravě.')
         }
-        const { error: phaseError } = await supabase
+        detail.draft.phase = 'picklist'
+        persistMobileSnapshot()
+        renderRouteMachineScreen()
+        const preparation = serializeFoodPreparation(stopId, detail)
+        const { data: savedPhase, error: phaseError } = await supabase
           .from('route_machine_visits')
-          .update({ work_phase: 'picklist', synced_at: new Date().toISOString() })
+          .update({ work_phase: 'picklist', food_preparation: preparation, synced_at: new Date().toISOString() })
           .eq('id', detail.visitId)
-        if (phaseError) throw phaseError
+          .select('id, work_phase')
+          .maybeSingle()
+        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'picklist') {
+          scheduleFoodWorkProgressSave(stopId)
+          showMessage('Návrat k přípravě je uložený v telefonu; server se dosynchronizuje po obnovení spojení.', 'error', { scroll: false })
+          return
+        }
         const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
         if (currentVisit) currentVisit.work_phase = 'picklist'
-        detail.draft.phase = 'picklist'
-        renderRouteMachineScreen()
+        persistMobileSnapshot()
         return
       }
       if (action === 'confirm-unchanged') {
