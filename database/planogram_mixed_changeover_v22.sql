@@ -29,10 +29,20 @@ begin
 end;
 $$;
 
-create unique index if not exists telemetry_sales_events_ingest_slot_part_uidx
-  on public.telemetry_sales_events
-  (provider, ingest_id, machine_id, planogram_slot_id, selection_code, event_part)
-  where ingest_id is not null;
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.telemetry_sales_events'::regclass
+      and conname = 'telemetry_sales_events_ingest_slot_part_key'
+  ) then
+    alter table public.telemetry_sales_events
+      add constraint telemetry_sales_events_ingest_slot_part_key
+      unique (provider, ingest_id, machine_id, planogram_slot_id, selection_code, event_part);
+  end if;
+end;
+$$;
 
 create unique index if not exists telemetry_sales_events_source_key_part_uidx
   on public.telemetry_sales_events (provider, source_event_key, event_part)
