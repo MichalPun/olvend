@@ -4537,7 +4537,7 @@
     }
 
     function getFoodSlotProductOptions(slot) {
-      const skus = [slot?.product_sku, slot?.pending_product_sku, ...(slot?._familyAlternativeSkus || [])]
+      const skus = [slot?.product_sku, slot?.pending_product_sku, slot?.planned_product_sku, ...(slot?._familyAlternativeSkus || [])]
       const allowed = String(slot?.allowed_substitutes || '')
       for (const match of allowed.matchAll(/SKU\s*([A-Za-z0-9_-]+)/gi)) skus.push(match[1])
       const primaryProduct = state.products.find((product) => String(product.sku || '') === String(slot?.product_sku || ''))
@@ -4551,6 +4551,26 @@
       return [...new Set(skus.filter(Boolean))]
         .map((sku) => state.products.find((product) => String(product.sku || '') === String(sku)))
         .filter(Boolean)
+    }
+
+    function getFoodPlanogramChange(slot) {
+      const currentSku = String(slot?.product_sku || '')
+      const nextSku = String(slot?.pending_product_sku || (slot?.planned_product_sku && String(slot.planned_product_sku) !== currentSku ? slot.planned_product_sku : '') || '')
+      const currentPrice = Number(slot?.price_czk || 0)
+      const nextPriceRaw = slot?.pending_price_czk ?? slot?.planned_price_czk
+      const nextPrice = nextPriceRaw == null ? null : Number(nextPriceRaw)
+      const productChanged = Boolean(nextSku && nextSku !== currentSku)
+      const priceChanged = Number.isFinite(nextPrice) && nextPrice !== currentPrice
+      if (!productChanged && !priceChanged) return null
+      const product = nextSku ? state.products.find((item) => String(item.sku || '') === nextSku) : null
+      return {
+        productChanged,
+        priceChanged,
+        nextSku: nextSku || currentSku,
+        nextProduct: product || null,
+        nextName: product?.name || slot?.pending_product_name || slot?.planned_product_name || slot?.product_name || '',
+        nextPrice: Number.isFinite(nextPrice) ? nextPrice : currentPrice
+      }
     }
 
     function isFoodExpiryExpired(value) {
@@ -4623,10 +4643,15 @@
       const current = Number(slot?.current_units || 0)
       const desired = getFoodRequiredFillQuantity(slot, detail)
       const draft = detail?.draft?.slots?.[String(slot?.id)] || {}
-      const defaultProductId = draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
+      const planogramChange = getFoodPlanogramChange(slot)
+      const changeProductId = planogramChange?.productChanged ? planogramChange.nextProduct?.id : null
+      const defaultProductId = (!draft.picked && changeProductId) || draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
       let rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
         ? draft.fillItems
         : allocateFoodFillFromVehicleBatches(detail, defaultProductId, Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? desired))))
+      if (!draft.picked && changeProductId && rawFillItems.every((item) => String(item.productId) !== String(changeProductId))) {
+        rawFillItems = allocateFoodFillFromVehicleBatches(detail, changeProductId, desired)
+      }
       const rawQuantity = rawFillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
       if (!draft.picked && current <= 0.0001 && rawFillItems.length === 1 && rawQuantity < desired) {
         rawFillItems = allocateFoodFillFromVehicleBatches(detail, rawFillItems[0].productId || defaultProductId, desired)
@@ -4675,6 +4700,7 @@
       ]
       const neededSlots = slots.filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
       const expiredSlots = getExpiredFoodSlots(slots)
+      const planogramChanges = slots.map((slot) => ({ slot, change: getFoodPlanogramChange(slot) })).filter((item) => item.change)
       const allPicked = neededSlots.every((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
         return draft.picked || (draft.skipped && draft.skipReason)
@@ -4705,6 +4731,11 @@
       if (phase === 'picklist') {
         return `
           <div class="coffee-visit-detail">
+            ${planogramChanges.length ? `<div class="attention-box">
+              <strong>Připravené změny plánogramu: ${escapeHtml(String(planogramChanges.length))}</strong>
+              ${planogramChanges.map(({ slot, change }) => `<span>Pozice ${escapeHtml(slot.slot_code)} · ${change.productChanged ? `${escapeHtml(slot.product_name || slot.product_sku || '')} → ${escapeHtml(change.nextName || change.nextSku)}` : escapeHtml(slot.product_name || slot.product_sku || '')}${change.priceChanged ? ` · cena ${escapeHtml(formatNumber(slot.price_czk || 0))} → ${escapeHtml(formatNumber(change.nextPrice))} Kč` : ''}</span>`).join('')}
+              <span>Picklist u těchto pozic nabízí nový produkt. Staré kusy zůstávají evidované jako doprodej.</span>
+            </div>` : ''}
             ${expiredSlots.length ? `<div class="food-expired-warning">
               <strong>POZOR: automat eviduje prošlé zboží v ${escapeHtml(String(expiredSlots.length))} pozicích</strong>
               ${expiredSlots.map((slot) => `<span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(slot.product_name || slot.product_sku || 'produkt')} · ${escapeHtml(String(slot.current_units || 0))} ks · expirace ${escapeHtml(formatFoodExpiryDateInput(slot.expiry_date))}</span>`).join('')}
@@ -4722,10 +4753,12 @@
                 const options = getFoodSlotProductOptions(slot)
                 const desired = getFoodRequiredFillQuantity(slot, detail)
                 const selected = state.products.find((product) => String(product.id) === String(draft.fillItems[0]?.productId))
+                const planogramChange = getFoodPlanogramChange(slot)
                 const vehicleQty = Number(detail.vehicleStock?.[String(draft.fillItems[0]?.productId)] || 0)
                 return `
                   <article class="food-pick-card ${draft.picked || draft.skipped ? 'ready' : ''}">
                     <h5>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(selected?.name || slot.product_name)}</h5>
+                    ${planogramChange ? `<div class="attention-box"><strong>Změna plánogramu</strong><span>${planogramChange.productChanged ? `${escapeHtml(slot.product_name || slot.product_sku || '')} → ${escapeHtml(planogramChange.nextName || planogramChange.nextSku)}` : escapeHtml(slot.product_name || '')}${planogramChange.priceChanged ? ` · nová cena ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč` : ''}</span></div>` : ''}
                     <div class="food-pick-stats">
                       <div class="food-pick-stat"><span>${manualStockMode ? 'Poslední kontrola' : 'Stav'}</span><strong>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0}`)}</strong></div>
                       <div class="food-pick-stat"><span>${manualStockMode ? 'Servisní zásoba' : 'Návrh'}</span><strong>${escapeHtml(`${desired} ks`)}</strong></div>
@@ -4796,6 +4829,7 @@
               const plannedProduct = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
               const tracksExpiry = isFoodExpiryTracked(product || plannedProduct)
               const recordedExpired = Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date)
+              const planogramChange = getFoodPlanogramChange(slot)
               const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
               const maxAdd = Math.max(0, Math.min(draft.pickedQuantity, Number(slot.capacity_units || 0) - draft.actualBefore + wasteTotal))
               const actualAdd = Math.min(draft.fillItems.reduce((sum, fill) => sum + Number(fill.quantity || 0), 0), maxAdd)
@@ -4820,10 +4854,10 @@
                     <div class="food-machine-stat"><span>Nový stav</span><strong data-food-total="final">${escapeHtml(`${finalQty} ks`)}</strong></div>
                   </div>
                   <div class="meta" data-food-total="meta">Systém předpokládal ${escapeHtml(`${slot.current_units || 0} ks`)} · přineseno ${escapeHtml(`${draft.pickedQuantity} ks`)} · kapacita ${escapeHtml(`${slot.capacity_units || 0} ks`)}${wasteTotal > 0 ? ` · odpis ${escapeHtml(`${wasteTotal} ks`)}` : ''}</div>
-                  ${slot.pending_product_sku || slot.pending_price_czk != null ? `
+                  ${planogramChange ? `
                     <div class="attention-box">
                       <strong>Naplánovaná změna pozice</strong>
-                      <span>${slot.pending_product_sku ? `Nové SKU ${escapeHtml(slot.pending_product_sku)}. ` : ''}${slot.pending_price_czk != null ? `Nová cena ${escapeHtml(formatNumber(slot.pending_price_czk))} Kč. ` : ''}Potvrzením pozice se změna aktivuje.</span>
+                      <span>${planogramChange.productChanged ? `${escapeHtml(slot.product_name || slot.product_sku || '')} → ${escapeHtml(planogramChange.nextName || planogramChange.nextSku)}. ` : ''}${planogramChange.priceChanged ? `Nová cena ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč. ` : ''}Potvrzením pozice se změna aktivuje nebo založí řízený doprodej starých kusů.</span>
                     </div>
                   ` : ''}
                   <section class="food-machine-step">
@@ -6661,6 +6695,8 @@
           return String(product?.sku || '') !== String(slot.product_sku || '')
         })
       const replacementProduct = replacementFill ? selectedProduct : null
+      const planogramChange = getFoodPlanogramChange(slot)
+      const nextPlanogramSku = planogramChange?.productChanged ? planogramChange.nextSku : null
       const mixedChangeover = Boolean(replacementProduct && remainingExistingQuantity > 0)
       const targetQuantity = Math.max(0, Math.min(capacity, Number(slot.target_units ?? capacity)))
       const nextDesiredQuantity = detail.manualStockMode
@@ -6789,19 +6825,19 @@
           ...(mixedChangeover ? {
             planned_product_sku: replacementProduct.sku,
             planned_product_name: replacementProduct.name,
-            planned_price_czk: slot.pending_price_czk ?? slot.price_czk,
+            planned_price_czk: planogramChange?.nextPrice ?? slot.pending_price_czk ?? slot.price_czk,
             changeover_old_units: remainingExistingQuantity,
             changeover_new_units: actualAdd,
             changeover_started_at: new Date().toISOString()
-          } : slot.pending_product_sku ? {
-            product_sku: slot.pending_product_sku,
-            product_name: state.products.find((item) => String(item.sku) === String(slot.pending_product_sku))?.name || slot.product_name,
-            planned_product_sku: slot.pending_product_sku,
-            planned_product_name: state.products.find((item) => String(item.sku) === String(slot.pending_product_sku))?.name || slot.product_name
+          } : nextPlanogramSku ? {
+            product_sku: nextPlanogramSku,
+            product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name,
+            planned_product_sku: nextPlanogramSku,
+            planned_product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name
           } : {}),
-          ...(slot.pending_price_czk != null ? {
-            price_czk: slot.pending_price_czk,
-            planned_price_czk: slot.pending_price_czk
+          ...(planogramChange?.priceChanged ? {
+            price_czk: planogramChange.nextPrice,
+            planned_price_czk: planogramChange.nextPrice
           } : {}),
           current_units: finalQuantity,
           desired_units: nextDesiredQuantity,
