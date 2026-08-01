@@ -459,6 +459,53 @@ async function applyAtomicCoffeeRecipeDepletion(
   return data || { inserted: 0, containers_updated: 0 };
 }
 
+async function reconcilePendingUnknownPayments(
+  adminClient: ReturnType<typeof createClient>,
+  params: { provider: string; machineId: number; beforeEventAt: string; cashQuantity: number; cashlessQuantity: number },
+) {
+  let cashRemaining = Math.max(0, Math.floor(params.cashQuantity));
+  let cashlessRemaining = Math.max(0, Math.floor(params.cashlessQuantity));
+  if ((!cashRemaining && !cashlessRemaining) || (cashRemaining && cashlessRemaining)) return [];
+
+  const { data: pending, error: pendingError } = await adminClient
+    .from("telemetry_sales_events")
+    .select("id,quantity,total_amount_czk,cash_quantity,cashless_quantity,unknown_payment_quantity,cash_amount_czk,cashless_amount_czk,unknown_payment_amount_czk")
+    .eq("provider", params.provider)
+    .eq("machine_id", params.machineId)
+    .gt("unknown_payment_quantity", 0)
+    .lt("source_event_at", params.beforeEventAt)
+    .order("source_event_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(100);
+  if (pendingError) throw pendingError;
+
+  const reconciled: Record<string, unknown>[] = [];
+  for (const sale of pending || []) {
+    const unknown = Number(sale.unknown_payment_quantity || 0);
+    if (unknown <= 0 || (!cashRemaining && !cashlessRemaining)) continue;
+    const allocated = Math.min(unknown, cashRemaining || cashlessRemaining);
+    const quantity = Number(sale.quantity || 0);
+    const unitPrice = quantity > 0 ? Number(sale.total_amount_czk || 0) / quantity : 0;
+    const cashAllocated = cashRemaining ? allocated : 0;
+    const cashlessAllocated = cashlessRemaining ? allocated : 0;
+    const nextUnknown = Math.max(0, unknown - allocated);
+    const patch = {
+      cash_quantity: Number(sale.cash_quantity || 0) + cashAllocated,
+      cashless_quantity: Number(sale.cashless_quantity || 0) + cashlessAllocated,
+      unknown_payment_quantity: nextUnknown,
+      cash_amount_czk: Math.round((Number(sale.cash_amount_czk || 0) + cashAllocated * unitPrice) * 100) / 100,
+      cashless_amount_czk: Math.round((Number(sale.cashless_amount_czk || 0) + cashlessAllocated * unitPrice) * 100) / 100,
+      unknown_payment_amount_czk: Math.round(nextUnknown * unitPrice * 100) / 100,
+    };
+    const { error: updateError } = await adminClient.from("telemetry_sales_events").update(patch).eq("id", sale.id);
+    if (updateError) throw updateError;
+    cashRemaining -= cashAllocated;
+    cashlessRemaining -= cashlessAllocated;
+    reconciled.push({ id: sale.id, cash_quantity: cashAllocated, cashless_quantity: cashlessAllocated });
+  }
+  return reconciled;
+}
+
 async function applyPlanogramDepletion(
   adminClient: ReturnType<typeof createClient>,
   params: {
@@ -543,6 +590,8 @@ async function applyPlanogramDepletion(
     .map((slot) => priceToPaymentAmount(Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0)))
     .filter((amount) => amount > 0);
   const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta, availablePaymentAmounts);
+  const allocatedCash = [...paymentAllocations.values()].reduce((sum, allocation) => sum + allocation.cashDelta, 0);
+  const allocatedCashless = [...paymentAllocations.values()].reduce((sum, allocation) => sum + allocation.cashlessDelta, 0);
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
@@ -714,6 +763,15 @@ async function applyPlanogramDepletion(
       settlement_amount_czk: settlementAmount,
     });
   }
+
+  const reconciledPayments = await reconcilePendingUnknownPayments(adminClient, {
+    provider: params.provider,
+    machineId: params.machineId,
+    beforeEventAt: params.eventAt,
+    cashQuantity: Math.max(0, paymentDelta.cashQuantity - allocatedCash),
+    cashlessQuantity: Math.max(0, paymentDelta.cashlessQuantity - allocatedCashless),
+  });
+  if (reconciledPayments.length) applied.push({ reconciled_pending_payments: reconciledPayments });
 
   return applied;
 }
