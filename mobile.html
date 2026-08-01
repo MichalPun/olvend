@@ -44,6 +44,8 @@
         radial-gradient(circle at top, rgba(215, 24, 37, 0.18), transparent 32rem),
         linear-gradient(180deg, #090a0d 0%, #10131a 100%);
       font-family: Arial, Helvetica, sans-serif;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
     }
 
     button,
@@ -1377,7 +1379,7 @@
 
     .food-pick-actions {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr;
       gap: 8px;
     }
 
@@ -1763,6 +1765,92 @@
       accent-color: #35d17f;
     }
 
+    @media (max-width: 699px) {
+      .food-machine-card > summary {
+        gap: 8px;
+        padding: 11px 12px;
+      }
+
+      .food-machine-card > summary strong {
+        font-size: 15px;
+      }
+
+      .food-machine-card > summary small {
+        margin-top: 2px;
+        font-size: 12px;
+        line-height: 1.22;
+      }
+
+      .food-machine-card > summary span {
+        padding: 5px 7px;
+        font-size: 11px;
+      }
+
+      .food-machine-body {
+        gap: 9px;
+        padding: 11px;
+      }
+
+      .food-machine-card .meta {
+        padding: 8px 9px;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+
+      .food-machine-stat {
+        padding: 7px 4px;
+      }
+
+      .food-machine-stat strong {
+        font-size: 14px;
+      }
+
+      .food-machine-step {
+        gap: 7px;
+        padding: 10px;
+        border-radius: 12px;
+      }
+
+      .food-machine-step > strong {
+        font-size: 14px;
+      }
+
+      .food-machine-card label {
+        gap: 4px;
+        font-size: 10px;
+        line-height: 1.25;
+      }
+
+      .food-machine-card input,
+      .food-machine-card select,
+      .food-machine-card textarea {
+        min-height: 44px;
+        margin-top: 3px;
+        padding: 10px 11px;
+        border-radius: 12px;
+        font-size: 15px;
+      }
+
+      .food-machine-card textarea {
+        min-height: 70px;
+      }
+
+      .food-machine-product-line {
+        font-size: 12px;
+        line-height: 1.28;
+      }
+
+      .food-machine-card .food-expiry-field {
+        padding: 8px 9px;
+        border-radius: 11px;
+      }
+
+      .food-machine-optional > summary {
+        padding: 10px 11px;
+        font-size: 12px;
+      }
+    }
+
     @media (min-width: 700px) {
       body {
         padding: 24px 0;
@@ -1781,7 +1869,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.01.5</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.01.6</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4617,6 +4705,40 @@
       return result
     }
 
+    async function refreshFoodVehicleBalances(detail) {
+      if (!detail) return
+      const productIds = [...new Set((detail.slots || [])
+        .flatMap((slot) => getFoodSlotProductOptions(slot).map((product) => product.id))
+        .filter(Boolean))]
+      const vehicleStock = {}
+      const vehicleBatches = {}
+      const vehicleId = getCurrentVehicleId()
+      if (vehicleId && productIds.length) {
+        const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+        const { data: balances, error } = await supabase
+          .from('stock_location_balances')
+          .select('product_id, batch_id, quantity_on_hand, inventory_batches(lot_code, best_before_date, use_by_date)')
+          .eq('stock_location_id', vehicleLocationId)
+          .in('product_id', productIds)
+        if (error) throw error
+        for (const productId of productIds) {
+          const rows = (balances || []).filter((row) => String(row.product_id) === String(productId))
+          vehicleStock[String(productId)] = rows.reduce((sum, row) => sum + Number(row.quantity_on_hand || 0), 0)
+          vehicleBatches[String(productId)] = rows
+            .filter((row) => Number(row.quantity_on_hand || 0) > 0)
+            .map((row) => ({
+              batch_id: row.batch_id || null,
+              quantity_on_hand: Number(row.quantity_on_hand || 0),
+              lot_code: row.inventory_batches?.lot_code || null,
+              expiry_date: row.inventory_batches?.use_by_date || row.inventory_batches?.best_before_date || null
+            }))
+            .sort((a, b) => String(a.expiry_date || '9999-12-31').localeCompare(String(b.expiry_date || '9999-12-31')) || Number(a.batch_id || Number.MAX_SAFE_INTEGER) - Number(b.batch_id || Number.MAX_SAFE_INTEGER))
+        }
+      }
+      detail.vehicleStock = vehicleStock
+      detail.vehicleBatches = vehicleBatches
+    }
+
     function hydrateFoodFillBatches(detail, fillItems) {
       const consumedByBatch = new Map()
       return fillItems.flatMap((fill) => {
@@ -4645,18 +4767,17 @@
       const current = Number(slot?.current_units || 0)
       const desired = getFoodRequiredFillQuantity(slot, detail)
       const draft = detail?.draft?.slots?.[String(slot?.id)] || {}
+      const hasDraftDecision = draft.picked != null || draft.skipped != null || Array.isArray(draft.fillItems)
       const planogramChange = getFoodPlanogramChange(slot)
       const changeProductId = planogramChange?.productChanged ? planogramChange.nextProduct?.id : null
       const defaultProductId = (!draft.picked && changeProductId) || draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
       let rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
         ? draft.fillItems
-        : allocateFoodFillFromVehicleBatches(detail, defaultProductId, Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? desired))))
+        : allocateFoodFillFromVehicleBatches(detail, defaultProductId, hasDraftDecision
+          ? Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? 0)))
+          : 0)
       if (!draft.picked && changeProductId && rawFillItems.every((item) => String(item.productId) !== String(changeProductId))) {
         rawFillItems = allocateFoodFillFromVehicleBatches(detail, changeProductId, desired)
-      }
-      const rawQuantity = rawFillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
-      if (!draft.picked && current <= 0.0001 && rawFillItems.length === 1 && rawQuantity < desired) {
-        rawFillItems = allocateFoodFillFromVehicleBatches(detail, rawFillItems[0].productId || defaultProductId, desired)
       }
       const fillItems = hydrateFoodFillBatches(detail, rawFillItems)
       const pickedQuantity = fillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
@@ -4666,10 +4787,10 @@
         pickedQuantity,
         preparedQuantity: Number(draft.preparedQuantity ?? pickedQuantity),
         picked: Boolean(draft.picked || desired <= 0),
-        skipped: Boolean(draft.skipped),
-        skipReason: draft.skipReason || '',
+        skipped: draft.skipped != null ? Boolean(draft.skipped) : desired > 0,
+        skipReason: draft.skipReason || (!hasDraftDecision && current > 0 ? 'not_needed' : ''),
         actualBefore: Math.max(0, Number(draft.actualBefore ?? current)),
-        actualAdd: Math.max(0, Number(draft.actualAdd ?? Math.min(desired, Math.max(0, Number(slot?.capacity_units || 0) - current)))),
+        actualAdd: Math.max(0, Number(draft.actualAdd ?? (hasDraftDecision ? Math.min(desired, Math.max(0, Number(slot?.capacity_units || 0) - current)) : 0))),
         wasteItems: Array.isArray(draft.wasteItems) ? draft.wasteItems : [],
         expiryDate: draft.expiryDate || '',
         existingExpiryDate: draft.existingExpiryDate ?? slot?.expiry_date ?? '',
@@ -4705,7 +4826,7 @@
       const planogramChanges = slots.map((slot) => ({ slot, change: getFoodPlanogramChange(slot) })).filter((item) => item.change)
       const allPicked = neededSlots.every((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
-        return draft.picked || (draft.skipped && draft.skipReason)
+        return draft.picked || (draft.skipped && (Number(slot.current_units || 0) > 0 || draft.skipReason))
       })
       const acceptedCount = slots.filter((slot) => getFoodSlotDraft(stop.id, slot).accepted).length
       const missingCheckCount = foodCheckRows.filter(([key]) => checks[key] !== 'done').length
@@ -4746,8 +4867,8 @@
             <div class="attention-box">
               <strong>${manualStockMode ? 'Ruční automat' : 'Příprava u auta'} · ${escapeHtml(`${neededSlots.length} pozic k doplnění`)}</strong>
               <span>${manualStockMode
-                ? 'Telemetrie zásob je vypnutá. Množství níže je standardní servisní zásoba, ne online stav. Vyber skutečnou příchuť a potvrď „Beru k automatu“.'
-                : 'Vyber skutečnou příchuť a potvrď „Beru k automatu“. K automatu půjdeš jen jednou.'}</span>
+                ? 'Telemetrie zásob je vypnutá. Výchozí volba je „Nic neberu“. Když doplňuješ, vyber příchuť a klepni na „Beru z vozidla“; počet se doplní automaticky.'
+                : 'Výchozí volba je „Nic neberu“. Když doplňuješ, klepni na „Beru z vozidla“; navržený počet se doplní automaticky.'}</span>
             </div>
             <div class="coffee-visit-grid">
               ${neededSlots.length ? neededSlots.map((slot) => {
@@ -4769,29 +4890,25 @@
                     ${draft.fillItems.map((fill, fillIndex) => {
                       const fillProduct = state.products.find((product) => String(product.id) === String(fill.productId))
                       const fillVehicleQty = Number(detail.vehicleStock?.[String(fill.productId)] || 0)
-                      const fillShortage = Number(fill.quantity || 0) > fillVehicleQty
+                      const fillShortage = draft.picked && Number(fill.quantity || 0) > fillVehicleQty
                       return `<div class="food-fill-line ${options.length > 1 ? '' : 'single'}">
                         ${options.length > 1 ? `<label>Produkt
                           <select data-food-fill-field="productId" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.picked ? 'disabled' : ''}>
                             ${options.map((product) => `<option value="${escapeHtml(product.id)}" ${String(product.id) === String(fill.productId) ? 'selected' : ''}>${escapeHtml(product.name)} · SKU ${escapeHtml(product.sku)}</option>`).join('')}
                           </select>
                         </label>` : ''}
-                        <label>${options.length > 1 ? `Beru z auta k automatu (ks) · v autě ${escapeHtml(fillVehicleQty)}` : 'Beru z auta k automatu (ks)'}
-                          <input type="number" min="0" max="${escapeHtml(desired)}" value="${escapeHtml(fill.quantity || 0)}" data-food-fill-field="quantity" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.picked ? 'disabled' : ''}>
-                        </label>
-                        ${fillShortage ? `<div class="muted-text">Evidence auta nestačí. Po doplnění bude nejméně ${escapeHtml(Number(fill.quantity || 0) - fillVehicleQty)} ks v mínusu; potvrzení je přesto možné.</div>` : ''}
-                        ${draft.fillItems.length > 1 && !draft.picked ? `<button class="secondary-btn" type="button" data-food-action="remove-fill" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Odebrat řádek</button>` : ''}
+                        <div class="food-pick-total">${draft.picked
+                          ? `Připraveno ${escapeHtml(fill.quantity || 0)} ks · v autě ${escapeHtml(fillVehicleQty)} ks`
+                          : `Nic neberu · po potvrzení se připraví ${escapeHtml(desired)} ks`}</div>
+                        ${fillShortage ? `<div class="muted-text">V evidenci auta chybí ${escapeHtml(Number(fill.quantity || 0) - fillVehicleQty)} ks. Samotná objednávka pro sklad zásobu auta nezvyšuje; musí být potvrzená nakládka.</div>` : ''}
                       </div>`
                     }).join('')}
-                    ${options.length > 1 && !draft.picked ? `<button class="secondary-btn" type="button" data-food-action="add-fill" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">+ Přidat další produkt</button>` : ''}
-                    ${draft.fillItems.length > 1 ? `<div class="food-pick-total">Celkem ${escapeHtml(draft.pickedQuantity)} z navržených ${escapeHtml(desired)} ks</div>` : ''}
                     <div class="food-pick-actions">
-                      <button class="${draft.picked ? 'secondary-btn' : 'primary-btn'}" type="button" data-food-action="toggle-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.picked ? 'Beru k automatu ✓' : 'Beru k automatu'}</button>
-                      <button class="${draft.skipped ? 'secondary-btn' : 'secondary-btn'}" type="button" data-food-action="skip-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.skipped ? 'Z auta nic neberu ✓' : 'Z auta nic neberu'}</button>
+                      <button class="${draft.picked ? 'secondary-btn' : 'primary-btn'}" type="button" data-food-action="toggle-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.picked ? `Beru ${escapeHtml(draft.pickedQuantity)} ks ✓ · změnit na nic` : `Beru z vozidla · ${escapeHtml(desired)} ks`}</button>
                     </div>
-                    ${draft.skipped ? `
+                    ${draft.skipped && Number(slot.current_units || 0) <= 0 ? `
                       <label class="food-skip-reason">
-                        Proč z auta nic nebereš
+                        Pozice je prázdná — proč ji nedoplňuješ?
                         <select data-food-field="skip-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">
                           <option value="">Vyber důvod</option>
                           <option value="not_needed" ${draft.skipReason === 'not_needed' ? 'selected' : ''}>Podle zkušenosti není potřeba</option>
@@ -4808,7 +4925,7 @@
             ${neededSlots.length ? `
               <div class="coffee-visit-actions">
                 <button class="secondary-btn" type="button" data-food-action="pick-all" data-stop-id="${escapeHtml(stop.id)}">Beru vše navržené</button>
-                <button class="secondary-btn" type="button" data-food-action="skip-all" data-stop-id="${escapeHtml(stop.id)}">Neberu nic z návrhu</button>
+                <button class="secondary-btn" type="button" data-food-action="skip-all" data-stop-id="${escapeHtml(stop.id)}">Nastavit vše na nic neberu</button>
               </div>
             ` : ''}
             <button class="primary-btn" type="button" data-food-action="open-machine" data-stop-id="${escapeHtml(stop.id)}" ${allPicked ? '' : 'disabled'}>${allPicked ? 'Mám připraveno · otevřít automat' : 'Nejdřív potvrď všechny položky'}</button>
@@ -6942,15 +7059,15 @@
       if (action === 'toggle-pick' && slot) {
         const draft = getFoodSlotDraft(stopId, slot)
         if (!draft.picked) {
+          await refreshFoodVehicleBalances(detail)
           const desired = getFoodRequiredFillQuantity(slot, detail)
-          if (draft.pickedQuantity > desired) {
-            throw new Error(`Pozice ${slot.slot_code}: připravuješ ${draft.pickedQuantity} ks, návrh dovoluje nejvýše ${desired} ks.`)
-          }
+          const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+          const fillItems = allocateFoodFillFromVehicleBatches(detail, productId, desired)
           const requested = new Map()
           for (const item of detail.slots || []) {
             const itemDraft = getFoodSlotDraft(stopId, item)
-            if (String(item.id) !== String(slot.id) && !itemDraft.picked) continue
-            for (const fill of itemDraft.fillItems) {
+            const itemFills = String(item.id) === String(slot.id) ? fillItems : (itemDraft.picked ? itemDraft.fillItems : [])
+            for (const fill of itemFills) {
               requested.set(String(fill.productId), Number(requested.get(String(fill.productId)) || 0) + Number(fill.quantity || 0))
             }
           }
@@ -6958,12 +7075,33 @@
             const available = Number(detail.vehicleStock?.[productId] || 0)
             if (quantity > available) {
               const product = state.products.find((item) => String(item.id) === productId)
-              showMessage(`${product?.name || 'Produkt'}: v autě je evidováno ${available} ks, připravuješ ${quantity} ks. Rozdíl se uloží jako záporná zásoba vozidla.`, 'error', { scroll: false })
+              showMessage(`${product?.name || 'Produkt'}: v autě je evidováno ${available} ks, připravuješ ${quantity} ks. Objednávka pro sklad ještě není nakládka; chybějící kusy po potvrzení vytvoří zápornou zásobu auta.`, 'error', { scroll: false })
             }
           }
+          updateFoodSlotDraft(stopId, slot.id, {
+            fillItems,
+            pickedQuantity: desired,
+            preparedQuantity: desired,
+            actualAdd: desired,
+            picked: true,
+            skipped: false,
+            skipReason: '',
+            accepted: false
+          })
+        } else {
+          updateFoodSlotDraft(stopId, slot.id, {
+            fillItems: draft.fillItems.map((fill) => ({ ...fill, quantity: 0, batchId: null, expiryDate: '' })),
+            pickedQuantity: 0,
+            preparedQuantity: 0,
+            actualAdd: 0,
+            picked: false,
+            skipped: true,
+            skipReason: Number(slot.current_units || 0) > 0 ? 'not_needed' : '',
+            accepted: false
+          })
         }
-        updateFoodSlotDraft(stopId, slot.id, { picked: !draft.picked, skipped: false, skipReason: '' })
         renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
         return
       }
       if (action === 'skip-pick' && slot) {
@@ -7017,10 +7155,25 @@
         return
       }
       if (action === 'pick-all') {
+        await refreshFoodVehicleBalances(detail)
         const requestedByProduct = new Map()
         for (const item of detail.slots || []) {
+          if (getFoodRequiredFillQuantity(item, detail) <= 0) continue
           const draft = getFoodSlotDraft(stopId, item)
-          for (const fill of draft.fillItems) {
+          const desired = getFoodRequiredFillQuantity(item, detail)
+          const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+          const fillItems = allocateFoodFillFromVehicleBatches(detail, productId, desired)
+          updateFoodSlotDraft(stopId, item.id, {
+            fillItems,
+            pickedQuantity: desired,
+            preparedQuantity: desired,
+            actualAdd: desired,
+            picked: true,
+            skipped: false,
+            skipReason: '',
+            accepted: false
+          })
+          for (const fill of fillItems) {
             if (Number(fill.quantity || 0) <= 0) continue
             const key = String(fill.productId || '')
             requestedByProduct.set(key, Number(requestedByProduct.get(key) || 0) + Number(fill.quantity || 0))
@@ -7033,34 +7186,36 @@
           return [`${product?.name || 'produkt'}: v autě ${available}, potřeba ${requested}`]
         })
         if (shortages.length) {
-          showMessage(`Evidence auta nestačí · ${shortages.join(' · ')}. Rozdíl se uloží jako záporná zásoba vozidla.`, 'error', { scroll: false })
-        }
-        for (const item of detail.slots || []) {
-          if (getFoodSlotDraft(stopId, item).pickedQuantity > 0) updateFoodSlotDraft(stopId, item.id, { picked: true, skipped: false, skipReason: '' })
+          showMessage(`Evidence auta nestačí · ${shortages.join(' · ')}. Objednávka pro sklad ještě není nakládka; chybějící kusy po potvrzení vytvoří zápornou zásobu auta.`, 'error', { scroll: false })
         }
         renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
         return
       }
       if (action === 'skip-all') {
         for (const item of detail.slots || []) {
           if (getFoodRequiredFillQuantity(item, detail) <= 0) continue
           updateFoodSlotDraft(stopId, item.id, {
+            fillItems: getFoodSlotDraft(stopId, item).fillItems.map((fill) => ({ ...fill, quantity: 0, batchId: null, expiryDate: '' })),
+            pickedQuantity: 0,
+            preparedQuantity: 0,
             picked: false,
             skipped: true,
-            skipReason: 'not_refilling_today',
+            skipReason: Number(item.current_units || 0) > 0 ? 'not_needed' : '',
             actualAdd: 0
           })
         }
         renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
         return
       }
       if (action === 'open-machine') {
         const missing = (detail.slots || []).find((item) => {
           if (getFoodRequiredFillQuantity(item, detail) <= 0) return false
           const draft = getFoodSlotDraft(stopId, item)
-          return !draft.picked && !(draft.skipped && draft.skipReason)
+          return !draft.picked && !(draft.skipped && (Number(item.current_units || 0) > 0 || draft.skipReason))
         })
-        if (missing) throw new Error(`U pozice ${missing.slot_code} potvrď „Beru k automatu“, nebo „Neberu“ a vyber důvod.`)
+        if (missing) throw new Error(`Pozice ${missing.slot_code} je prázdná. Buď zvol „Beru z vozidla“, nebo vyber důvod, proč ji nedoplňuješ.`)
         for (const item of detail.slots || []) {
           const draft = getFoodSlotDraft(stopId, item)
           updateFoodSlotDraft(stopId, item.id, {
@@ -8829,7 +8984,7 @@
         const foodButton = event.target.closest('[data-food-action]')
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
-          const instantActions = ['step-pick', 'toggle-pick', 'skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'open-machine', 'back-picklist']
+          const instantActions = ['step-pick', 'skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'open-machine', 'back-picklist']
           const restore = instantActions.includes(foodButton.dataset.foodAction)
             ? () => {}
             : setButtonBusy(foodButton, getBusyLabel(foodButton.dataset.foodAction))
