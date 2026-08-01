@@ -4539,15 +4539,62 @@
         .filter(Boolean)
     }
 
+    function allocateFoodFillFromVehicleBatches(detail, productId, quantity) {
+      const requested = Math.max(0, Number(quantity || 0))
+      const batches = detail?.vehicleBatches?.[String(productId)] || []
+      if (!requested || !batches.length) return [{ productId, quantity: requested, batchId: null, expiryDate: '' }]
+      const result = []
+      let remaining = requested
+      for (const batch of batches) {
+        if (remaining <= 0.0001) break
+        const available = Math.max(0, Number(batch.quantity_on_hand || 0))
+        if (!available) continue
+        const moved = Math.min(remaining, available)
+        result.push({
+          productId,
+          quantity: moved,
+          batchId: batch.batch_id || null,
+          expiryDate: batch.expiry_date || ''
+        })
+        remaining = Number((remaining - moved).toFixed(3))
+      }
+      if (remaining > 0.0001) result.push({ productId, quantity: remaining, batchId: null, expiryDate: '' })
+      return result
+    }
+
+    function hydrateFoodFillBatches(detail, fillItems) {
+      const consumedByBatch = new Map()
+      return fillItems.flatMap((fill) => {
+        if (fill.batchId && fill.expiryDate) return [fill]
+        const batches = detail?.vehicleBatches?.[String(fill.productId)] || []
+        if (!batches.length) return [fill]
+        let remaining = Math.max(0, Number(fill.quantity || 0))
+        const allocated = []
+        for (const batch of batches) {
+          if (remaining <= 0.0001) break
+          const key = `${fill.productId}:${batch.batch_id || 'none'}`
+          const available = Math.max(0, Number(batch.quantity_on_hand || 0) - Number(consumedByBatch.get(key) || 0))
+          if (!available) continue
+          const moved = Math.min(remaining, available)
+          allocated.push({ ...fill, quantity: moved, batchId: batch.batch_id || null, expiryDate: batch.expiry_date || '' })
+          consumedByBatch.set(key, Number(consumedByBatch.get(key) || 0) + moved)
+          remaining = Number((remaining - moved).toFixed(3))
+        }
+        if (remaining > 0.0001) allocated.push({ ...fill, quantity: remaining, batchId: null, expiryDate: '' })
+        return allocated.length ? allocated : [fill]
+      })
+    }
+
     function getFoodSlotDraft(stopId, slot) {
       const detail = getFoodDetail(stopId)
       const current = Number(slot?.current_units || 0)
       const desired = Math.max(0, Number(slot?.desired_units ?? (Number(slot?.capacity_units || 0) - current)) || 0)
       const draft = detail?.draft?.slots?.[String(slot?.id)] || {}
       const defaultProductId = draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
-      const fillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
+      const rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
         ? draft.fillItems
-        : [{ productId: defaultProductId, quantity: Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? desired))), expiryDate: draft.expiryDate || '' }]
+        : allocateFoodFillFromVehicleBatches(detail, defaultProductId, Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? desired))))
+      const fillItems = hydrateFoodFillBatches(detail, rawFillItems)
       const pickedQuantity = fillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
       return {
         selectedProductId: defaultProductId,
@@ -4753,9 +4800,11 @@
                         <label>Kolik kusů skutečně vkládáš?
                           <input type="number" min="0" max="${escapeHtml(fill.quantity || 0)}" step="1" value="${escapeHtml(fill.quantity || 0)}" data-food-fill-field="quantity" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                         </label>
-                        ${needsExpiry && Number(fill.quantity || 0) > 0 ? `<label class="food-expiry-field">Povinné: datum spotřeby vkládaných kusů
-                          <input type="text" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(fill.expiryDate || ''))}" data-food-fill-field="expiryDate" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
-                        </label>` : ''}
+                        ${needsExpiry && Number(fill.quantity || 0) > 0 ? (fill.batchId && fill.expiryDate
+                          ? `<div class="food-expiry-field"><strong>Expirace z vozidla</strong><span>${escapeHtml(formatFoodExpiryDateInput(fill.expiryDate))} · šarže ${escapeHtml(String(fill.batchId))}</span></div>`
+                          : `<label class="food-expiry-field">Výjimka: ve vozidle chybí dohledatelná šarže – doplň datum
+                            <input type="text" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(fill.expiryDate || ''))}" data-food-fill-field="expiryDate" data-fill-index="${fillIndex}" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
+                          </label>`) : ''}
                       </div>`
                     }).join('')}
                   </section>
@@ -5929,6 +5978,7 @@
                 .map((fill) => ({
                   productId: fill.productId || null,
                   quantity: Math.max(0, Number(fill.quantity || 0)),
+                  batchId: fill.batchId || null,
                   expiryDate: fill.expiryDate || ''
                 }))
                 .filter((fill) => fill.productId)
@@ -5960,7 +6010,7 @@
             ...(draftSlots[String(slot.id)] || {}),
             selectedProductId: existing.actual_product_id || existing.planned_product_id || null,
             fillItems: existingFills.length
-              ? existingFills.map((fill) => ({ productId: fill.product_id, quantity: Number(fill.quantity || 0), expiryDate: fill.expiry_date || '' }))
+              ? existingFills.map((fill) => ({ productId: fill.product_id, quantity: Number(fill.quantity || 0), batchId: null, expiryDate: fill.expiry_date || '' }))
               : [{ productId: existing.actual_product_id || existing.planned_product_id || null, quantity: Number(existing.actual_add_quantity || 0), expiryDate: expiryMatch?.[1] || '' }],
             pickedQuantity: Number(existing.suggested_add_quantity || existing.actual_add_quantity || 0),
             picked: true,
@@ -5979,19 +6029,30 @@
 
         const productIds = [...new Set(slots.flatMap((slot) => getFoodSlotProductOptions(slot).map((product) => product.id)).filter(Boolean))]
         const vehicleStock = {}
+        const vehicleBatches = {}
         const vehicleId = getCurrentVehicleId()
         if (vehicleId && productIds.length) {
           const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
           const { data: balances, error: balancesError } = await supabase
             .from('stock_location_balances')
-            .select('product_id, quantity_on_hand')
+            .select('product_id, batch_id, quantity_on_hand, inventory_batches(lot_code, best_before_date, use_by_date)')
             .eq('stock_location_id', vehicleLocationId)
             .in('product_id', productIds)
           if (balancesError) throw balancesError
           for (const productId of productIds) {
-            vehicleStock[String(productId)] = (balances || [])
+            const productBalances = (balances || [])
               .filter((row) => String(row.product_id) === String(productId))
+            vehicleStock[String(productId)] = productBalances
               .reduce((sum, row) => sum + Number(row.quantity_on_hand || 0), 0)
+            vehicleBatches[String(productId)] = productBalances
+              .filter((row) => Number(row.quantity_on_hand || 0) > 0)
+              .map((row) => ({
+                batch_id: row.batch_id || null,
+                quantity_on_hand: Number(row.quantity_on_hand || 0),
+                lot_code: row.inventory_batches?.lot_code || null,
+                expiry_date: row.inventory_batches?.use_by_date || row.inventory_batches?.best_before_date || null
+              }))
+              .sort((a, b) => String(a.expiry_date || '9999-12-31').localeCompare(String(b.expiry_date || '9999-12-31')) || Number(a.batch_id || Number.MAX_SAFE_INTEGER) - Number(b.batch_id || Number.MAX_SAFE_INTEGER))
           }
         }
 
@@ -6005,6 +6066,7 @@
           checks: Object.fromEntries((checksResult.data || []).map((check) => [check.check_key, check.status])),
           cash: cashResult.data || null,
           vehicleStock,
+          vehicleBatches,
           draft: {
             ...previousDraft,
             phase: existingItems.length || visit?.work_phase === 'machine' ? 'machine' : (previousDraft.phase || 'picklist'),
@@ -6425,6 +6487,7 @@
           fillItems: draft.fillItems.map((fill) => ({
             productId: fill.productId || null,
             quantity: draft.skipped ? 0 : Math.max(0, Number(fill.quantity || 0)),
+            batchId: fill.batchId || null,
             expiryDate: fill.expiryDate || ''
           })),
           preparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.preparedQuantity || draft.pickedQuantity || 0)),
@@ -6568,7 +6631,8 @@
             movementType: 'fill_machine',
             referenceId: fillReference,
             note: `Potravinový automat · pozice ${slot.slot_code} · ${fillProduct?.name || 'produkt'} · vloženo ${fill.quantity} ks`,
-            allowNegative: true
+            allowNegative: true,
+            selectedBatchId: fill.batchId || null
           })
           await applyStockMovementsAtomically(fillMovements)
         }
@@ -8664,11 +8728,13 @@
             const fillItems = draft.fillItems.map((item, index) => index === Number(foodFillField.dataset.fillIndex)
               ? {
                   ...item,
-                  [foodFillField.dataset.foodFillField]: fillValue
+                  [foodFillField.dataset.foodFillField]: fillValue,
+                  ...(foodFillField.dataset.foodFillField === 'productId' ? { batchId: null, expiryDate: '' } : {})
                 }
               : item)
             updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
-            refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
+            if (foodFillField.dataset.foodFillField === 'productId') renderRouteMachineScreen()
+            else refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
             scheduleFoodWorkProgressSave(foodFillField.dataset.stopId)
           }
           return
