@@ -459,49 +459,88 @@ async function applyAtomicCoffeeRecipeDepletion(
   return data || { inserted: 0, containers_updated: 0 };
 }
 
-async function reconcilePendingUnknownPayments(
+async function reconcilePendingUnpaidDispenses(
   adminClient: ReturnType<typeof createClient>,
-  params: { provider: string; machineId: number; beforeEventAt: string; cashQuantity: number; cashlessQuantity: number },
+  params: {
+    provider: string;
+    machineId: number;
+    beforeEventAt: string;
+    cashQuantity: number;
+    cashlessQuantity: number;
+    cashAmount: number;
+    cashlessAmount: number;
+  },
 ) {
-  let cashRemaining = Math.max(0, Math.floor(params.cashQuantity));
-  let cashlessRemaining = Math.max(0, Math.floor(params.cashlessQuantity));
-  if ((!cashRemaining && !cashlessRemaining) || (cashRemaining && cashlessRemaining)) return [];
+  const cashQuantity = Math.max(0, Math.floor(params.cashQuantity));
+  const cashlessQuantity = Math.max(0, Math.floor(params.cashlessQuantity));
+  const paymentQuantity = cashQuantity + cashlessQuantity;
+  if (!paymentQuantity || paymentQuantity > 24) return [];
 
   const { data: pending, error: pendingError } = await adminClient
     .from("telemetry_sales_events")
-    .select("id,quantity,total_amount_czk,cash_quantity,cashless_quantity,unknown_payment_quantity,cash_amount_czk,cashless_amount_czk,unknown_payment_amount_czk")
+    .select("id,quantity,unit_price_czk,total_amount_czk,cash_quantity,cashless_quantity,unknown_payment_quantity,unpaid_dispense_quantity,cash_amount_czk,cashless_amount_czk,unknown_payment_amount_czk")
     .eq("provider", params.provider)
     .eq("machine_id", params.machineId)
-    .gt("unknown_payment_quantity", 0)
+    .gt("unpaid_dispense_quantity", 0)
     .lt("source_event_at", params.beforeEventAt)
     .order("source_event_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(100);
   if (pendingError) throw pendingError;
 
-  const reconciled: Record<string, unknown>[] = [];
+  const pendingById = new Map<number, Record<string, unknown>>();
+  const unpaidUnits: Array<{ selection: string; priceAmount: number }> = [];
   for (const sale of pending || []) {
-    const unknown = Number(sale.unknown_payment_quantity || 0);
-    if (unknown <= 0 || (!cashRemaining && !cashlessRemaining)) continue;
-    const allocated = Math.min(unknown, cashRemaining || cashlessRemaining);
-    const quantity = Number(sale.quantity || 0);
-    const unitPrice = quantity > 0 ? Number(sale.total_amount_czk || 0) / quantity : 0;
-    const cashAllocated = cashRemaining ? allocated : 0;
-    const cashlessAllocated = cashlessRemaining ? allocated : 0;
-    const nextUnknown = Math.max(0, unknown - allocated);
+    const saleId = Number(sale.id || 0);
+    const unpaid = Math.max(0, Math.floor(Number(sale.unpaid_dispense_quantity || 0)));
+    const unitPrice = Number(sale.unit_price_czk || 0);
+    if (!saleId || !unpaid || unitPrice <= 0) continue;
+    pendingById.set(saleId, sale);
+    for (let index = 0; index < unpaid && unpaidUnits.length < 24; index += 1) {
+      unpaidUnits.push({ selection: String(saleId), priceAmount: priceToPaymentAmount(unitPrice) });
+    }
+    if (unpaidUnits.length >= 24) break;
+  }
+
+  const assignment = findPaymentUnitAssignments(unpaidUnits, {
+    cashQuantity,
+    cashAmount: Math.round(params.cashAmount),
+    cashlessQuantity,
+    cashlessAmount: Math.round(params.cashlessAmount),
+  });
+  if (!assignment) return [];
+
+  const allocations = new Map<number, { cash: number; cashless: number }>();
+  unpaidUnits.forEach((unit, index) => {
+    const saleId = Number(unit.selection);
+    const current = allocations.get(saleId) || { cash: 0, cashless: 0 };
+    if (assignment.cash.has(index)) current.cash += 1;
+    if (assignment.cashless.has(index)) current.cashless += 1;
+    allocations.set(saleId, current);
+  });
+
+  const reconciled: Record<string, unknown>[] = [];
+  for (const [saleId, allocated] of allocations) {
+    if (!allocated.cash && !allocated.cashless) continue;
+    const sale = pendingById.get(saleId);
+    if (!sale) continue;
+    const unpaid = Number(sale.unpaid_dispense_quantity || 0);
+    const unitPrice = Number(sale.unit_price_czk || 0);
+    const nextUnpaid = Math.max(0, unpaid - allocated.cash - allocated.cashless);
+    const nextCashQuantity = Number(sale.cash_quantity || 0) + allocated.cash;
+    const nextCashlessQuantity = Number(sale.cashless_quantity || 0) + allocated.cashless;
+    const unknownQuantity = Number(sale.unknown_payment_quantity || 0);
     const patch = {
-      cash_quantity: Number(sale.cash_quantity || 0) + cashAllocated,
-      cashless_quantity: Number(sale.cashless_quantity || 0) + cashlessAllocated,
-      unknown_payment_quantity: nextUnknown,
-      cash_amount_czk: Math.round((Number(sale.cash_amount_czk || 0) + cashAllocated * unitPrice) * 100) / 100,
-      cashless_amount_czk: Math.round((Number(sale.cashless_amount_czk || 0) + cashlessAllocated * unitPrice) * 100) / 100,
-      unknown_payment_amount_czk: Math.round(nextUnknown * unitPrice * 100) / 100,
+      cash_quantity: nextCashQuantity,
+      cashless_quantity: nextCashlessQuantity,
+      unpaid_dispense_quantity: nextUnpaid,
+      cash_amount_czk: Math.round((Number(sale.cash_amount_czk || 0) + allocated.cash * unitPrice) * 100) / 100,
+      cashless_amount_czk: Math.round((Number(sale.cashless_amount_czk || 0) + allocated.cashless * unitPrice) * 100) / 100,
+      total_amount_czk: Math.round((nextCashQuantity + nextCashlessQuantity + unknownQuantity) * unitPrice * 100) / 100,
     };
-    const { error: updateError } = await adminClient.from("telemetry_sales_events").update(patch).eq("id", sale.id);
+    const { error: updateError } = await adminClient.from("telemetry_sales_events").update(patch).eq("id", saleId);
     if (updateError) throw updateError;
-    cashRemaining -= cashAllocated;
-    cashlessRemaining -= cashlessAllocated;
-    reconciled.push({ id: sale.id, cash_quantity: cashAllocated, cashless_quantity: cashlessAllocated });
+    reconciled.push({ id: saleId, cash_quantity: allocated.cash, cashless_quantity: allocated.cashless });
   }
   return reconciled;
 }
@@ -592,12 +631,24 @@ async function applyPlanogramDepletion(
   const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta, availablePaymentAmounts);
   const allocatedCash = [...paymentAllocations.values()].reduce((sum, allocation) => sum + allocation.cashDelta, 0);
   const allocatedCashless = [...paymentAllocations.values()].reduce((sum, allocation) => sum + allocation.cashlessDelta, 0);
+  const slotPriceBySelection = new Map(planned.map((item) => [
+    item.selection,
+    priceToPaymentAmount(Number(item.slot.customer_price_czk ?? item.slot.dex_price_czk ?? 0)),
+  ]));
+  const allocatedCashAmount = [...paymentAllocations.entries()].reduce(
+    (sum, [selection, allocation]) => sum + allocation.cashDelta * Number(slotPriceBySelection.get(selection) || 0),
+    0,
+  );
+  const allocatedCashlessAmount = [...paymentAllocations.entries()].reduce(
+    (sum, [selection, allocation]) => sum + allocation.cashlessDelta * Number(slotPriceBySelection.get(selection) || 0),
+    0,
+  );
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
     const { slot, counter, isInitialCounter, previousTotal, delta, selection } = item;
-    const { cashDelta, cashlessDelta, unknownPaymentDelta } = paymentAllocations.get(selection) ||
-      { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta };
+    const { cashDelta, cashlessDelta, unknownPaymentDelta, unpaidDispenseDelta } = paymentAllocations.get(selection) ||
+      { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta, unpaidDispenseDelta: 0 };
 
     const { error: counterError } = await adminClient
       .from("telemetry_planogram_counters")
@@ -641,12 +692,14 @@ async function applyPlanogramDepletion(
         event_part: 1, product_name: slot.product_name ?? null, product_sku: slot.product_sku ?? null,
         quantity: oldSold, cash_quantity: allocate(cashDelta, oldSold),
         cashless_quantity: allocate(cashlessDelta, oldSold), unknown_payment_quantity: allocate(unknownPaymentDelta, oldSold),
+        unpaid_dispense_quantity: allocate(unpaidDispenseDelta, oldSold),
         unit_price_czk: Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
       } : null,
       newSold > 0 ? {
         event_part: 2, product_name: slot.planned_product_name ?? null, product_sku: slot.planned_product_sku ?? null,
         quantity: newSold, cash_quantity: allocate(cashDelta, newSold),
         cashless_quantity: allocate(cashlessDelta, newSold), unknown_payment_quantity: allocate(unknownPaymentDelta, newSold),
+        unpaid_dispense_quantity: allocate(unpaidDispenseDelta, newSold),
         unit_price_czk: Number(slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
       } : null,
     ].filter(Boolean).map((part: any) => ({
@@ -656,7 +709,9 @@ async function applyPlanogramDepletion(
         planogram_slot_id: slot.id,
         selection_code: selection,
         ...part,
-        total_amount_czk: part.unit_price_czk ? Math.round(part.quantity * part.unit_price_czk * 100) / 100 : null,
+        total_amount_czk: part.unit_price_czk
+          ? Math.round((part.cash_quantity + part.cashless_quantity + part.unknown_payment_quantity) * part.unit_price_czk * 100) / 100
+          : null,
         cash_amount_czk: part.unit_price_czk ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
         cashless_amount_czk: part.unit_price_czk ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
         unknown_payment_amount_czk: part.unit_price_czk ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
@@ -753,10 +808,13 @@ async function applyPlanogramDepletion(
       cash_delta: cashDelta,
       cashless_delta: cashlessDelta,
       unknown_payment_delta: unknownPaymentDelta,
+      unpaid_dispense_delta: unpaidDispenseDelta,
       product_name: slot.product_name ?? null,
       product_sku: slot.product_sku ?? null,
       unit_price_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
-      total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(delta * unitPrice * 100) / 100 : null,
+      total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0
+        ? Math.round((cashDelta + cashlessDelta + unknownPaymentDelta) * unitPrice * 100) / 100
+        : null,
       next_units: nextUnits,
       next_fill_percent: nextFillPercent,
       settlement_type: settlementType,
@@ -764,12 +822,14 @@ async function applyPlanogramDepletion(
     });
   }
 
-  const reconciledPayments = await reconcilePendingUnknownPayments(adminClient, {
+  const reconciledPayments = await reconcilePendingUnpaidDispenses(adminClient, {
     provider: params.provider,
     machineId: params.machineId,
     beforeEventAt: params.eventAt,
     cashQuantity: Math.max(0, paymentDelta.cashQuantity - allocatedCash),
     cashlessQuantity: Math.max(0, paymentDelta.cashlessQuantity - allocatedCashless),
+    cashAmount: Math.max(0, paymentDelta.cashAmount - allocatedCashAmount),
+    cashlessAmount: Math.max(0, paymentDelta.cashlessAmount - allocatedCashlessAmount),
   });
   if (reconciledPayments.length) applied.push({ reconciled_pending_payments: reconciledPayments });
 
@@ -795,7 +855,37 @@ function priceToPaymentAmount(priceCzk: number) {
 }
 
 function emptyPaymentAllocation() {
-  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0 };
+  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0, unpaidDispenseDelta: 0 };
+}
+
+function findPaymentUnitAssignments(
+  saleUnits: Array<{ selection: string; priceAmount: number }>,
+  target: { cashQuantity: number; cashAmount: number; cashlessQuantity: number; cashlessAmount: number },
+) {
+  const cashQuantity = Math.max(0, Math.round(target.cashQuantity));
+  const cashlessQuantity = Math.max(0, Math.round(target.cashlessQuantity));
+  const cashAmount = Math.max(0, Math.round(target.cashAmount));
+  const cashlessAmount = Math.max(0, Math.round(target.cashlessAmount));
+  if (cashQuantity + cashlessQuantity > saleUnits.length || saleUnits.length > 24) return null;
+
+  type Assignment = { cash: Set<number>; cashless: Set<number> };
+  let states = new Map<string, Assignment>([["0:0:0:0", { cash: new Set(), cashless: new Set() }]]);
+  saleUnits.forEach((unit, index) => {
+    const next = new Map(states);
+    for (const [key, assignment] of states) {
+      const [cashCount, cashTotal, cashlessCount, cashlessTotal] = key.split(":").map(Number);
+      if (cashCount < cashQuantity && cashTotal + unit.priceAmount <= cashAmount) {
+        const nextKey = `${cashCount + 1}:${cashTotal + unit.priceAmount}:${cashlessCount}:${cashlessTotal}`;
+        if (!next.has(nextKey)) next.set(nextKey, { cash: new Set([...assignment.cash, index]), cashless: new Set(assignment.cashless) });
+      }
+      if (cashlessCount < cashlessQuantity && cashlessTotal + unit.priceAmount <= cashlessAmount) {
+        const nextKey = `${cashCount}:${cashTotal}:${cashlessCount + 1}:${cashlessTotal + unit.priceAmount}`;
+        if (!next.has(nextKey)) next.set(nextKey, { cash: new Set(assignment.cash), cashless: new Set([...assignment.cashless, index]) });
+      }
+    }
+    states = next;
+  });
+  return states.get(`${cashQuantity}:${cashAmount}:${cashlessQuantity}:${cashlessAmount}`) || null;
 }
 
 function canComposePaymentAmount(quantity: number, targetAmount: number, availableAmounts: number[]) {
@@ -833,7 +923,7 @@ function allocatePaymentDeltas(
   paymentDelta: ReturnType<typeof getPaymentDelta>,
   availablePaymentAmounts: number[],
 ) {
-  const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; unknownPaymentDelta: number }>();
+  const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; unknownPaymentDelta: number; unpaidDispenseDelta: number }>();
   const saleUnits: Array<{ selection: string; priceAmount: number }> = [];
 
   for (const item of planned) {
@@ -845,7 +935,7 @@ function allocatePaymentDeltas(
     allocations.set(item.selection, emptyPaymentAllocation());
   }
 
-  const assign = (selection: string, key: "cashDelta" | "cashlessDelta" | "unknownPaymentDelta") => {
+  const assign = (selection: string, key: "cashDelta" | "cashlessDelta" | "unknownPaymentDelta" | "unpaidDispenseDelta") => {
     const current = allocations.get(selection) || emptyPaymentAllocation();
     current[key] += 1;
     allocations.set(selection, current);
@@ -865,7 +955,19 @@ function allocatePaymentDeltas(
     return allocations;
   }
   if (paymentDelta.totalQuantity < totalVendDelta) {
-    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
+    const assignment = findPaymentUnitAssignments(saleUnits, {
+      cashQuantity: paymentDelta.cashQuantity,
+      cashAmount: paymentDelta.cashAmount,
+      cashlessQuantity: paymentDelta.cashlessQuantity,
+      cashlessAmount: paymentDelta.cashlessAmount,
+    });
+    const paidQuantity = Math.max(0, Math.round(paymentDelta.totalQuantity));
+    saleUnits.forEach((unit, index) => {
+      if (assignment?.cash.has(index)) assign(unit.selection, "cashDelta");
+      else if (assignment?.cashless.has(index)) assign(unit.selection, "cashlessDelta");
+      else if (!assignment && index < paidQuantity) assign(unit.selection, "unknownPaymentDelta");
+      else assign(unit.selection, "unpaidDispenseDelta");
+    });
     return allocations;
   }
 
@@ -1066,6 +1168,21 @@ Deno.serve(async (req) => {
 
       if (previousStateError) throw previousStateError;
 
+      const previousCountersPayload = previousState?.counters_payload as Record<string, unknown> | null | undefined;
+      const previousAllocatedPaymentCounters = previousCountersPayload?.allocated_payment_counters as Record<string, unknown> | null | undefined;
+      const nextCountersPayload = {
+        ingest_id: ingest?.id ?? null,
+        device_id: deviceId,
+        terminal_id: parsedDex.terminal_id,
+        machine_number: parsedDex.machine_number,
+        dex_read_at: parsedDex.dex_read_at,
+        record_counts: parsedDex.record_counts,
+        product_counter_count: parsedDex.product_counters.length,
+        raw_product_counter_count: parsedDex.raw_product_counter_count,
+        payment_counters: parsedDex.payment_counters,
+        allocated_payment_counters: previousAllocatedPaymentCounters || null,
+      };
+
       const { error: stateError } = await adminClient
         .from("machine_telemetry_state")
         .upsert({
@@ -1073,17 +1190,7 @@ Deno.serve(async (req) => {
           provider,
           last_seen_at: eventAt,
           connectivity_status: "online",
-          counters_payload: {
-            ingest_id: ingest?.id ?? null,
-            device_id: deviceId,
-            terminal_id: parsedDex.terminal_id,
-            machine_number: parsedDex.machine_number,
-            dex_read_at: parsedDex.dex_read_at,
-            record_counts: parsedDex.record_counts,
-            product_counter_count: parsedDex.product_counters.length,
-            raw_product_counter_count: parsedDex.raw_product_counter_count,
-            payment_counters: parsedDex.payment_counters,
-          },
+          counters_payload: nextCountersPayload,
           updated_at: new Date().toISOString(),
         }, { onConflict: "machine_id,provider" });
 
@@ -1096,8 +1203,21 @@ Deno.serve(async (req) => {
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
         paymentCounters: parsedDex.payment_counters as Record<string, unknown>,
-        previousPaymentCounters: previousDexPaymentCounters || (previousState?.counters_payload as Record<string, unknown> | null | undefined)?.payment_counters as Record<string, unknown> | null | undefined,
+        previousPaymentCounters: previousAllocatedPaymentCounters || previousDexPaymentCounters || previousCountersPayload?.payment_counters as Record<string, unknown> | null | undefined,
       });
+
+      const { error: allocationStateError } = await adminClient
+        .from("machine_telemetry_state")
+        .update({
+          counters_payload: {
+            ...nextCountersPayload,
+            allocated_payment_counters: parsedDex.payment_counters,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("machine_id", machineId)
+        .eq("provider", provider);
+      if (allocationStateError) throw allocationStateError;
 
       coffeeRecipeDepletion = [];
     }

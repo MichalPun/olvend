@@ -4107,6 +4107,19 @@
       return `${weekday} ${String(date.getDate()).padStart(2, "0")}`;
     }
 
+    function getPreviousSameWeekdayKeys(referenceDate, count = 4) {
+      return Array.from({ length: count }, (_, index) => {
+        const date = new Date(referenceDate);
+        date.setDate(referenceDate.getDate() - ((index + 1) * 7));
+        return getDateKey(date);
+      });
+    }
+
+    function getWeekdayComparisonLabel(referenceDate, count = 4) {
+      const labels = ["nedělí", "pondělků", "úterků", "střed", "čtvrtků", "pátků", "sobot"];
+      return ` vs průměr ${count} předchozích ${labels[referenceDate.getDay()]}`;
+    }
+
     function getTelemetryDateRange(periodValue = "14") {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -4119,27 +4132,37 @@
       const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
 
       if (periodValue === "today") {
-        const compareStart = new Date(yesterday);
+        const compareDateKeys = getPreviousSameWeekdayKeys(today);
+        const compareStart = new Date(today);
+        compareStart.setDate(today.getDate() - 28);
         return {
           start: today,
           end: tomorrow,
           compareStart,
           compareEnd: today,
+          compareMode: "weekday_average",
+          compareDateKeys,
+          compareDivisor: compareDateKeys.length,
+          compareElapsedMs: Math.max(0, Date.now() - today.getTime()),
           label: "Dnes",
-          compareLabel: " vs včera"
+          compareLabel: getWeekdayComparisonLabel(today)
         };
       }
 
       if (periodValue === "yesterday") {
-        const beforeYesterday = new Date(yesterday);
-        beforeYesterday.setDate(yesterday.getDate() - 1);
+        const compareDateKeys = getPreviousSameWeekdayKeys(yesterday);
+        const compareStart = new Date(yesterday);
+        compareStart.setDate(yesterday.getDate() - 28);
         return {
           start: yesterday,
           end: today,
-          compareStart: beforeYesterday,
+          compareStart,
           compareEnd: yesterday,
+          compareMode: "weekday_average",
+          compareDateKeys,
+          compareDivisor: compareDateKeys.length,
           label: "Včera",
-          compareLabel: " vs předchozí den"
+          compareLabel: getWeekdayComparisonLabel(yesterday)
         };
       }
 
@@ -4196,6 +4219,12 @@
       return Number(row?.[key] || 0);
     }
 
+    function getTelemetrySaleQuantity(row) {
+      return Number(row?.cash_quantity || 0)
+        + Number(row?.cashless_quantity || 0)
+        + Number(row?.unknown_payment_quantity || 0);
+    }
+
     function isTelemetryLidItem(row) {
       const text = normalizeText([
         row?.product_name,
@@ -4238,7 +4267,7 @@
       (rows || []).forEach((row) => {
         const key = getKey(row) || "Nezařazeno";
         const current = map.get(key) || { label: key, quantity: 0, revenue: 0, cash: 0, cashless: 0, unknown: 0 };
-        current.quantity += Number(row.quantity || 0);
+        current.quantity += getTelemetrySaleQuantity(row);
         current.revenue += Number(row.total_amount_czk || 0);
         current.cash += Number(row.cash_amount_czk || 0);
         current.cashless += Number(row.cashless_amount_czk || 0);
@@ -4311,7 +4340,7 @@
         current.cash += getTelemetryAmount(row, "cash_amount_czk");
         current.cashless += getTelemetryAmount(row, "cashless_amount_czk");
         current.unknown += getTelemetryAmount(row, "unknown_payment_amount_czk");
-        current.quantity += Number(row.quantity || 0);
+        current.quantity += getTelemetrySaleQuantity(row);
       });
       return Array.from(grouped.values());
     }
@@ -4373,7 +4402,8 @@
         { label: "Total", quantity, amount: revenue },
         { label: "Hotově", quantity: Number(totals.cashQuantity || 0), amount: Number(totals.cashAmount || 0) },
         { label: "Kartou", quantity: Number(totals.cashlessQuantity || 0), amount: Number(totals.cashlessAmount || 0) },
-        { label: "Neurčeno", quantity: Number(totals.unknownQuantity || 0), amount: Number(totals.unknownAmount || 0) }
+        { label: "Neurčeno", quantity: Number(totals.unknownQuantity || 0), amount: Number(totals.unknownAmount || 0) },
+        { label: "Bez platby", quantity: Number(totals.unpaidQuantity || 0), amount: 0 }
       ];
       return `
         <table class="telemetry-payment-table">
@@ -4684,16 +4714,17 @@
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.cash_amount_czk == null ? "-" : formatMoney(row.cash_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.cash_quantity || 0) > 0 ? `${String(Number(row.cash_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.cashless_amount_czk == null ? "-" : formatMoney(row.cashless_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.cashless_quantity || 0) > 0 ? `${String(Number(row.cashless_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.unknown_payment_amount_czk == null ? "-" : formatMoney(row.unknown_payment_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.unknown_payment_quantity || 0) > 0 ? `${String(Number(row.unknown_payment_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
+            <td>${escapeHtml(Number(row.unpaid_dispense_quantity || 0) > 0 ? `${String(Number(row.unpaid_dispense_quantity || 0)).replace(".", ",")} ks` : "0 ks")}</td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.total_amount_czk == null ? "-" : formatMoney(row.total_amount_czk || 0))}</td>
           </tr>
         `).join("")
-        : `<tr><td colspan="10"><strong>${escapeHtml(emptyText)}</strong></td></tr>`;
+        : `<tr><td colspan="11"><strong>${escapeHtml(emptyText)}</strong></td></tr>`;
 
       const renderTransactionTable = (title, subtitle, sourceRows, emptyText) => `
         <div class="table-scroll">
           <div class="telemetry-panel-head"><h3>${escapeHtml(title)}</h3><span>${escapeHtml(subtitle)}</span></div>
           <table class="dashboard-table telemetry-sales-table">
-            <thead><tr><th>Čas</th><th>Automat</th><th>Lokalita</th><th>Volba</th><th>Produkt</th><th>Ks</th><th>Hotově</th><th>Kartou</th><th>Neurčeno</th><th>Celkem</th></tr></thead>
+            <thead><tr><th>Čas</th><th>Automat</th><th>Lokalita</th><th>Volba</th><th>Produkt</th><th>Ks</th><th>Hotově</th><th>Kartou</th><th>Neurčeno</th><th>Bez platby</th><th>Celkem</th></tr></thead>
             <tbody>${renderTransactionBody(sourceRows, emptyText)}</tbody>
           </table>
         </div>`;
@@ -4718,12 +4749,12 @@
       const [recentResult, trendRows, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
+          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .order("source_event_at", { ascending: false })
           .limit(100),
         fetchSupabaseRowsPaged(() => supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
+          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unpaid_dispense_quantity, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
           .gte("source_event_at", fetchStart.toISOString())
           .order("source_event_at", { ascending: false })),
         fetchSupabaseRowsPaged(() => supabase
@@ -4769,7 +4800,7 @@
       if (foodMachineIds.length) {
         const { data, error } = await supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
+          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .eq("provider", "ima")
           .in("machine_id", foodMachineIds)
           .order("source_event_at", { ascending: false })
@@ -4789,6 +4820,15 @@
       });
       const compareRows = allTrendRows.filter((row) => {
         const date = new Date(row.source_event_at);
+        if (range.compareMode === "weekday_average") {
+          if (!range.compareDateKeys.includes(getDateKey(date))) return false;
+          if (range.compareElapsedMs != null) {
+            const localDayStart = new Date(date);
+            localDayStart.setHours(0, 0, 0, 0);
+            if (date.getTime() - localDayStart.getTime() > range.compareElapsedMs) return false;
+          }
+          return true;
+        }
         return date >= range.compareStart && date < range.compareEnd;
       });
       const lowStockRaw = lowStockRows || [];
@@ -4845,16 +4885,21 @@
       const enrichedPeriodRows = periodRows.map(enrichTelemetryRow);
       const enrichedTrendRows = allTrendRows.map(enrichTelemetryRow);
       const getTotalsForRows = (sourceRows) => ({
-        quantity: sourceRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+        quantity: sourceRows.reduce((sum, row) => sum + getTelemetrySaleQuantity(row), 0),
         revenue: sourceRows.reduce((sum, row) => sum + Number(row.total_amount_czk || 0), 0),
         cashAmount: sourceRows.reduce((sum, row) => sum + Number(row.cash_amount_czk || 0), 0),
         cashlessAmount: sourceRows.reduce((sum, row) => sum + Number(row.cashless_amount_czk || 0), 0),
         unknownAmount: sourceRows.reduce((sum, row) => sum + Number(row.unknown_payment_amount_czk || 0), 0),
         cashQuantity: sourceRows.reduce((sum, row) => sum + Number(row.cash_quantity || 0), 0),
         cashlessQuantity: sourceRows.reduce((sum, row) => sum + Number(row.cashless_quantity || 0), 0),
-        unknownQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unknown_payment_quantity || 0), 0)
+        unknownQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unknown_payment_quantity || 0), 0),
+        unpaidQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unpaid_dispense_quantity || 0), 0)
       });
-      const compareTotals = getTotalsForRows(compareRows);
+      const rawCompareTotals = getTotalsForRows(compareRows);
+      const compareDivisor = Math.max(1, Number(range.compareDivisor || 1));
+      const compareTotals = Object.fromEntries(
+        Object.entries(rawCompareTotals).map(([key, value]) => [key, Number(value || 0) / compareDivisor])
+      );
       const inventoriedMachineIds = new Set((inventoriedItemsResult.data || []).map((item) => String(item.machine_id)));
       const enabledTelemetryLinks = new Set((telemetryLinksResult.data || []).map((link) => `${link.machine_id}:${String(link.provider || "").toLowerCase()}`));
       const telemetryFreshCutoffMs = Date.now() - 15 * 60 * 1000;
