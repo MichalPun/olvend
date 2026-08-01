@@ -7461,12 +7461,29 @@
       }
       return null
     }
-    function getMobilePickAvailableQuantity(row, productId) {
+    function getMobilePickAvailableQuantity(row, productId, batchId = null) {
       const sourceLocation = getMobilePickSourceLocation(row)
       if (!sourceLocation || !productId) return null
       return stockBalancesV13
-        .filter((balance) => String(balance.stock_location_id) === String(sourceLocation.id) && String(balance.product_id) === String(productId))
+        .filter((balance) => String(balance.stock_location_id) === String(sourceLocation.id)
+          && String(balance.product_id) === String(productId)
+          && (!batchId || String(balance.batch_id) === String(batchId)))
         .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+    }
+    function getMobilePickBatchOptions(row, item, disabled = false) {
+      if (!['vehicle_order', 'vehicle_load'].includes(row.request_type)) return '-'
+      const sourceLocation = getMobilePickSourceLocation(row)
+      const balances = stockBalancesV13
+        .filter((balance) => String(balance.stock_location_id) === String(sourceLocation?.id)
+          && String(balance.product_id) === String(item.product_id)
+          && Number(balance.quantity_on_hand || 0) > 0)
+        .sort(sortBalancesByExpiry)
+      const options = balances.map((balance) => {
+        const batch = getBalanceBatch(balance)
+        const selected = String(item.batch_id || '') === String(balance.batch_id || '') ? 'selected' : ''
+        return `<option value="${escapeHtml(String(balance.batch_id || ''))}" ${selected}>${escapeHtml(`${formatBatchLabel(batch)} · ${formatQuantityValue(balance.quantity_on_hand, productsV13.find((product) => String(product.id) === String(item.product_id))?.base_unit || 'ks')}`)}</option>`
+      }).join('')
+      return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" ${disabled ? 'disabled' : ''}><option value="">FEFO · nejbližší expirace</option>${options}</select>`
     }
     function getMobilePickShortages(row) {
       if (!row || !['vehicle_order', 'vehicle_load', 'vehicle_unload', 'vehicle_return', 'vehicle_writeoff', 'vehicle_sale'].includes(row.request_type)) return []
@@ -7474,7 +7491,7 @@
         const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
         const unit = product?.base_unit || item.unit || 'ks'
         const requested = getMobilePickStockQuantity(item)
-        const available = getMobilePickAvailableQuantity(row, item.product_id)
+        const available = getMobilePickAvailableQuantity(row, item.product_id, item.batch_id)
         return {
           item,
           product,
@@ -7613,7 +7630,7 @@
           const prepared = getMobilePickPreparedDisplayQuantity(item, product)
           const requested = getMobilePickRequestedDisplayQuantity(item, product)
           const preparedStockQuantity = getMobilePickStockQuantity(item)
-          const available = isHistoricalDocument ? null : getMobilePickAvailableQuantity(row, item.product_id)
+          const available = isHistoricalDocument ? null : getMobilePickAvailableQuantity(row, item.product_id, item.batch_id)
           const hasShortage = !isHistoricalDocument && available !== null && preparedStockQuantity > available + 0.0001
           const shortage = hasShortage ? Number((preparedStockQuantity - available).toFixed(3)) : 0
           const isZeroed = Number(prepared || 0) <= 0 && Number(item.requested_quantity || 0) > 0
@@ -7628,7 +7645,7 @@
                 ${hasShortage ? `<span class="mobile-pick-shortage-note">Chybí ${escapeHtml(formatQuantityValue(shortage, unit))}</span>` : ''}
               </td>
               <td><input data-mobile-pick-qty data-item-id="${escapeHtml(String(item.id))}" type="number" step="0.001" min="0" value="${escapeHtml(prepared)}" ${stockAlreadyApplied ? 'disabled' : ''} /></td>
-              <td><input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" ${stockAlreadyApplied ? 'disabled' : ''} /></td>
+              <td>${getMobilePickBatchOptions(row, item, stockAlreadyApplied)}<input data-mobile-pick-note data-item-id="${escapeHtml(String(item.id))}" type="text" value="${escapeHtml(item.note || '')}" placeholder="Poznámka" ${stockAlreadyApplied ? 'disabled' : ''} /></td>
               <td><button class="btn secondary" type="button" data-mobile-pick-action="remove-item" data-request-id="${escapeHtml(String(row.id))}" data-item-id="${escapeHtml(String(item.id))}" ${stockAlreadyApplied ? 'disabled' : ''}>Vynulovat</button></td>
             </tr>
           `
@@ -7696,7 +7713,7 @@
                         <th>MJ</th>
                         <th>Skladem</th>
                         <th>${escapeHtml(flow.preparedLabel)}</th>
-                        <th>Poznámka</th>
+                        <th>Expirace / poznámka</th>
                         <th>Akce</th>
                       </tr>
                     </thead>
@@ -7799,6 +7816,7 @@
       const input = mobilePickRequestsBody.querySelector(`[data-mobile-pick-qty][data-item-id="${CSS.escape(String(itemId))}"]`)
       const unitInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-unit][data-item-id="${CSS.escape(String(itemId))}"]`)
       const noteInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-note][data-item-id="${CSS.escape(String(itemId))}"]`)
+      const batchInput = mobilePickRequestsBody.querySelector(`[data-mobile-pick-batch][data-item-id="${CSS.escape(String(itemId))}"]`)
       const unit = unitInput?.value || item?.unit || product?.base_unit || 'ks'
       const requestedStockQuantity = getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null })
       const requestedQuantity = getMobilePickQuantityInUnit(item, product, requestedStockQuantity, unit)
@@ -7806,7 +7824,8 @@
         unit,
         requested_quantity: requestedQuantity,
         prepared_quantity: Number(input?.value || 0),
-        note: noteInput?.value.trim() || null
+        note: noteInput?.value.trim() || null,
+        batch_id: batchInput?.value ? Number(batchInput.value) : null
       }
     }
     function getMobilePickQuantityInUnit(item, product, stockQuantity, unit) {
@@ -7824,6 +7843,7 @@
       if (payload.requested_quantity !== undefined) localItem.requested_quantity = Number(payload.requested_quantity || 0)
       localItem.prepared_quantity = Number(payload.prepared_quantity || 0)
       localItem.note = payload.note
+      localItem.batch_id = payload.batch_id || null
     }
     function replaceLocalMobilePickRequestItems(requestId, items) {
       mobileStockRequestItems = [
@@ -8062,7 +8082,8 @@
             referenceId,
             note: `Mobilní nakládka #${request.id}`,
             allowNegative: allowNegativeLoad,
-            applyBalances: false
+            applyBalances: false,
+            selectedBatchId: item.batch_id || null
           }))
           continue
         }
@@ -10201,7 +10222,7 @@
       }])
       if (error) throw error
     }
-    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative, applyBalances = true, sourceRecordsCache = null }) {
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, unitPrice, referenceType, referenceId, note, allowNegative, applyBalances = true, sourceRecordsCache = null, selectedBatchId = null }) {
       const movements = []
       const cacheKey = `${fromStockLocationId || ''}:${productId || ''}`
       let sourceRecords = []
@@ -10213,6 +10234,7 @@
       } else {
         sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
       }
+      if (selectedBatchId) sourceRecords = sourceRecords.filter((record) => String(record.batch_id) === String(selectedBatchId))
       let remaining = Number(quantity || 0)
       for (const record of sourceRecords) {
         if (remaining <= 0.0001) break
@@ -10241,7 +10263,7 @@
         remaining = Number((remaining - movedQty).toFixed(3))
       }
       if (remaining > 0.0001) {
-        if (!allowNegative) {
+        if (!allowNegative || selectedBatchId) {
           const product = productsV13.find((item) => String(item.id) === String(productId))
           const available = Number((Number(quantity || 0) - remaining).toFixed(3))
           throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
