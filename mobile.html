@@ -5786,6 +5786,7 @@
       const machine = getRouteStopMachine(stop)
       if (!machine?.id || !visitId) return
       const key = String(stop.id)
+      const visit = getRouteVisitForStop(stop)
       state.routeCoffeeDetails[key] = {
         ...(state.routeCoffeeDetails[key] || {}),
         loading: true,
@@ -5865,7 +5866,7 @@
             packages: currentDraft.packages != null ? currentDraft.packages : existingPackages,
             picked: currentDraft.picked != null
               ? currentDraft.picked
-              : suggestedPackages <= 0 || Boolean(existing?.accepted_at),
+              : suggestedPackages <= 0 || Boolean(existing?.accepted_at) || (expectedMovedQuantity > 0 && movedQuantity + 0.0001 >= expectedMovedQuantity),
             accepted: existing?.accepted_at
               ? stockInSync
               : (currentDraft.accepted != null ? currentDraft.accepted : (!manualCounterMode && suggestedPackages <= 0)),
@@ -5934,7 +5935,7 @@
           vehiclePackages,
           needsCalibration: !manualCounterMode && previousCalibrationCount === 0 && containers.length > 0,
           calibratedContainers,
-          machineOpen: state.routeCoffeeDetails[key]?.machineOpen || false,
+          machineOpen: Boolean(state.routeCoffeeDetails[key]?.machineOpen || visit?.work_phase === 'machine' || existingItems.length),
           draft: {
             ...(state.routeCoffeeDetails[key]?.draft || {}),
             containers: draftContainers,
@@ -7159,6 +7160,7 @@
           picked: true,
           movedPackages: packages
         }
+        persistMobileSnapshot()
         showMessage(packages > 0 ? 'Surovina je vzatá k automatu a odečtená z auta.' : 'Položka je automaticky vyřízená bez doplnění.', 'success', { scroll: false })
         renderRouteMachineScreen()
         return
@@ -7171,15 +7173,43 @@
         const picked = needed.filter((item) => detail.draft?.containers?.[String(item.id)]?.picked)
         if (picked.length < needed.length) throw new Error(`Nejdřív potvrď picklist ${picked.length}/${needed.length}.`)
         detail.machineOpen = true
-        showMessage('Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.', 'success', { scroll: false })
+        persistMobileSnapshot()
         renderRouteMachineScreen()
+        const { data: savedPhase, error: phaseError } = await supabase
+          .from('route_machine_visits')
+          .update({ work_phase: 'machine', synced_at: new Date().toISOString() })
+          .eq('id', detail.visitId)
+          .select('id, work_phase')
+          .maybeSingle()
+        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'machine') {
+          showMessage('Otevřený automat je uložený v telefonu. Server se dosynchronizuje po obnovení spojení.', 'error', { scroll: false })
+          return
+        }
+        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+        if (currentVisit) currentVisit.work_phase = 'machine'
+        persistMobileSnapshot()
+        showMessage('Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.', 'success', { scroll: false })
         window.scrollTo({ top: 0, behavior: 'smooth' })
         return
       }
 
       if (action === 'back-picklist') {
         detail.machineOpen = false
+        persistMobileSnapshot()
         renderRouteMachineScreen()
+        const { data: savedPhase, error: phaseError } = await supabase
+          .from('route_machine_visits')
+          .update({ work_phase: 'picklist', synced_at: new Date().toISOString() })
+          .eq('id', detail.visitId)
+          .select('id, work_phase')
+          .maybeSingle()
+        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'picklist') {
+          showMessage('Návrat na picklist je uložený v telefonu; server se dosynchronizuje po obnovení spojení.', 'error', { scroll: false })
+          return
+        }
+        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+        if (currentVisit) currentVisit.work_phase = 'picklist'
+        persistMobileSnapshot()
         window.scrollTo({ top: 0, behavior: 'smooth' })
         return
       }
