@@ -388,6 +388,77 @@ async function applyCoffeeRecipeDepletion(
   return applied;
 }
 
+async function applyTelemetryStockDepletion(
+  adminClient: ReturnType<typeof createClient>,
+  saleEvents: Record<string, unknown>[],
+) {
+  const saleEventIds = saleEvents.map((sale) => Number(sale.id || 0)).filter(Boolean);
+  if (!saleEventIds.length) return [];
+  const { data, error } = await adminClient.rpc("apply_telemetry_stock_depletion", { p_sale_event_ids: saleEventIds });
+  if (error) throw error;
+  return data || [];
+  /* Legacy client-side implementation retained below for rollback readability.
+  const applied: Record<string, unknown>[] = [];
+  for (const sale of saleEvents) {
+    const saleId = Number(sale.id || 0);
+    const machineId = Number(sale.machine_id || 0);
+    const productSku = String(sale.product_sku || "").trim();
+    const quantity = Number(sale.quantity || 0);
+    if (!saleId || !machineId || !productSku || quantity <= 0) continue;
+
+    const [{ data: product }, { data: location }] = await Promise.all([
+      adminClient.from("products").select("id").eq("sku", productSku).maybeSingle(),
+      adminClient.from("stock_locations").select("id").eq("location_type", "machine").eq("machine_id", machineId).maybeSingle(),
+    ]);
+    if (!product?.id || !location?.id) continue;
+
+    const { data: balances, error: balancesError } = await adminClient
+      .from("stock_location_balances")
+      .select("batch_id, quantity_on_hand, inventory_batches(use_by_date,best_before_date)")
+      .eq("stock_location_id", location.id)
+      .eq("product_id", product.id)
+      .gt("quantity_on_hand", 0);
+    if (balancesError) throw balancesError;
+    const ordered = [...(balances || [])].sort((a, b) => {
+      const aExpiry = a.inventory_batches?.use_by_date || a.inventory_batches?.best_before_date || "9999-12-31";
+      const bExpiry = b.inventory_batches?.use_by_date || b.inventory_batches?.best_before_date || "9999-12-31";
+      return String(aExpiry).localeCompare(String(bExpiry));
+    });
+    let remaining = quantity;
+    const movements: Record<string, unknown>[] = [];
+    for (const balance of ordered) {
+      if (remaining <= 0.0001) break;
+      const moved = Math.min(remaining, Number(balance.quantity_on_hand || 0));
+      if (moved <= 0) continue;
+      movements.push({
+        product_id: product.id, batch_id: balance.batch_id || null,
+        from_stock_location_id: location.id, to_stock_location_id: null,
+        movement_type: "sale", quantity_base_units: moved,
+        reference_type: "telemetry_sale", reference_id: `telemetry-sale:${saleId}`,
+        note: `Automatický odečet telemetrického prodeje #${saleId}`,
+      });
+      remaining = Math.round((remaining - moved) * 1000) / 1000;
+    }
+    if (!movements.length) continue;
+    const { error: movementError } = await adminClient.rpc("apply_stock_movements_v13", { movement_rows: movements });
+    if (movementError) throw movementError;
+    applied.push({ sale_event_id: saleId, product_id: product.id, quantity: quantity - remaining });
+  }
+  return applied;
+  */
+}
+
+async function applyAtomicCoffeeRecipeDepletion(
+  adminClient: ReturnType<typeof createClient>,
+  saleEvents: Record<string, unknown>[],
+) {
+  const saleEventIds = saleEvents.map((sale) => Number(sale.id || 0)).filter(Boolean);
+  if (!saleEventIds.length) return { inserted: 0, containers_updated: 0 };
+  const { data, error } = await adminClient.rpc("apply_telemetry_coffee_depletion", { p_sale_event_ids: saleEventIds });
+  if (error) throw error;
+  return data || { inserted: 0, containers_updated: 0 };
+}
+
 async function applyPlanogramDepletion(
   adminClient: ReturnType<typeof createClient>,
   params: {
@@ -542,11 +613,14 @@ async function applyPlanogramDepletion(
         unknown_payment_amount_czk: part.unit_price_czk ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
         source_event_at: counter.eventAt,
       }));
-    const { error: salesEventError } = await adminClient
+    const { data: savedSaleParts, error: salesEventError } = await adminClient
       .from("telemetry_sales_events")
-      .upsert(saleParts, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code,event_part" });
+      .upsert(saleParts, { onConflict: "provider,ingest_id,machine_id,planogram_slot_id,selection_code,event_part" })
+      .select("id,machine_id,product_sku,quantity");
 
     if (salesEventError) throw salesEventError;
+    await applyAtomicCoffeeRecipeDepletion(adminClient, savedSaleParts || []);
+    await applyTelemetryStockDepletion(adminClient, savedSaleParts || []);
 
     const currentUnits = slot.current_units == null ? null : Number(slot.current_units);
     const capacityUnits = slot.capacity_units == null ? null : Number(slot.capacity_units);
@@ -951,10 +1025,7 @@ Deno.serve(async (req) => {
         previousPaymentCounters: (previousState?.counters_payload as Record<string, unknown> | null | undefined)?.payment_counters as Record<string, unknown> | null | undefined,
       });
 
-      coffeeRecipeDepletion = await applyCoffeeRecipeDepletion(adminClient, {
-        machineId: Number(machineId),
-        deltas: planogramDepletion,
-      });
+      coffeeRecipeDepletion = [];
     }
 
     return json({
