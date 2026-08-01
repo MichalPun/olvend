@@ -4562,6 +4562,16 @@
       return (slots || []).filter((slot) => Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date))
     }
 
+    function getFoodRequiredFillQuantity(slot, detail = null) {
+      const storedSuggestion = Math.max(0, Number(slot?.desired_units || 0))
+      if (detail?.manualStockMode) return storedSuggestion
+      const capacity = Number(slot?.capacity_units)
+      const current = Math.max(0, Number(slot?.current_units || 0))
+      if (!Number.isFinite(capacity) || capacity <= 0) return storedSuggestion
+      if (current <= 0.0001) return Math.max(0, Math.round(capacity))
+      return Math.min(Math.max(0, Math.round(capacity - Math.min(capacity, current))), storedSuggestion)
+    }
+
     function allocateFoodFillFromVehicleBatches(detail, productId, quantity) {
       const requested = Math.max(0, Number(quantity || 0))
       const batches = detail?.vehicleBatches?.[String(productId)] || []
@@ -4611,7 +4621,7 @@
     function getFoodSlotDraft(stopId, slot) {
       const detail = getFoodDetail(stopId)
       const current = Number(slot?.current_units || 0)
-      const desired = Math.max(0, Number(slot?.desired_units ?? (Number(slot?.capacity_units || 0) - current)) || 0)
+      const desired = getFoodRequiredFillQuantity(slot, detail)
       const draft = detail?.draft?.slots?.[String(slot?.id)] || {}
       const defaultProductId = draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
       const rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
@@ -4659,7 +4669,7 @@
         ['shelves', 'Police a spirály srovnané'],
         ['test_vend', 'Kontrolní výdej / kontrola chodu hotová']
       ]
-      const neededSlots = slots.filter((slot) => Number(slot.desired_units || 0) > 0)
+      const neededSlots = slots.filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
       const expiredSlots = getExpiredFoodSlots(slots)
       const allPicked = neededSlots.every((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
@@ -4706,7 +4716,7 @@
               ${neededSlots.length ? neededSlots.map((slot) => {
                 const draft = getFoodSlotDraft(stop.id, slot)
                 const options = getFoodSlotProductOptions(slot)
-                const desired = Math.max(0, Number(slot.desired_units || 0))
+                const desired = getFoodRequiredFillQuantity(slot, detail)
                 const selected = state.products.find((product) => String(product.id) === String(draft.fillItems[0]?.productId))
                 const vehicleQty = Number(detail.vehicleStock?.[String(draft.fillItems[0]?.productId)] || 0)
                 return `
@@ -6878,7 +6888,7 @@
       if (!detail) throw new Error('Potravinový planogram ještě není načtený.')
       if (action === 'step-pick' && slot) {
         const draft = getFoodSlotDraft(stopId, slot)
-        const desired = Math.max(0, Number(slot.desired_units || 0))
+        const desired = getFoodRequiredFillQuantity(slot, detail)
         updateFoodSlotDraft(stopId, slot.id, {
           pickedQuantity: Math.max(0, Math.min(desired, draft.pickedQuantity + Number(target.dataset.delta || 0))),
           picked: false,
@@ -6890,7 +6900,7 @@
       if (action === 'toggle-pick' && slot) {
         const draft = getFoodSlotDraft(stopId, slot)
         if (!draft.picked) {
-          const desired = Math.max(0, Number(slot.desired_units || 0))
+          const desired = getFoodRequiredFillQuantity(slot, detail)
           if (draft.pickedQuantity > desired) {
             throw new Error(`Pozice ${slot.slot_code}: připravuješ ${draft.pickedQuantity} ks, návrh dovoluje nejvýše ${desired} ks.`)
           }
@@ -6991,7 +7001,7 @@
       }
       if (action === 'skip-all') {
         for (const item of detail.slots || []) {
-          if (Number(item.desired_units || 0) <= 0) continue
+          if (getFoodRequiredFillQuantity(item, detail) <= 0) continue
           updateFoodSlotDraft(stopId, item.id, {
             picked: false,
             skipped: true,
@@ -7004,7 +7014,7 @@
       }
       if (action === 'open-machine') {
         const missing = (detail.slots || []).find((item) => {
-          if (Number(item.desired_units || 0) <= 0) return false
+          if (getFoodRequiredFillQuantity(item, detail) <= 0) return false
           const draft = getFoodSlotDraft(stopId, item)
           return !draft.picked && !(draft.skipped && draft.skipReason)
         })
