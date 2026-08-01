@@ -1560,6 +1560,43 @@
       line-height: 1.35;
     }
 
+    .food-quantity-stepper {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) 48px;
+      gap: 8px;
+      align-items: stretch;
+      margin-top: 6px;
+    }
+
+    .food-quantity-stepper input {
+      min-width: 0;
+      margin-top: 0 !important;
+      text-align: center;
+      font-weight: 900;
+    }
+
+    .food-quantity-stepper button {
+      min-height: 48px;
+      border: 1px solid #cbd2dc;
+      border-radius: 13px;
+      background: #fff;
+      color: #1d5f9b;
+      font-size: 24px;
+      font-weight: 900;
+    }
+
+    .food-machine-extra-take {
+      display: grid;
+      gap: 5px;
+    }
+
+    .food-machine-extra-take small {
+      color: #626875;
+      font-size: 11px;
+      font-weight: 750;
+      line-height: 1.35;
+    }
+
     .food-machine-optional {
       overflow: hidden;
       border: 1px solid #dfe3ea;
@@ -1882,7 +1919,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.01.7</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.01.8</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -2458,6 +2495,7 @@
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
+    let foodMachineRenderAnchor = null
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -4722,7 +4760,7 @@
       return (detail?.slots || []).reduce((sum, item) => {
         if (String(item.id) === String(excludedSlotId)) return sum
         const itemDraft = getFoodSlotDraft(stopId, item)
-        if (!itemDraft.picked) return sum
+        if (!itemDraft.picked || itemDraft.accepted) return sum
         return sum + itemDraft.fillItems
           .filter((fill) => String(fill.productId) === String(productId))
           .reduce((fillSum, fill) => fillSum + Math.max(0, Number(fill.quantity || 0)), 0)
@@ -4741,7 +4779,7 @@
       for (const item of detail?.slots || []) {
         if (String(item.id) === String(slotId)) continue
         const itemDraft = getFoodSlotDraft(stopId, item)
-        if (!itemDraft.picked) continue
+        if (!itemDraft.picked || itemDraft.accepted) continue
         for (const fill of itemDraft.fillItems) {
           if (String(fill.productId) !== String(productId)) continue
           const key = String(fill.batchId || 'none')
@@ -5004,7 +5042,7 @@
         <div class="coffee-visit-detail">
           <div class="attention-box">
             <strong>U otevřeného automatu · potvrzeno ${escapeHtml(`${acceptedCount}/${slots.length}`)}</strong>
-            <span>Nejdřív oprav skutečný stav. Vložit lze nejvýše to, co sis přinesla. Nevloženo se automaticky vrátí do auta.</span>
+            <span>Nejdřív oprav skutečný stav. Pokud chybí zboží mimo picklist, vezmi ho dodatečně z auta přímo u pozice. Nevloženo se automaticky vrátí do auta.</span>
           </div>
           ${readOnly ? '' : `<button class="secondary-btn" type="button" data-food-action="back-picklist" data-stop-id="${escapeHtml(stop.id)}">Zpět na přípravu</button>`}
           ${readOnly ? '' : `<button class="secondary-btn" type="button" data-food-action="confirm-unchanged" data-stop-id="${escapeHtml(stop.id)}">Potvrdit ostatní pozice beze změny</button>`}
@@ -5050,14 +5088,24 @@
                     <strong>1. Zkontroluj počet v automatu</strong>
                     <label>
                       Kolik kusů je teď skutečně v automatu?
-                      <input type="number" min="0" max="${escapeHtml(slot.capacity_units || 0)}" step="1" value="${escapeHtml(draft.actualBefore)}" data-food-field="actual-before" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''} />
+                      <span class="food-quantity-stepper">
+                        <button type="button" data-food-action="adjust-actual-before" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Ubrat jeden kus" ${readOnly || draft.accepted ? 'disabled' : ''}>−</button>
+                        <input type="number" min="0" max="${escapeHtml(slot.capacity_units || 0)}" step="1" value="${escapeHtml(draft.actualBefore)}" data-food-field="actual-before" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''} />
+                        <button type="button" data-food-action="adjust-actual-before" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Přidat jeden kus" ${readOnly || draft.accepted ? 'disabled' : ''}>+</button>
+                      </span>
                     </label>
-                    ${tracksExpiry && draft.actualBefore > wasteTotal ? `
+                    ${tracksExpiry ? `
                       <label class="food-expiry-field">Nejbližší datum spotřeby zboží, které už uvnitř bylo
                         <input type="text" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(draft.existingExpiryDate || ''))}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                       </label>
                     ` : ''}
                   </section>
+                  ${readOnly || draft.accepted ? '' : `
+                    <div class="food-machine-extra-take">
+                      <button class="secondary-btn" type="button" data-food-action="machine-take-from-vehicle" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Dodatečně vzít z auta</button>
+                      <small>Použij, když po fyzické kontrole zjistíš větší doplnění, než bylo v picklistu. Systém vezme dostupné kusy FEFO včetně expirace.</small>
+                    </div>
+                  `}
                   <section class="food-machine-step">
                     <strong>2. Vlož připravené zboží · celkem ${escapeHtml(actualAdd)} ks</strong>
                     ${draft.fillItems.map((fill, fillIndex) => {
@@ -5183,6 +5231,7 @@
       els.routeMachineBadge.className = `badge ${machineKind === 'coffee' ? 'blue' : 'yellow'}`
       if (machineKind === 'food') {
         els.routeMachineContent.innerHTML = renderFoodVisitDetail(stop, getRouteVisitForStop(stop))
+        restoreFoodMachineRenderAnchor()
         return
       }
       if (machineKind === 'coffee') {
@@ -5190,6 +5239,35 @@
         return
       }
       els.routeMachineContent.innerHTML = '<div class="empty">Pro tento typ automatu zatím není připravený pracovní postup.</div>'
+    }
+
+    function rememberFoodMachineRenderAnchor(target) {
+      const card = target?.closest?.('[data-food-machine-card]')
+      if (!card) {
+        foodMachineRenderAnchor = null
+        return
+      }
+      foodMachineRenderAnchor = {
+        stopId: card.dataset.stopId,
+        slotId: card.dataset.slotId,
+        top: card.getBoundingClientRect().top,
+        open: card.open
+      }
+    }
+
+    function restoreFoodMachineRenderAnchor() {
+      const anchor = foodMachineRenderAnchor
+      foodMachineRenderAnchor = null
+      if (!anchor) return
+      window.requestAnimationFrame(() => {
+        const card = els.routeMachineContent?.querySelector(
+          `[data-food-machine-card][data-stop-id="${CSS.escape(String(anchor.stopId))}"][data-slot-id="${CSS.escape(String(anchor.slotId))}"]`
+        )
+        if (!card) return
+        card.open = anchor.open
+        const delta = card.getBoundingClientRect().top - anchor.top
+        if (Math.abs(delta) > 0.5) window.scrollBy(0, delta)
+      })
     }
 
     function renderAssignedRoute() {
@@ -7112,6 +7190,44 @@
       const detail = getFoodDetail(stopId)
       const slot = getFoodSlot(stopId, target?.dataset?.slotId)
       if (!detail) throw new Error('Potravinový planogram ještě není načtený.')
+      if (action === 'adjust-actual-before' && slot) {
+        const input = target.closest('[data-food-machine-card]')?.querySelector('[data-food-field="actual-before"]')
+        if (!input) return
+        const capacity = Math.max(0, Number(slot.capacity_units || 0))
+        const nextQuantity = Math.max(0, Math.min(capacity, Math.round(parseNumber(input.value) || 0) + Number(target.dataset.delta || 0)))
+        input.value = String(nextQuantity)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        return
+      }
+      if (action === 'machine-take-from-vehicle' && slot) {
+        const draft = getFoodSlotDraft(stopId, slot)
+        if (draft.accepted) throw new Error(`Pozice ${slot.slot_code} už je potvrzená.`)
+        await refreshFoodVehicleBalances(detail)
+        const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+        if (!productId) throw new Error(`Pozice ${slot.slot_code}: není určený produkt k doplnění.`)
+        const capacity = Math.max(0, Number(slot.capacity_units || 0))
+        const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
+        const freeCapacity = Math.max(0, capacity - Math.max(0, Number(draft.actualBefore || 0)) + wasteTotal)
+        if (freeCapacity <= 0) throw new Error(`Pozice ${slot.slot_code} je podle zadaného skutečného stavu plná.`)
+        const available = getFoodAvailableVehicleQuantity(detail, stopId, slot.id, productId)
+        const preparedQuantity = Math.min(freeCapacity, available)
+        if (preparedQuantity <= 0) throw new Error(`Pro pozici ${slot.slot_code} už v evidenci auta není žádný volný kus.`)
+        const fillItems = allocateFoodFillForSlot(detail, stopId, slot.id, productId, preparedQuantity)
+        updateFoodSlotDraft(stopId, slot.id, {
+          fillItems,
+          pickedQuantity: preparedQuantity,
+          preparedQuantity,
+          actualAdd: preparedQuantity,
+          picked: true,
+          skipped: false,
+          skipReason: '',
+          accepted: false
+        })
+        renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
+        showMessage(`Pozice ${slot.slot_code}: z auta je dodatečně připraveno ${preparedQuantity} ks. Skutečně vložený počet můžeš ještě snížit.`, 'success', { scroll: false })
+        return
+      }
       if (action === 'step-pick' && slot) {
         await refreshFoodVehicleBalances(detail)
         const draft = getFoodSlotDraft(stopId, slot)
@@ -9048,12 +9164,16 @@
         const foodButton = event.target.closest('[data-food-action]')
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
-          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'open-machine', 'back-picklist']
+          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'open-machine', 'back-picklist', 'adjust-actual-before']
+          if (foodButton.dataset.foodAction !== 'adjust-actual-before') rememberFoodMachineRenderAnchor(foodButton)
           const restore = instantActions.includes(foodButton.dataset.foodAction)
             ? () => {}
             : setButtonBusy(foodButton, getBusyLabel(foodButton.dataset.foodAction))
           handleFoodAction(foodButton.dataset.foodAction, foodButton.dataset.stopId, foodButton)
-            .catch(handleError)
+            .catch((error) => {
+              foodMachineRenderAnchor = null
+              handleError(error)
+            })
             .finally(restore)
           return
         }
@@ -9194,7 +9314,8 @@
               : item)
             updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
           }
-          renderRouteMachineScreen()
+          if (foodFillField.dataset.foodFillField === 'productId') renderRouteMachineScreen()
+          else if (slot) refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
           return
         }
         const foodCheck = event.target.closest('[data-food-check]')
@@ -9205,18 +9326,21 @@
         const foodField = event.target.closest('[data-food-field]')
         if (foodField) {
           if (foodField.dataset.foodField === 'product') {
+            rememberFoodMachineRenderAnchor(foodField)
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
               selectedProductId: foodField.value,
               picked: false,
               accepted: false
             })
+            renderRouteMachineScreen()
           } else if (foodField.dataset.foodField === 'assortment-mismatch') {
+            rememberFoodMachineRenderAnchor(foodField)
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
               assortmentMismatch: foodField.value === 'yes',
               accepted: false
             })
+            renderRouteMachineScreen()
           }
-          renderRouteMachineScreen()
           return
         }
         const range = event.target.closest('[data-coffee-calibration-range]')

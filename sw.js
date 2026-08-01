@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v50-live-api-no-cache';
+const CACHE_NAME = 'olvend-v51-live-api-no-cache';
 const APP_SHELL = [
   './',
   './index.html',
