@@ -7473,17 +7473,26 @@
     function getMobilePickBatchOptions(row, item, disabled = false) {
       if (!['vehicle_order', 'vehicle_load'].includes(row.request_type)) return '-'
       const sourceLocation = getMobilePickSourceLocation(row)
+      const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
+      const expiryRequired = isAuditExpiryTracked(product)
       const balances = stockBalancesV13
         .filter((balance) => String(balance.stock_location_id) === String(sourceLocation?.id)
           && String(balance.product_id) === String(item.product_id)
           && Number(balance.quantity_on_hand || 0) > 0)
         .sort(sortBalancesByExpiry)
-      const options = balances.map((balance) => {
+      const selectableBalances = expiryRequired
+        ? balances.filter((balance) => balance.batch_id && getBatchExpiryDate(getBalanceBatch(balance)))
+        : balances
+      if (!selectableBalances.length) {
+        const label = expiryRequired ? 'CHYBÍ ŠARŽE S EXPIRACÍ' : 'Bez evidované šarže'
+        return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" disabled><option value="">${escapeHtml(label)}</option></select>`
+      }
+      const options = selectableBalances.map((balance, index) => {
         const batch = getBalanceBatch(balance)
-        const selected = String(item.batch_id || '') === String(balance.batch_id || '') ? 'selected' : ''
+        const selected = String(item.batch_id || '') === String(balance.batch_id || '') || (!item.batch_id && index === 0) ? 'selected' : ''
         return `<option value="${escapeHtml(String(balance.batch_id || ''))}" ${selected}>${escapeHtml(`${formatBatchLabel(batch)} · ${formatQuantityValue(balance.quantity_on_hand, productsV13.find((product) => String(product.id) === String(item.product_id))?.base_unit || 'ks')}`)}</option>`
       }).join('')
-      return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" ${disabled ? 'disabled' : ''}><option value="">FEFO · nejbližší expirace</option>${options}</select>`
+      return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" ${disabled ? 'disabled' : ''}>${options}</select><span class="subtext">Automaticky vybrána nejbližší expirace; lze změnit.</span>`
     }
     function getMobilePickShortages(row) {
       if (!row || !['vehicle_order', 'vehicle_load', 'vehicle_unload', 'vehicle_return', 'vehicle_writeoff', 'vehicle_sale'].includes(row.request_type)) return []
@@ -8181,6 +8190,13 @@
         const request = mobileStockRequests.find((item) => String(item.id) === String(requestId))
         if (request) {
           request.items = getMobileRequestItems(requestId)
+          const missingExpiryItem = request.items.find((item) => {
+            const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
+            return getMobilePickStockQuantity(item) > 0 && isAuditExpiryTracked(product) && !item.batch_id
+          })
+          if (missingExpiryItem) {
+            throw new Error(`Nelze označit vychystané: ${missingExpiryItem.product_name || 'položka'} nemá na skladě evidovanou šarži s expirací.`)
+          }
           const shortages = getMobilePickShortages(request)
           if (shortages.length) {
             const first = shortages[0]
@@ -8194,6 +8210,11 @@
       if (action === 'confirm') {
         await saveMobilePickPreparedItems(requestId)
         await refreshMobilePickRequestItems(requestId)
+        const missingExpiryItem = getMobileRequestItems(requestId).find((item) => {
+          const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
+          return getMobilePickStockQuantity(item) > 0 && isAuditExpiryTracked(product) && !item.batch_id
+        })
+        if (missingExpiryItem) throw new Error(`Nelze potvrdit doklad: ${missingExpiryItem.product_name || 'položka'} nemá zvolenou šarži s expirací.`)
         await applyMobilePickRequestToStock(requestId)
         mobilePickOpenDetailIds.delete(String(requestId))
         setStockV13Status('Doklad byl potvrzený a propsaný do skladu.', 'success')
