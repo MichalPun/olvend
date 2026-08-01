@@ -2046,6 +2046,11 @@
                 <select id="stockUnitSelect"></select>
                 <span class="helper-line" id="stockQuantityHelp">Vyber produkt, ukážu jednotku.</span>
               </label>
+              <label id="stockBatchLabel" hidden>
+                Expirace / šarže
+                <select id="stockBatchSelect"><option value="">Automaticky podle nejbližší expirace</option></select>
+                <span class="helper-line">Vybraná šarže se přenese ze skladu do vozidla a následně do automatu.</span>
+              </label>
               <label>
                 Poznámka
                 <textarea id="stockNoteInput" placeholder="Volitelné"></textarea>
@@ -2399,6 +2404,8 @@
       stockQuantityInput: document.getElementById('stockQuantityInput'),
       stockUnitSelect: document.getElementById('stockUnitSelect'),
       stockQuantityHelp: document.getElementById('stockQuantityHelp'),
+      stockBatchLabel: document.getElementById('stockBatchLabel'),
+      stockBatchSelect: document.getElementById('stockBatchSelect'),
       freshRouteRecommendation: document.getElementById('freshRouteRecommendation'),
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
@@ -3335,7 +3342,30 @@
       els.stockProductInput.value = [product.name, product.sku, product.ean].filter(Boolean).join(' · ')
       els.stockProductSearchPanel.hidden = true
       updateStockUnitControls(product)
+      loadStockBatchOptions(product).catch(handleError)
       els.stockQuantityInput.focus({ preventScroll: true })
+    }
+
+    async function loadStockBatchOptions(product = resolveProductFromInput(els.stockProductInput.value.trim())) {
+      if (!els.stockBatchLabel || !els.stockBatchSelect) return
+      const canSelect = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad && product?.id
+      els.stockBatchLabel.hidden = !canSelect
+      els.stockBatchSelect.innerHTML = '<option value="">Automaticky podle nejbližší expirace</option>'
+      if (!canSelect) return
+      const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
+      const vehicle = state.vehicles.find((item) => String(item.id) === String(vehicleId))
+      if (!vehicle?.warehouse_id) return
+      const warehouseLocationId = await ensureStockLocation('warehouse', vehicle.warehouse_id, `Sklad ${vehicle.warehouse_id}`)
+      const records = await getBalanceRecords(warehouseLocationId, product.id)
+      records.forEach((record) => {
+        if (!record.batch_id) return
+        const option = document.createElement('option')
+        option.value = String(record.batch_id)
+        option.dataset.expiryDate = record.expiry_date || ''
+        option.dataset.batchCode = record.batch_code || String(record.batch_id)
+        option.textContent = `${record.expiry_date ? new Date(`${record.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'bez expirace'} · šarže ${record.batch_code || record.batch_id} · ${formatStockQuantityValue(record.quantity_on_hand, product.base_unit || 'ks')}`
+        els.stockBatchSelect.appendChild(option)
+      })
     }
 
     function updateStockUnitControls(product = resolveProductFromInput(els.stockProductInput.value.trim())) {
@@ -3486,6 +3516,7 @@
             <div>
               <strong>${escapeHtml(item.product_name)}</strong>
               <span>${escapeHtml(formatStockRequestItemQuantity(item))}${item.sku ? ` · ${escapeHtml(item.sku)}` : ''}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</span>
+              ${item.batch_id ? `<span>Expirace ${escapeHtml(item.expiry_date ? new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'neuvedena')} · šarže ${escapeHtml(item.batch_code || String(item.batch_id))}</span>` : ''}
             </div>
             <button class="mini-btn" data-remove-draft-index="${index}" type="button">Odebrat</button>
           </div>
@@ -7569,12 +7600,17 @@
         unit: unitOption?.unit || product?.base_unit || 'ks',
         quantity,
         stock_quantity_base_units: unitOption?.pack ? convertMobilePackageQuantityToBase(product, quantity, unitOption.pack) : quantity,
-        note: els.stockNoteInput.value.trim() || null
+        note: els.stockNoteInput.value.trim() || null,
+        batch_id: els.stockBatchSelect?.value ? Number(els.stockBatchSelect.value) : null,
+        expiry_date: els.stockBatchSelect?.selectedOptions?.[0]?.dataset?.expiryDate || null,
+        batch_code: els.stockBatchSelect?.selectedOptions?.[0]?.dataset?.batchCode || null
       })
 
       els.stockProductInput.value = ''
       els.stockQuantityInput.value = '1'
       els.stockNoteInput.value = ''
+      if (els.stockBatchSelect) els.stockBatchSelect.innerHTML = '<option value="">Automaticky podle nejbližší expirace</option>'
+      if (els.stockBatchLabel) els.stockBatchLabel.hidden = true
       updateStockUnitControls(null)
       renderStockDraft()
       if (!options.silent) showMessage('Položka je přidaná do rozpracovaného dokladu.', 'info', { scroll: false })
@@ -7641,7 +7677,8 @@
           requested_quantity: item.quantity,
           prepared_quantity: appliesImmediately ? item.quantity : null,
           confirmed_quantity: null,
-          note: item.note
+          note: item.note,
+          batch_id: item.batch_id || null
         }))
 
         const { data: savedItems, error: itemError } = await supabase
@@ -8041,18 +8078,22 @@
     async function getBalanceRecords(stockLocationId, productId) {
       const { data, error } = await supabase
         .from('stock_location_balances')
-        .select('id, batch_id, quantity_on_hand')
+        .select('id, batch_id, quantity_on_hand, inventory_batches(batch_code, best_before_date, use_by_date)')
         .eq('stock_location_id', stockLocationId)
         .eq('product_id', productId)
         .gt('quantity_on_hand', 0)
-        .order('batch_id', { ascending: true, nullsFirst: false })
       if (error) throw error
-      return data || []
+      return (data || []).map((record) => ({
+        ...record,
+        batch_code: record.inventory_batches?.batch_code || null,
+        expiry_date: record.inventory_batches?.use_by_date || record.inventory_batches?.best_before_date || null
+      })).sort((a, b) => String(a.expiry_date || '9999-12-31').localeCompare(String(b.expiry_date || '9999-12-31')) || Number(a.batch_id || Number.MAX_SAFE_INTEGER) - Number(b.batch_id || Number.MAX_SAFE_INTEGER))
     }
 
-    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, referenceId, note, allowNegative = false }) {
+    async function moveStockPreservingBatches({ productId, quantity, fromStockLocationId, toStockLocationId, movementType, referenceId, note, allowNegative = false, selectedBatchId = null }) {
       const movements = []
-      const sourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      const allSourceRecords = fromStockLocationId ? await getBalanceRecords(fromStockLocationId, productId) : []
+      const sourceRecords = selectedBatchId ? allSourceRecords.filter((record) => String(record.batch_id) === String(selectedBatchId)) : allSourceRecords
       let remaining = Number(quantity || 0)
       for (const record of sourceRecords) {
         if (remaining <= 0.0001) break
@@ -8074,7 +8115,7 @@
         remaining = Number((remaining - movedQty).toFixed(3))
       }
       if (remaining > 0.0001) {
-        if (!allowNegative) {
+        if (!allowNegative || selectedBatchId) {
           const product = state.products.find((item) => String(item.id) === String(productId))
           const available = Number((Number(quantity || 0) - remaining).toFixed(3))
           throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
@@ -8180,7 +8221,8 @@
             movementType: 'load_vehicle',
             referenceId,
             note: `Mobilní nakládka #${request.id}`,
-            allowNegative: request.request_type === 'vehicle_load' || isFoodReadyProduct(product)
+            allowNegative: request.request_type === 'vehicle_load' || isFoodReadyProduct(product),
+            selectedBatchId: item.batch_id || null
           }))
         }
 
