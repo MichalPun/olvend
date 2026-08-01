@@ -1412,6 +1412,20 @@
       border-color: #74c69d;
       background: #f4fbf7;
     }
+    .coffee-visit-row.food-machine-card.expired-alert {
+      border-color:rgba(220,38,38,.72);
+      box-shadow:0 0 0 2px rgba(220,38,38,.12);
+    }
+    .food-expired-warning {
+      display:grid;
+      gap:5px;
+      padding:11px 12px;
+      border:1px solid rgba(220,38,38,.55);
+      border-radius:10px;
+      background:rgba(220,38,38,.10);
+      color:#991b1b;
+    }
+    .food-expired-warning strong { color:#b91c1c; }
 
     .food-machine-card > summary {
       display: grid;
@@ -4539,6 +4553,15 @@
         .filter(Boolean)
     }
 
+    function isFoodExpiryExpired(value) {
+      const normalized = normalizeFoodExpiryDate(value)
+      return Boolean(normalized && normalized < todayIso)
+    }
+
+    function getExpiredFoodSlots(slots) {
+      return (slots || []).filter((slot) => Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date))
+    }
+
     function allocateFoodFillFromVehicleBatches(detail, productId, quantity) {
       const requested = Math.max(0, Number(quantity || 0))
       const batches = detail?.vehicleBatches?.[String(productId)] || []
@@ -4637,6 +4660,7 @@
         ['test_vend', 'Kontrolní výdej / kontrola chodu hotová']
       ]
       const neededSlots = slots.filter((slot) => Number(slot.desired_units || 0) > 0)
+      const expiredSlots = getExpiredFoodSlots(slots)
       const allPicked = neededSlots.every((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
         return draft.picked || (draft.skipped && draft.skipReason)
@@ -4667,6 +4691,11 @@
       if (phase === 'picklist') {
         return `
           <div class="coffee-visit-detail">
+            ${expiredSlots.length ? `<div class="food-expired-warning">
+              <strong>POZOR: automat eviduje prošlé zboží v ${escapeHtml(String(expiredSlots.length))} pozicích</strong>
+              ${expiredSlots.map((slot) => `<span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(slot.product_name || slot.product_sku || 'produkt')} · ${escapeHtml(String(slot.current_units || 0))} ks · expirace ${escapeHtml(formatFoodExpiryDateInput(slot.expiry_date))}</span>`).join('')}
+              <span>U otevřeného automatu každou pozici zkontroluj. Prošlé kusy odepiš; pokud evidence nesedí, oprav nejbližší datum.</span>
+            </div>` : ''}
             <div class="attention-box">
               <strong>${manualStockMode ? 'Ruční automat' : 'Příprava u auta'} · ${escapeHtml(`${neededSlots.length} pozic k doplnění`)}</strong>
               <span>${manualStockMode
@@ -4752,12 +4781,13 @@
               const product = state.products.find((item) => String(item.id) === String(draft.selectedProductId))
               const plannedProduct = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
               const tracksExpiry = isFoodExpiryTracked(product || plannedProduct)
+              const recordedExpired = Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date)
               const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
               const maxAdd = Math.max(0, Math.min(draft.pickedQuantity, Number(slot.capacity_units || 0) - draft.actualBefore + wasteTotal))
               const actualAdd = Math.min(draft.fillItems.reduce((sum, fill) => sum + Number(fill.quantity || 0), 0), maxAdd)
               const finalQty = Math.max(0, draft.actualBefore - wasteTotal + actualAdd)
               return `
-                <details class="coffee-visit-row food-machine-card ${draft.accepted ? 'ready' : ''}" data-food-machine-card data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.pickedQuantity > 0 && !draft.accepted ? 'open' : ''}>
+                <details class="coffee-visit-row food-machine-card ${draft.accepted ? 'ready' : ''} ${recordedExpired && !draft.accepted ? 'expired-alert' : ''}" data-food-machine-card data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${(draft.pickedQuantity > 0 || recordedExpired) && !draft.accepted ? 'open' : ''}>
                   <summary>
                     <div>
                       <strong>Pozice ${escapeHtml(slot.slot_code)}</strong>
@@ -4766,6 +4796,10 @@
                     <span data-food-total="summary">${escapeHtml(`${finalQty}/${slot.capacity_units || 0} ks`)} ${draft.accepted ? '✓' : ''}</span>
                   </summary>
                   <div class="food-machine-body">
+                  ${recordedExpired && !draft.accepted ? `<div class="food-expired-warning">
+                    <strong>Kontrola prošlé expirace je povinná</strong>
+                    <span>Evidence: ${escapeHtml(String(slot.current_units || 0))} ks, nejbližší expirace ${escapeHtml(formatFoodExpiryDateInput(slot.expiry_date))}. Spočítej prošlé kusy a přidej je do odpisu s důvodem „Prošlá expirace“, nebo po fyzické kontrole oprav datum.</span>
+                  </div>` : ''}
                   <div class="food-machine-stats">
                     <div class="food-machine-stat"><span>Při příjezdu</span><strong data-food-total="arrival">${escapeHtml(`${draft.actualBefore} ks`)}</strong></div>
                     <div class="food-machine-stat"><span>Doplním</span><strong data-food-total="add">${escapeHtml(`${actualAdd} ks`)}</strong></div>
@@ -6582,6 +6616,9 @@
       const existingExpiryDate = normalizeFoodExpiryDate(draft.existingExpiryDate)
       if (tracksExistingExpiry && remainingExistingQuantity > 0 && !existingExpiryDate) {
         throw new Error(`Pozice ${slot.slot_code}: zapiš nejbližší expiraci ve formátu DD.MM.RRRR.`)
+      }
+      if (tracksExistingExpiry && remainingExistingQuantity > 0 && isFoodExpiryExpired(existingExpiryDate)) {
+        throw new Error(`Pozice ${slot.slot_code}: evidovaná expirace ${formatFoodExpiryDateInput(existingExpiryDate)} je prošlá. Prošlé kusy odepiš, nebo po fyzické kontrole oprav datum zbývajícího zboží.`)
       }
       const actualAdd = fillItems.reduce((sum, fill) => sum + fill.quantity, 0)
       const maxAdd = Math.max(0, capacity - actualBefore + wasteQuantity)
