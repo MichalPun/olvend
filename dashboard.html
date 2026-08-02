@@ -3403,6 +3403,7 @@
     const telemetrySalesNote = document.getElementById("telemetrySalesNote");
     const telemetryPeriodFilter = document.getElementById("telemetryPeriodFilter");
     const telemetryPeriodLabel = document.getElementById("telemetryPeriodLabel");
+    const telemetrySalesWidget = telemetrySalesTable?.closest(".telemetry-sales-widget");
 
     let editMode = false;
     let draggedWidget = null;
@@ -3414,6 +3415,8 @@
     let serviceDashboardCacheAt = 0;
     let telemetryRefreshTimer = null;
     let telemetryRefreshInFlight = false;
+    let telemetryRefreshQueued = false;
+    let telemetryHasRenderedData = false;
     const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
     let managerAttendanceDayMap = new Map();
 
@@ -5095,16 +5098,44 @@
 
     async function renderTelemetrySalesDashboard() {
       if (!telemetrySalesTable) return;
-      if (telemetryRefreshInFlight) return;
+      if (telemetryRefreshInFlight) {
+        telemetryRefreshQueued = true;
+        return;
+      }
       telemetryRefreshInFlight = true;
-      renderTelemetrySales({ rows: [], totals: {}, error: "" });
+      telemetrySalesWidget?.setAttribute("aria-busy", "true");
+      const periodLabelBeforeRefresh = telemetryPeriodLabel?.textContent || "";
+      if (telemetryPeriodLabel) {
+        telemetryPeriodLabel.textContent = telemetryHasRenderedData
+          ? `${periodLabelBeforeRefresh.replace(/\s+·\s+aktualizuji…$/, "")} · aktualizuji…`
+          : "Načítám aktuální data…";
+      }
       try {
-        renderTelemetrySales(await loadTelemetrySalesDashboard());
+        const nextTelemetryData = await loadTelemetrySalesDashboard();
+        const scrollXBeforeRender = window.scrollX;
+        const scrollYBeforeRender = window.scrollY;
+        renderTelemetrySales(nextTelemetryData);
+        telemetryHasRenderedData = true;
+        if (window.scrollX !== scrollXBeforeRender || window.scrollY !== scrollYBeforeRender) {
+          window.scrollTo(scrollXBeforeRender, scrollYBeforeRender);
+        }
       } catch (error) {
         console.error(error);
-        renderTelemetrySales({ rows: [], totals: {}, error: error.message });
+        if (telemetryHasRenderedData) {
+          if (telemetryPeriodLabel) {
+            telemetryPeriodLabel.textContent = `${periodLabelBeforeRefresh} · poslední aktualizace se nezdařila`;
+          }
+          telemetrySalesNote.textContent = `Nová data se nepodařilo načíst: ${error.message}. Zobrazuji poslední úspěšně načtený stav.`;
+        } else {
+          renderTelemetrySales({ rows: [], totals: {}, error: error.message });
+        }
       } finally {
         telemetryRefreshInFlight = false;
+        telemetrySalesWidget?.setAttribute("aria-busy", "false");
+        if (telemetryRefreshQueued) {
+          telemetryRefreshQueued = false;
+          window.queueMicrotask(() => renderTelemetrySalesDashboard());
+        }
       }
     }
 
