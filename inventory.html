@@ -484,6 +484,14 @@
     .auto-load-panel .summary-box-value { font-size:22px; }
     .auto-load-actions { margin:12px 0; }
     .auto-load-actions .btn { min-height:40px; padding:9px 13px; border-radius:9px; }
+    .auto-load-manual-editor { display:grid; grid-template-columns:minmax(280px,1fr) 150px auto; gap:8px; align-items:end; margin:10px 0 12px; padding:12px; border:1px solid rgba(88,166,255,0.24); border-radius:10px; background:rgba(88,166,255,0.06); }
+    .auto-load-manual-editor[hidden] { display:none; }
+    .auto-load-manual-editor label { display:grid; gap:5px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.04em; }
+    .auto-load-manual-editor select,
+    .auto-load-manual-editor input { min-height:40px; padding:8px 10px; border-radius:8px; font-size:13px; }
+    .auto-load-approved-control { display:flex; align-items:center; gap:6px; min-width:130px; }
+    .auto-load-approved-control input { width:92px; min-height:36px; padding:6px 8px; border-radius:8px; font-weight:900; }
+    .auto-load-approved-control span { color:var(--muted); font-size:11px; font-weight:800; }
     .picking-workflow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:12px 0; }
     .picking-step { padding:11px 12px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background:rgba(255,255,255,0.025); }
     .picking-step strong { display:block; margin-bottom:4px; font-size:13px; }
@@ -984,6 +992,15 @@
               <button class="btn" type="button" id="autoLoadCreateRequestBtn">Předat skladu k vychystání</button>
               <button class="btn secondary" type="button" id="autoLoadCreateAuditsBtn">Týdenní namátková inventura</button>
             </div>
+            <div class="auto-load-manual-editor" id="autoLoadManualEditor" hidden>
+              <label>Přidat položku mimo návrh
+                <select id="autoLoadManualProduct"><option value="">Vyber produkt</option></select>
+              </label>
+              <label>Množství v základní MJ
+                <input id="autoLoadManualQuantity" type="number" min="0.001" step="0.001" placeholder="Např. 12" />
+              </label>
+              <button class="btn secondary" type="button" id="autoLoadManualAddBtn">Přidat do vychystání</button>
+            </div>
             <div class="auto-load-audit-preview" id="autoLoadAuditPreview" hidden>
               <div class="auto-load-audit-preview-head">
                 <div>
@@ -1015,6 +1032,7 @@
                     <th>Potřeba při příjezdu</th>
                     <th>Balení</th>
                     <th>Návrh</th>
+                    <th>K vychystání</th>
                     <th>Využití nového</th>
                     <th>Riziko / důvod</th>
                   </tr>
@@ -1987,6 +2005,10 @@
     const autoLoadRowsBody = document.getElementById('autoLoadRowsBody')
     const autoLoadEmpty = document.getElementById('autoLoadEmpty')
     const autoLoadOnlyActionable = document.getElementById('autoLoadOnlyActionable')
+    const autoLoadManualEditor = document.getElementById('autoLoadManualEditor')
+    const autoLoadManualProduct = document.getElementById('autoLoadManualProduct')
+    const autoLoadManualQuantity = document.getElementById('autoLoadManualQuantity')
+    const autoLoadManualAddBtn = document.getElementById('autoLoadManualAddBtn')
     const autoLoadAuditPreview = document.getElementById('autoLoadAuditPreview')
     const autoLoadAuditPreviewNote = document.getElementById('autoLoadAuditPreviewNote')
     const autoLoadAuditPreviewBody = document.getElementById('autoLoadAuditPreviewBody')
@@ -2037,6 +2059,8 @@
     let vehicleAutoLoadProfiles = []
     let vehicleAutoLoadDeferredNeeds = []
     let autoLoadRows = []
+    let autoLoadManualOverrides = new Map()
+    let autoLoadCalculationReady = false
     let autoLoadRoutePlans = []
     let autoLoadRouteNeeds = new Map()
     let autoLoadRouteForecasts = new Map()
@@ -5715,6 +5739,8 @@
             minRatio,
             packagePlanBlockedUsageRatio: Number(packagePlan.blockedUsageRatio || 0),
             stockoutOverride,
+            autoSuggestedPackageCount: approvedPackageCount,
+            autoSuggestedQty: approvedQty,
             approvedPackageCount,
             approvedQty,
             deferredAfterLoadQty,
@@ -5734,6 +5760,120 @@
           return normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs')
         })
     }
+    function getAutoLoadApprovedPackageCount(row, quantity) {
+      const packageQty = Number(row?.packageQty || 0)
+      if (packageQty <= 0) return 0
+      const rawCount = Number(quantity || 0) / packageQty
+      const roundedCount = Math.round(rawCount)
+      return Math.abs(rawCount - roundedCount) <= 0.0001 ? roundedCount : 0
+    }
+    function normalizeAutoLoadApprovedQuantity(product, value, { allowZero = true } = {}) {
+      const quantity = Number(value)
+      if (!Number.isFinite(quantity) || quantity < 0 || (!allowZero && quantity <= 0)) {
+        throw new Error(allowZero ? 'Množství k vychystání musí být nula nebo kladné číslo.' : 'Zadej množství větší než nula.')
+      }
+      if (normalizeText(product?.base_unit || 'ks') === 'ks' && Math.abs(quantity - Math.round(quantity)) > 0.0001) {
+        throw new Error('U kusového zboží zadej celé kusy.')
+      }
+      return Number(quantity.toFixed(3))
+    }
+    function applyAutoLoadManualQuantity(row, quantity, { added = false } = {}) {
+      const approvedQty = Math.max(0, Number(Number(quantity || 0).toFixed(3)))
+      row.approvedQty = approvedQty
+      row.approvedPackageCount = getAutoLoadApprovedPackageCount(row, approvedQty)
+      row.projectedVehicleAfterTrip = Number((Number(row.projectedVehicleBeforeTarget ?? row.currentVehicleQty ?? 0) + approvedQty - Number(row.tripDemandQty || 0)).toFixed(3))
+      row.manualOverride = true
+      row.manualAdded = Boolean(row.manualAdded || added)
+      row.status = 'manual'
+      row.reasons = [
+        `${row.manualAdded ? 'ručně přidáno' : 'množství ručně upraveno'} před předáním skladu`,
+        ...(row.reasons || []).filter((reason) => !/ručně (přidáno|upraveno)/i.test(String(reason || '')))
+      ]
+      return row
+    }
+    function buildManualAutoLoadRow(product, quantity) {
+      const vehicleId = Number(autoLoadVehicle?.value || 0)
+      const warehouseId = Number(autoLoadWarehouse?.value || 0)
+      const vehicleLocation = getVehicleStockLocationByVehicleId(vehicleId)
+      const warehouseLocation = getWarehouseStockLocationByWarehouseId(warehouseId)
+      if (!vehicleLocation || !warehouseLocation) throw new Error('Nejdřív vyber vozidlo a sklad a spočítej vychystání.')
+      const pack = getDefaultProductPackage(product.id)
+      const packageQty = getAutoLoadPackageQuantity(product, pack)
+      const currentVehicleQty = getLocationQuantity(vehicleLocation.id, product.id)
+      const row = {
+        product,
+        profile: getAutoLoadDefaultProfile(product),
+        groupLabel: '',
+        package: pack,
+        packageQty,
+        currentVehicleQty,
+        pendingLoadQty: 0,
+        plannedVehicleQty: currentVehicleQty,
+        warehouseQty: getLocationQuantity(warehouseLocation.id, product.id),
+        expectedDemand: 0,
+        routeNeed: 0,
+        routeForecast: { missingNow: 0, forecastSales: 0, stockoutMachines: 0 },
+        pendingBeforeTarget: { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 },
+        projectedVehicleBeforeTarget: currentVehicleQty,
+        safetyQty: 0,
+        stockoutBonusQty: 0,
+        fixedSafetyQty: 0,
+        dynamicSafetyQty: 0,
+        tripDemandQty: 0,
+        targetNeedQty: 0,
+        deferredNeed: null,
+        deferredNeeds: [],
+        resolvedDeferredNeeds: [],
+        deferredQty: 0,
+        sameTargetDeferredQty: 0,
+        samples: 0,
+        estimateSource: 'ruční doplnění',
+        requiredFromNew: 0,
+        packageCount: 0,
+        suggestedQty: 0,
+        usageRatio: 0,
+        minRatio: 0.75,
+        packagePlanBlockedUsageRatio: 0,
+        stockoutOverride: false,
+        autoSuggestedPackageCount: 0,
+        autoSuggestedQty: 0,
+        approvedPackageCount: 0,
+        approvedQty: 0,
+        deferredAfterLoadQty: 0,
+        missingPackage: false,
+        projectedVehicleAfterTrip: currentVehicleQty,
+        staleRisk: false,
+        staleDays: null,
+        reasons: [],
+        status: 'manual'
+      }
+      return applyAutoLoadManualQuantity(row, quantity, { added: true })
+    }
+    function applyAutoLoadManualOverrides(rows) {
+      const result = [...rows]
+      for (const [productId, override] of autoLoadManualOverrides.entries()) {
+        const existing = result.find((row) => String(row.product?.id) === String(productId))
+        if (existing) {
+          applyAutoLoadManualQuantity(existing, override.quantity, { added: override.added })
+          continue
+        }
+        const product = productsV13.find((item) => String(item.id) === String(productId))
+        if (product) result.push(buildManualAutoLoadRow(product, override.quantity))
+      }
+      return result.sort((a, b) => {
+        if (a.manualOverride !== b.manualOverride) return a.manualOverride ? -1 : 1
+        return normalizeText(a.product?.name || '').localeCompare(normalizeText(b.product?.name || ''), 'cs')
+      })
+    }
+    function renderAutoLoadManualProductOptions() {
+      if (!autoLoadManualProduct) return
+      const currentValue = autoLoadManualProduct.value
+      const products = productsV13
+        .filter((product) => product.active !== false)
+        .sort((a, b) => normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs'))
+      autoLoadManualProduct.innerHTML = `<option value="">Vyber produkt</option>${products.map((product) => `<option value="${escapeHtml(product.id)}">${escapeHtml(product.name || 'Produkt')}${product.sku ? ` · SKU ${escapeHtml(product.sku)}` : ''} · ${escapeHtml(product.base_unit || 'ks')}</option>`).join('')}`
+      if (products.some((product) => String(product.id) === String(currentValue))) autoLoadManualProduct.value = currentValue
+    }
     function renderAutoLoadRows() {
       if (!autoLoadRowsBody) return
       const rows = autoLoadRows || []
@@ -5742,11 +5882,15 @@
         : rows
       autoLoadRowsBody.innerHTML = visibleRows.map((row) => {
         const unit = row.product.base_unit || 'ks'
-        const statusClass = row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
-        const suggestedLabel = row.stockoutOverride
-          ? `${formatQuantityValue(row.approvedQty, unit)} · i rozbalené`
-          : row.approvedQty > 0
-          ? `${row.approvedPackageCount} bal. / ${formatQuantityValue(row.approvedQty, unit)}`
+        const automaticQty = Number(row.autoSuggestedQty ?? row.approvedQty ?? 0)
+        const automaticPackageCount = Number(row.autoSuggestedPackageCount ?? row.approvedPackageCount ?? 0)
+        const statusClass = row.manualOverride ? 'auto-load-warn' : row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
+        const suggestedLabel = row.manualAdded
+          ? 'bez systémového návrhu'
+          : row.stockoutOverride
+          ? `${formatQuantityValue(automaticQty, unit)} · i rozbalené`
+          : automaticQty > 0
+          ? `${automaticPackageCount} bal. / ${formatQuantityValue(automaticQty, unit)}`
           : row.missingPackage
             ? 'chybí balení'
             : row.status === 'blocked' && row.requiredFromNew > 0
@@ -5768,6 +5912,7 @@
             <td data-label="Potřeba při příjezdu"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([`chybí nyní ${formatQuantityValue(row.routeForecast?.missingNow || 0, unit)}`, `prodej do příjezdu ${formatQuantityValue(row.routeForecast?.forecastSales || 0, unit)}`, `donaložit ${formatQuantityValue(row.requiredFromNew, unit)}`].join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
+            <td data-label="K vychystání"><label class="auto-load-approved-control"><input type="number" min="0" step="${normalizeText(unit) === 'ks' ? '1' : '0.001'}" value="${escapeHtml(Number(row.approvedQty || 0))}" data-auto-load-approved data-product-id="${escapeHtml(row.product.id)}" aria-label="Množství k vychystání ${escapeHtml(row.product.name || '')}" /><span>${escapeHtml(unit)}</span></label><span class="subtext">${row.manualOverride ? 'ručně upraveno' : 'lze změnit před odesláním'}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.status === 'blocked' ? `${(row.packagePlanBlockedUsageRatio * 100).toFixed(0)} %` : row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">${row.stockoutOverride ? 'výjimka: hrozí nula' : `minimum ${(row.minRatio * 100).toFixed(0)} %`}</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
@@ -5778,12 +5923,14 @@
         : 'Zatím není spočítaný žádný návrh.'
       autoLoadEmpty.style.display = visibleRows.length ? 'none' : 'block'
       if (autoLoadTableWrap) autoLoadTableWrap.hidden = !visibleRows.length
+      if (autoLoadManualEditor) autoLoadManualEditor.hidden = !autoLoadCalculationReady
+      if (autoLoadCalculationReady) renderAutoLoadManualProductOptions()
       const recommended = rows.filter((row) => row.approvedQty > 0)
       const risks = rows.filter((row) => row.staleRisk)
       const missingPackages = rows.filter((row) => row.missingPackage)
       const blocked = rows.filter((row) => row.status === 'blocked')
       autoLoadSummary.innerHTML = [
-        { label: 'Doporučeno', value: recommended.length, note: `${recommended.reduce((sum, row) => sum + row.approvedQty, 0).toFixed(0)} ks v celých baleních.` },
+        { label: 'K vychystání', value: recommended.length, note: 'Finální množství je uvedeno a upravitelné v každém řádku.' },
         { label: 'Chybí balení', value: missingPackages.length, note: 'Doplň počet ks v balení v kartě zásoby.' },
         { label: 'Rizika inventury', value: risks.length, note: 'Zůstatky na autě bez pohybu.' },
         { label: 'Možná potřeba', value: blocked.length, note: 'Nenakládat: využití nového balení je pod 75 %.' },
@@ -5802,7 +5949,8 @@
       syncAutoLoadWarehouseFromVehicle()
       const routeContext = await loadSelectedRouteNeeds()
       await refreshAutoLoadCalculationData()
-      autoLoadRows = buildAutoLoadRows()
+      autoLoadRows = applyAutoLoadManualOverrides(buildAutoLoadRows())
+      autoLoadCalculationReady = true
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
       renderAutoLoadRows()
@@ -5814,7 +5962,7 @@
       const route = getSelectedAutoLoadRoute()
       if (!route) throw new Error('Bez vybrané trasy nelze předat vychystání skladu.')
       const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
-      if (!rows.length) throw new Error('Není tu žádná doporučená položka k nakládce.')
+      if (!rows.length) throw new Error('Není tu žádná položka k vychystání.')
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const warehouseId = Number(autoLoadWarehouse?.value || 0)
       const employeeId = autoLoadEmployee?.value || ''
@@ -5847,8 +5995,8 @@
         const storeAsPackage = row.package
           && packageQty > 1
           && packageCount > 0
+          && Math.abs((packageCount * packageQty) - Number(row.approvedQty || 0)) <= 0.0001
         return {
-          request_id: request.id,
           product_id: product.id,
           product_name: product.name,
           sku: product.sku || null,
@@ -5856,7 +6004,9 @@
           requested_quantity: storeAsPackage ? packageCount : row.approvedQty,
           prepared_quantity: storeAsPackage ? packageCount : row.approvedQty,
           note: [
-            row.stockoutOverride
+            row.manualOverride
+              ? `${row.manualAdded ? 'ručně přidáno' : 'ručně upraveno'} před předáním skladu: ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}`
+              : row.stockoutOverride
               ? `výjimka hrozící nuly: vychystat ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')} i z rozbaleného balení`
               : `auto návrh: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
             storeAsPackage ? `skladově ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}` : '',
@@ -11645,10 +11795,72 @@
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'stock'))
     })
+    autoLoadRowsBody?.addEventListener('change', (event) => {
+      const input = event.target.closest('[data-auto-load-approved]')
+      if (!input) return
+      const productId = input.dataset.productId
+      const row = autoLoadRows.find((item) => String(item.product?.id) === String(productId))
+      if (!row) return
+      try {
+        const quantity = normalizeAutoLoadApprovedQuantity(row.product, input.value)
+        const added = Boolean(row.manualAdded)
+        autoLoadManualOverrides.set(String(productId), { quantity, added })
+        applyAutoLoadManualQuantity(row, quantity, { added })
+        renderAutoLoadRows()
+        renderAutoLoadWeeklyAuditPreview()
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line success'
+          autoLoadStatus.textContent = `${row.product?.name || 'Položka'}: k vychystání ručně nastaveno ${formatQuantityValue(quantity, row.product?.base_unit || 'ks')}.`
+        }
+      } catch (error) {
+        input.value = Number(row.approvedQty || 0)
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line error'
+          autoLoadStatus.textContent = error.message || 'Množství se nepodařilo upravit.'
+        }
+      }
+    })
+    autoLoadManualProduct?.addEventListener('change', () => {
+      const product = productsV13.find((item) => String(item.id) === String(autoLoadManualProduct.value || ''))
+      if (!autoLoadManualQuantity) return
+      const wholePieces = normalizeText(product?.base_unit || 'ks') === 'ks'
+      autoLoadManualQuantity.step = wholePieces ? '1' : '0.001'
+      autoLoadManualQuantity.placeholder = wholePieces ? 'Např. 12' : 'Např. 1,5'
+    })
+    autoLoadManualAddBtn?.addEventListener('click', () => {
+      try {
+        const product = productsV13.find((item) => String(item.id) === String(autoLoadManualProduct?.value || ''))
+        if (!product) throw new Error('Vyber produkt, který chceš přidat.')
+        const quantity = normalizeAutoLoadApprovedQuantity(product, autoLoadManualQuantity?.value, { allowZero: false })
+        const existing = autoLoadRows.find((row) => String(row.product?.id) === String(product.id))
+        const added = !existing
+        autoLoadManualOverrides.set(String(product.id), { quantity, added })
+        if (existing) {
+          applyAutoLoadManualQuantity(existing, quantity, { added: false })
+        } else {
+          autoLoadRows.push(buildManualAutoLoadRow(product, quantity))
+        }
+        if (autoLoadManualProduct) autoLoadManualProduct.value = ''
+        if (autoLoadManualQuantity) autoLoadManualQuantity.value = ''
+        renderAutoLoadRows()
+        renderAutoLoadWeeklyAuditPreview()
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line success'
+          autoLoadStatus.textContent = `${product.name || 'Položka'} byla ručně přidána: ${formatQuantityValue(quantity, product.base_unit || 'ks')}. Předání skladu použije upravený seznam.`
+        }
+      } catch (error) {
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line error'
+          autoLoadStatus.textContent = error.message || 'Položku se nepodařilo přidat.'
+        }
+      }
+    })
     autoLoadVehicle?.addEventListener('change', () => {
       if (autoLoadWarehouse) autoLoadWarehouse.value = ''
       syncAutoLoadWarehouseFromVehicle()
       syncAutoLoadEmployeeFromVehicle({ force: false })
+      autoLoadManualOverrides = new Map()
+      autoLoadCalculationReady = false
       autoLoadRows = []
       renderAutoLoadRows()
       renderAutoLoadWeeklyAuditPreview()
@@ -11656,6 +11868,8 @@
     autoLoadEmployee?.addEventListener('change', () => {
       const assignedVehicle = getAutoLoadAssignedVehicleForEmployee(autoLoadEmployee.value)
       const vehicleChanged = syncAutoLoadVehicleFromEmployee({ force: true })
+      autoLoadManualOverrides = new Map()
+      autoLoadCalculationReady = false
       autoLoadRows = []
       renderAutoLoadRows()
       renderAutoLoadWeeklyAuditPreview()
@@ -11670,6 +11884,8 @@
       }
     })
     autoLoadDate?.addEventListener('change', async () => {
+      autoLoadManualOverrides = new Map()
+      autoLoadCalculationReady = false
       autoLoadRows = []
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
@@ -11678,6 +11894,8 @@
       await loadAutoLoadRoutes()
     })
     autoLoadRoute?.addEventListener('change', () => {
+      autoLoadManualOverrides = new Map()
+      autoLoadCalculationReady = false
       autoLoadRows = []
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
@@ -11691,9 +11909,16 @@
           : 'Vyber trasu. Bez trasy se ostré vychystání nevytvoří.'
       }
     })
-    autoLoadWarehouse?.addEventListener('change', renderAutoLoadWeeklyAuditPreview)
+    autoLoadWarehouse?.addEventListener('change', () => {
+      autoLoadManualOverrides = new Map()
+      autoLoadCalculationReady = false
+      autoLoadRows = []
+      renderAutoLoadRows()
+      renderAutoLoadWeeklyAuditPreview()
+    })
     autoLoadScope?.addEventListener('change', async () => {
       if (!autoLoadVehicle?.value || !autoLoadWarehouse?.value) {
+        autoLoadCalculationReady = false
         autoLoadRows = []
         renderAutoLoadRows()
         renderAutoLoadWeeklyAuditPreview()
