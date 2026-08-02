@@ -5777,6 +5777,19 @@
       }
       return Number(quantity.toFixed(3))
     }
+    function syncAutoLoadApprovedInput(input) {
+      const productId = input?.dataset?.productId
+      const row = autoLoadRows.find((item) => String(item.product?.id) === String(productId))
+      if (!row) throw new Error('Upravovanou položku už v návrhu nemám. Přepočítej vychystání.')
+      const quantity = normalizeAutoLoadApprovedQuantity(row.product, input.value)
+      const added = Boolean(row.manualAdded)
+      autoLoadManualOverrides.set(String(productId), { quantity, added })
+      applyAutoLoadManualQuantity(row, quantity, { added })
+      return { row, quantity }
+    }
+    function syncAutoLoadApprovedInputs() {
+      autoLoadRowsBody?.querySelectorAll('[data-auto-load-approved]').forEach((input) => syncAutoLoadApprovedInput(input))
+    }
     function applyAutoLoadManualQuantity(row, quantity, { added = false } = {}) {
       const approvedQty = Math.max(0, Number(Number(quantity || 0).toFixed(3)))
       row.approvedQty = approvedQty
@@ -5961,6 +5974,7 @@
     async function createAutoLoadMobileRequest() {
       const route = getSelectedAutoLoadRoute()
       if (!route) throw new Error('Bez vybrané trasy nelze předat vychystání skladu.')
+      syncAutoLoadApprovedInputs()
       const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
       if (!rows.length) throw new Error('Není tu žádná položka k vychystání.')
       const vehicleId = Number(autoLoadVehicle?.value || 0)
@@ -11795,17 +11809,23 @@
     document.querySelectorAll('[data-inventory-tab]').forEach((button) => {
       button.addEventListener('click', () => setActiveInventoryTab(button.dataset.inventoryTab || 'stock'))
     })
+    autoLoadRowsBody?.addEventListener('input', (event) => {
+      const input = event.target.closest('[data-auto-load-approved]')
+      if (!input) return
+      try {
+        syncAutoLoadApprovedInput(input)
+      } catch (error) {
+        if (autoLoadStatus) {
+          autoLoadStatus.className = 'status-line error'
+          autoLoadStatus.textContent = error.message || 'Množství se nepodařilo upravit.'
+        }
+      }
+    })
     autoLoadRowsBody?.addEventListener('change', (event) => {
       const input = event.target.closest('[data-auto-load-approved]')
       if (!input) return
-      const productId = input.dataset.productId
-      const row = autoLoadRows.find((item) => String(item.product?.id) === String(productId))
-      if (!row) return
       try {
-        const quantity = normalizeAutoLoadApprovedQuantity(row.product, input.value)
-        const added = Boolean(row.manualAdded)
-        autoLoadManualOverrides.set(String(productId), { quantity, added })
-        applyAutoLoadManualQuantity(row, quantity, { added })
+        const { row, quantity } = syncAutoLoadApprovedInput(input)
         renderAutoLoadRows()
         renderAutoLoadWeeklyAuditPreview()
         if (autoLoadStatus) {
@@ -11813,7 +11833,8 @@
           autoLoadStatus.textContent = `${row.product?.name || 'Položka'}: k vychystání ručně nastaveno ${formatQuantityValue(quantity, row.product?.base_unit || 'ks')}.`
         }
       } catch (error) {
-        input.value = Number(row.approvedQty || 0)
+        const row = autoLoadRows.find((item) => String(item.product?.id) === String(input.dataset.productId))
+        input.value = Number(row?.approvedQty || 0)
         if (autoLoadStatus) {
           autoLoadStatus.className = 'status-line error'
           autoLoadStatus.textContent = error.message || 'Množství se nepodařilo upravit.'
