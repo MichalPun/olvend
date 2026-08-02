@@ -7529,8 +7529,9 @@
       balances = expiryRequired
         ? balances.filter((balance) => balance.batch_id && getBatchExpiryDate(getBalanceBatch(balance)))
         : balances
-      if (item.batch_id) {
-        const selectedIndex = balances.findIndex((balance) => String(balance.batch_id || '') === String(item.batch_id))
+      const selectedBatchId = item.batch_selection_mode === 'manual' ? item.batch_id : null
+      if (selectedBatchId) {
+        const selectedIndex = balances.findIndex((balance) => String(balance.batch_id || '') === String(selectedBatchId))
         balances = selectedIndex >= 0 ? balances.slice(selectedIndex) : []
       }
       return { sourceLocation, product, expiryRequired, balances }
@@ -7589,10 +7590,10 @@
       }
       const options = balances.map((balance) => {
         const batch = getBalanceBatch(balance)
-        const selected = String(item.batch_id || '') === String(balance.batch_id || '') ? 'selected' : ''
+        const selected = item.batch_selection_mode === 'manual' && String(item.batch_id || '') === String(balance.batch_id || '') ? 'selected' : ''
         return `<option value="${escapeHtml(String(balance.batch_id || ''))}" ${selected}>${escapeHtml(`Začít: ${formatBatchLabel(batch)} · ${formatQuantityValue(balance.quantity_on_hand, productsV13.find((product) => String(product.id) === String(item.product_id))?.base_unit || 'ks')}`)}</option>`
       }).join('')
-      return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" ${disabled ? 'disabled' : ''}><option value="" ${item.batch_id ? '' : 'selected'}>Automaticky FEFO přes více expirací</option>${options}</select><span class="subtext">Automatika bere nejstarší šarže; ručně lze zvolit, od které expirace začít.</span>${allocationHtml}`
+      return `<select data-mobile-pick-batch data-item-id="${escapeHtml(String(item.id))}" ${disabled ? 'disabled' : ''}><option value="" ${item.batch_selection_mode === 'manual' ? '' : 'selected'}>Automaticky FEFO přes více expirací</option>${options}</select><span class="subtext">Automatika bere nejstarší šarže; ručně lze zvolit, od které expirace začít.</span>${allocationHtml}`
     }
     function getMobilePickShortages(row) {
       if (!row || !['vehicle_order', 'vehicle_load', 'vehicle_unload', 'vehicle_return', 'vehicle_writeoff', 'vehicle_sale'].includes(row.request_type)) return []
@@ -7981,7 +7982,8 @@
         requested_quantity: requestedQuantity,
         prepared_quantity: Number(input?.value || 0),
         note: noteInput?.value.trim() || null,
-        batch_id: batchInput?.value ? Number(batchInput.value) : null
+        batch_id: batchInput?.value ? Number(batchInput.value) : null,
+        batch_selection_mode: batchInput?.value ? 'manual' : 'auto'
       }
     }
     function updateMobilePickVehicleProjection(itemId) {
@@ -8015,6 +8017,7 @@
       localItem.prepared_quantity = Number(payload.prepared_quantity || 0)
       localItem.note = payload.note
       localItem.batch_id = payload.batch_id || null
+      if (payload.batch_selection_mode !== undefined) localItem.batch_selection_mode = payload.batch_selection_mode || 'auto'
       if (payload.warehouse_picked_at !== undefined) localItem.warehouse_picked_at = payload.warehouse_picked_at
       if (payload.warehouse_picked_by !== undefined) localItem.warehouse_picked_by = payload.warehouse_picked_by
     }
@@ -8023,6 +8026,7 @@
       return normalizeText(item.unit || '') !== normalizeText(payload.unit || '')
         || Math.abs(Number(item.prepared_quantity ?? item.requested_quantity ?? 0) - Number(payload.prepared_quantity || 0)) > 0.0001
         || String(item.batch_id || '') !== String(payload.batch_id || '')
+        || String(item.batch_selection_mode || 'auto') !== String(payload.batch_selection_mode || 'auto')
     }
     function getMobilePickSavePayload(item, payload) {
       return shouldResetMobilePickChecklist(item, payload)
@@ -8300,7 +8304,7 @@
             note: `Mobilní nakládka #${request.id}`,
             allowNegative: allowNegativeLoad,
             applyBalances: false,
-            selectedBatchId: item.batch_id || null,
+            selectedBatchId: item.batch_selection_mode === 'manual' ? (item.batch_id || null) : null,
             requireDatedBatches: isAuditExpiryTracked(product)
           }))
           continue
@@ -12146,7 +12150,10 @@
       const checklistSensitiveChanged = Boolean(
         (unitInput && normalizeText(item.unit || '') !== normalizeText(unitInput.value || ''))
         || (qtyInput && Math.abs(Number(item.prepared_quantity ?? item.requested_quantity ?? 0) - Number(qtyInput.value || 0)) > 0.0001)
-        || (batchInput && String(item.batch_id || '') !== String(batchInput.value || ''))
+        || (batchInput && (
+          String(item.batch_id || '') !== String(batchInput.value || '')
+          || String(item.batch_selection_mode || 'auto') !== String(batchInput.value ? 'manual' : 'auto')
+        ))
       )
       if (unitInput) {
         const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
@@ -12162,7 +12169,10 @@
       }
       if (qtyInput) item.prepared_quantity = Number(qtyInput.value || 0)
       if (noteInput) item.note = noteInput.value.trim() || null
-      if (batchInput) item.batch_id = batchInput.value ? Number(batchInput.value) : null
+      if (batchInput) {
+        item.batch_id = batchInput.value ? Number(batchInput.value) : null
+        item.batch_selection_mode = batchInput.value ? 'manual' : 'auto'
+      }
       try {
         await saveMobilePickPreparedItem(item.id, checklistSensitiveChanged)
         setStockV13Status(batchInput ? 'Expirace v objednávce je uložená.' : 'Množství v objednávce je uložené.', 'success')
