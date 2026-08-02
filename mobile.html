@@ -3926,16 +3926,11 @@
 
     async function cleanupFailedStockRequest(requestId, reason = '') {
       if (!requestId) return
-      await supabase.from('mobile_stock_request_items').delete().eq('request_id', requestId)
-      const { error: deleteError } = await supabase.from('mobile_stock_requests').delete().eq('id', requestId)
-      if (!deleteError) return
-      await supabase
-        .from('mobile_stock_requests')
-        .update({
-          status: 'cancelled',
-          note: [reason, 'Automaticky zrušeno po nedokončeném mobilním zápisu.'].filter(Boolean).join(' · ') || null
-        })
-        .eq('id', requestId)
+      const { error } = await supabase.rpc('cancel_unapplied_mobile_stock_request_v22', {
+        request_id_value: Number(requestId),
+        reason_value: reason || null
+      })
+      if (error) console.warn('Nedokončený skladový doklad se nepodařilo automaticky zrušit:', error)
     }
 
     function getLegacyInventoryCountPackage(product) {
@@ -8184,9 +8179,7 @@
       els.createStockRequestButton.disabled = true
       els.createStockRequestButton.textContent = appliesImmediately ? 'Zapisuji sklad...' : 'Odesílám...'
       try {
-        const { data: request, error } = await supabase
-          .from('mobile_stock_requests')
-          .insert({
+        const requestPayload = {
             request_type: state.selectedStockType,
             status: needsApproval ? 'requested' : 'picking',
             employee_id: state.employee?.id || null,
@@ -8196,14 +8189,9 @@
             confirmed_by: null,
             confirmed_at: null,
             note
-          })
-          .select('*')
-          .single()
-        if (error) throw new Error(`Nepodařilo se uložit hlavičku dokladu: ${error.message}`)
-        if (!request?.id) throw new Error('Doklad se uložil bez čísla požadavku.')
+        }
 
         const itemRows = draftItems.map((item) => ({
-          request_id: request.id,
           product_id: item.product_id,
           product_name: item.product_name,
           sku: item.sku,
@@ -8215,14 +8203,17 @@
           batch_id: item.batch_id || null
         }))
 
-        const { data: savedItems, error: itemError } = await supabase
-          .from('mobile_stock_request_items')
-          .insert(itemRows)
-          .select('*')
-        if (itemError) {
-          await cleanupFailedStockRequest(request.id, `Položky dokladu se neuložily: ${itemError.message}`)
-          throw new Error(`Nepodařilo se uložit položky dokladu: ${itemError.message}`)
-        }
+        const { data: createdDocument, error: createError } = await supabase.rpc(
+          'create_mobile_stock_request_with_items_v22',
+          {
+            request_payload: requestPayload,
+            items_payload: itemRows
+          }
+        )
+        if (createError) throw new Error(`Skladový doklad se nevytvořil atomicky: ${createError.message}`)
+        const request = createdDocument?.request || null
+        const savedItems = Array.isArray(createdDocument?.items) ? createdDocument.items : []
+        if (!request?.id) throw new Error('Atomický skladový doklad se uložil bez čísla požadavku.')
         if (!savedItems?.length || savedItems.length !== itemRows.length) {
           await cleanupFailedStockRequest(request.id, 'Položky dokladu se neuložily kompletně.')
           throw new Error('Položky dokladu se neuložily kompletně. Doklad nebyl vytvořený, zkus ho odeslat znovu.')

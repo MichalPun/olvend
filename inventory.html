@@ -5806,9 +5806,7 @@
       const warehouse = warehouses.find((item) => String(item.id) === String(warehouseId))
       const sourceLocation = getWarehouseStockLocationByWarehouseId(warehouseId) || { id: await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`) }
       const targetLocation = getVehicleStockLocationByVehicleId(vehicleId) || { id: await ensureStockLocation('vehicle', vehicleId, vehicle?.name || `Vozidlo ${vehicleId}`) }
-      const { data: request, error: requestError } = await supabase
-        .from('mobile_stock_requests')
-        .insert([{
+      const requestPayload = {
           request_type: 'vehicle_load',
           status: 'requested',
           employee_id: employeeId || null,
@@ -5820,10 +5818,7 @@
           route_plan_id: route.id,
           calculation_source: 'route_plan',
           note: `Vychystání z telemetrie pro trasu #${route.id} · ${route.title || requestedDate} · ${getVehicleLabel(vehicleId)} · stav nyní + očekávaný prodej do příjezdu`
-        }])
-        .select('id')
-        .single()
-      if (requestError) throw requestError
+      }
       const itemRows = rows.map((row) => {
         const product = row.product || {}
         const packageQty = Number(row.packageQty || 0)
@@ -5850,8 +5845,19 @@
           ].filter(Boolean).join(' · ')
         }
       })
-      const { error: itemsError } = await supabase.from('mobile_stock_request_items').insert(itemRows)
-      if (itemsError) throw itemsError
+      const { data: createdDocument, error: createError } = await supabase.rpc(
+        'create_mobile_stock_request_with_items_v22',
+        {
+          request_payload: requestPayload,
+          items_payload: itemRows
+        }
+      )
+      if (createError) throw new Error(`Vychystávací doklad se nevytvořil atomicky: ${createError.message}`)
+      const request = createdDocument?.request || null
+      const savedItems = Array.isArray(createdDocument?.items) ? createdDocument.items : []
+      if (!request?.id || savedItems.length !== itemRows.length) {
+        throw new Error('Vychystávací doklad se nevytvořil kompletně. Zkus předání skladu znovu.')
+      }
       mobilePickRequestsCollapsed = false
       await loadMobilePickRequests()
       autoLoadStatus.className = 'status-line success'
