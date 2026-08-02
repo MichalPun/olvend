@@ -510,6 +510,7 @@
 
     const initialReport = new URLSearchParams(window.location.search).get('report');
     const DEFAULT_VAT_RATE = 12;
+    let telemetryLoadSequence = 0;
     const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], products: [], machines: [], locations: [], stockLocations: [], currentOutput: [], compareRange: null };
     const els = {
       status: document.getElementById('statusLine'),
@@ -1283,14 +1284,17 @@
         else renderAggregate(state.activeReport);
       }
     }
-    async function fetchPaged(buildQuery) {
+    async function fetchPaged(buildQuery, maxRows = 100000) {
       const output = [];
       const pageSize = 1000;
-      for (let from = 0; from < 10000; from += pageSize) {
+      for (let from = 0; from < maxRows; from += pageSize) {
         const { data, error } = await buildQuery().range(from, from + pageSize - 1);
         if (error) throw error;
         output.push(...(data || []));
         if (!data || data.length < pageSize) break;
+        if (output.length >= maxRows) {
+          throw new Error(`Zvolené období obsahuje více než ${maxRows.toLocaleString('cs-CZ')} řádků. Zkrať období nebo použij přesnější filtr.`);
+        }
       }
       return output;
     }
@@ -1302,7 +1306,8 @@
         .select('id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at')
         .gte('source_event_at', from.toISOString())
         .lt('source_event_at', to.toISOString())
-        .order('source_event_at', { ascending: false }));
+        .order('source_event_at', { ascending: false })
+        .order('id', { ascending: false }));
       return dedupeTelemetryRows(rows);
     }
     async function fetchFillRange(range) {
@@ -1314,53 +1319,69 @@
         .eq('movement_type', 'fill_machine')
         .gte('created_at', from.toISOString())
         .lt('created_at', to.toISOString())
-        .order('created_at', { ascending: false }));
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false }));
     }
     async function loadData() {
+      const loadSequence = ++telemetryLoadSequence;
+      const currentRange = getCurrentRange();
+      const compareRange = getCompareRange();
       els.refresh.disabled = true;
       setStatus('Načítám telemetrické reporty...');
-      state.compareRange = getCompareRange();
-      const [salesRows, compareRows, fillRows, compareFillRows] = await Promise.all([
-        fetchSalesRange(getCurrentRange()),
-        state.compareRange ? fetchSalesRange(state.compareRange) : Promise.resolve([]),
-        fetchFillRange(getCurrentRange()),
-        state.compareRange ? fetchFillRange(state.compareRange) : Promise.resolve([])
-      ]);
-      const stockLocationIds = [...new Set([...fillRows, ...compareFillRows].flatMap((row) => [Number(row.from_stock_location_id), Number(row.to_stock_location_id)]).filter(Boolean))];
-      const stockLocationsRes = stockLocationIds.length
-        ? await supabase.from('stock_locations').select('id, location_type, name, warehouse_id, vehicle_id, employee_id, machine_id, planogram_slot_id').in('id', stockLocationIds)
-        : { data: [], error: null };
-      if (stockLocationsRes.error) throw stockLocationsRes.error;
-      const stockLocations = stockLocationsRes.data || [];
-      const fillMachineIds = stockLocations.map((location) => Number(location.machine_id)).filter(Boolean);
-      const machineIds = [...new Set([...salesRows, ...compareRows].map((row) => Number(row.machine_id)).concat(fillMachineIds).filter(Boolean))];
-      const [machinesRes, productsRes] = await Promise.all([
-        machineIds.length
-          ? supabase.from('machines').select('id, evidence_number, name, machine_type, brand, model, location_id, active').in('id', machineIds)
-          : Promise.resolve({ data: [], error: null }),
-        supabase.from('products').select('id, sku, name, purchase_price, sale_price, vat_rate, product_category, usage_type, note, active')
-      ]);
-      if (machinesRes.error) throw machinesRes.error;
-      if (productsRes.error) throw productsRes.error;
-      const machines = machinesRes.data || [];
-      const locationIds = [...new Set(machines.map((machine) => Number(machine.location_id)).filter(Boolean))];
-      const locationsRes = locationIds.length
-        ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
-        : { data: [], error: null };
-      if (locationsRes.error) throw locationsRes.error;
-      state.products = productsRes.data || [];
-      state.machines = machines;
-      state.locations = locationsRes.data || [];
-      state.stockLocations = stockLocations;
-      state.rows = enrichRows(salesRows, state.machines, state.locations);
-      state.compareRows = enrichRows(compareRows, state.machines, state.locations);
-      state.fillRows = enrichFillRows(fillRows, state.stockLocations, state.machines, state.locations, state.products);
-      state.compareFillRows = enrichFillRows(compareFillRows, state.stockLocations, state.machines, state.locations, state.products);
-      populateFilters();
-      render();
-      const t = totals(state.rows);
-      const compareText = state.compareRange ? ` Srovnání: ${formatRange(state.compareRange)} (${state.compareRows.length} řádků).` : '';
-      setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období. Doplnění: ${state.fillRows.length} pohybů.${compareText}`, 'success');
+      try {
+        const [salesRows, compareRows, fillRows, compareFillRows] = await Promise.all([
+          fetchSalesRange(currentRange),
+          compareRange ? fetchSalesRange(compareRange) : Promise.resolve([]),
+          fetchFillRange(currentRange),
+          compareRange ? fetchFillRange(compareRange) : Promise.resolve([])
+        ]);
+        if (loadSequence !== telemetryLoadSequence) return;
+        const stockLocationIds = [...new Set([...fillRows, ...compareFillRows].flatMap((row) => [Number(row.from_stock_location_id), Number(row.to_stock_location_id)]).filter(Boolean))];
+        const stockLocationsRes = stockLocationIds.length
+          ? await supabase.from('stock_locations').select('id, location_type, name, warehouse_id, vehicle_id, employee_id, machine_id, planogram_slot_id').in('id', stockLocationIds)
+          : { data: [], error: null };
+        if (stockLocationsRes.error) throw stockLocationsRes.error;
+        if (loadSequence !== telemetryLoadSequence) return;
+        const stockLocations = stockLocationsRes.data || [];
+        const fillMachineIds = stockLocations.map((location) => Number(location.machine_id)).filter(Boolean);
+        const machineIds = [...new Set([...salesRows, ...compareRows].map((row) => Number(row.machine_id)).concat(fillMachineIds).filter(Boolean))];
+        const [machinesRes, productsRes] = await Promise.all([
+          machineIds.length
+            ? supabase.from('machines').select('id, evidence_number, name, machine_type, brand, model, location_id, active').in('id', machineIds)
+            : Promise.resolve({ data: [], error: null }),
+          supabase.from('products').select('id, sku, name, purchase_price, sale_price, vat_rate, product_category, usage_type, note, active')
+        ]);
+        if (machinesRes.error) throw machinesRes.error;
+        if (productsRes.error) throw productsRes.error;
+        if (loadSequence !== telemetryLoadSequence) return;
+        const machines = machinesRes.data || [];
+        const locationIds = [...new Set(machines.map((machine) => Number(machine.location_id)).filter(Boolean))];
+        const locationsRes = locationIds.length
+          ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
+          : { data: [], error: null };
+        if (locationsRes.error) throw locationsRes.error;
+        if (loadSequence !== telemetryLoadSequence) return;
+        const products = productsRes.data || [];
+        const locations = locationsRes.data || [];
+        state.compareRange = compareRange;
+        state.products = products;
+        state.machines = machines;
+        state.locations = locations;
+        state.stockLocations = stockLocations;
+        state.rows = enrichRows(salesRows, machines, locations);
+        state.compareRows = enrichRows(compareRows, machines, locations);
+        state.fillRows = enrichFillRows(fillRows, stockLocations, machines, locations, products);
+        state.compareFillRows = enrichFillRows(compareFillRows, stockLocations, machines, locations, products);
+        populateFilters();
+        render();
+        const t = totals(state.rows);
+        const compareText = compareRange ? ` Srovnání: ${formatRange(compareRange)} (${state.compareRows.length} řádků).` : '';
+        setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období. Doplnění: ${state.fillRows.length} pohybů.${compareText}`, 'success');
+      } catch (error) {
+        if (loadSequence === telemetryLoadSequence) setStatus(error.message, 'error');
+      } finally {
+        if (loadSequence === telemetryLoadSequence) els.refresh.disabled = false;
+      }
     }
     function exportCsv() {
       if (!state.currentOutput.length) {
@@ -1379,12 +1400,12 @@
 
     applyPreset();
     renderTabs();
-    els.preset.addEventListener('change', () => { applyPreset(); loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; }); });
-    [els.from, els.to, els.compare].forEach((input) => input.addEventListener('change', () => loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; })));
+    els.preset.addEventListener('change', () => { applyPreset(); loadData(); });
+    [els.from, els.to, els.compare].forEach((input) => input.addEventListener('change', loadData));
     [els.machine, els.location, els.search].forEach((input) => input.addEventListener('input', render));
-    els.refresh.addEventListener('click', () => loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; }));
+    els.refresh.addEventListener('click', loadData);
     els.export.addEventListener('click', exportCsv);
-    loadData().catch((error) => setStatus(error.message, 'error')).finally(() => { els.refresh.disabled = false; });
+    loadData();
   </script>
   <script src="./pwa.js?v=20260713telemetry-reports-v9" defer></script>
 </body>
