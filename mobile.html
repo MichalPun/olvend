@@ -1925,7 +1925,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.5</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.6</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4897,6 +4897,7 @@
       const draft = detail?.draft?.slots?.[String(slot?.id)] || {}
       const hasDraftDecision = draft.picked != null || draft.skipped != null || Array.isArray(draft.fillItems)
       const planogramChange = getFoodPlanogramChange(slot)
+      const currentProduct = state.products.find((product) => String(product.sku || '') === String(slot?.product_sku || ''))
       const changeProductId = planogramChange?.productChanged ? planogramChange.nextProduct?.id : null
       const defaultProductId = (!draft.picked && changeProductId) || draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
       let rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
@@ -4923,6 +4924,7 @@
         expiryDate: draft.expiryDate || '',
         existingExpiryDate: draft.existingExpiryDate ?? slot?.expiry_date ?? '',
         assortmentMismatch: Boolean(draft.assortmentMismatch),
+        existingProductId: draft.existingProductId ?? (draft.assortmentMismatch ? null : currentProduct?.id || null),
         note: draft.note || '',
         accepted: Boolean(draft.accepted)
       }
@@ -4971,11 +4973,11 @@
       })
       const unchangedPositionCount = slots.filter((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
-        return !draft.accepted && draft.pickedQuantity <= 0 && !getFoodPlanogramChange(slot)?.fullSwap
+        return !draft.accepted && draft.pickedQuantity <= 0 && !draft.assortmentMismatch && !getFoodPlanogramChange(slot)?.fullSwap
       }).length
       const changedPositionCount = slots.filter((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
-        return !draft.accepted && (draft.pickedQuantity > 0 || getFoodPlanogramChange(slot)?.fullSwap)
+        return !draft.accepted && (draft.pickedQuantity > 0 || draft.assortmentMismatch || getFoodPlanogramChange(slot)?.fullSwap)
       }).length
       const remainingPositionCount = unchangedPositionCount + changedPositionCount
       const finishReady = remainingPositionCount === 0 && missingCheckCount === 0 && cashSaved
@@ -5104,7 +5106,9 @@
               const draft = getFoodSlotDraft(stop.id, slot)
               const product = state.products.find((item) => String(item.id) === String(draft.selectedProductId))
               const plannedProduct = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
-              const tracksExpiry = isFoodExpiryTracked(product || plannedProduct)
+              const existingProduct = state.products.find((item) => String(item.id) === String(draft.existingProductId))
+              const existingProductOptions = getFoodSlotProductOptions(slot)
+              const tracksExpiry = isFoodExpiryTracked(existingProduct || product || plannedProduct)
               const recordedExpired = Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date)
               const planogramChange = getFoodPlanogramChange(slot)
               const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
@@ -5128,7 +5132,7 @@
                   <summary>
                     <div>
                       <strong>Pozice ${escapeHtml(slot.slot_code)}</strong>
-                      <small>${escapeHtml(product?.name || slot.product_name)}</small>
+                      <small>${escapeHtml(draft.assortmentMismatch && !existingProduct ? 'Vyber skutečný produkt' : (existingProduct?.name || product?.name || slot.product_name))}</small>
                     </div>
                     <span data-food-total="summary">${escapeHtml(`${finalQty}/${slot.capacity_units || 0} ks`)} ${draft.accepted ? '✓' : ''}</span>
                   </summary>
@@ -5221,12 +5225,25 @@
                         Produkt v pozici
                         <select data-food-field="assortment-mismatch" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
                           <option value="" ${draft.assortmentMismatch ? '' : 'selected'}>Produkt sedí s plánem</option>
-                          <option value="yes" ${draft.assortmentMismatch ? 'selected' : ''}>Je tam jiný produkt – hlásím změnu</option>
+                          <option value="yes" ${draft.assortmentMismatch ? 'selected' : ''}>Je tam jiný, ale prodejný produkt</option>
                         </select>
                       </label>
+                      ${draft.assortmentMismatch ? `
+                        <label>
+                          Co je skutečně uvnitř?
+                          <select data-food-field="existing-product" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${readOnly || draft.accepted ? 'disabled' : ''}>
+                            <option value="">Vyber skutečný druh</option>
+                            ${existingProductOptions.map((option) => `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(draft.existingProductId || '') ? 'selected' : ''}>${escapeHtml(option.name)} · SKU ${escapeHtml(option.sku)}</option>`).join('')}
+                          </select>
+                        </label>
+                        <div class="attention-box">
+                          <strong>Prodejné kusy zůstanou v automatu</strong>
+                          <span>Po potvrzení se skutečný druh eviduje jako doprodej do zadané expirace. Plánovaný druh se aktivuje automaticky, až bude původní zásoba vyprodaná.</span>
+                        </div>
+                      ` : ''}
                       <label>
-                        Poznámka
-                        <textarea data-food-field="note" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" placeholder="Popiš jen to, co nesedí" ${readOnly || draft.accepted ? 'disabled' : ''}>${escapeHtml(draft.note)}</textarea>
+                        Poznámka (volitelná)
+                        <textarea data-food-field="note" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" placeholder="Jen pokud je potřeba něco doplnit" ${readOnly || draft.accepted ? 'disabled' : ''}>${escapeHtml(draft.note)}</textarea>
                       </label>
                     </div>
                   </details>
@@ -6426,6 +6443,7 @@
               wasteItems: Array.isArray(prepared.wasteItems) ? prepared.wasteItems : [],
               existingExpiryDate: prepared.existingExpiryDate || '',
               assortmentMismatch: Boolean(prepared.assortmentMismatch),
+              existingProductId: prepared.existingProductId || null,
               note: prepared.note || '',
               accepted: false,
               ...liveDraft,
@@ -6454,7 +6472,8 @@
             wasteItems,
             expiryDate: expiryMatch?.[1] || '',
             assortmentMismatch: existing.issue_type === 'substitution'
-              && String(existing.actual_product_sku || '') === String(existing.planned_product_sku || ''),
+              && /jiný sortiment|fyzicky nalezen/i.test(String(existing.substitution_reason || existing.operator_note || '')),
+            existingProductId: existing.actual_product_id || null,
             note: existing.operator_note || '',
             accepted: Boolean(existing.accepted_at)
           }
@@ -7145,6 +7164,7 @@
           })),
           existingExpiryDate: draft.existingExpiryDate || '',
           assortmentMismatch: Boolean(draft.assortmentMismatch),
+          existingProductId: draft.existingProductId || null,
           note: draft.note || ''
         }]
       }))
@@ -7234,6 +7254,22 @@
       const wasteQuantity = wasteItems.reduce((sum, item) => sum + item.quantity, 0)
       const planogramChange = getFoodPlanogramChange(slot)
       const fullSwap = Boolean(planogramChange?.fullSwap)
+      const desiredTargetProduct = planogramChange?.nextProduct || plannedProduct
+      const existingProduct = draft.assortmentMismatch
+        ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
+        : plannedProduct
+      if (draft.assortmentMismatch && fullSwap) {
+        throw new Error(`Pozice ${slot.slot_code}: je naplánovaná kompletní výměna. Prodejné kusy vrať do auta, nebo nejdřív změň režim pozice na řízený doprodej.`)
+      }
+      if (draft.assortmentMismatch && actualBefore <= 0) {
+        throw new Error(`Pozice ${slot.slot_code}: pozice je prázdná, takže není co evidovat jako jiný produkt.`)
+      }
+      if (draft.assortmentMismatch && !existingProduct?.id) {
+        throw new Error(`Pozice ${slot.slot_code}: vyber, který produkt je skutečně uvnitř.`)
+      }
+      if (draft.assortmentMismatch && String(existingProduct?.sku || '') === String(slot.product_sku || '')) {
+        throw new Error(`Pozice ${slot.slot_code}: vybraný skutečný produkt je stejný jako plánogram. Zvol „Produkt sedí s plánem“, nebo vyber jiný druh.`)
+      }
       const retainedReplacementUnits = fullSwap
         ? Math.max(0, Math.min(actualBefore, Number(slot.changeover_new_units || 0)))
         : 0
@@ -7241,7 +7277,7 @@
       if (wasteQuantity > oldUnitsBeforeSwap) throw new Error(`Pozice ${slot.slot_code}: celkový odpis nesmí být vyšší než stav původního produktu ${oldUnitsBeforeSwap} ks.`)
       const swapReturnQuantity = fullSwap ? Math.max(0, oldUnitsBeforeSwap - wasteQuantity) : 0
       const remainingExistingQuantity = fullSwap ? retainedReplacementUnits : Math.max(0, actualBefore - wasteQuantity)
-      const tracksExistingExpiry = isFoodExpiryTracked(fullSwap ? selectedProduct : (plannedProduct || selectedProduct))
+      const tracksExistingExpiry = isFoodExpiryTracked(fullSwap ? selectedProduct : (existingProduct || plannedProduct || selectedProduct))
       const existingExpiryDate = normalizeFoodExpiryDate(draft.existingExpiryDate)
       if (tracksExistingExpiry && remainingExistingQuantity > 0 && !existingExpiryDate) {
         throw new Error(`Pozice ${slot.slot_code}: zapiš nejbližší expiraci ve formátu DD.MM.RRRR.`)
@@ -7262,9 +7298,10 @@
         : Math.max(0, capacity - actualBefore + wasteQuantity)
       if (actualAdd > maxAdd) throw new Error(`Pozice ${slot.slot_code}: vložit lze nejvýše ${maxAdd} ks.`)
       if (actualAdd > draft.preparedQuantity) throw new Error(`Pozice ${slot.slot_code}: nelze vložit více než připravených ${draft.preparedQuantity} ks.`)
-      if (draft.assortmentMismatch && !String(draft.note || '').trim()) {
-        throw new Error(`Pozice ${slot.slot_code}: napiš, jaký jiný produkt je v pozici.`)
-      }
+      if (draft.assortmentMismatch && fillItems.some((fill) => {
+        const product = state.products.find((item) => String(item.id) === String(fill.productId))
+        return String(product?.sku || '') !== String(desiredTargetProduct?.sku || '')
+      })) throw new Error(`Pozice ${slot.slot_code}: při doprodeji skutečného druhu lze doplnit jen plánovaný produkt ${desiredTargetProduct?.name || desiredTargetProduct?.sku || ''}.`)
       const missingFillExpiryProducts = []
       for (const fill of fillItems) {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
@@ -7287,6 +7324,19 @@
       const replacementProduct = replacementFill ? selectedProduct : null
       const nextPlanogramSku = planogramChange?.productChanged ? planogramChange.nextSku : null
       const mixedChangeover = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity > 0)
+      const physicalMismatchSellThrough = Boolean(
+        draft.assortmentMismatch
+        && remainingExistingQuantity > 0
+        && existingProduct?.id
+        && desiredTargetProduct?.id
+        && String(existingProduct.sku || '') !== String(desiredTargetProduct.sku || '')
+      )
+      const desiredAddedQuantity = physicalMismatchSellThrough
+        ? fillItems.reduce((sum, fill) => {
+          const product = state.products.find((item) => String(item.id) === String(fill.productId))
+          return sum + (String(product?.sku || '') === String(desiredTargetProduct.sku || '') ? fill.quantity : 0)
+        }, 0)
+        : 0
       const targetQuantity = Math.max(0, Math.min(capacity, Number(slot.target_units ?? capacity)))
       const nextDesiredQuantity = detail.manualStockMode
         ? Math.max(0, Number(slot.desired_units || 0))
@@ -7334,7 +7384,7 @@
       }
 
       for (const [wasteIndex, waste] of wasteItems.entries()) {
-        const wasteProduct = plannedProduct || selectedProduct
+        const wasteProduct = existingProduct || plannedProduct || selectedProduct
         const wasteReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_waste_${wasteIndex}_${waste.reason}`
         if (!(await stockReferenceAlreadyApplied(wasteReference))) {
           const wasteMovements = await moveStockPreservingBatches({
@@ -7351,6 +7401,11 @@
         }
       }
 
+      const recordedActualProduct = draft.assortmentMismatch
+        ? (existingProduct || selectedProduct)
+        : remainingExistingQuantity > 0
+          ? (existingProduct || plannedProduct || selectedProduct)
+          : selectedProduct
       const issueType = wasteQuantity <= 0
         ? (fullSwap || draft.assortmentMismatch || fillItems.some((fill) => {
             const product = state.products.find((item) => String(item.id) === String(fill.productId))
@@ -7368,7 +7423,9 @@
           return `Doplnění: ${fill.quantity} ks · SKU ${product?.sku || ''}${fill.expiryDate ? ` · expirace ${fill.expiryDate}` : ''}`
         }),
         ...missingFillExpiryProducts.map((productName) => `Upozornění: expirace nezadaná · ${productName}`),
-        draft.assortmentMismatch ? 'Jiný sortiment v pozici – nahlášeno ke schválení' : null,
+        draft.assortmentMismatch
+          ? `Skutečný produkt: ${existingProduct?.name || existingProduct?.sku || 'neurčen'} · ponecháno ${remainingExistingQuantity} ks do doprodeje${existingExpiryDate ? ` · expirace ${existingExpiryDate}` : ''} · plán ${desiredTargetProduct?.name || desiredTargetProduct?.sku || ''}`
+          : null,
         draft.note || null
       ].filter(Boolean).join(' · ') || null
       const row = {
@@ -7378,12 +7435,12 @@
         planogram_slot_id: slot.id,
         physical_position_label: slot.slot_code,
         telemetry_key: slot.telemetry_key || slot.slot_code,
-        planned_product_id: plannedProduct?.id || null,
-        planned_product_sku: slot.product_sku || null,
-        planned_product_name: slot.product_name || null,
-        actual_product_id: selectedProduct.id,
-        actual_product_sku: selectedProduct.sku || null,
-        actual_product_name: selectedProduct.name,
+        planned_product_id: desiredTargetProduct?.id || plannedProduct?.id || null,
+        planned_product_sku: desiredTargetProduct?.sku || slot.product_sku || null,
+        planned_product_name: desiredTargetProduct?.name || slot.product_name || null,
+        actual_product_id: recordedActualProduct?.id || null,
+        actual_product_sku: recordedActualProduct?.sku || null,
+        actual_product_name: recordedActualProduct?.name || null,
         sale_price_czk: fullSwap ? (planogramChange?.nextPrice ?? slot.price_czk ?? null) : (slot.price_czk ?? null),
         system_current_quantity: Number(slot.current_units || 0),
         actual_before_quantity: actualBefore,
@@ -7397,7 +7454,7 @@
         substitution_reason: fullSwap
           ? 'Kompletní výměna sortimentu bez doprodeje původních kusů'
           : draft.assortmentMismatch
-          ? 'Jiný sortiment nalezený v pozici'
+          ? 'Fyzicky nalezen jiný prodejný sortiment; ponechán do expirace jako řízený doprodej'
           : (fillItems.length > 1 ? 'Smíšené doplnění ze schválených variant' : String(selectedProduct.sku) === String(slot.product_sku) ? null : 'Schválená varianta sortimentu'),
         operator_note: operatorNote,
         accepted_at: new Date().toISOString()
@@ -7443,6 +7500,15 @@
             changeover_old_units: null,
             changeover_new_units: null,
             changeover_started_at: null
+          } : physicalMismatchSellThrough ? {
+            product_sku: existingProduct.sku,
+            product_name: existingProduct.name,
+            planned_product_sku: desiredTargetProduct.sku,
+            planned_product_name: desiredTargetProduct.name,
+            planned_price_czk: planogramChange?.nextPrice ?? slot.pending_price_czk ?? slot.price_czk,
+            changeover_old_units: remainingExistingQuantity,
+            changeover_new_units: desiredAddedQuantity,
+            changeover_started_at: new Date().toISOString()
           } : mixedChangeover ? {
             planned_product_sku: replacementProduct.sku,
             planned_product_name: replacementProduct.name,
@@ -7485,6 +7551,16 @@
         slot.changeover_old_units = null
         slot.changeover_new_units = null
         slot.pending_change_mode = 'sell_through'
+      } else if (physicalMismatchSellThrough) {
+        slot.product_sku = existingProduct.sku
+        slot.product_name = existingProduct.name
+        slot.planned_product_sku = desiredTargetProduct.sku
+        slot.planned_product_name = desiredTargetProduct.name
+        slot.planned_price_czk = planogramChange?.nextPrice ?? slot.pending_price_czk ?? slot.price_czk
+        slot.changeover_old_units = remainingExistingQuantity
+        slot.changeover_new_units = desiredAddedQuantity
+        slot.changeover_started_at = new Date().toISOString()
+        slot.pending_change_mode = 'sell_through'
       }
       detail.visitItems = [
         ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
@@ -7495,6 +7571,7 @@
         actualAdd,
         wasteItems,
         existingExpiryDate: nextExpiryDate || '',
+        existingProductId: recordedActualProduct?.id || null,
         accepted: true
       })
       renderRouteMachineScreen()
@@ -7508,7 +7585,7 @@
       if (!detail?.visitId) throw new Error('Návštěva není připravená.')
       const unchanged = (detail.slots || []).filter((slot) => {
         const draft = getFoodSlotDraft(stopId, slot)
-        return !draft.accepted && draft.pickedQuantity <= 0 && !getFoodPlanogramChange(slot)?.fullSwap
+        return !draft.accepted && draft.pickedQuantity <= 0 && !draft.assortmentMismatch && !getFoodPlanogramChange(slot)?.fullSwap
       })
       if (!unchanged.length) {
         showMessage('Všechny pozice bez doplnění už jsou potvrzené.', 'success', { scroll: false })
@@ -9580,6 +9657,7 @@
             expiry: 'expiryDate',
             'existing-expiry': 'existingExpiryDate',
             'assortment-mismatch': 'assortmentMismatch',
+            'existing-product': 'existingProductId',
             note: 'note'
           }
           const key = fieldMap[foodField.dataset.foodField]
@@ -9672,8 +9750,18 @@
             renderRouteMachineScreen()
           } else if (foodField.dataset.foodField === 'assortment-mismatch') {
             rememberFoodMachineRenderAnchor(foodField)
+            const slot = getFoodSlot(foodField.dataset.stopId, foodField.dataset.slotId)
+            const plannedProduct = state.products.find((item) => String(item.sku || '') === String(slot?.product_sku || ''))
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
               assortmentMismatch: foodField.value === 'yes',
+              existingProductId: foodField.value === 'yes' ? null : (plannedProduct?.id || null),
+              accepted: false
+            })
+            renderRouteMachineScreen()
+          } else if (foodField.dataset.foodField === 'existing-product') {
+            rememberFoodMachineRenderAnchor(foodField)
+            updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
+              existingProductId: foodField.value || null,
               accepted: false
             })
             renderRouteMachineScreen()
