@@ -1988,7 +1988,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.9</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.10</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4436,13 +4436,39 @@
       return Math.floor(missing / packageQuantity)
     }
 
+    function getCoffeeActualBeforeQuantity(stopId, container) {
+      const detail = getCoffeeDetail(stopId)
+      const draftValue = detail?.draft?.containers?.[String(container?.id)]?.actualBeforeQuantity
+      if (draftValue != null && Number.isFinite(Number(draftValue))) return Math.max(0, Number(draftValue))
+      const existing = detail?.visitItems?.find((item) => (
+        String(item.coffee_container_id || '') === String(container?.id)
+        && !String(item.operator_note || '').includes('První kalibrace')
+      ))
+      return Math.max(0, Number(existing?.actual_before_quantity ?? container?.current_quantity ?? 0))
+    }
+
+    function getCoffeeEntryUnit(container) {
+      return normalizeText(container?.unit || '') === 'g' ? 'kg' : (container?.unit || 'ks')
+    }
+
+    function getCoffeeEntryQuantity(quantity, container) {
+      return convertRecipeQuantity(Number(quantity || 0), container?.unit || '', getCoffeeEntryUnit(container))
+    }
+
+    function getCoffeeContainerQuantity(quantity, container) {
+      return convertRecipeQuantity(Number(quantity || 0), getCoffeeEntryUnit(container), container?.unit || '')
+    }
+
     function getCoffeeMaxPackages(stopId, container) {
       const capacity = Number(container?.capacity_quantity || 0)
       const existing = getCoffeeDetail(stopId)?.visitItems?.find((item) => (
         String(item.coffee_container_id || '') === String(container.id)
         && !String(item.operator_note || '').includes('První kalibrace')
       ))
-      const current = Number(existing?.system_current_quantity ?? container?.current_quantity ?? 0)
+      const draftActualBefore = getCoffeeDetail(stopId)?.draft?.containers?.[String(container.id)]?.actualBeforeQuantity
+      const current = draftActualBefore != null
+        ? Number(draftActualBefore || 0)
+        : Number(existing?.system_current_quantity ?? container?.current_quantity ?? 0)
       const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return Number.POSITIVE_INFINITY
       return Math.max(0, Math.floor((capacity - current) / packageQuantity))
@@ -4528,7 +4554,7 @@
     }
 
     function getCoffeeAfterQuantity(stopId, container) {
-      const current = Number(container?.current_quantity || 0)
+      const current = getCoffeeActualBeforeQuantity(stopId, container)
       const capacity = Number(container?.capacity_quantity || 0)
       const next = current + getCoffeeAddedQuantity(stopId, container)
       return capacity ? Math.min(capacity, next) : next
@@ -4762,7 +4788,8 @@
             ${containers.map((container) => {
               const packages = getCoffeeActualPackages(stop.id, container)
               const packageQty = getCoffeeRefillPackageQuantity(container)
-              const current = Number(container.current_quantity || 0)
+              const systemCurrent = Number(container.current_quantity || 0)
+              const current = getCoffeeActualBeforeQuantity(stop.id, container)
               const added = getCoffeeAddedQuantity(stop.id, container)
               const after = getCoffeeAfterQuantity(stop.id, container)
               const capacity = Number(container.capacity_quantity || 0)
@@ -4777,7 +4804,7 @@
                   <div>
                     <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
                     <div class="meta">
-                      <span>${manualCounterMode ? `evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}` : `stav z PC ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</span>
+                      <span>${manualCounterMode ? `evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}` : current !== systemCurrent ? `skutečný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')} · PC ${formatNumber(systemCurrent)}` : `stav z PC ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</span>
                       <span>${manualCounterMode ? `po doplnění ${formatNumber(after)}/${formatNumber(capacity)} · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : `po připraveném množství ${formatNumber(after)}/${formatNumber(capacity)} · hladina ${currentPct}% -> ${afterPct}%`}</span>
                     </div>
                     ${stockMismatch ? '<div class="muted-text">Skladový pohyb nesedí s uloženým doplněním. Potvrzením se automaticky dorovná.</div>' : ''}
@@ -7143,8 +7170,13 @@
       ))
       const packages = getCoffeeActualPackages(stopId, container)
       const addedQty = getCoffeeAddedQuantity(stopId, container)
-      const current = Number(container.current_quantity || 0)
-      const finalQty = Math.min(Number(container.capacity_quantity || current + addedQty), current + addedQty)
+      const systemCurrent = Number(existing?.system_current_quantity ?? container.current_quantity ?? 0)
+      const actualBefore = Math.max(0, Number(payload.actual_before_quantity ?? getCoffeeActualBeforeQuantity(stopId, container)))
+      const capacity = Number(container.capacity_quantity || 0)
+      const finalQty = actualBefore + addedQty
+      if (capacity && finalQty > capacity + 0.0001) {
+        throw new Error(`Skutečný stav a doplnění přesahují kapacitu zásobníku (${formatNumber(capacity)} ${container.unit || 'g'}).`)
+      }
       const row = {
         visit_id: detail.visitId,
         machine_id: container.machine_id,
@@ -7157,14 +7189,14 @@
         actual_product_id: container.product_id || null,
         actual_product_sku: container.product_sku || null,
         actual_product_name: container.product_name || null,
-        system_current_quantity: current,
-        actual_before_quantity: payload.actual_before_quantity ?? current,
+        system_current_quantity: systemCurrent,
+        actual_before_quantity: actualBefore,
         suggested_add_quantity: detail.manualCounterMode
           ? 0
           : Math.max(0, getCoffeeSuggestedPackages(container) * getCoffeeRefillPackageQuantity(container)),
         actual_add_quantity: addedQty,
         final_quantity: payload.final_quantity ?? finalQty,
-        capacity_quantity: Number(container.capacity_quantity || 0) || null,
+        capacity_quantity: capacity || null,
         unit: container.unit || 'g',
         issue_type: payload.issue_type || 'none',
         operator_note: payload.operator_note || null,
@@ -8314,22 +8346,53 @@
       }
 
       if (action === 'adjust-container' && container) {
-        const packagesText = window.prompt('Kolik celých balení reálně doplňuješ mimo PC návrh?', String(getCoffeeActualPackages(stopId, container)))
-        if (packagesText === null) return
-        const requestedPackages = Math.max(0, Math.round(Number(String(packagesText).replace(',', '.')) || 0))
-        const packages = Math.min(requestedPackages, getCoffeeSelectableMaxPackages(stopId, container))
+        const entryUnit = getCoffeeEntryUnit(container)
+        const actualBeforeText = window.prompt(
+          `${container.product_name || container.container_code || 'Zásobník'}: kolik je teď skutečně v zásobníku? Zadej v ${entryUnit}.`,
+          String(getCoffeeEntryQuantity(getCoffeeActualBeforeQuantity(stopId, container), container)).replace('.', ',')
+        )
+        if (actualBeforeText === null) return
+        const actualBeforeEntry = parseNumber(actualBeforeText)
+        if (actualBeforeEntry == null || actualBeforeEntry < 0) throw new Error(`Skutečný stav musí být platné číslo v ${entryUnit}.`)
+        const actualBefore = getCoffeeContainerQuantity(actualBeforeEntry, container)
+        const capacity = Number(container.capacity_quantity || 0)
+        if (capacity && actualBefore > capacity + 0.0001) throw new Error(`Skutečný stav nemůže být vyšší než kapacita ${formatNumber(getCoffeeEntryQuantity(capacity, container))} ${entryUnit}.`)
+        const packageQuantity = getCoffeeRefillPackageQuantity(container)
+        const suggestedAddEntry = getCoffeeEntryQuantity(getCoffeeAddedQuantity(stopId, container), container)
+        const addedText = window.prompt(
+          `Kolik ${entryUnit} skutečně doplňuješ? Jedno celé balení má ${formatNumber(getCoffeeEntryQuantity(packageQuantity, container))} ${entryUnit}.`,
+          String(suggestedAddEntry).replace('.', ',')
+        )
+        if (addedText === null) return
+        const addedEntry = parseNumber(addedText)
+        if (addedEntry == null || addedEntry < 0) throw new Error(`Doplnění musí být platné číslo v ${entryUnit}.`)
+        const requestedAddedQuantity = getCoffeeContainerQuantity(addedEntry, container)
+        const rawPackages = packageQuantity > 0 ? requestedAddedQuantity / packageQuantity : 0
+        const requestedPackages = Math.round(rawPackages)
+        if (Math.abs(rawPackages - requestedPackages) > 0.0001) {
+          throw new Error(`Doplň celé balení: ${formatNumber(getCoffeeEntryQuantity(packageQuantity, container))} ${entryUnit}.`)
+        }
+        const maxByCapacity = capacity && packageQuantity
+          ? Math.max(0, Math.floor((capacity - actualBefore) / packageQuantity))
+          : Number.POSITIVE_INFINITY
+        const packages = Math.min(requestedPackages, maxByCapacity, getCoffeeVehicleAvailablePackages(stopId, container))
         if (packages < requestedPackages) {
-          showMessage(`Do zásobníku se vejde nejvýše ${packages} celých balení. Hodnota byla automaticky omezena.`, 'error', { scroll: false })
+          throw new Error(`Podle zadaného skutečného stavu se vejde nejvýše ${getCoffeePackageCountLabel(packages, container)}.`)
         }
         const note = window.prompt('Poznámka pro kontrolora, proč nesedí stav?', '') || 'Nesedí stav zásobníku'
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
           packages,
+          actualBeforeQuantity: actualBefore,
           picked: true,
           accepted: true
         }
         await syncCoffeePackagesWithVehicle(stopId, container, packages)
-        await saveCoffeeContainerVisitItem(stopId, container, { issue_type: 'telemetry_mismatch', operator_note: note })
+        await saveCoffeeContainerVisitItem(stopId, container, {
+          actual_before_quantity: actualBefore,
+          issue_type: 'telemetry_mismatch',
+          operator_note: note
+        })
         showMessage('Nesoulad je zapsaný ke kontrole. Množství se z auta odečetlo a můžeš pokračovat.', 'success', { scroll: false })
         renderRouteMachineScreen()
         return

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v61-coffee-package-picklist-guard';
+const CACHE_NAME = 'olvend-v62-coffee-actual-quantity';
 const APP_SHELL = [
   './',
   './index.html',
