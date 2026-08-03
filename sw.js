@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v65-coffee-mobile-workflow';
+const CACHE_NAME = 'olvend-v66-stock-mobile-workflow';
 const APP_SHELL = [
   './',
   './index.html',
