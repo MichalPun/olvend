@@ -1925,7 +1925,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.3</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.4</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -2502,6 +2502,8 @@
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
     let foodMachineRenderAnchor = null
+    let routeMachineLiveRefreshTimer = null
+    let routeMachineLiveRefreshBusy = false
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -3012,7 +3014,12 @@
         state.showWorkSummary = false
         renderWorkSummary()
       }
-      if (screen === 'route-machine') renderRouteMachineScreen()
+      if (screen === 'route-machine') {
+        renderRouteMachineScreen()
+        scheduleRouteMachineLiveRefresh()
+      } else {
+        stopRouteMachineLiveRefresh()
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' })
       if (requestedScreen !== screen) renderShiftState()
     }
@@ -4425,6 +4432,9 @@
       ]
       const freeCoffeeOptions = buttons.map((button) => `<option value="${escapeHtml(button.id)}">${escapeHtml(`Volba ${button.selection_code} · ${button.product_name || 'Káva'}`)}</option>`).join('')
       const readOnly = Boolean(state.routeMachineReadOnly || getRouteStopStatus(stop) === 'completed')
+      const liveStateLabel = detail.liveStateUpdatedAt
+        ? `Online stav ověřen ${new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(detail.liveStateUpdatedAt))} · průběžná obnova po 10 s`
+        : 'Online stav se ověřuje'
 
       return `
         <div class="coffee-visit-detail">
@@ -4435,6 +4445,7 @@
           </div>
           ` : ''}
           ${!detail.machineOpen && !readOnly ? `
+          <div class="muted-text" data-route-live-status>${escapeHtml(liveStateLabel)}</div>
           <div class="task-head">
             <div>
               <h4>${manualCounterMode ? 'Ruční doplnění automatu' : 'Picklist k automatu'}</h4>
@@ -4974,10 +4985,14 @@
           : missingCheckCount > 0
             ? `Ještě potvrdit ${missingCheckCount} úkolů před odjezdem.`
             : 'Všechno je hotové. Můžeš dokončit automat.'
+      const liveStateLabel = detail.liveStateUpdatedAt
+        ? `Online stav ověřen ${new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(detail.liveStateUpdatedAt))} · průběžná obnova po 10 s`
+        : 'Online stav se ověřuje'
 
       if (phase === 'picklist') {
         return `
           <div class="coffee-visit-detail">
+            <div class="muted-text" data-route-live-status>${escapeHtml(liveStateLabel)}</div>
             ${planogramChanges.length ? `<div class="attention-box">
               <strong>Připravené změny plánogramu: ${escapeHtml(String(planogramChanges.length))}</strong>
               ${planogramChanges.map(({ slot, change }) => `<span>Pozice ${escapeHtml(slot.slot_code)} · ${change.productChanged ? `${escapeHtml(slot.product_name || slot.product_sku || '')} → ${escapeHtml(change.nextName || change.nextSku)}` : escapeHtml(slot.product_name || slot.product_sku || '')}${change.priceChanged ? ` · cena ${escapeHtml(formatNumber(slot.price_czk || 0))} → ${escapeHtml(formatNumber(change.nextPrice))} Kč` : ''}${change.fullSwap ? ' · KOMPLETNÍ VÝMĚNA' : ' · řízený doprodej'}</span>`).join('')}
@@ -6308,6 +6323,7 @@
           needsCalibration: !manualCounterMode && previousCalibrationCount === 0 && containers.length > 0,
           calibratedContainers,
           machineOpen: Boolean(state.routeCoffeeDetails[key]?.machineOpen || visit?.work_phase === 'machine' || existingItems.length),
+          liveStateUpdatedAt: new Date().toISOString(),
           draft: {
             ...(state.routeCoffeeDetails[key]?.draft || {}),
             containers: draftContainers,
@@ -6373,6 +6389,9 @@
           ? visit.food_preparation
           : {}
         const previousDraft = state.routeFoodDetails[key]?.draft || { phase: 'picklist', slots: {} }
+        const arrivalStateIsFrozen = existingItems.length > 0
+          || visit?.work_phase === 'machine'
+          || previousDraft.phase === 'machine'
         const draftSlots = { ...(previousDraft.slots || {}) }
         for (const slot of slots) {
           const existing = existingItems.find((item) => String(item.planogram_slot_id || '') === String(slot.id))
@@ -6398,14 +6417,16 @@
               picked: Boolean(prepared.picked),
               skipped: Boolean(prepared.skipped),
               skipReason: prepared.skipReason || '',
-              actualBefore: Number(prepared.actualBefore ?? slot.current_units ?? 0),
               actualAdd: Number(prepared.preparedQuantity || 0),
               wasteItems: Array.isArray(prepared.wasteItems) ? prepared.wasteItems : [],
               existingExpiryDate: prepared.existingExpiryDate || '',
               assortmentMismatch: Boolean(prepared.assortmentMismatch),
               note: prepared.note || '',
               accepted: false,
-              ...liveDraft
+              ...liveDraft,
+              actualBefore: Number(arrivalStateIsFrozen
+                ? (liveDraft.actualBefore ?? prepared.actualBefore ?? slot.current_units ?? 0)
+                : (slot.current_units ?? 0))
             }
             continue
           }
@@ -6474,6 +6495,7 @@
           cash: cashResult.data || null,
           vehicleStock,
           vehicleBatches,
+          liveStateUpdatedAt: new Date().toISOString(),
           draft: {
             ...previousDraft,
             phase: existingItems.length || visit?.work_phase === 'machine' ? 'machine' : (previousDraft.phase || 'picklist'),
@@ -6488,6 +6510,216 @@
         }
       }
       renderRouteMachineScreen()
+    }
+
+    function stopRouteMachineLiveRefresh() {
+      if (routeMachineLiveRefreshTimer) window.clearTimeout(routeMachineLiveRefreshTimer)
+      routeMachineLiveRefreshTimer = null
+    }
+
+    function scheduleRouteMachineLiveRefresh(delay = 10000) {
+      stopRouteMachineLiveRefresh()
+      const routeScreen = document.querySelector('.screen[data-screen="route-machine"]')
+      if (!routeScreen?.classList.contains('active') || state.routeMachineReadOnly) return
+      routeMachineLiveRefreshTimer = window.setTimeout(async () => {
+        try {
+          await refreshActiveRouteMachineLiveState()
+        } catch (error) {
+          console.warn('Route machine live refresh failed:', error)
+          const label = els.routeMachineContent?.querySelector('[data-route-live-status]')
+          if (label) label.textContent = 'Online kontrola se nepodařila · zkusím znovu za 10 s'
+        } finally {
+          scheduleRouteMachineLiveRefresh()
+        }
+      }, delay)
+    }
+
+    async function refreshActiveRouteMachineLiveState() {
+      if (routeMachineLiveRefreshBusy || !navigator.onLine || state.routeMachineReadOnly) return
+      const routeScreen = document.querySelector('.screen[data-screen="route-machine"]')
+      if (!routeScreen?.classList.contains('active')) return
+      const { stop } = findRouteStop(state.activeRouteStopId)
+      const machine = getRouteStopMachine(stop)
+      const machineKind = getMachineKind(machine)
+      if (!stop || !machine?.id || !['food', 'coffee'].includes(machineKind)) return
+      const detail = machineKind === 'food' ? getFoodDetail(stop.id) : getCoffeeDetail(stop.id)
+      if (!detail || detail.loading) return
+      if (machineKind === 'food' && detail.draft?.phase === 'machine') return
+      if (machineKind === 'coffee' && detail.machineOpen) return
+
+      routeMachineLiveRefreshBusy = true
+      try {
+        const query = machineKind === 'food'
+          ? supabase
+            .from('machine_planogram_slots')
+            .select('id, current_units, capacity_units, updated_at')
+            .eq('machine_id', machine.id)
+            .eq('active', true)
+            .order('sort_order', { ascending: true })
+          : supabase
+            .from('machine_coffee_containers')
+            .select('id, current_quantity, capacity_quantity, updated_at')
+            .eq('machine_id', machine.id)
+            .eq('active', true)
+            .order('sort_order', { ascending: true })
+        const { data, error } = await query
+        if (error) throw error
+
+        let changed = false
+        const liveById = new Map((data || []).map((row) => [String(row.id), row]))
+        if (machineKind === 'food') {
+          for (const slot of detail.slots || []) {
+            const live = liveById.get(String(slot.id))
+            if (!live) continue
+            const nextCurrent = Number(live.current_units || 0)
+            if (nextCurrent !== Number(slot.current_units || 0) || String(live.updated_at || '') !== String(slot.updated_at || '')) changed = true
+            slot.current_units = nextCurrent
+            slot.capacity_units = live.capacity_units == null ? slot.capacity_units : Number(live.capacity_units)
+            slot.updated_at = live.updated_at || slot.updated_at
+            const draft = getFoodSlotDraft(stop.id, slot)
+            detail.draft.slots[String(slot.id)] = { ...draft, actualBefore: nextCurrent }
+          }
+        } else {
+          for (const container of detail.containers || []) {
+            const live = liveById.get(String(container.id))
+            if (!live) continue
+            const nextCurrent = Number(live.current_quantity || 0)
+            if (nextCurrent !== Number(container.current_quantity || 0) || String(live.updated_at || '') !== String(container.updated_at || '')) changed = true
+            container.current_quantity = nextCurrent
+            container.capacity_quantity = live.capacity_quantity == null ? container.capacity_quantity : Number(live.capacity_quantity)
+            container.updated_at = live.updated_at || container.updated_at
+            const draft = detail.draft?.containers?.[String(container.id)]
+            if (draft && !draft.picked && !draft.accepted) draft.packages = getCoffeeSuggestedPackages(container)
+          }
+        }
+
+        detail.liveStateUpdatedAt = new Date().toISOString()
+        const focusedField = els.routeMachineContent?.contains(document.activeElement)
+          && document.activeElement?.matches?.('input, select, textarea')
+        if (changed && focusedField) detail.liveRenderPending = true
+        if ((changed || detail.liveRenderPending) && !focusedField) {
+          detail.liveRenderPending = false
+          const scrollY = window.scrollY
+          renderRouteMachineScreen()
+          window.requestAnimationFrame(() => window.scrollTo(0, scrollY))
+        } else {
+          const label = els.routeMachineContent?.querySelector('[data-route-live-status]')
+          if (label) {
+            label.textContent = `Online stav ověřen ${new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(detail.liveStateUpdatedAt))} · průběžná obnova po 10 s`
+          }
+        }
+      } finally {
+        routeMachineLiveRefreshBusy = false
+      }
+    }
+
+    async function openRouteMachineWithLiveState(stopId, detail, machineKind) {
+      const { stop } = findRouteStop(stopId)
+      const machine = getRouteStopMachine(stop)
+      if (!machine?.id || !detail?.visitId) throw new Error('Chybí automat nebo otevřená návštěva.')
+
+      const loadLiveRows = async () => {
+        const query = machineKind === 'food'
+          ? supabase
+            .from('machine_planogram_slots')
+            .select('id, slot_code, current_units, capacity_units, updated_at')
+            .eq('machine_id', machine.id)
+            .eq('active', true)
+            .order('sort_order', { ascending: true })
+          : supabase
+            .from('machine_coffee_containers')
+            .select('id, container_code, current_quantity, capacity_quantity, updated_at')
+            .eq('machine_id', machine.id)
+            .eq('active', true)
+            .order('sort_order', { ascending: true })
+        const { data, error } = await query
+        if (error || !data?.length) {
+          const reason = error?.message ? ` (${error.message})` : ''
+          throw new Error(`Nepodařilo se načíst aktuální online stav automatu${reason}. Práci neotevírám se starými údaji; zkontroluj připojení a zkus to znovu.`)
+        }
+        return data
+      }
+
+      const applyLiveRows = (rows) => {
+        const liveRows = new Map(rows.map((row) => [String(row.id), row]))
+        if (machineKind === 'food') {
+          for (const slot of detail.slots || []) {
+            const live = liveRows.get(String(slot.id))
+            if (!live) continue
+            slot.current_units = Number(live.current_units || 0)
+            slot.capacity_units = live.capacity_units == null ? slot.capacity_units : Number(live.capacity_units)
+            slot.updated_at = live.updated_at || slot.updated_at
+            const draft = getFoodSlotDraft(stopId, slot)
+            detail.draft.slots[String(slot.id)] = {
+              ...draft,
+              actualBefore: Number(live.current_units || 0)
+            }
+          }
+        } else {
+          for (const container of detail.containers || []) {
+            const live = liveRows.get(String(container.id))
+            if (!live) continue
+            container.current_quantity = Number(live.current_quantity || 0)
+            container.capacity_quantity = live.capacity_quantity == null
+              ? container.capacity_quantity
+              : Number(live.capacity_quantity)
+            container.updated_at = live.updated_at || container.updated_at
+          }
+        }
+      }
+
+      const liveRows = await loadLiveRows()
+      applyLiveRows(liveRows)
+      const firstPreparation = machineKind === 'food' ? serializeFoodPreparation(stopId, detail) : null
+      const firstUpdate = machineKind === 'food'
+        ? { work_phase: 'machine', food_preparation: firstPreparation, synced_at: new Date().toISOString() }
+        : { work_phase: 'machine', synced_at: new Date().toISOString() }
+      const { data: savedVisit, error: saveError } = await supabase
+        .from('route_machine_visits')
+        .update(firstUpdate)
+        .eq('id', detail.visitId)
+        .select('id, work_phase, food_preparation')
+        .maybeSingle()
+      if (saveError || !savedVisit?.id || savedVisit.work_phase !== 'machine') {
+        const reason = saveError?.message ? ` (${saveError.message})` : ''
+        throw new Error(`Aktuální stav se nepodařilo bezpečně uložit${reason}. Zkus otevření automatu znovu.`)
+      }
+
+      const verifiedRows = await loadLiveRows()
+      const snapshotChanged = verifiedRows.some((row, index) => {
+        const previous = liveRows[index]
+        const quantityKey = machineKind === 'food' ? 'current_units' : 'current_quantity'
+        return !previous
+          || String(previous.id) !== String(row.id)
+          || Number(previous[quantityKey] || 0) !== Number(row[quantityKey] || 0)
+          || String(previous.updated_at || '') !== String(row.updated_at || '')
+      })
+      if (snapshotChanged) {
+        applyLiveRows(verifiedRows)
+        const verifiedPreparation = machineKind === 'food' ? serializeFoodPreparation(stopId, detail) : null
+        const verifiedUpdate = machineKind === 'food'
+          ? { food_preparation: verifiedPreparation, synced_at: new Date().toISOString() }
+          : { synced_at: new Date().toISOString() }
+        const { error: verifySaveError } = await supabase
+          .from('route_machine_visits')
+          .update(verifiedUpdate)
+          .eq('id', detail.visitId)
+        if (verifySaveError) throw new Error(`Živý stav se během otevření změnil a jeho nové uložení selhalo (${verifySaveError.message}). Zkus otevření znovu.`)
+      }
+
+      if (machineKind === 'food') {
+        detail.draft.phase = 'machine'
+      } else {
+        detail.machineOpen = true
+      }
+
+      const currentVisit = getRouteVisitForStop(stop)
+      if (currentVisit) {
+        currentVisit.work_phase = 'machine'
+        if (machineKind === 'food') currentVisit.food_preparation = serializeFoodPreparation(stopId, detail)
+      }
+      persistMobileSnapshot()
+      return { work_phase: 'machine', live_rows: verifiedRows, snapshot_changed: snapshotChanged }
     }
 
     async function openRouteStop(stopId) {
@@ -7540,33 +7772,10 @@
             } : {})
           })
         }
-        detail.draft.phase = 'machine'
-        persistMobileSnapshot()
+        await openRouteMachineWithLiveState(stopId, detail, 'food')
         foodMachineRenderAnchor = null
         renderRouteMachineScreen()
         scrollToFirstMachinePosition('food')
-        const preparation = serializeFoodPreparation(stopId, detail)
-        const { data: savedPhase, error: phaseError } = await supabase
-          .from('route_machine_visits')
-          .update({
-            work_phase: 'machine',
-            food_preparation: preparation,
-            synced_at: new Date().toISOString()
-          })
-          .eq('id', detail.visitId)
-          .select('id, work_phase, food_preparation')
-          .maybeSingle()
-        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'machine') {
-          scheduleFoodWorkProgressSave(stopId)
-          showMessage('Doplňování je bezpečně uložené v telefonu. Serverové uložení se zopakuje automaticky po obnovení spojení.', 'error', { scroll: false })
-          return
-        }
-        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
-        if (currentVisit) {
-          currentVisit.work_phase = 'machine'
-          currentVisit.food_preparation = savedPhase.food_preparation || preparation
-        }
-        persistMobileSnapshot()
         return
       }
       if (action === 'back-picklist') {
@@ -7695,23 +7904,9 @@
           : (detail.containers || []).filter((item) => getCoffeeSuggestedPackages(item) > 0)
         const picked = needed.filter((item) => detail.draft?.containers?.[String(item.id)]?.picked)
         if (picked.length < needed.length) throw new Error(`Nejdřív potvrď picklist ${picked.length}/${needed.length}.`)
-        detail.machineOpen = true
-        persistMobileSnapshot()
+        await openRouteMachineWithLiveState(stopId, detail, 'coffee')
         renderRouteMachineScreen()
         scrollToFirstMachinePosition('coffee')
-        const { data: savedPhase, error: phaseError } = await supabase
-          .from('route_machine_visits')
-          .update({ work_phase: 'machine', synced_at: new Date().toISOString() })
-          .eq('id', detail.visitId)
-          .select('id, work_phase')
-          .maybeSingle()
-        if (phaseError || !savedPhase?.id || savedPhase.work_phase !== 'machine') {
-          showMessage('Otevřený automat je uložený v telefonu. Server se dosynchronizuje po obnovení spojení.', 'error', { scroll: false })
-          return
-        }
-        const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
-        if (currentVisit) currentVisit.work_phase = 'machine'
-        persistMobileSnapshot()
         showMessage('Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.', 'success', { scroll: false })
         return
       }
@@ -9301,7 +9496,7 @@
         const foodButton = event.target.closest('[data-food-action]')
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
-          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'open-machine', 'back-picklist', 'adjust-actual-before']
+          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before']
           if (foodButton.dataset.foodAction !== 'adjust-actual-before') rememberFoodMachineRenderAnchor(foodButton)
           const restore = instantActions.includes(foodButton.dataset.foodAction)
             ? () => {}
@@ -9608,6 +9803,9 @@
           showMessage(result.synced ? `${result.synced} offline změn bylo synchronizováno.` : 'Připojení je zpět.', 'success', { scroll: false })
           await reloadData().catch(console.warn)
         }
+      })
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') scheduleRouteMachineLiveRefresh(0)
       })
       try {
         const hasUser = await hydrateCurrentUser()

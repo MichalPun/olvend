@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v55-machine-first-position';
+const CACHE_NAME = 'olvend-v56-live-machine-open';
 const APP_SHELL = [
   './',
   './index.html',
