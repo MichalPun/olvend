@@ -1988,7 +1988,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.8</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.9</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4394,10 +4394,43 @@
       return state.routeFoodDetails[String(stopId || '')] || null
     }
 
+    function getCoffeeRefillPackage(container) {
+      const configuredQuantity = Math.max(0, Number(container?.refill_package_quantity || 0))
+      const configuredUnit = container?.refill_package_unit || container?.unit || ''
+      const product = state.products.find((item) => String(item.id) === String(container?.product_id || ''))
+      const catalogPackage = state.productPackages.find((item) => (
+        String(item.product_id) === String(container?.product_id || '')
+        && item.active !== false
+        && item.is_default === true
+      ))
+      const catalogQuantity = Math.max(0, Number(catalogPackage?.units_per_package || 0))
+      const sameUnit = normalizeText(product?.base_unit || '') === normalizeText(container?.unit || '')
+      if (catalogPackage && sameUnit && catalogQuantity > 1) {
+        return {
+          quantity: catalogQuantity,
+          unit: container?.unit || product?.base_unit || configuredUnit,
+          label: String(catalogPackage.package_name || 'balení').replace(/^1\s+/i, '')
+        }
+      }
+      return {
+        quantity: configuredQuantity,
+        unit: configuredUnit,
+        label: String(catalogPackage?.package_name || 'balení').replace(/^1\s+/i, '')
+      }
+    }
+
+    function getCoffeeRefillPackageQuantity(container) {
+      return getCoffeeRefillPackage(container).quantity
+    }
+
+    function getCoffeePackageCountLabel(packages, container) {
+      return `${formatNumber(packages)} × ${getCoffeeRefillPackage(container).label}`
+    }
+
     function getCoffeeSuggestedPackages(container) {
       const capacity = Number(container?.capacity_quantity || 0)
       const current = Number(container?.current_quantity || 0)
-      const packageQuantity = Number(container?.refill_package_quantity || 0)
+      const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return 0
       const missing = Math.max(0, capacity - current)
       return Math.floor(missing / packageQuantity)
@@ -4410,7 +4443,7 @@
         && !String(item.operator_note || '').includes('První kalibrace')
       ))
       const current = Number(existing?.system_current_quantity ?? container?.current_quantity ?? 0)
-      const packageQuantity = Number(container?.refill_package_quantity || 0)
+      const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return Number.POSITIVE_INFINITY
       return Math.max(0, Math.floor((capacity - current) / packageQuantity))
     }
@@ -4418,14 +4451,14 @@
     function getCoffeeActualPackages(stopId, container) {
       const detail = getCoffeeDetail(stopId)
       const draft = detail?.draft?.containers?.[String(container.id)]
-      if (draft?.packages != null) return Math.min(Number(draft.packages || 0), getCoffeeMaxPackages(stopId, container))
+      if (draft?.packages != null) return Math.min(Number(draft.packages || 0), getCoffeeSelectableMaxPackages(stopId, container))
       if (detail?.manualCounterMode) return 0
-      return getCoffeeSuggestedPackages(container)
+      return Math.min(getCoffeeSuggestedPackages(container), getCoffeeSelectableMaxPackages(stopId, container))
     }
 
     function getCoffeeAddedQuantity(stopId, container) {
       const packages = getCoffeeActualPackages(stopId, container)
-      return Math.max(0, packages * Number(container?.refill_package_quantity || 0))
+      return Math.max(0, packages * getCoffeeRefillPackageQuantity(container))
     }
 
     function isCoffeeMassPackageStock(container) {
@@ -4445,8 +4478,8 @@
 
     function getCoffeePackageBaseQuantity(container) {
       return Math.max(0, convertCoffeeQuantityToProductBase(
-        Number(container?.refill_package_quantity || 0),
-        container?.refill_package_unit || container?.unit || '',
+        getCoffeeRefillPackageQuantity(container),
+        getCoffeeRefillPackage(container).unit,
         container?.product_id
       ))
     }
@@ -4457,14 +4490,28 @@
         const packageBaseQty = getCoffeePackageBaseQuantity(container)
         return packageBaseQty ? Math.max(0, Math.floor(total / packageBaseQty)) : Math.max(0, Math.floor(total))
       }
-      const packageQty = Number(container?.refill_package_quantity || 0)
+      const packageQty = getCoffeeRefillPackageQuantity(container)
       return packageQty ? Math.floor(total / packageQty) : Math.max(0, Math.floor(total))
     }
 
     function getCoffeeVehicleStockQuantity(container, packages) {
       const packageCount = Math.max(0, Number(packages || 0))
-      if (isCoffeeMassPackageStock(container)) return packageCount * getCoffeePackageBaseQuantity(container)
-      return packageCount * Number(container?.refill_package_quantity || 0)
+      return packageCount * getCoffeePackageBaseQuantity(container)
+    }
+
+    function getCoffeeVehicleAvailablePackages(stopId, container) {
+      const detail = getCoffeeDetail(stopId)
+      const vehiclePackages = detail?.vehiclePackages?.[String(container?.product_id)]
+      if (vehiclePackages == null) return Number.POSITIVE_INFINITY
+      const alreadyMoved = Number(detail?.draft?.containers?.[String(container?.id)]?.movedPackages || 0)
+      return Math.max(0, Number(vehiclePackages || 0) + alreadyMoved)
+    }
+
+    function getCoffeeSelectableMaxPackages(stopId, container) {
+      return Math.min(
+        getCoffeeMaxPackages(stopId, container),
+        getCoffeeVehicleAvailablePackages(stopId, container)
+      )
     }
 
     function getCoffeeNetMovedQuantity(rows, visitId, container) {
@@ -4496,7 +4543,7 @@
 
     function getCoffeeCalibrationStep(container) {
       if (normalizeText(container?.unit || '') === 'ks') return 1
-      return Math.max(1, Number(container?.refill_package_quantity || 1))
+      return Math.max(1, getCoffeeRefillPackageQuantity(container) || 1)
     }
 
     function getCoffeeCalibrationSliderStep(container) {
@@ -4517,7 +4564,7 @@
     function describeCoffeeQuantity(quantity, container) {
       const value = Number(quantity || 0)
       const unit = container?.unit || 'g'
-      const packageQty = Number(container?.refill_package_quantity || 0)
+      const packageQty = getCoffeeRefillPackageQuantity(container)
       if (packageQty > 0) {
         const packages = value / packageQty
         if (Number.isInteger(packages)) return `${formatNumber(packages)} bal. · ${formatNumber(value)} ${unit}`
@@ -4618,31 +4665,32 @@
             ${containers.map((container) => {
               const suggested = getCoffeeSuggestedPackages(container)
               const packages = getCoffeeActualPackages(stop.id, container)
-              const packageQty = Number(container.refill_package_quantity || 0)
+              const packageQty = getCoffeeRefillPackageQuantity(container)
               const current = Number(container.current_quantity || 0)
               const added = getCoffeeAddedQuantity(stop.id, container)
               const after = getCoffeeAfterQuantity(stop.id, container)
               const capacity = Number(container.capacity_quantity || 0)
               const picked = suggested <= 0 || detail.draft?.containers?.[String(container.id)]?.picked
               const vehiclePackages = detail.vehiclePackages?.[String(container.product_id)] ?? null
-              const vehicleShortage = vehiclePackages != null && packages > Number(vehiclePackages)
+              const suggestionLimited = packages < suggested && !picked
               return `
                 <article class="coffee-visit-row ${picked ? 'ready' : ''}">
                   ${renderCoffeeTube(current, added, capacity)}
                   <div>
                     <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
                     <div class="meta">
-                      <span>${packages > 0 ? `${packages} bal. x ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')} · vezmu ${formatNumber(packages * packageQty)} ${escapeHtml(container.unit || 'g')}` : 'automaticky neberu · podle PC není celé balení potřeba'}</span>
-                      <span>${picked && packages > 0 ? 'potvrzeno · z auta odečteno' : ''}${vehiclePackages != null ? ` · v autě ${formatNumber(vehiclePackages)} bal.` : ''}</span>
+                      <span>${packages > 0 ? `${escapeHtml(getCoffeePackageCountLabel(packages, container))} · po ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')} · vezmu ${formatNumber(packages * packageQty)} ${escapeHtml(container.unit || 'g')}` : 'nic neberu'}</span>
+                      <span>${picked && packages > 0 ? 'potvrzeno · z auta odečteno' : ''}${vehiclePackages != null ? ` · v autě ${escapeHtml(getCoffeePackageCountLabel(vehiclePackages, container))}` : ''}</span>
                     </div>
-                    ${vehicleShortage ? `<div class="muted-text">Pozor: evidence auta nestačí. Po potvrzení půjde zásoba o ${escapeHtml(formatNumber(packages - Number(vehiclePackages)))} bal. do mínusu.</div>` : ''}
+                    ${suggestionLimited ? `<div class="muted-text">PC návrh je ${escapeHtml(getCoffeePackageCountLabel(suggested, container))}, ale z auta lze bezpečně vzít nejvýše ${escapeHtml(getCoffeePackageCountLabel(packages, container))}. Zásoba do mínusu nepůjde.</div>` : ''}
                     <div class="coffee-visit-actions">
                       <span class="inline-stepper">
                         <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">-</button>
-                        <span>${packages} bal.</span>
+                        <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
                         <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">+</button>
                       </span>
                       <button class="${picked ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="pick-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${packages > 0 ? picked ? 'Vzato k automatu' : 'Beru k automatu' : 'Automaticky neberu'}</button>
+                      ${suggested > 0 && packages > 0 ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nic neberu</button>` : ''}
                     </div>
                   </div>
                 </article>
@@ -4713,7 +4761,7 @@
           <div class="coffee-visit-grid">
             ${containers.map((container) => {
               const packages = getCoffeeActualPackages(stop.id, container)
-              const packageQty = Number(container.refill_package_quantity || 0)
+              const packageQty = getCoffeeRefillPackageQuantity(container)
               const current = Number(container.current_quantity || 0)
               const added = getCoffeeAddedQuantity(stop.id, container)
               const after = getCoffeeAfterQuantity(stop.id, container)
@@ -4730,22 +4778,25 @@
                     <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
                     <div class="meta">
                       <span>${manualCounterMode ? `evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}` : `stav z PC ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</span>
-                      <span>${manualCounterMode ? `po doplnění ${formatNumber(after)}/${formatNumber(capacity)} · ${packages} bal.` : `po PC návrhu ${formatNumber(after)}/${formatNumber(capacity)} · hladina ${currentPct}% -> ${afterPct}%`}</span>
+                      <span>${manualCounterMode ? `po doplnění ${formatNumber(after)}/${formatNumber(capacity)} · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : `po připraveném množství ${formatNumber(after)}/${formatNumber(capacity)} · hladina ${currentPct}% -> ${afterPct}%`}</span>
                     </div>
                     ${stockMismatch ? '<div class="muted-text">Skladový pohyb nesedí s uloženým doplněním. Potvrzením se automaticky dorovná.</div>' : ''}
                     ${readOnly ? `
-                      <div class="meta"><span>${packages > 0 ? `Doplněno ${packages} bal.` : 'Nedoplňováno'}</span></div>
+                      <div class="meta"><span>${packages > 0 ? `Doplněno ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Nedoplňováno'}</span></div>
                     ` : `
                       <div class="coffee-visit-actions">
                         ${manualCounterMode ? `
                           <span class="inline-stepper">
                             <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>-</button>
-                            <span>${packages} bal.</span>
+                        <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
                             <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>+</button>
                           </span>
-                          <button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}"${accepted ? ' disabled' : ''}>${accepted ? packages > 0 ? `Uloženo: ${packages} bal.` : 'Bez doplnění' : packages > 0 ? `Uložit ${packages} bal.` : 'Nic nedoplňuji'}</button>
+                          <button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}"${accepted ? ' disabled' : ''}>${accepted ? packages > 0 ? `Uloženo: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Bez doplnění' : packages > 0 ? `Uložit ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Nic nedoplňuji'}</button>
                         ` : `
-                          <button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${packages > 0 ? accepted ? `Potvrzeno podle PC: ${packages} bal.` : `Potvrdit PC návrh: ${packages} bal.` : 'Podle PC nedoplňovat'}</button>
+                      ${accepted && packages <= 0
+                        ? '<div class="meta"><span>Nic nebylo vzato · není co potvrzovat</span></div>'
+                        : `<button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${accepted ? 'disabled' : ''}>${accepted ? `Potvrzeno: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : `Potvrdit vložení: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}`}</button>`}
+                      ${packages > 0 && !accepted ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nevložil jsem nic</button>` : ''}
                           <button class="secondary-btn" type="button" data-coffee-action="adjust-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nesedí / upravit</button>
                         `}
                       </div>
@@ -6416,7 +6467,7 @@
           const existing = existingItems.find((item) => String(item.coffee_container_id || '') === String(container.id))
           const suggestedPackages = manualCounterMode ? 0 : getCoffeeSuggestedPackages(container)
           const existingPackages = existing?.actual_add_quantity != null
-            ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, Number(container.refill_package_quantity || 1)))
+            ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, getCoffeeRefillPackageQuantity(container)))
             : suggestedPackages
           const expectedMovedQuantity = getCoffeeVehicleStockQuantity(container, existingPackages)
           const movedQuantity = getCoffeeNetMovedQuantity(stockMovements, visitId, container)
@@ -6475,6 +6526,18 @@
             }
           } catch (error) {
             console.warn('Vehicle coffee balance lookup failed:', error)
+          }
+        }
+
+        for (const container of containers) {
+          const draft = draftContainers[String(container.id)]
+          const availablePackages = vehiclePackages[String(container.product_id)]
+          if (!draft || availablePackages == null || draft.picked || draft.accepted) continue
+          const limitedPackages = Math.max(0, Math.min(Number(draft.packages || 0), Number(availablePackages || 0)))
+          draft.packages = limitedPackages
+          if (limitedPackages <= 0) {
+            draft.picked = true
+            draft.accepted = true
           }
         }
 
@@ -7098,7 +7161,7 @@
         actual_before_quantity: payload.actual_before_quantity ?? current,
         suggested_add_quantity: detail.manualCounterMode
           ? 0
-          : Math.max(0, getCoffeeSuggestedPackages(container) * Number(container.refill_package_quantity || 0)),
+          : Math.max(0, getCoffeeSuggestedPackages(container) * getCoffeeRefillPackageQuantity(container)),
         actual_add_quantity: addedQty,
         final_quantity: payload.final_quantity ?? finalQty,
         capacity_quantity: Number(container.capacity_quantity || 0) || null,
@@ -7208,7 +7271,11 @@
     async function syncCoffeePackagesWithVehicle(stopId, container, packages = getCoffeeActualPackages(stopId, container)) {
       const detail = getCoffeeDetail(stopId)
       if (!detail?.visitId || !container?.id || !container?.product_id) throw new Error('Návštěva nemá úplná skladová data.')
-      const desiredPackages = Math.min(Math.max(0, Number(packages || 0)), getCoffeeMaxPackages(stopId, container))
+      const requestedPackages = Math.max(0, Number(packages || 0))
+      const desiredPackages = Math.min(requestedPackages, getCoffeeSelectableMaxPackages(stopId, container))
+      if (desiredPackages + 0.0001 < requestedPackages) {
+        throw new Error(`Z vozidla lze pro ${container.product_name || container.container_code || 'zásobník'} vzít nejvýše ${getCoffeePackageCountLabel(desiredPackages, container)}. Záporný stav není povolen.`)
+      }
       const desiredQuantity = getCoffeeVehicleStockQuantity(container, desiredPackages)
       const movedQuantity = await loadCoffeeNetMovedQuantity(detail, container)
       const difference = Number((desiredQuantity - movedQuantity).toFixed(3))
@@ -7235,9 +7302,15 @@
         movementType: movingToMachine ? 'fill_machine' : 'return',
         referenceId: `route_visit_${detail.visitId}_container_${container.id}_sync_${movingToMachine ? 'in' : 'back'}_${Date.now()}`,
         note: `Automatické dorovnání návštěvy · ${container.container_code || ''} · cílově ${desiredPackages} bal.`,
-        allowNegative: movingToMachine
+        allowNegative: false
       })
       await applyStockMovementsAtomically(movements)
+      const packageBaseQuantity = getCoffeePackageBaseQuantity(container)
+      const movedPackageDifference = packageBaseQuantity > 0 ? quantity / packageBaseQuantity : 0
+      const vehiclePackageKey = String(container.product_id)
+      if (detail.vehiclePackages?.[vehiclePackageKey] != null) {
+        detail.vehiclePackages[vehiclePackageKey] = Math.max(0, Number(detail.vehiclePackages[vehiclePackageKey] || 0) + (movingToMachine ? -movedPackageDifference : movedPackageDifference))
+      }
       detail.draft.containers[String(container.id)] = {
         ...(detail.draft.containers[String(container.id)] || {}),
         movedPackages: desiredPackages,
@@ -8107,7 +8180,7 @@
       if (action === 'step-container' && container) {
         const current = getCoffeeActualPackages(stopId, container)
         const next = Math.min(
-          getCoffeeMaxPackages(stopId, container),
+          getCoffeeSelectableMaxPackages(stopId, container),
           Math.max(0, current + Number(target.dataset.delta || 0))
         )
         detail.draft.containers[String(container.id)] = {
@@ -8116,6 +8189,29 @@
           picked: next <= 0,
           accepted: next <= 0
         }
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'skip-container' && container) {
+        await syncCoffeePackagesWithVehicle(stopId, container, 0)
+        detail.draft.containers[String(container.id)] = {
+          ...(detail.draft.containers[String(container.id)] || {}),
+          packages: 0,
+          picked: true,
+          accepted: true,
+          movedPackages: 0,
+          stockMismatch: false
+        }
+        if (detail.machineOpen) {
+          await saveCoffeeContainerVisitItem(stopId, container, {
+            actual_before_quantity: Number(container.current_quantity || 0),
+            final_quantity: Number(container.current_quantity || 0),
+            operator_note: 'Operátor potvrdil, že tuto surovinu nevzal nebo nevložil.'
+          })
+        }
+        persistMobileSnapshot()
+        showMessage(detail.machineOpen ? 'Položka je potvrzená bez doplnění a případně vrácená do auta.' : 'Položka je označená: nic neberu.', 'success', { scroll: false })
         renderRouteMachineScreen()
         return
       }
@@ -8221,7 +8317,7 @@
         const packagesText = window.prompt('Kolik celých balení reálně doplňuješ mimo PC návrh?', String(getCoffeeActualPackages(stopId, container)))
         if (packagesText === null) return
         const requestedPackages = Math.max(0, Math.round(Number(String(packagesText).replace(',', '.')) || 0))
-        const packages = Math.min(requestedPackages, getCoffeeMaxPackages(stopId, container))
+        const packages = Math.min(requestedPackages, getCoffeeSelectableMaxPackages(stopId, container))
         if (packages < requestedPackages) {
           showMessage(`Do zásobníku se vejde nejvýše ${packages} celých balení. Hodnota byla automaticky omezena.`, 'error', { scroll: false })
         }
