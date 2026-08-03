@@ -1,3 +1,122 @@
+create or replace function public.sync_inventory_audit_expiry_counts(p_audit_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_item record;
+  v_existing_total numeric;
+  v_existing_count integer;
+  v_balance_total numeric;
+  v_balance_count integer;
+  v_synced_items integer := 0;
+  v_unresolved_items integer := 0;
+begin
+  if not exists (select 1 from public.inventory_audits where id = p_audit_id) then
+    raise exception 'Inventura % neexistuje.', p_audit_id;
+  end if;
+
+  for v_item in
+    select i.*, p.expiry_tracking_mode, p.requires_batch_tracking
+    from public.inventory_audit_items i
+    join public.products p on p.id = i.product_id
+    where i.audit_id = p_audit_id
+    order by i.id
+    for update of i
+  loop
+    if not (v_item.requires_batch_tracking or v_item.expiry_tracking_mode <> 'none') then
+      continue;
+    end if;
+
+    select coalesce(sum(e.quantity_base_units), 0), count(*)
+      into v_existing_total, v_existing_count
+    from public.inventory_audit_expiry_counts e
+    where e.audit_item_id = v_item.id;
+
+    if coalesce(v_item.counted_quantity, 0) <= 0 then
+      if v_existing_count > 0 then
+        delete from public.inventory_audit_expiry_counts where audit_item_id = v_item.id;
+        v_synced_items := v_synced_items + 1;
+      end if;
+      continue;
+    end if;
+
+    if abs(v_existing_total - v_item.counted_quantity) <= 0.001 then
+      continue;
+    end if;
+
+    -- Jediná už evidovaná expirace je jednoznačná i po opravě fyzického počtu.
+    if v_existing_count = 1 then
+      update public.inventory_audit_expiry_counts
+      set package_id = null,
+          package_count = 0,
+          loose_quantity = v_item.counted_quantity,
+          quantity_base_units = v_item.counted_quantity,
+          updated_at = now()
+      where audit_item_id = v_item.id;
+      v_synced_items := v_synced_items + 1;
+      continue;
+    end if;
+
+    select coalesce(sum(source.quantity_on_hand), 0), count(*)
+      into v_balance_total, v_balance_count
+    from (
+      select b.batch_id, sum(b.quantity_on_hand) as quantity_on_hand
+      from public.stock_location_balances b
+      where b.stock_location_id = v_item.stock_location_id
+        and b.product_id = v_item.product_id
+        and b.quantity_on_hand > 0.0001
+      group by b.batch_id
+    ) source;
+
+    -- Přesný součet šarží nebo jediná kladná šarže dovolují bezpečné automatické převzetí expirace.
+    if v_balance_count > 0
+       and (abs(v_balance_total - v_item.counted_quantity) <= 0.001 or v_balance_count = 1) then
+      delete from public.inventory_audit_expiry_counts where audit_item_id = v_item.id;
+
+      insert into public.inventory_audit_expiry_counts (
+        audit_item_id, product_id, package_id, package_count, loose_quantity,
+        quantity_base_units, expiry_date, expiry_unknown, lot_code
+      )
+      select
+        v_item.id,
+        v_item.product_id,
+        null,
+        0,
+        case when v_balance_count = 1 then v_item.counted_quantity else source.quantity_on_hand end,
+        case when v_balance_count = 1 then v_item.counted_quantity else source.quantity_on_hand end,
+        coalesce(batch.use_by_date, batch.best_before_date),
+        coalesce(batch.use_by_date, batch.best_before_date) is null,
+        batch.lot_code
+      from (
+        select b.batch_id, sum(b.quantity_on_hand) as quantity_on_hand
+        from public.stock_location_balances b
+        where b.stock_location_id = v_item.stock_location_id
+          and b.product_id = v_item.product_id
+          and b.quantity_on_hand > 0.0001
+        group by b.batch_id
+      ) source
+      left join public.inventory_batches batch on batch.id = source.batch_id
+      order by coalesce(batch.use_by_date, batch.best_before_date) nulls last, source.batch_id;
+
+      v_synced_items := v_synced_items + 1;
+    else
+      v_unresolved_items := v_unresolved_items + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'audit_id', p_audit_id,
+    'synced_items', v_synced_items,
+    'unresolved_items', v_unresolved_items
+  );
+end;
+$$;
+
+revoke all on function public.sync_inventory_audit_expiry_counts(bigint) from public;
+grant execute on function public.sync_inventory_audit_expiry_counts(bigint) to authenticated;
+
 create or replace function public.close_inventory_audit_atomic(p_audit_id bigint)
 returns jsonb
 language plpgsql
@@ -28,6 +147,8 @@ begin
   if v_audit.status <> 'evaluated' then
     raise exception 'Inventura % musí být před uzavřením vyhodnocená (aktuálně %).', p_audit_id, v_audit.status;
   end if;
+
+  perform public.sync_inventory_audit_expiry_counts(p_audit_id);
 
   for v_item in
     select i.*, p.expiry_tracking_mode, p.requires_batch_tracking
@@ -89,10 +210,11 @@ begin
         from public.inventory_batches b
         where b.product_id = v_item.product_id
           and b.lot_code is not distinct from v_expiry.lot_code
-          and b.best_before_date is not distinct from
-            (case when not v_expiry.expiry_unknown and v_item.expiry_tracking_mode <> 'use_by' then v_expiry.expiry_date end)
-          and b.use_by_date is not distinct from
-            (case when not v_expiry.expiry_unknown and v_item.expiry_tracking_mode = 'use_by' then v_expiry.expiry_date end)
+          -- Starší importy a inventura #24 mohly stejné datum uložit do druhého
+          -- expiračního sloupce. Pro opětovné použití šarže je rozhodující
+          -- výsledné datum, ne historická volba sloupce.
+          and coalesce(b.use_by_date, b.best_before_date) is not distinct from
+            (case when not v_expiry.expiry_unknown then v_expiry.expiry_date end)
         order by b.id
         limit 1;
 

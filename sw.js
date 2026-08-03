@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v63-product-stock-sheet';
+const CACHE_NAME = 'olvend-v64-inventory-expiry-sync';
 const APP_SHELL = [
   './',
   './index.html',
