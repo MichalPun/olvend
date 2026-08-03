@@ -1695,6 +1695,12 @@
       color: #725300;
     }
 
+    .food-machine-card .food-expiry-field input.expiry-required-error {
+      border-color: #dc2626;
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.16);
+      background: #fff;
+    }
+
     .food-machine-card .coffee-visit-actions {
       grid-template-columns: 1fr;
     }
@@ -1919,7 +1925,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.02.1</p>
+        <p class="eyebrow">Mobilní režim 1.7 · build 2026.08.03.1</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4938,6 +4944,14 @@
       const acceptedCount = slots.filter((slot) => getFoodSlotDraft(stop.id, slot).accepted).length
       const missingCheckCount = foodCheckRows.filter(([key]) => checks[key] !== 'done').length
       const cashSaved = Boolean(detail.cash?.operator_collected_at)
+      const missingFillExpirySlots = slots.filter((slot) => {
+        const draft = getFoodSlotDraft(stop.id, slot)
+        if (draft.accepted) return false
+        return (draft.fillItems || []).some((fill) => {
+          const product = state.products.find((item) => String(item.id) === String(fill.productId))
+          return Number(fill.quantity || 0) > 0 && isFoodExpiryTracked(product) && !normalizeFoodExpiryDate(fill.expiryDate)
+        })
+      })
       const unchangedPositionCount = slots.filter((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
         return !draft.accepted && draft.pickedQuantity <= 0 && !getFoodPlanogramChange(slot)?.fullSwap
@@ -4948,7 +4962,9 @@
       }).length
       const remainingPositionCount = unchangedPositionCount + changedPositionCount
       const finishReady = remainingPositionCount === 0 && missingCheckCount === 0 && cashSaved
-      const finishHint = changedPositionCount > 0
+      const finishHint = missingFillExpirySlots.length > 0
+        ? `Doplň datum expirace u pozic ${missingFillExpirySlots.map((slot) => slot.slot_code).join(', ')}.`
+        : changedPositionCount > 0
         ? `Ještě potvrdit ${changedPositionCount} doplňovaných pozic.`
         : unchangedPositionCount > 0
           ? `${unchangedPositionCount} nedoplňovaných pozic potvrdíš najednou.`
@@ -5050,6 +5066,10 @@
             <strong>U otevřeného automatu · potvrzeno ${escapeHtml(`${acceptedCount}/${slots.length}`)}</strong>
             <span>Nejdřív oprav skutečný stav. Pokud chybí zboží mimo picklist, vezmi ho dodatečně z auta přímo u pozice. Nevloženo se automaticky vrátí do auta.</span>
           </div>
+          ${missingFillExpirySlots.length ? `<div class="food-expired-warning">
+            <strong>Chybí datum expirace doplňovaného zboží</strong>
+            <span>Pozice ${escapeHtml(missingFillExpirySlots.map((slot) => slot.slot_code).join(', '))}: datum můžeš doplnit z obalu. Pokud ho teď nezadáš, pozice se přesto uloží a systém ji označí upozorněním „expirace nezadaná“.</span>
+          </div>` : ''}
           ${readOnly ? '' : `<button class="secondary-btn" type="button" data-food-action="back-picklist" data-stop-id="${escapeHtml(stop.id)}">Zpět na přípravu</button>`}
           ${readOnly ? '' : `<button class="secondary-btn" type="button" data-food-action="confirm-unchanged" data-stop-id="${escapeHtml(stop.id)}">Potvrdit ostatní pozice beze změny</button>`}
           <div class="coffee-visit-grid">
@@ -6986,11 +7006,12 @@
       if (draft.assortmentMismatch && !String(draft.note || '').trim()) {
         throw new Error(`Pozice ${slot.slot_code}: napiš, jaký jiný produkt je v pozici.`)
       }
+      const missingFillExpiryProducts = []
       for (const fill of fillItems) {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
         const needsExpiry = isFoodExpiryTracked(product)
         const normalizedExpiry = normalizeFoodExpiryDate(fill.expiryDate)
-        if (needsExpiry && !normalizedExpiry) throw new Error(`Pozice ${slot.slot_code}: zapiš expiraci produktu ${product?.name || ''} ve formátu DD.MM.RRRR.`)
+        if (needsExpiry && !normalizedExpiry) missingFillExpiryProducts.push(product?.name || product?.sku || 'produkt')
         fill.expiryDate = normalizedExpiry
       }
       const nextExpiryDates = [
@@ -7087,6 +7108,7 @@
           const product = state.products.find((item) => String(item.id) === String(fill.productId))
           return `Doplnění: ${fill.quantity} ks · SKU ${product?.sku || ''}${fill.expiryDate ? ` · expirace ${fill.expiryDate}` : ''}`
         }),
+        ...missingFillExpiryProducts.map((productName) => `Upozornění: expirace nezadaná · ${productName}`),
         draft.assortmentMismatch ? 'Jiný sortiment v pozici – nahlášeno ke schválení' : null,
         draft.note || null
       ].filter(Boolean).join(' · ') || null
@@ -7217,6 +7239,9 @@
         accepted: true
       })
       renderRouteMachineScreen()
+      if (missingFillExpiryProducts.length) {
+        showMessage(`Pozice ${slot.slot_code} je uložená. Upozornění: expirace doplňovaného zboží není zadaná.`, 'success', { scroll: false })
+      }
     }
 
     async function confirmUnchangedFoodSlots(stopId) {

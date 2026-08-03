@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v52-full-assortment-swap';
+const CACHE_NAME = 'olvend-v53-expiry-guard';
 const APP_SHELL = [
   './',
   './index.html',
