@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v54-picklist-blockers';
+const CACHE_NAME = 'olvend-v55-machine-first-position';
 const APP_SHELL = [
   './',
   './index.html',
