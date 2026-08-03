@@ -831,7 +831,13 @@ async function applyPlanogramDepletion(
     cashAmount: Math.max(0, paymentDelta.cashAmount - allocatedCashAmount),
     cashlessAmount: Math.max(0, paymentDelta.cashlessAmount - allocatedCashlessAmount),
   });
-  if (reconciledPayments.length) applied.push({ reconciled_pending_payments: reconciledPayments });
+  if (reconciledPayments.length) {
+    // A late payment turns a possible stock loss into a confirmed sale. Apply only
+    // the newly confirmed inventory delta; the RPCs are incremental and idempotent.
+    await applyAtomicCoffeeRecipeDepletion(adminClient, reconciledPayments);
+    await applyTelemetryStockDepletion(adminClient, reconciledPayments);
+    applied.push({ reconciled_pending_payments: reconciledPayments });
+  }
 
   return applied;
 }
