@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v62-coffee-actual-quantity';
+const CACHE_NAME = 'olvend-v63-product-stock-sheet';
 const APP_SHELL = [
   './',
   './index.html',

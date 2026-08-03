@@ -314,6 +314,37 @@
     .machine-stock-title { align-items:flex-start; }
     .machine-stock-title .badge { white-space:nowrap; }
     .machine-stock-table .detail-table { min-width:980px; }
+    .product-stock-sheet { gap:8px; }
+    .product-stock-sheet .detail-spreadsheet-title { padding:10px 12px; border-radius:5px; }
+    .product-stock-sheet .detail-spreadsheet-title h4 { font-size:21px; }
+    .product-stock-sheet .detail-spreadsheet-title p { margin-top:3px; font-size:12px; }
+    .product-stock-sheet .product-detail-workspace { grid-template-columns:1fr; gap:8px; }
+    .product-stock-sheet .product-detail-card,
+    .product-stock-sheet .product-detail-actions-panel,
+    .product-stock-sheet .detail-sheet-section { border-radius:4px; }
+    .product-stock-sheet .product-detail-card-head { padding:8px 10px; }
+    .product-stock-sheet .product-detail-card-head h5 { font-size:14px; }
+    .product-stock-sheet .product-detail-summary-cell { padding:9px 11px; }
+    .product-stock-sheet .product-detail-summary-value { margin-top:4px; font-size:21px; }
+    .product-stock-sheet .product-detail-summary-note { margin-top:3px; font-size:11px; }
+    .product-stock-sheet .product-detail-field { min-height:58px; padding:7px 9px; }
+    .product-stock-sheet .product-detail-field-value { margin-top:4px; font-size:14px; }
+    .product-stock-sheet .product-detail-field-note { margin-top:2px; font-size:11px; }
+    .product-stock-sheet .product-detail-actions-panel h5 { display:none; }
+    .product-stock-sheet .product-detail-action-list { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .product-stock-sheet .product-detail-action-list .btn { min-height:38px; padding:8px 10px; border-right:1px solid rgba(255,255,255,0.08); border-bottom:0; font-size:12px; }
+    .product-stock-sheet .product-detail-side-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); border-top:1px solid rgba(255,255,255,0.08); }
+    .product-stock-sheet .product-detail-side-metric { padding:7px 10px; border-right:1px solid rgba(255,255,255,0.08); border-bottom:0; }
+    .product-stock-sheet .product-detail-side-metric strong { margin-top:3px; font-size:15px; }
+    .product-stock-sheet .detail-table th,
+    .product-stock-sheet .detail-table td { padding:6px 8px; font-size:12px; }
+    .product-stock-sheet .detail-table td strong { font-size:13px; }
+    .product-location-batches { display:grid; gap:3px; }
+    .product-location-batch { display:grid; grid-template-columns:minmax(70px,auto) minmax(150px,1fr); gap:8px; align-items:baseline; }
+    .product-location-batch strong { white-space:nowrap; }
+    .product-sales-summary { display:flex; flex-wrap:wrap; gap:14px; margin:0; padding:7px 10px; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; }
+    .product-sales-summary span { color:var(--muted); }
+    .product-sales-summary strong { color:var(--text); }
     @media (max-width:1100px) {
       .product-detail-workspace { grid-template-columns:1fr; }
       .product-detail-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -335,6 +366,9 @@
       .product-detail-action-list,
       .product-detail-side-metrics { grid-template-columns:1fr; }
       .product-detail-side-metric { border-right:none; border-bottom:1px solid rgba(255,255,255,0.08); }
+      .product-stock-sheet .product-detail-action-list,
+      .product-stock-sheet .product-detail-side-metrics { grid-template-columns:1fr; }
+      .product-location-batch { grid-template-columns:1fr; gap:1px; }
     }
     .detail-list { display:grid; gap:10px; }
     .detail-list-row { display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.06); }
@@ -3952,6 +3986,32 @@
           return sortBalancesByExpiry(a.balance, b.balance)
         })
     }
+    function getProductLocationSummaryRows(productId) {
+      const grouped = new Map()
+      getProductLocationBreakdown(productId).forEach((row) => {
+        const key = String(row.location.id)
+        let summary = grouped.get(key)
+        if (!summary) {
+          summary = { location: row.location, profile: row.profile, quantity: 0, balances: [], updatedAt: '' }
+          grouped.set(key, summary)
+        }
+        summary.quantity = Number((summary.quantity + Number(row.balance.quantity_on_hand || 0)).toFixed(3))
+        summary.balances.push(row)
+        if (String(row.balance.updated_at || '') > summary.updatedAt) summary.updatedAt = row.balance.updated_at || ''
+      })
+      return [...grouped.values()].sort((a, b) => {
+        const typeDiff = String(a.location.location_type || '').localeCompare(String(b.location.location_type || ''), 'cs')
+        if (typeDiff) return typeDiff
+        return normalizeText(a.location.name).localeCompare(normalizeText(b.location.name), 'cs')
+      })
+    }
+    function renderProductLocationBatches(summary, product) {
+      const rows = [...summary.balances].sort((a, b) => sortBalancesByExpiry(a.balance, b.balance))
+      return `<div class="product-location-batches">${rows.map((row) => {
+        const quantity = formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary
+        return `<div class="product-location-batch"><strong>${escapeHtml(quantity)}</strong><span>${escapeHtml(formatBatchLabel(row.batch))}</span></div>`
+      }).join('')}</div>`
+    }
     function renderDetailTable(columns, rows, emptyText) {
       if (!rows.length) return `<div class="detail-chart-empty">${escapeHtml(emptyText)}</div>`
       return `
@@ -4039,7 +4099,7 @@
       ])
       if (coffeeResult.error) throw coffeeResult.error
       if (slotResult.error) throw slotResult.error
-      const rows = [
+      const matchedRows = [
         ...(coffeeResult.data || [])
           .filter((row) => machineStockProductMatches(row, product))
           .map((row) => ({
@@ -4069,6 +4129,7 @@
             updated_at: row.updated_at
           }))
       ]
+      const rows = [...new Map(matchedRows.map((row) => [row.id, row])).values()]
       const machineIds = [...new Set(rows.map((row) => row.machine_id).filter(Boolean).map(String))]
       if (!machineIds.length) return rows
       const [machinesResult, telemetryResult] = await Promise.all([
@@ -4084,7 +4145,12 @@
       if (machinesResult.error) throw machinesResult.error
       if (telemetryResult.error) throw telemetryResult.error
       const machineMap = new Map((machinesResult.data || []).map((machine) => [String(machine.id), machine]))
-      const telemetryMap = new Map((telemetryResult.data || []).map((state) => [String(state.machine_id), state]))
+      const telemetryMap = new Map()
+      ;(telemetryResult.data || []).forEach((state) => {
+        const key = String(state.machine_id)
+        const previous = telemetryMap.get(key)
+        if (!previous || String(state.last_seen_at || '') > String(previous.last_seen_at || '')) telemetryMap.set(key, state)
+      })
       return rows
         .map((row) => ({
           ...row,
@@ -4119,8 +4185,8 @@
     }
     function renderProductMachineStockInline(product, rows) {
       return `
-        <h5>Online stav v automatech</h5>
-        <div class="helper-line">Součet online zásobníků a slotů: <strong>${escapeHtml(renderMachineStockTotals(rows))}</strong></div>
+        <h5>Telemetricky měřený stav v automatech</h5>
+        <div class="helper-line product-sales-summary"><span>Měřené pozice <strong>${escapeHtml(String(rows.length))}</strong></span><span>Součet čítačů <strong>${escapeHtml(renderMachineStockTotals(rows))}</strong></span><span>Zdroj <strong>online zásobníky a sloty</strong></span></div>
         ${renderProductMachineStockTable(rows)}
       `
     }
@@ -4128,7 +4194,7 @@
       const target = detailModalContent.querySelector('[data-product-machine-stock-inline]')
       const product = productsV13.find((item) => String(item.id) === String(productId))
       if (!target || !product) return
-      target.innerHTML = '<h5>Online stav v automatech</h5><div class="detail-chart-empty">Načítám online stavy automatů...</div>'
+      target.innerHTML = '<h5>Telemetricky měřený stav v automatech</h5><div class="detail-chart-empty">Načítám online stavy automatů...</div>'
       try {
         const rows = await loadProductMachineStockRows(productId)
         if (!target.isConnected || String(currentDetailContext?.productId || '') !== String(productId)) return
@@ -4136,7 +4202,7 @@
       } catch (error) {
         console.error(error)
         if (!target.isConnected || String(currentDetailContext?.productId || '') !== String(productId)) return
-        target.innerHTML = `<h5>Online stav v automatech</h5><div class="detail-chart-empty">Online stav v automatech se nepodařilo načíst: ${escapeHtml(error.message || 'neznámá chyba')}</div>`
+        target.innerHTML = `<h5>Telemetricky měřený stav v automatech</h5><div class="detail-chart-empty">Online stav v automatech se nepodařilo načíst: ${escapeHtml(error.message || 'neznámá chyba')}</div>`
       }
     }
     function renderProductMachineStockDetail(product, rows) {
@@ -11001,22 +11067,43 @@
         `
       }).join('')}</div>`
     }
+    function getPragueIsoDate(value = new Date()) {
+      const date = value instanceof Date ? value : new Date(value)
+      if (Number.isNaN(date.getTime())) return ''
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit'
+      }).formatToParts(date)
+      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+      return `${values.year}-${values.month}-${values.day}`
+    }
+    function getStockMovementBusinessDate(movement) {
+      const noteDate = String(movement?.note || '').match(/(?:^|\s)(20\d{2}-\d{2}-\d{2})(?=\s|·|$)/)?.[1]
+      return noteDate || getPragueIsoDate(movement?.created_at || '')
+    }
+    function shiftIsoDate(dateValue, days) {
+      const date = new Date(`${dateValue}T12:00:00Z`)
+      date.setUTCDate(date.getUTCDate() + days)
+      return date.toISOString().slice(0, 10)
+    }
     function renderSalesTrendChart(movements, unit) {
       if (!movements.length) {
         return `<div class="detail-chart-empty">Zatím tu nemáme žádné prodejní pohyby. Jakmile začne proudit telemetrie nebo DEX, graf se objeví tady.</div>`
       }
       const grouped = new Map()
       movements.forEach((movement) => {
-        const dateKey = new Date(movement.created_at).toLocaleDateString('en-CA')
+        const dateKey = getStockMovementBusinessDate(movement)
+        if (!dateKey) return
         grouped.set(dateKey, (grouped.get(dateKey) || 0) + Number(movement.quantity_base_units || 0))
       })
-      const rows = [...grouped.entries()]
-        .sort((a, b) => a[0].localeCompare(b[0], 'cs'))
-        .slice(-14)
-        .map(([date, value]) => ({
-          label: new Date(`${date}T00:00:00`).toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' }),
-          value: Number(value || 0)
-        }))
+      const today = getPragueIsoDate()
+      const rows = Array.from({ length: 14 }, (_, index) => {
+        const date = shiftIsoDate(today, index - 13)
+        return {
+          date,
+          label: new Date(`${date}T12:00:00`).toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' }),
+          value: Number(grouped.get(date) || 0)
+        }
+      })
       const width = 820
       const height = 220
       const leftPad = 36
@@ -11037,7 +11124,7 @@
         const y = topPad + chartHeight - chartHeight * ratio
         const value = maxValue * ratio
         return `
-          <line x1="${leftPad}" y1="${y}" x2="${width - rightPad}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1"></line>
+          <line x1="${leftPad}" y1="${y}" x2="${width - rightPad}" y2="${y}" stroke="rgba(107,114,128,0.18)" stroke-width="1"></line>
           <text x="0" y="${y + 4}" fill="#9ea3ae" font-size="11">${escapeHtml(value.toFixed(0))} ${escapeHtml(unit || 'ks')}</text>
         `
       }).join('')
@@ -11045,7 +11132,7 @@
         <text x="${point.x}" y="${height - 14}" text-anchor="middle" fill="#9ea3ae" font-size="11">${escapeHtml(point.label)}</text>
       `).join('')
       const dots = points.map((point) => `
-        <circle cx="${point.x}" cy="${point.y}" r="4" fill="#ffffff"></circle>
+        <circle cx="${point.x}" cy="${point.y}" r="4" fill="#ffffff"><title>${escapeHtml(`${point.label}: ${formatQuantityValue(point.value, unit || 'ks')}`)}</title></circle>
         <circle cx="${point.x}" cy="${point.y}" r="2" fill="#ff646e"></circle>
       `).join('')
       return `
@@ -11059,6 +11146,53 @@
           </svg>
         </div>
       `
+    }
+    async function loadProductSalesMovements(productId) {
+      const { data, error } = await supabase
+        .from('stock_movements_v13')
+        .select('id, product_id, movement_type, quantity_base_units, reference_type, reference_id, note, created_at')
+        .eq('product_id', Number(productId))
+        .eq('movement_type', 'sale')
+        .order('created_at', { ascending: false })
+        .limit(5000)
+      if (error) throw error
+      return data || []
+    }
+    function renderProductSalesTrendInline(product, movements) {
+      const today = getPragueIsoDate()
+      const fromDate = shiftIsoDate(today, -13)
+      const currentRows = movements.filter((movement) => {
+        const date = getStockMovementBusinessDate(movement)
+        return date >= fromDate && date <= today
+      })
+      const total = currentRows.reduce((sum, movement) => sum + Number(movement.quantity_base_units || 0), 0)
+      const todayTotal = currentRows
+        .filter((movement) => getStockMovementBusinessDate(movement) === today)
+        .reduce((sum, movement) => sum + Number(movement.quantity_base_units || 0), 0)
+      return `
+        <h5>Vývoj prodeje v čase</h5>
+        <div class="helper-line product-sales-summary">
+          <span>Období <strong>${escapeHtml(new Date(`${fromDate}T12:00:00`).toLocaleDateString('cs-CZ'))}–${escapeHtml(new Date(`${today}T12:00:00`).toLocaleDateString('cs-CZ'))}</strong></span>
+          <span>14 dní <strong>${escapeHtml(formatQuantityValue(total, product.base_unit || 'ks'))}</strong></span>
+          <span>Dnes <strong>${escapeHtml(formatQuantityValue(todayTotal, product.base_unit || 'ks'))}</strong></span>
+          <span>Zdroj <strong>skutečný den prodeje</strong></span>
+        </div>
+        ${renderSalesTrendChart(movements, product.base_unit)}
+      `
+    }
+    async function refreshProductSalesTrendInline(productId) {
+      const target = detailModalContent.querySelector('[data-product-sales-trend-inline]')
+      const product = productsV13.find((item) => String(item.id) === String(productId))
+      if (!target || !product) return
+      try {
+        const movements = await loadProductSalesMovements(productId)
+        if (!target.isConnected || String(currentDetailContext?.productId || '') !== String(productId)) return
+        target.innerHTML = renderProductSalesTrendInline(product, movements)
+      } catch (error) {
+        console.error(error)
+        if (!target.isConnected) return
+        target.innerHTML = `<h5>Vývoj prodeje v čase</h5><div class="detail-chart-empty">Graf se nepodařilo načíst: ${escapeHtml(error.message || 'neznámá chyba')}</div>`
+      }
     }
     function openLegacyItemDetail(item) {
       currentDetailContext = { type: 'legacy', itemId: item.id }
@@ -11115,14 +11249,12 @@
       if (!product) return
       const breakdownRows = getProductLocationBreakdown(productId)
       const locatedRows = breakdownRows
-      const warehouseBatchRows = breakdownRows.filter((row) => row.location?.location_type === 'warehouse')
+      const locationSummaryRows = getProductLocationSummaryRows(productId)
       const totalQuantity = breakdownRows.reduce((sum, row) => sum + Number(row.balance.quantity_on_hand || 0), 0)
       const lowCount = locatedRows.filter((row) => getLocationRisk(row.balance, row.profile) === 'low').length
       const recentMovements = stockMovementsV13
         .filter((movement) => String(movement.product_id) === String(productId))
         .slice(0, 50)
-      const saleMovements = stockMovementsV13
-        .filter((movement) => String(movement.product_id) === String(productId) && movement.movement_type === 'sale')
       const costMeta = getProductCostMeta(product)
       const usesStoragePosition = productTypeUsesStoragePosition(product)
       const storagePosition = usesStoragePosition ? getStoragePosition(product) : ''
@@ -11143,7 +11275,7 @@
       detailEditBtn.style.display = 'none'
       detailEditBtn.textContent = 'Upravit'
       detailModalContent.innerHTML = `
-        <div class="detail-spreadsheet">
+        <div class="detail-spreadsheet product-stock-sheet">
           <section class="detail-spreadsheet-title">
             <div>
               <h4>${escapeHtml(product.name || 'Produkt')}</h4>
@@ -11200,28 +11332,23 @@
             ], packages, 'U této položky není vyplněné balení. Automatická nakládka pak neumí navrhnout celé balení.')}
           </section>
           <section class="detail-sheet-section">
-            <h5>Sklad podle expirací</h5>
+            <h5>Stavy podle míst a šarží</h5>
             ${renderDetailTable([
-              { label: 'Místo', render: (row) => `<strong>${escapeHtml(row.location.name || 'Sklad')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span>` },
-              { label: 'Expirace / šarže', render: (row) => `<strong>${escapeHtml(formatBatchLabel(row.batch))}</strong><span class="subtext">${escapeHtml(row.batch?.received_at ? `Přijato ${new Date(row.batch.received_at).toLocaleDateString('cs-CZ')}` : 'Bez data příjmu')}</span>` },
-              { label: 'Množství', render: (row) => `<strong>${escapeHtml(formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary)}</strong><span class="subtext">${escapeHtml(product.base_unit || 'ks')}</span>` }
-            ], warehouseBatchRows, 'Na skladu teď u této položky není žádná evidovaná šarže ani expirace.')}
-          </section>
-          <section class="detail-sheet-section">
-            <h5>Rozpad podle míst</h5>
-            ${renderDetailTable([
-              { label: 'Místo', render: (row) => `<strong>${escapeHtml(row.location.name || 'Místo')}</strong><span class="subtext">${escapeHtml(getLocationTypeLabel(row.location.location_type))}</span>` },
-              { label: 'Množství', render: (row) => `<strong>${escapeHtml(formatLocationQuantity(product.id, row.balance.quantity_on_hand, product.base_unit || 'ks', row.location.location_type).primary)}</strong><span class="subtext">${escapeHtml(formatBatchLabel(row.batch))}</span>` },
-              { label: 'Minimum / cíl', render: (row) => row.profile ? `<strong>${escapeHtml(formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks'))} / ${escapeHtml(formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks'))}</strong><span class="subtext">Doplňovací profil</span>` : '<span class="subtext">Bez profilu</span>' }
-            ], locatedRows, 'Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.')}
+              { label: 'Typ', render: (row) => `<strong>${escapeHtml(getLocationTypeLabel(row.location.location_type))}</strong>` },
+              { label: 'Místo', render: (row) => `<strong>${escapeHtml(row.location.name || 'Místo')}</strong>` },
+              { label: 'Celkem', render: (row) => `<strong>${escapeHtml(formatLocationQuantity(product.id, row.quantity, product.base_unit || 'ks', row.location.location_type).primary)}</strong>` },
+              { label: 'Rozpis expirací / šarží', render: (row) => renderProductLocationBatches(row, product) },
+              { label: 'Minimum / cíl', render: (row) => row.profile ? `<strong>${escapeHtml(formatQuantityValue(row.profile.min_quantity, product.base_unit || 'ks'))} / ${escapeHtml(formatQuantityValue(row.profile.target_quantity, product.base_unit || 'ks'))}</strong>` : '<span class="subtext">Bez profilu</span>' },
+              { label: 'Aktualizováno', render: (row) => `<strong>${escapeHtml(row.updatedAt ? new Date(row.updatedAt).toLocaleString('cs-CZ') : '—')}</strong>` }
+            ], locationSummaryRows, 'Produkt je už v katalogu, ale zatím nemá žádné naskladnění ani pohyb.')}
           </section>
           <section class="detail-sheet-section" data-product-machine-stock-inline>
-            <h5>Online stav v automatech</h5>
+            <h5>Telemetricky měřený stav v automatech</h5>
             <div class="detail-chart-empty">Načítám online stavy automatů...</div>
           </section>
-          <section class="detail-sheet-section">
+          <section class="detail-sheet-section" data-product-sales-trend-inline>
             <h5>Vývoj prodeje v čase</h5>
-            ${renderSalesTrendChart(saleMovements, product.base_unit)}
+            <div class="detail-chart-empty">Načítám skutečné prodeje produktu...</div>
           </section>
           <section class="detail-sheet-section">
             <h5>Historie pohybů</h5>
@@ -11231,6 +11358,7 @@
       `
       openDetailModal()
       refreshProductMachineStockInline(productId)
+      refreshProductSalesTrendInline(productId)
     }
     async function loadReferences() {
       const [{ data: warehousesData }, { data: machinesData }, { data: vehiclesData }, { data: suppliersData }, { data: purchaseProfilesData }, planogramResult] = await Promise.all([
