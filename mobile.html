@@ -1709,6 +1709,122 @@
       border: 2px solid #252b35;
     }
 
+    .coffee-pick-card,
+    .coffee-calibration-card {
+      position: relative;
+    }
+
+    .coffee-pick-card .coffee-pick-head,
+    .coffee-calibration-card .coffee-pick-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 46px;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .coffee-pick-card .coffee-tube-mobile,
+    .coffee-calibration-card .coffee-tube-mobile {
+      width: 42px;
+      height: 86px;
+      border-color: #b9c1cc;
+      background: #eef1f5;
+    }
+
+    .coffee-pick-card .meta,
+    .coffee-calibration-card .meta,
+    .coffee-pick-card .muted-text,
+    .coffee-calibration-card .muted-text {
+      color: #626875;
+    }
+
+    .coffee-pick-card .inline-stepper,
+    .coffee-calibration-card .inline-stepper {
+      border-color: #a8c9ef;
+      background: #edf5ff;
+      color: #17191f;
+    }
+
+    .coffee-pick-card .inline-stepper button,
+    .coffee-calibration-card .inline-stepper button {
+      color: #1766b0;
+    }
+
+    .coffee-pick-card .coffee-visit-actions,
+    .coffee-calibration-card .coffee-visit-actions {
+      grid-template-columns: 1fr;
+    }
+
+    .coffee-pick-card .primary-btn,
+    .coffee-calibration-card .primary-btn {
+      border: 2px solid #252b35;
+    }
+
+    .coffee-machine-card .coffee-machine-visual-row {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid #dfe3ea;
+      border-radius: 15px;
+      background: #f7f8fa;
+    }
+
+    .coffee-machine-card .coffee-tube-mobile {
+      width: 42px;
+      height: 96px;
+      border-color: #b9c1cc;
+      background: #eef1f5;
+    }
+
+    .coffee-machine-card .coffee-machine-level {
+      display: grid;
+      gap: 5px;
+      color: #626875;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .coffee-machine-card .coffee-machine-level strong {
+      color: #17191f;
+      font-size: 15px;
+    }
+
+    .coffee-machine-card .coffee-machine-step-actions {
+      display: grid;
+      gap: 8px;
+    }
+
+    .coffee-machine-card .coffee-machine-step-actions .primary-btn,
+    .coffee-machine-card .coffee-machine-step-actions .secondary-btn {
+      min-height: 48px;
+      border-radius: 14px;
+    }
+
+    .coffee-machine-card .inline-stepper {
+      border-color: #a8c9ef;
+      background: #edf5ff;
+      color: #17191f;
+    }
+
+    .coffee-machine-card .inline-stepper button {
+      color: #1766b0;
+    }
+
+    .coffee-machine-card .muted-text {
+      color: #707582;
+    }
+
+    .coffee-offline-status {
+      padding: 10px 12px;
+      border: 1px solid #d5a94f;
+      border-radius: 13px;
+      background: #fff7dd;
+      color: #765300 !important;
+      font-weight: 900;
+    }
+
     .navigation-sheet[hidden] { display: none; }
 
     .navigation-sheet {
@@ -2523,7 +2639,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260731-live-api-v3" defer></script>
+  <script src="./pwa.js?v=20260803-coffee-workflow-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260731-mobile-offline-v2'
 
@@ -2577,10 +2693,12 @@
     const SHIFT_DOCUMENTS_BUCKET = 'shift-documents'
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV17'
     const MOBILE_SNAPSHOT_KEY = 'olvendMobileSnapshotV1'
+    const COFFEE_OFFLINE_STOCK_KEY = 'olvendCoffeeOfflineStockV1'
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
     let foodMachineRenderAnchor = null
+    let coffeeMachineRenderAnchor = null
     let activeNavigationStopId = null
     let routeMachineLiveRefreshTimer = null
     let routeMachineLiveRefreshBusy = false
@@ -2754,8 +2872,63 @@
       }
     }
 
+    function readCoffeeOfflineStockQueue() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(COFFEE_OFFLINE_STOCK_KEY) || '[]')
+        return Array.isArray(rows) ? rows : []
+      } catch (_) {
+        return []
+      }
+    }
+
+    function writeCoffeeOfflineStockQueue(rows) {
+      localStorage.setItem(COFFEE_OFFLINE_STOCK_KEY, JSON.stringify(rows || []))
+      window.dispatchEvent(new CustomEvent('olvend-offline-queue'))
+    }
+
+    function queueCoffeeOfflineStockSync(stopId, container, desiredPackages) {
+      const key = `${stopId}:${container.id}`
+      const rows = readCoffeeOfflineStockQueue().filter((row) => row.key !== key)
+      rows.push({
+        key,
+        stopId: String(stopId),
+        containerId: String(container.id),
+        desiredPackages: Number(desiredPackages || 0),
+        updatedAt: new Date().toISOString()
+      })
+      writeCoffeeOfflineStockQueue(rows)
+    }
+
+    function getCombinedOfflineRequestCount() {
+      return getOfflineRequestCount() + readCoffeeOfflineStockQueue().length
+    }
+
+    async function syncCoffeeOfflineStockQueue() {
+      if (!navigator.onLine) return { pending: readCoffeeOfflineStockQueue().length, synced: 0 }
+      const rows = readCoffeeOfflineStockQueue()
+      const pending = []
+      let synced = 0
+      for (const row of rows) {
+        const detail = getCoffeeDetail(row.stopId)
+        const container = getCoffeeContainer(row.stopId, row.containerId)
+        if (!detail || !container) {
+          pending.push(row)
+          continue
+        }
+        try {
+          await syncCoffeePackagesWithVehicle(row.stopId, container, row.desiredPackages, { forceOnline: true, reconcileOffline: true })
+          synced += 1
+        } catch (error) {
+          console.warn('Offline skladový pohyb kávy se zatím nepodařilo synchronizovat:', error)
+          pending.push(row)
+        }
+      }
+      writeCoffeeOfflineStockQueue(pending)
+      return { pending: pending.length, synced }
+    }
+
     function showConnectivityState() {
-      const pending = getOfflineRequestCount()
+      const pending = getCombinedOfflineRequestCount()
       if (!navigator.onLine) {
         showMessage(`Offline režim: pokračuj v práci. ${pending ? `${pending} změn čeká na odeslání.` : 'Změny se odešlou po návratu signálu.'}`, 'info', { scroll: false })
       } else if (pending) {
@@ -4661,9 +4834,19 @@
       ]
       const freeCoffeeOptions = buttons.map((button) => `<option value="${escapeHtml(button.id)}">${escapeHtml(`Volba ${button.selection_code} · ${button.product_name || 'Káva'}`)}</option>`).join('')
       const readOnly = Boolean(state.routeMachineReadOnly || getRouteStopStatus(stop) === 'completed')
-      const liveStateLabel = detail.liveStateUpdatedAt
-        ? `Online stav ověřen ${new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(detail.liveStateUpdatedAt))} · průběžná obnova po 10 s`
-        : 'Online stav se ověřuje'
+      const offlinePendingCount = getCombinedOfflineRequestCount()
+      const coffeeOfflineMode = !navigator.onLine || detail.openedOffline
+      const liveStateLabel = coffeeOfflineMode
+        ? `OFFLINE · poslední uložený stav${offlinePendingCount ? ` · ${offlinePendingCount} změn čeká na odeslání` : ''}`
+        : detail.liveStateUpdatedAt
+          ? `Online stav ověřen ${new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(detail.liveStateUpdatedAt))} · průběžná obnova po 10 s`
+          : 'Online stav se ověřuje'
+      const firstPendingContainerId = containers.find((container) => {
+        const packages = getCoffeeActualPackages(stop.id, container)
+        const accepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
+          || (!manualCounterMode && packages <= 0)
+        return !accepted
+      })?.id
 
       return `
         <div class="coffee-visit-detail">
@@ -4674,7 +4857,7 @@
           </div>
           ` : ''}
           ${!detail.machineOpen && !readOnly ? `
-          <div class="muted-text" data-route-live-status>${escapeHtml(liveStateLabel)}</div>
+          <div class="muted-text ${coffeeOfflineMode ? 'coffee-offline-status' : ''}" data-route-live-status>${escapeHtml(liveStateLabel)}</div>
           <div class="task-head">
             <div>
               <h4>${manualCounterMode ? 'Ruční doplnění automatu' : 'Picklist k automatu'}</h4>
@@ -4700,24 +4883,32 @@
               const vehiclePackages = detail.vehiclePackages?.[String(container.product_id)] ?? null
               const suggestionLimited = packages < suggested && !picked
               return `
-                <article class="coffee-visit-row ${picked ? 'ready' : ''}">
-                  ${renderCoffeeTube(current, added, capacity)}
-                  <div>
-                    <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
-                    <div class="meta">
-                      <span>${packages > 0 ? `${escapeHtml(getCoffeePackageCountLabel(packages, container))} · po ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')} · vezmu ${formatNumber(packages * packageQty)} ${escapeHtml(container.unit || 'g')}` : 'nic neberu'}</span>
-                      <span>${picked && packages > 0 ? 'potvrzeno · z auta odečteno' : ''}${vehiclePackages != null ? ` · v autě ${escapeHtml(getCoffeePackageCountLabel(vehiclePackages, container))}` : ''}</span>
+                <article class="food-pick-card coffee-pick-card ${picked ? 'ready' : ''}">
+                  <div class="coffee-pick-head">
+                    <div>
+                      <h5>Zásobník ${escapeHtml(container.container_code || 'Z')}</h5>
+                      <div class="food-pick-total">${escapeHtml(container.product_name || 'Surovina')}</div>
                     </div>
-                    ${suggestionLimited ? `<div class="muted-text">PC návrh je ${escapeHtml(getCoffeePackageCountLabel(suggested, container))}, ale z auta lze bezpečně vzít nejvýše ${escapeHtml(getCoffeePackageCountLabel(packages, container))}. Zásoba do mínusu nepůjde.</div>` : ''}
-                    <div class="coffee-visit-actions">
-                      <span class="inline-stepper">
-                        <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">-</button>
-                        <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
-                        <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">+</button>
-                      </span>
-                      <button class="${picked ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="pick-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${packages > 0 ? picked ? 'Vzato k automatu' : 'Beru k automatu' : 'Automaticky neberu'}</button>
-                      ${suggested > 0 && packages > 0 ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nic neberu</button>` : ''}
-                    </div>
+                    ${renderCoffeeTube(current, added, capacity)}
+                  </div>
+                  <div class="food-pick-stats">
+                    <div class="food-pick-stat"><span>Stav</span><strong>${escapeHtml(`${formatNumber(current)}/${formatNumber(capacity)}`)}</strong></div>
+                    <div class="food-pick-stat"><span>Návrh</span><strong>${escapeHtml(getCoffeePackageCountLabel(suggested, container))}</strong></div>
+                    <div class="food-pick-stat"><span>V autě</span><strong>${vehiclePackages != null ? escapeHtml(getCoffeePackageCountLabel(vehiclePackages, container)) : '—'}</strong></div>
+                  </div>
+                  <div class="meta">
+                    <span>${packages > 0 ? `${escapeHtml(getCoffeePackageCountLabel(packages, container))} · po ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')} · celkem ${formatNumber(packages * packageQty)} ${escapeHtml(container.unit || 'g')}` : 'Nic neberu'}</span>
+                    ${picked && packages > 0 ? '<span>Potvrzeno · z vozidla odečteno</span>' : ''}
+                  </div>
+                  ${suggestionLimited ? `<div class="food-skip-reason">PC doporučil ${escapeHtml(getCoffeePackageCountLabel(suggested, container))}, ale z auta lze bezpečně vzít nejvýše ${escapeHtml(getCoffeePackageCountLabel(packages, container))}. Zásoba nepůjde do mínusu.</div>` : ''}
+                  <div class="food-pick-actions">
+                    <span class="inline-stepper food-pick-stepper">
+                      <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">−</button>
+                      <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
+                      <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button">+</button>
+                    </span>
+                    <button class="${picked ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="pick-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">${packages > 0 ? picked ? 'Vzato k automatu ✓' : 'Beru k automatu' : 'Automaticky nic neberu ✓'}</button>
+                    ${suggested > 0 && packages > 0 ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nic neberu</button>` : ''}
                   </div>
                 </article>
               `
@@ -4741,21 +4932,27 @@
               const realPct = capacity ? Math.round((realQty / capacity) * 100) : 0
               const calibrated = isCoffeeContainerCalibrated(stop.id, container)
               return `
-                <article class="coffee-visit-row ${calibrated ? 'ready' : ''}" data-coffee-calibration-row data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">
-                  ${renderCoffeeTube(realQty, 0, capacity, {
-                    calibration: true,
-                    stopId: stop.id,
-                    containerId: container.id
-                  })}
-                  <div>
-                    <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
-                    <div class="meta">
-                      <span>PC stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}</span>
-                      <span data-coffee-calibration-readout>reálně ${formatNumber(realQty)}/${formatNumber(capacity)} · ${realPct}%</span>
+                <article class="food-pick-card coffee-calibration-card ${calibrated ? 'ready' : ''}" data-coffee-calibration-row data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">
+                  <div class="coffee-pick-head">
+                    <div>
+                      <h5>Zásobník ${escapeHtml(container.container_code || 'Z')}</h5>
+                      <div class="food-pick-total">${escapeHtml(container.product_name || 'Surovina')}</div>
                     </div>
+                    ${renderCoffeeTube(realQty, 0, capacity, {
+                      calibration: true,
+                      stopId: stop.id,
+                      containerId: container.id
+                    })}
+                  </div>
+                  <div class="food-pick-stats">
+                    <div class="food-pick-stat"><span>PC stav</span><strong>${escapeHtml(`${formatNumber(current)}/${formatNumber(capacity)}`)}</strong></div>
+                    <div class="food-pick-stat"><span>Skutečně</span><strong data-coffee-calibration-readout>${escapeHtml(`${formatNumber(realQty)}/${formatNumber(capacity)}`)}</strong></div>
+                    <div class="food-pick-stat"><span>Naplnění</span><strong data-coffee-calibration-percent>${realPct}%</strong></div>
+                  </div>
+                  <div>
                     <div class="coffee-calibration-control">
                       <input type="range" data-coffee-calibration-range data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" min="0" max="${escapeHtml(String(capacity || Math.max(realQty, 1)))}" step="${escapeHtml(String(getCoffeeCalibrationSliderStep(container)))}" value="${escapeHtml(String(realQty))}" aria-label="Reálná hladina zásobníku ${escapeHtml(container.container_code || '')}" />
-                      <span class="coffee-calibration-value" data-coffee-calibration-percent>${realPct}%</span>
+                      <span class="coffee-calibration-value" data-coffee-calibration-quantity>${escapeHtml(describeCoffeeQuantity(realQty, container))}</span>
                     </div>
                     <div class="coffee-visit-actions">
                       <span class="inline-stepper">
@@ -4776,6 +4973,7 @@
           </div>
           ` : ''}
           ${(detail.machineOpen || readOnly) && (!showCalibration || readOnly) ? `
+          ${coffeeOfflineMode ? `<div class="coffee-offline-status" data-route-live-status>${escapeHtml(liveStateLabel)}</div>` : ''}
           <div class="task-head">
             <div>
               <h4>${readOnly ? 'Dokončené doplnění' : manualCounterMode ? 'Ruční doplnění zásobníků' : 'Doplnění automatu'}</h4>
@@ -4795,41 +4993,71 @@
               const capacity = Number(container.capacity_quantity || 0)
               const accepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
                 || (!manualCounterMode && packages <= 0)
+              const vehiclePackages = detail.vehiclePackages?.[String(container.product_id)]
+              const maxPackages = getCoffeeSelectableMaxPackages(stop.id, container)
+              const explicitlyAccepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
+              const canTakeMore = !readOnly && !explicitlyAccepted && packages < maxPackages
               const stockMismatch = Boolean(detail.draft?.containers?.[String(container.id)]?.stockMismatch)
               const currentPct = capacity ? Math.round((current / capacity) * 100) : 0
               const afterPct = capacity ? Math.round((after / capacity) * 100) : 0
+              const cardOpen = !readOnly && !accepted && String(container.id) === String(firstPendingContainerId)
               return `
-                <article class="coffee-visit-row ${accepted ? 'ready' : ''}">
-                  ${renderCoffeeTube(current, added, capacity)}
-                  <div>
-                    <h5>${escapeHtml(container.container_code || 'Z')} · ${escapeHtml(container.product_name || 'Surovina')}</h5>
-                    <div class="meta">
-                      <span>${manualCounterMode ? `evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}` : current !== systemCurrent ? `skutečný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')} · PC ${formatNumber(systemCurrent)}` : `stav z PC ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</span>
-                      <span>${manualCounterMode ? `po doplnění ${formatNumber(after)}/${formatNumber(capacity)} · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : `po připraveném množství ${formatNumber(after)}/${formatNumber(capacity)} · hladina ${currentPct}% -> ${afterPct}%`}</span>
+                <details class="coffee-visit-row food-machine-card coffee-machine-card ${accepted ? 'ready' : ''}" data-coffee-machine-card data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${cardOpen ? 'open' : ''}>
+                  <summary>
+                    <div>
+                      <strong>Zásobník ${escapeHtml(container.container_code || 'Z')}</strong>
+                      <small>${escapeHtml(container.product_name || 'Surovina')}</small>
                     </div>
-                    ${stockMismatch ? '<div class="muted-text">Skladový pohyb nesedí s uloženým doplněním. Potvrzením se automaticky dorovná.</div>' : ''}
+                    <span>${escapeHtml(`${formatNumber(after)}/${formatNumber(capacity)} ${container.unit || 'g'}`)} ${accepted ? '✓' : ''}</span>
+                  </summary>
+                  <div class="food-machine-body">
+                    <div class="food-machine-stats">
+                      <div class="food-machine-stat"><span>Při otevření</span><strong>${escapeHtml(`${formatNumber(current)} ${container.unit || 'g'}`)}</strong></div>
+                      <div class="food-machine-stat"><span>Doplním</span><strong>${escapeHtml(`${formatNumber(added)} ${container.unit || 'g'}`)}</strong></div>
+                      <div class="food-machine-stat"><span>Nový stav</span><strong>${escapeHtml(`${formatNumber(after)} ${container.unit || 'g'}`)}</strong></div>
+                    </div>
+                    <div class="meta">${manualCounterMode
+                      ? `Evidovaný stav ${formatNumber(current)}/${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')} · připraveno ${escapeHtml(getCoffeePackageCountLabel(packages, container))}`
+                      : current !== systemCurrent
+                        ? `Skutečný stav ${formatNumber(current)} · PC předpokládal ${formatNumber(systemCurrent)} · kapacita ${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`
+                        : `Online stav ${formatNumber(current)} · kapacita ${formatNumber(capacity)} ${escapeHtml(container.unit || 'g')}`}</div>
+                    <div class="coffee-machine-visual-row">
+                      ${renderCoffeeTube(current, added, capacity)}
+                      <div class="coffee-machine-level">
+                        <strong>Naplnění ${currentPct}% → ${afterPct}%</strong>
+                        <span>${packages > 0 ? `Připraveno ${escapeHtml(getCoffeePackageCountLabel(packages, container))} · jedno balení ${formatNumber(packageQty)} ${escapeHtml(container.unit || 'g')}` : 'Pro tento zásobník nebylo nic připraveno.'}</span>
+                      </div>
+                    </div>
+                    ${stockMismatch ? '<div class="food-skip-reason">Skladový pohyb nesedí s uloženým doplněním. Potvrzením se automaticky dorovná.</div>' : ''}
                     ${readOnly ? `
                       <div class="meta"><span>${packages > 0 ? `Doplněno ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Nedoplňováno'}</span></div>
                     ` : `
-                      <div class="coffee-visit-actions">
-                        ${manualCounterMode ? `
-                          <span class="inline-stepper">
-                            <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>-</button>
-                        <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
-                            <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>+</button>
-                          </span>
-                          <button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}"${accepted ? ' disabled' : ''}>${accepted ? packages > 0 ? `Uloženo: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Bez doplnění' : packages > 0 ? `Uložit ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : 'Nic nedoplňuji'}</button>
-                        ` : `
-                      ${accepted && packages <= 0
-                        ? '<div class="meta"><span>Nic nebylo vzato · není co potvrzovat</span></div>'
-                        : `<button class="${accepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${accepted ? 'disabled' : ''}>${accepted ? `Potvrzeno: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : `Potvrdit vložení: ${escapeHtml(getCoffeePackageCountLabel(packages, container))}`}</button>`}
-                      ${packages > 0 && !accepted ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nevložil jsem nic</button>` : ''}
-                          <button class="secondary-btn" type="button" data-coffee-action="adjust-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nesedí / upravit</button>
-                        `}
-                      </div>
+                      <section class="food-machine-step">
+                        <strong>1. Zkontroluj skutečný stav</strong>
+                        <div class="food-machine-product-line">Pokud stav proti automatu nesedí, oprav ho před potvrzením doplnění.</div>
+                        <button class="secondary-btn" type="button" data-coffee-action="adjust-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nesedí stav / upravit</button>
+                      </section>
+                      <section class="food-machine-step">
+                        <strong>2. Doplň připravenou surovinu</strong>
+                        <div class="coffee-machine-step-actions">
+                          ${manualCounterMode ? `
+                            <span class="inline-stepper">
+                              <button data-coffee-action="step-container" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>−</button>
+                              <span>${escapeHtml(getCoffeePackageCountLabel(packages, container))}</span>
+                              <button data-coffee-action="step-container" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" type="button"${accepted ? ' disabled' : ''}>+</button>
+                            </span>
+                          ` : `<div class="food-machine-product-line">${packages > 0 ? `Vlož ${escapeHtml(getCoffeePackageCountLabel(packages, container))}.` : 'Nic nebylo vzato z vozidla.'}</div>`}
+                          ${!manualCounterMode && canTakeMore ? `
+                            <button class="secondary-btn" type="button" data-coffee-action="machine-take-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">+ Dodatečně vzít 1 balení z auta</button>
+                            <div class="muted-text">${vehiclePackages == null ? 'Dostupnost v autě se ověří při synchronizaci.' : `V autě zbývá ${escapeHtml(formatNumber(vehiclePackages))} bal.`}</div>
+                          ` : ''}
+                          ${packages > 0 && !accepted ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nevložil jsem nic</button>` : ''}
+                        </div>
+                      </section>
+                      <button class="primary-btn" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${accepted ? 'disabled' : ''}>${accepted ? 'Zásobník potvrzen ✓' : packages > 0 ? `3. Potvrdit doplnění · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : '3. Potvrdit bez doplnění'}</button>
                     `}
                   </div>
-                </article>
+                </details>
               `
             }).join('')}
           </div>
@@ -5547,6 +5775,7 @@
       }
       if (machineKind === 'coffee') {
         els.routeMachineContent.innerHTML = renderCoffeeVisitDetail(stop, getRouteVisitForStop(stop))
+        restoreCoffeeMachineRenderAnchor()
         return
       }
       els.routeMachineContent.innerHTML = '<div class="empty">Pro tento typ automatu zatím není připravený pracovní postup.</div>'
@@ -5581,12 +5810,42 @@
       })
     }
 
+    function rememberCoffeeMachineRenderAnchor(target, options = {}) {
+      const card = target?.closest?.('[data-coffee-machine-card]')
+      if (!card) {
+        coffeeMachineRenderAnchor = null
+        return
+      }
+      coffeeMachineRenderAnchor = {
+        stopId: card.dataset.stopId,
+        containerId: card.dataset.containerId,
+        top: card.getBoundingClientRect().top,
+        open: options.open ?? card.open
+      }
+    }
+
+    function restoreCoffeeMachineRenderAnchor() {
+      const anchor = coffeeMachineRenderAnchor
+      coffeeMachineRenderAnchor = null
+      if (!anchor) return
+      window.requestAnimationFrame(() => {
+        const card = els.routeMachineContent?.querySelector(
+          `[data-coffee-machine-card][data-stop-id="${CSS.escape(String(anchor.stopId))}"][data-container-id="${CSS.escape(String(anchor.containerId))}"]`
+        )
+        if (!card) return
+        card.open = anchor.open
+        const delta = card.getBoundingClientRect().top - anchor.top
+        if (Math.abs(delta) > 0.5) window.scrollBy(0, delta)
+      })
+    }
+
     function scrollToFirstMachinePosition(machineKind) {
       foodMachineRenderAnchor = null
+      coffeeMachineRenderAnchor = null
       window.requestAnimationFrame(() => {
         const selector = machineKind === 'food'
           ? '[data-food-machine-card]'
-          : '.coffee-visit-grid .coffee-visit-row'
+          : '[data-coffee-machine-card]'
         const firstPosition = els.routeMachineContent?.querySelector(selector)
         if (firstPosition) {
           firstPosition.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -6936,8 +7195,23 @@
         }
       }
 
-      const liveRows = await loadLiveRows()
-      applyLiveRows(liveRows)
+      const hasCachedRows = machineKind === 'food'
+        ? Boolean(detail.slots?.length)
+        : Boolean(detail.containers?.length)
+      let liveRows = []
+      let openedFromCache = !navigator.onLine
+      if (!openedFromCache) {
+        try {
+          liveRows = await loadLiveRows()
+          applyLiveRows(liveRows)
+        } catch (error) {
+          if (!hasCachedRows) throw error
+          console.warn('Online stav automatu není dostupný, pokračuji s uloženým stavem:', error)
+          openedFromCache = true
+        }
+      } else if (!hasCachedRows) {
+        throw new Error('Offline není v telefonu uložený žádný stav tohoto automatu. Připoj se a otevři ho poprvé online.')
+      }
       const firstPreparation = machineKind === 'food' ? serializeFoodPreparation(stopId, detail) : null
       const firstUpdate = machineKind === 'food'
         ? { work_phase: 'machine', food_preparation: firstPreparation, synced_at: new Date().toISOString() }
@@ -6948,12 +7222,12 @@
         .eq('id', detail.visitId)
         .select('id, work_phase, food_preparation')
         .maybeSingle()
-      if (saveError || !savedVisit?.id || savedVisit.work_phase !== 'machine') {
+      if (!openedFromCache && (saveError || !savedVisit?.id || savedVisit.work_phase !== 'machine')) {
         const reason = saveError?.message ? ` (${saveError.message})` : ''
         throw new Error(`Aktuální stav se nepodařilo bezpečně uložit${reason}. Zkus otevření automatu znovu.`)
       }
 
-      const verifiedRows = await loadLiveRows()
+      const verifiedRows = openedFromCache ? [] : await loadLiveRows()
       const snapshotChanged = verifiedRows.some((row, index) => {
         const previous = liveRows[index]
         const quantityKey = machineKind === 'food' ? 'current_units' : 'current_quantity'
@@ -6980,6 +7254,8 @@
       } else {
         detail.machineOpen = true
       }
+      detail.openedOffline = openedFromCache
+      if (!openedFromCache) detail.liveStateUpdatedAt = new Date().toISOString()
 
       const currentVisit = getRouteVisitForStop(stop)
       if (currentVisit) {
@@ -7207,28 +7483,39 @@
       let result
       if (existing?.id) {
         result = await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
+      } else if (!navigator.onLine || detail.openedOffline) {
+        const offlineRow = { ...row, id: crypto.randomUUID() }
+        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'id' })
+        result = { error: queuedResult.error, data: { ...offlineRow, _offlinePending: true } }
       } else {
         result = await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
       }
-      if (result.error) throw result.error
-      const savedFinalQuantity = Number(result.data.final_quantity ?? row.final_quantity ?? finalQty)
+      if (result.error && navigator.onLine) throw result.error
+      const savedRow = result.data?.id
+        ? result.data
+        : { ...row, id: existing?.id || `offline-${detail.visitId}-${container.id}`, _offlinePending: true }
+      const savedFinalQuantity = Number(savedRow.final_quantity ?? row.final_quantity ?? finalQty)
       if (Number.isFinite(savedFinalQuantity)) {
         const { error: containerError } = await supabase
           .from('machine_coffee_containers')
           .update({ current_quantity: savedFinalQuantity })
           .eq('id', container.id)
-        if (containerError) throw containerError
+        if (containerError && navigator.onLine) throw containerError
         container.current_quantity = savedFinalQuantity
       }
       detail.visitItems = [
-        ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
-        result.data
+        ...(detail.visitItems || []).filter((item) => (
+          String(item.id) !== String(savedRow.id)
+          && String(item.coffee_container_id || '') !== String(container.id)
+        )),
+        savedRow
       ]
       detail.draft.containers[String(container.id)] = {
         ...(detail.draft.containers[String(container.id)] || {}),
         accepted: true
       }
-      return result.data
+      persistMobileSnapshot()
+      return savedRow
     }
 
     async function saveCoffeeContainerCalibration(stopId, container, realQuantity, note = '') {
@@ -7264,19 +7551,29 @@
         operator_note: ['První kalibrace zásobníku', note].filter(Boolean).join(' · '),
         accepted_at: new Date().toISOString()
       }
-      const result = existing?.id
-        ? await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
-        : await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
-      if (result.error) throw result.error
+      let result
+      if (existing?.id) {
+        result = await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
+      } else if (!navigator.onLine || detail.openedOffline) {
+        const offlineRow = { ...row, id: crypto.randomUUID() }
+        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'id' })
+        result = { error: queuedResult.error, data: { ...offlineRow, _offlinePending: true } }
+      } else {
+        result = await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
+      }
+      if (result.error && navigator.onLine) throw result.error
+      const savedRow = result.data?.id
+        ? result.data
+        : { ...row, id: existing?.id || `offline-calibration-${detail.visitId}-${container.id}`, _offlinePending: true }
       const { error: containerError } = await supabase
         .from('machine_coffee_containers')
         .update({ current_quantity: boundedQuantity })
         .eq('id', container.id)
-      if (containerError) throw containerError
+      if (containerError && navigator.onLine) throw containerError
       container.current_quantity = boundedQuantity
       detail.visitItems = [
-        ...(detail.visitItems || []).filter((item) => String(item.id) !== String(result.data.id)),
-        result.data
+        ...(detail.visitItems || []).filter((item) => String(item.id) !== String(savedRow.id)),
+        savedRow
       ]
       detail.calibratedContainers = {
         ...(detail.calibratedContainers || {}),
@@ -7286,7 +7583,8 @@
         ...(detail.draft.calibration || {}),
         [String(container.id)]: { quantity: boundedQuantity, done: true }
       }
-      return result.data
+      persistMobileSnapshot()
+      return savedRow
     }
 
     async function loadCoffeeNetMovedQuantity(detail, container) {
@@ -7302,13 +7600,31 @@
       return getCoffeeNetMovedQuantity(data || [], detail.visitId, container)
     }
 
-    async function syncCoffeePackagesWithVehicle(stopId, container, packages = getCoffeeActualPackages(stopId, container)) {
+    async function syncCoffeePackagesWithVehicle(stopId, container, packages = getCoffeeActualPackages(stopId, container), options = {}) {
       const detail = getCoffeeDetail(stopId)
       if (!detail?.visitId || !container?.id || !container?.product_id) throw new Error('Návštěva nemá úplná skladová data.')
       const requestedPackages = Math.max(0, Number(packages || 0))
       const desiredPackages = Math.min(requestedPackages, getCoffeeSelectableMaxPackages(stopId, container))
       if (desiredPackages + 0.0001 < requestedPackages) {
         throw new Error(`Z vozidla lze pro ${container.product_name || container.container_code || 'zásobník'} vzít nejvýše ${getCoffeePackageCountLabel(desiredPackages, container)}. Záporný stav není povolen.`)
+      }
+      if (!navigator.onLine && !options.forceOnline) {
+        const draft = detail.draft.containers[String(container.id)] || {}
+        const previousPackages = Math.max(0, Number(draft.movedPackages || 0))
+        const packageDifference = desiredPackages - previousPackages
+        const vehiclePackageKey = String(container.product_id)
+        if (detail.vehiclePackages?.[vehiclePackageKey] != null) {
+          detail.vehiclePackages[vehiclePackageKey] = Math.max(0, Number(detail.vehiclePackages[vehiclePackageKey] || 0) - packageDifference)
+        }
+        detail.draft.containers[String(container.id)] = {
+          ...draft,
+          movedPackages: desiredPackages,
+          stockMismatch: false,
+          offlineStockPending: true
+        }
+        queueCoffeeOfflineStockSync(stopId, container, desiredPackages)
+        persistMobileSnapshot()
+        return { queued: true }
       }
       const desiredQuantity = getCoffeeVehicleStockQuantity(container, desiredPackages)
       const movedQuantity = await loadCoffeeNetMovedQuantity(detail, container)
@@ -7317,9 +7633,11 @@
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
           movedPackages: desiredPackages,
-          stockMismatch: false
+          stockMismatch: false,
+          offlineStockPending: false
         }
-        return
+        persistMobileSnapshot()
+        return { queued: false }
       }
 
       const vehicleId = getCurrentVehicleId()
@@ -7342,14 +7660,17 @@
       const packageBaseQuantity = getCoffeePackageBaseQuantity(container)
       const movedPackageDifference = packageBaseQuantity > 0 ? quantity / packageBaseQuantity : 0
       const vehiclePackageKey = String(container.product_id)
-      if (detail.vehiclePackages?.[vehiclePackageKey] != null) {
+      if (!options.reconcileOffline && detail.vehiclePackages?.[vehiclePackageKey] != null) {
         detail.vehiclePackages[vehiclePackageKey] = Math.max(0, Number(detail.vehiclePackages[vehiclePackageKey] || 0) + (movingToMachine ? -movedPackageDifference : movedPackageDifference))
       }
       detail.draft.containers[String(container.id)] = {
         ...(detail.draft.containers[String(container.id)] || {}),
         movedPackages: desiredPackages,
-        stockMismatch: false
+        stockMismatch: false,
+        offlineStockPending: false
       }
+      persistMobileSnapshot()
+      return { queued: false }
     }
 
     function updateCoffeeCalibrationRowView(stopId, container, quantity) {
@@ -7361,10 +7682,12 @@
       const range = row.querySelector('[data-coffee-calibration-range]')
       const readout = row.querySelector('[data-coffee-calibration-readout]')
       const percent = row.querySelector('[data-coffee-calibration-percent]')
+      const quantityLabel = row.querySelector('[data-coffee-calibration-quantity]')
       if (fill) fill.style.height = `${Math.max(0, Math.min(100, pct))}%`
       if (range) range.value = String(quantity)
-      if (readout) readout.textContent = `reálně ${formatNumber(quantity)}/${formatNumber(capacity)} · ${pct}%`
+      if (readout) readout.textContent = `${formatNumber(quantity)}/${formatNumber(capacity)}`
       if (percent) percent.textContent = `${pct}%`
+      if (quantityLabel) quantityLabel.textContent = describeCoffeeQuantity(quantity, container)
     }
 
     function setCoffeeCalibrationDraftQuantity(stopId, containerId, rawQuantity, options = {}) {
@@ -8166,13 +8489,21 @@
           operator_collected_at: new Date().toISOString(),
           note: decision === 'skip' ? 'Operátorka zapsala rozhodnutí nevybírat.' : null
         }
-        const result = detail.cash?.id
-          ? await supabase.from('route_machine_cash_reports').update(payload).eq('id', detail.cash.id).select('*').single()
-          : await supabase.from('route_machine_cash_reports').insert([payload]).select('*').single()
-        if (result.error) throw result.error
-        detail.cash = result.data
+        let result
+        if (detail.cash?.id) {
+          result = await supabase.from('route_machine_cash_reports').update(payload).eq('id', detail.cash.id).select('*').single()
+        } else if (!navigator.onLine || detail.openedOffline) {
+          const offlineCash = { ...payload, id: crypto.randomUUID() }
+          const queuedResult = await supabase.from('route_machine_cash_reports').upsert([offlineCash], { onConflict: 'id' })
+          result = { error: queuedResult.error, data: { ...offlineCash, _offlinePending: true } }
+        } else {
+          result = await supabase.from('route_machine_cash_reports').insert([payload]).select('*').single()
+        }
+        if (result.error && navigator.onLine) throw result.error
+        detail.cash = result.data?.id ? result.data : { ...payload, id: detail.cash?.id || `offline-cash-${detail.visitId}`, _offlinePending: true }
         detail.draft.cashDecision = decision
         detail.draft.cashBag = bag
+        persistMobileSnapshot()
         renderRouteMachineScreen()
         showMessage('Rozhodnutí k hotovosti je uložené.', 'success', { scroll: false })
         return
@@ -8273,7 +8604,13 @@
         await openRouteMachineWithLiveState(stopId, detail, 'coffee')
         renderRouteMachineScreen()
         scrollToFirstMachinePosition('coffee')
-        showMessage('Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.', 'success', { scroll: false })
+        showMessage(
+          detail.openedOffline
+            ? 'Automat otevřený offline z posledního uloženého stavu. Změny se odešlou po návratu signálu.'
+            : 'Automat otevřený. Aktuální stav je načtený a pokračuje stejné měření práce.',
+          'success',
+          { scroll: false }
+        )
         return
       }
 
@@ -8328,6 +8665,30 @@
       if (action === 'finish-calibration') {
         if (!isCoffeeCalibrationComplete(stopId)) throw new Error('Nejdřív potvrď první načtení všech zásobníků.')
         showMessage('První načtení zásobníků je hotové. Teď pokračuj běžným doplněním.', 'success', { scroll: false })
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'machine-take-container' && container) {
+        const currentPackages = getCoffeeActualPackages(stopId, container)
+        const maxPackages = getCoffeeSelectableMaxPackages(stopId, container)
+        if (currentPackages >= maxPackages) {
+          throw new Error(`Pro ${container.product_name || container.container_code || 'zásobník'} už nelze z auta vzít další celé balení.`)
+        }
+        const nextPackages = currentPackages + 1
+        detail.draft.containers[String(container.id)] = {
+          ...(detail.draft.containers[String(container.id)] || {}),
+          packages: nextPackages,
+          picked: true,
+          accepted: false
+        }
+        const syncResult = await syncCoffeePackagesWithVehicle(stopId, container, nextPackages)
+        persistMobileSnapshot()
+        showMessage(
+          `K zásobníku je připraveno ${getCoffeePackageCountLabel(nextPackages, container)}.${syncResult?.queued ? ' Skladový pohyb čeká na signál.' : ''}`,
+          'success',
+          { scroll: false }
+        )
         renderRouteMachineScreen()
         return
       }
@@ -8478,7 +8839,7 @@
         const note = els.routeMachineContent.querySelector(`[data-coffee-change-note][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value?.trim() || ''
         if (!buttonId && !note) throw new Error('Vyber tlačítko nebo doplň poznámku ke změně.')
         const button = detail.buttons.find((item) => String(item.id) === String(buttonId))
-        const { error } = await supabase.from('route_machine_visit_items').insert([{
+        const workRow = {
           visit_id: detail.visitId,
           machine_id: stopMachine?.id || null,
           item_kind: 'coffee_button',
@@ -8491,7 +8852,10 @@
           issue_type: 'substitution',
           operator_note: note || 'Změna tlačítka/ceny v mobilu.',
           accepted_at: new Date().toISOString()
-        }])
+        }
+        const { error } = (!navigator.onLine || detail.openedOffline)
+          ? await supabase.from('route_machine_visit_items').upsert([{ ...workRow, id: crypto.randomUUID() }], { onConflict: 'id' })
+          : await supabase.from('route_machine_visit_items').insert([workRow])
         if (error) throw error
         showMessage('Změna automatu je zapsaná k návštěvě.', 'success', { scroll: false })
         return
@@ -8513,7 +8877,7 @@
           if (error) throw error
           container.current_quantity = next
         }
-        const { error } = await supabase.from('route_machine_visit_items').insert([{
+        const freeCoffeeRow = {
           visit_id: detail.visitId,
           machine_id: stopMachine?.id || null,
           item_kind: 'coffee_button',
@@ -8527,7 +8891,10 @@
           issue_type: 'other',
           operator_note: `Káva zdarma / test: ${count}x ${button?.product_name || ''}`,
           accepted_at: new Date().toISOString()
-        }])
+        }
+        const { error } = (!navigator.onLine || detail.openedOffline)
+          ? await supabase.from('route_machine_visit_items').upsert([{ ...freeCoffeeRow, id: crypto.randomUUID() }], { onConflict: 'id' })
+          : await supabase.from('route_machine_visit_items').insert([freeCoffeeRow])
         if (error) throw error
         showMessage('Káva zdarma je zapsaná a suroviny se odečetly podle receptury.', 'success', { scroll: false })
         renderRouteMachineScreen()
@@ -9916,12 +10283,20 @@
         const coffeeButton = event.target.closest('[data-coffee-action]')
         if (!coffeeButton) return
         if (coffeeButton.disabled || coffeeButton.classList.contains('is-busy')) return
+        rememberCoffeeMachineRenderAnchor(coffeeButton, {
+          open: ['accept-container', 'adjust-container', 'skip-container'].includes(coffeeButton.dataset.coffeeAction)
+            ? false
+            : undefined
+        })
         const instantActions = ['step-container', 'calibration-step', 'back-picklist']
         const restore = instantActions.includes(coffeeButton.dataset.coffeeAction)
           ? () => {}
           : setButtonBusy(coffeeButton, getBusyLabel(coffeeButton.dataset.coffeeAction))
         handleCoffeeAction(coffeeButton.dataset.coffeeAction, coffeeButton.dataset.stopId, coffeeButton)
-          .catch(handleError)
+          .catch((error) => {
+            coffeeMachineRenderAnchor = null
+            handleError(error)
+          })
           .finally(restore)
       })
       els.routeMachineContent?.addEventListener('input', (event) => {
@@ -10213,10 +10588,14 @@
       window.addEventListener('olvend-offline-queue', showConnectivityState)
       window.addEventListener('online', async () => {
         showConnectivityState()
-        const result = await syncOfflineRequests()
-        if (!result.pending) {
-          showMessage(result.synced ? `${result.synced} offline změn bylo synchronizováno.` : 'Připojení je zpět.', 'success', { scroll: false })
+        const requestResult = await syncOfflineRequests()
+        const coffeeResult = await syncCoffeeOfflineStockQueue()
+        if (!requestResult.pending && !coffeeResult.pending) {
+          Object.values(state.routeCoffeeDetails || {}).forEach((detail) => { detail.openedOffline = false })
+          const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0)
+          showMessage(synced ? `${synced} offline změn bylo synchronizováno.` : 'Připojení je zpět.', 'success', { scroll: false })
           await reloadData().catch(console.warn)
+          renderRouteMachineScreen()
         }
       })
       document.addEventListener('visibilitychange', () => {
@@ -10226,9 +10605,13 @@
         const hasUser = await hydrateCurrentUser()
         if (!hasUser) return
         await reloadData()
+        if (navigator.onLine && getCombinedOfflineRequestCount()) {
+          await syncOfflineRequests().catch(console.warn)
+          await syncCoffeeOfflineStockQueue().catch(console.warn)
+        }
         openScreen(getStartupScreen())
         showStartupMessage()
-        if (!navigator.onLine || getOfflineRequestCount()) showConnectivityState()
+        if (!navigator.onLine || getCombinedOfflineRequestCount()) showConnectivityState()
         window.setInterval(() => {
           if (isShiftRunning()) renderShiftState()
         }, 30000)

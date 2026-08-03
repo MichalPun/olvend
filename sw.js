@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v64-inventory-expiry-sync';
+const CACHE_NAME = 'olvend-v65-coffee-mobile-workflow';
 const APP_SHELL = [
   './',
   './index.html',
