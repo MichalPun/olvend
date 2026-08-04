@@ -647,8 +647,8 @@ async function applyPlanogramDepletion(
 
   for (const item of planned) {
     const { slot, counter, isInitialCounter, previousTotal, delta, selection } = item;
-    const { cashDelta, cashlessDelta, unknownPaymentDelta, unpaidDispenseDelta } = paymentAllocations.get(selection) ||
-      { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: delta, unpaidDispenseDelta: 0 };
+    const { cashDelta, cashlessDelta, freeVendDelta, unknownPaymentDelta, unpaidDispenseDelta } = paymentAllocations.get(selection) ||
+      { cashDelta: 0, cashlessDelta: 0, freeVendDelta: 0, unknownPaymentDelta: delta, unpaidDispenseDelta: 0 };
 
     const { error: counterError } = await adminClient
       .from("telemetry_planogram_counters")
@@ -691,16 +691,18 @@ async function applyPlanogramDepletion(
       oldSold > 0 ? {
         event_part: 1, product_name: slot.product_name ?? null, product_sku: slot.product_sku ?? null,
         quantity: oldSold, cash_quantity: allocate(cashDelta, oldSold),
-        cashless_quantity: allocate(cashlessDelta, oldSold), unknown_payment_quantity: allocate(unknownPaymentDelta, oldSold),
+        cashless_quantity: allocate(cashlessDelta, oldSold), free_vend_quantity: allocate(freeVendDelta, oldSold),
+        unknown_payment_quantity: allocate(unknownPaymentDelta, oldSold),
         unpaid_dispense_quantity: allocate(unpaidDispenseDelta, oldSold),
-        unit_price_czk: Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
+        unit_price_czk: nullableTelemetryPrice(slot.customer_price_czk ?? slot.dex_price_czk),
       } : null,
       newSold > 0 ? {
         event_part: 2, product_name: slot.planned_product_name ?? null, product_sku: slot.planned_product_sku ?? null,
         quantity: newSold, cash_quantity: allocate(cashDelta, newSold),
-        cashless_quantity: allocate(cashlessDelta, newSold), unknown_payment_quantity: allocate(unknownPaymentDelta, newSold),
+        cashless_quantity: allocate(cashlessDelta, newSold), free_vend_quantity: allocate(freeVendDelta, newSold),
+        unknown_payment_quantity: allocate(unknownPaymentDelta, newSold),
         unpaid_dispense_quantity: allocate(unpaidDispenseDelta, newSold),
-        unit_price_czk: Number(slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk ?? 0) || null,
+        unit_price_czk: nullableTelemetryPrice(slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk),
       } : null,
     ].filter(Boolean).map((part: any) => ({
         provider: params.provider,
@@ -709,12 +711,12 @@ async function applyPlanogramDepletion(
         planogram_slot_id: slot.id,
         selection_code: selection,
         ...part,
-        total_amount_czk: part.unit_price_czk
+        total_amount_czk: part.unit_price_czk != null
           ? Math.round((part.cash_quantity + part.cashless_quantity + part.unknown_payment_quantity) * part.unit_price_czk * 100) / 100
           : null,
-        cash_amount_czk: part.unit_price_czk ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
-        cashless_amount_czk: part.unit_price_czk ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
-        unknown_payment_amount_czk: part.unit_price_czk ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
+        cash_amount_czk: part.unit_price_czk != null ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
+        cashless_amount_czk: part.unit_price_czk != null ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
+        unknown_payment_amount_czk: part.unit_price_czk != null ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
         source_event_at: counter.eventAt,
       }));
     const { data: savedSaleParts, error: salesEventError } = await adminClient
@@ -807,12 +809,13 @@ async function applyPlanogramDepletion(
       vend_delta: delta,
       cash_delta: cashDelta,
       cashless_delta: cashlessDelta,
+      free_vend_delta: freeVendDelta,
       unknown_payment_delta: unknownPaymentDelta,
       unpaid_dispense_delta: unpaidDispenseDelta,
       product_name: slot.product_name ?? null,
       product_sku: slot.product_sku ?? null,
-      unit_price_czk: Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
-      total_amount_czk: Number.isFinite(unitPrice) && unitPrice > 0
+      unit_price_czk: nullableTelemetryPrice(slot.customer_price_czk ?? slot.dex_price_czk),
+      total_amount_czk: Number.isFinite(unitPrice) && unitPrice >= 0
         ? Math.round((cashDelta + cashlessDelta + unknownPaymentDelta) * unitPrice * 100) / 100
         : null,
       next_units: nextUnits,
@@ -860,8 +863,14 @@ function priceToPaymentAmount(priceCzk: number) {
   return Number.isFinite(priceCzk) && priceCzk > 0 ? Math.round(priceCzk * 100) : 0;
 }
 
+function nullableTelemetryPrice(value: unknown) {
+  if (value == null || value === "") return null;
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : null;
+}
+
 function emptyPaymentAllocation() {
-  return { cashDelta: 0, cashlessDelta: 0, unknownPaymentDelta: 0, unpaidDispenseDelta: 0 };
+  return { cashDelta: 0, cashlessDelta: 0, freeVendDelta: 0, unknownPaymentDelta: 0, unpaidDispenseDelta: 0 };
 }
 
 function findPaymentUnitAssignments(
@@ -965,24 +974,30 @@ function allocatePaymentDeltas(
   paymentDelta: ReturnType<typeof getPaymentDelta>,
   availablePaymentAmounts: number[],
 ) {
-  const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; unknownPaymentDelta: number; unpaidDispenseDelta: number }>();
-  const saleUnits: Array<{ selection: string; priceAmount: number }> = [];
+  const allocations = new Map<string, { cashDelta: number; cashlessDelta: number; freeVendDelta: number; unknownPaymentDelta: number; unpaidDispenseDelta: number }>();
+  const allSaleUnits: Array<{ selection: string; priceAmount: number; freeVend: boolean }> = [];
 
   for (const item of planned) {
     const quantity = item.isInitialCounter ? 0 : Math.max(0, Math.round(Number(item.delta || 0)));
     if (quantity <= 0) continue;
-    const unitPrice = Number(item.slot.customer_price_czk ?? item.slot.dex_price_czk ?? 0);
+    const rawUnitPrice = item.slot.customer_price_czk ?? item.slot.dex_price_czk;
+    const unitPrice = Number(rawUnitPrice);
     const priceAmount = priceToPaymentAmount(unitPrice);
-    for (let i = 0; i < quantity; i += 1) saleUnits.push({ selection: item.selection, priceAmount });
+    const freeVend = rawUnitPrice != null && Number.isFinite(unitPrice) && unitPrice === 0;
+    for (let i = 0; i < quantity; i += 1) allSaleUnits.push({ selection: item.selection, priceAmount, freeVend });
     allocations.set(item.selection, emptyPaymentAllocation());
   }
 
-  const assign = (selection: string, key: "cashDelta" | "cashlessDelta" | "unknownPaymentDelta" | "unpaidDispenseDelta") => {
+  const assign = (selection: string, key: "cashDelta" | "cashlessDelta" | "freeVendDelta" | "unknownPaymentDelta" | "unpaidDispenseDelta") => {
     const current = allocations.get(selection) || emptyPaymentAllocation();
     current[key] += 1;
     allocations.set(selection, current);
   };
 
+  if (!allSaleUnits.length) return allocations;
+  allSaleUnits.filter((unit) => unit.freeVend).forEach((unit) => assign(unit.selection, "freeVendDelta"));
+  const saleUnits = allSaleUnits.filter((unit) => !unit.freeVend);
+  totalVendDelta = saleUnits.length;
   if (!saleUnits.length) return allocations;
   if (totalVendDelta <= 0) {
     saleUnits.forEach((unit) => assign(unit.selection, "unpaidDispenseDelta"));
