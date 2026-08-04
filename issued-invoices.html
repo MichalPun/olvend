@@ -119,6 +119,8 @@
     .partner-billing-evidence-option input { width:auto; min-height:0; margin-top:2px; }
     .partner-billing-evidence-option strong { display:block; margin-bottom:3px; font-size:12px; }
     .partner-billing-evidence-option span { color:var(--muted); font-size:11px; line-height:1.35; }
+    .partner-billing-source-file { display:none; grid-column:1 / -1; padding:12px 14px; border:1px solid rgba(88,166,255,0.2); border-radius:10px; background:rgba(88,166,255,0.07); }
+    .partner-billing-source-file.show { display:flex; }
     :root[data-olvend-theme="light"] input,
     :root[data-olvend-theme="light"] select,
     :root[data-olvend-theme="light"] textarea,
@@ -277,7 +279,13 @@
                 <option value="all_sales">Všechny vydané porce</option>
                 <option value="product_category">Jen hotová jídla / bagety</option>
                 <option value="settlement_rules">Jen položky s nastavenou sazbou</option>
+                <option value="external_report">Podle nahraného reportu</option>
               </select>
+            </div>
+            <div class="field partner-billing-source-file" id="partnerBillingSourceFileField">
+              <label for="partnerBillingSourceFile">Podklad od poskytovatele (povinný)</label>
+              <input id="partnerBillingSourceFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+              <span class="subtext" id="partnerBillingSourceFileHint">Nahraj měsíční XLSX od Global Payments. Soubor se použije jen pro výpočet a kontrolu; partnerovi se odešle přehledný PDF podklad.</span>
             </div>
             <div class="field">
               <label for="partnerBillingUnitDescription">Popis položky za jednotky</label>
@@ -545,6 +553,7 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="./sidebar.js?v=20260712lightfix2"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -575,6 +584,9 @@
     const partnerBillingRate = document.getElementById('partnerBillingRate')
     const partnerBillingVat = document.getElementById('partnerBillingVat')
     const partnerBillingScope = document.getElementById('partnerBillingScope')
+    const partnerBillingSourceFileField = document.getElementById('partnerBillingSourceFileField')
+    const partnerBillingSourceFileInput = document.getElementById('partnerBillingSourceFile')
+    const partnerBillingSourceFileHint = document.getElementById('partnerBillingSourceFileHint')
     const partnerBillingUnitDescription = document.getElementById('partnerBillingUnitDescription')
     const partnerBillingFixedAmount = document.getElementById('partnerBillingFixedAmount')
     const partnerBillingFixedVat = document.getElementById('partnerBillingFixedVat')
@@ -682,6 +694,7 @@
     let partnerBillingMachines = []
     let currentPartnerBilling = null
     let pendingPartnerBillingMeta = null
+    let partnerBillingSourceFile = null
     let partnerBillingRequestSequence = 0
     let partnerBillingRefreshTimer = null
     let customers = loadCustomers()
@@ -1437,27 +1450,38 @@
       if (selectedId) partnerBillingLocation.value = String(selectedId)
     }
     function syncPartnerBillingScopeInputs() {
-      const usesItemizedRates = partnerBillingScope.value === 'settlement_rules'
+      const usesExternalReport = partnerBillingScope.value === 'external_report'
+      const usesItemizedRates = partnerBillingScope.value === 'settlement_rules' || usesExternalReport
       partnerBillingRate.disabled = usesItemizedRates
       partnerBillingRate.placeholder = usesItemizedRates ? 'Podle pravidel jednotlivých položek' : ''
       if (usesItemizedRates) partnerBillingRate.value = ''
+      partnerBillingSourceFileField.classList.toggle('show', usesExternalReport)
+      partnerBillingSourceFileInput.required = usesExternalReport
+      partnerBillingAttachmentMode.disabled = usesExternalReport
+      if (usesExternalReport) partnerBillingAttachmentMode.value = 'none'
+      downloadPartnerBillingBtn.textContent = usesExternalReport ? 'Stáhnout souhrn' : 'Stáhnout podklad'
     }
     function applyPartnerBillingProfile() {
       const locationId = partnerBillingLocation.value
       const profile = partnerProfileForLocation(locationId)
       const rule = partnerRuleForLocation(locationId)
       const machines = partnerBillingMachines.filter((machine) => String(machine.location_id) === String(locationId))
+      partnerBillingSourceFile = null
+      partnerBillingSourceFileInput.value = ''
+      partnerBillingSourceFileHint.textContent = profile?.external_report_required
+        ? `Nahraj měsíční XLSX od ${profile.external_report_provider || 'poskytovatele'}. Soubor se použije jen pro výpočet a kontrolu; partnerovi se odešle PDF podklad.`
+        : 'Nahraj zdrojový měsíční report.'
       renderPartnerBillingContacts(profile?.business_contact_id || '')
       partnerBillingDevice.value = profile?.device_label || (machines.length === 1 ? (machines[0].model || machines[0].name || '') : '')
       partnerBillingRate.value = profile?.rate ?? rule?.amount ?? ''
       partnerBillingVat.value = profile?.unit_vat_rate ?? profile?.vat_rate ?? 21
       partnerBillingScope.value = profile?.billing_scope || 'all_sales'
-      syncPartnerBillingScopeInputs()
       partnerBillingUnitDescription.value = partnerInvoiceDescription(profile || {})
       partnerBillingFixedAmount.value = Number(profile?.fixed_monthly_amount || 0)
       partnerBillingFixedVat.value = Number(profile?.fixed_vat_rate ?? 21)
       partnerBillingFixedDescription.value = Number(profile?.fixed_monthly_amount || 0) > 0 ? partnerFixedDescription(profile) : ''
       partnerBillingAttachmentMode.value = profile?.attachment_mode || 'optional'
+      syncPartnerBillingScopeInputs()
       partnerBillingOrderNumber.value = profile?.customer_order_number || knownPartnerOrderNumber(profile?.business_contact_id) || ''
       const contact = partnerContactForId(profile?.business_contact_id)
       partnerBillingEmail.value = profile?.email_recipient || contact?.email || ''
@@ -1583,6 +1607,119 @@
         partner: slot.settlement_partner || ''
       }
     }
+    function externalReportDate(value) {
+      if (value instanceof Date && !Number.isNaN(value.getTime())) return value
+      if (typeof value === 'number' && window.XLSX?.SSF?.parse_date_code) {
+        const parsed = window.XLSX.SSF.parse_date_code(value)
+        if (parsed) return new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, Math.floor(parsed.S || 0)))
+      }
+      const parsed = new Date(String(value || ''))
+      return Number.isNaN(parsed.getTime()) ? null : parsed
+    }
+    function externalReportMonth(date) {
+      return date ? `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}` : ''
+    }
+    function externalReportIso(date) {
+      return date ? date.toISOString() : ''
+    }
+    function normalizeExternalReportSelection(value) {
+      const raw = String(value ?? '').trim()
+      return /^\d+$/.test(raw) ? String(Number(raw)) : raw
+    }
+    async function sha256Hex(buffer) {
+      if (!globalThis.crypto?.subtle) return ''
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer)
+      return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+    }
+    async function parseExternalPartnerReport(file, setup, range, context) {
+      if (!file) throw new Error(`Nahraj podklad od ${setup.externalReportProvider || 'poskytovatele'}.`)
+      if (!window.XLSX) throw new Error('Nepodařilo se načíst knihovnu pro Excel. Obnov stránku a zkus report nahrát znovu.')
+      if (file.size > 12 * 1024 * 1024) throw new Error('Zdrojový report je větší než povolených 12 MB.')
+      const buffer = await file.arrayBuffer()
+      const workbook = window.XLSX.read(buffer, { type:'array', cellDates:false })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      const matrix = window.XLSX.utils.sheet_to_json(sheet, { header:1, defval:'', raw:true })
+      const requiredHeaders = ['id trn.', 'datum a cas', 'uid', 'karta', 'volba', 'cena kon.', 'prijmeni', 'jmeno osoby']
+      const headerIndex = matrix.findIndex((row) => {
+        const values = new Set((row || []).map((cell) => normalizeText(cell)))
+        return requiredHeaders.every((header) => values.has(header))
+      })
+      if (headerIndex < 0) throw new Error('Soubor nemá očekávanou strukturu reportu Global Payments (A5Export).')
+      const headers = matrix[headerIndex].map((cell) => normalizeText(cell))
+      const column = (name) => headers.indexOf(normalizeText(name))
+      const filter = setup.externalReportFilter || {}
+      const cardValue = String(filter.cardValue || '').trim()
+      const partnerText = normalizeText(filter.partnerText || setup.partnerName || 'Ridera')
+      const expectedUid = String(filter.uid || '').trim()
+      const machineUids = filter.machineUids && typeof filter.machineUids === 'object' ? filter.machineUids : {}
+      const rawRows = matrix.slice(headerIndex + 1).filter((row) => String(row[column('ID trn.')] ?? '').trim())
+      const transactionIds = rawRows.map((row) => String(row[column('ID trn.')] ?? '').trim())
+      if (new Set(transactionIds).size !== transactionIds.length) throw new Error('GP report obsahuje duplicitní ID transakcí.')
+      const partnerRows = rawRows.filter((row) => {
+        const card = String(row[column('Karta')] ?? '').trim()
+        const identity = normalizeText(`${row[column('Příjmení')] ?? ''} ${row[column('Jméno osoby')] ?? ''}`)
+        return (cardValue && card === cardValue) || (partnerText && identity.includes(partnerText))
+      })
+      if (!partnerRows.length) throw new Error(`V reportu nejsou žádné transakce označené pro ${setup.partnerName || 'partnera'}.`)
+      const dates = partnerRows.map((row) => externalReportDate(row[column('Datum a čas')]))
+      if (dates.some((date) => !date)) throw new Error('U některé transakce se nepodařilo přečíst datum a čas.')
+      const outsidePeriod = dates.filter((date) => externalReportMonth(date) !== range.value)
+      if (outsidePeriod.length) throw new Error(`${outsidePeriod.length} transakcí partnera nepatří do zvoleného měsíce ${range.label}.`)
+      const unexpectedUids = Array.from(new Set(partnerRows.map((row) => String(row[column('UID')] ?? '').trim()).filter((uid) => {
+        if (machineUids[uid]) return false
+        return expectedUid ? uid !== expectedUid : true
+      })))
+      if (unexpectedUids.length) throw new Error(`Report obsahuje neočekávané UID zařízení: ${unexpectedUids.join(', ')}.`)
+      const fallbackMachineId = setup.externalReportMachineId || setup.machineIds?.[0]
+      if (!fallbackMachineId && !Object.keys(machineUids).length) throw new Error('U partnera není nastavené zařízení pro mapování voleb reportu.')
+      const productMap = new Map()
+      let reportGrossAmount = 0
+      const missingSelections = new Set()
+      partnerRows.forEach((row) => {
+        const uid = String(row[column('UID')] ?? '').trim()
+        const machineId = Number(machineUids[uid] || fallbackMachineId || 0)
+        const selectionCode = normalizeExternalReportSelection(row[column('Volba')])
+        const slot = context.slotDetails.get(partnerBillingSlotKey(machineId, selectionCode))
+        if (!slot) {
+          missingSelections.add(selectionCode || '(prázdná)')
+          return
+        }
+        const grossUnitPrice = Number(row[column('Cena kon.')] || 0)
+        if (grossUnitPrice <= 0) throw new Error(`Transakce ${row[column('ID trn.')]} partnera má nulovou nebo zápornou koncovou cenu.`)
+        const rate = roundMoney(grossUnitPrice / (1 + setup.unitVatRate / 100))
+        const productName = normalizedPartnerProductName(slot.product_name || selectionCode)
+        const productSku = String(slot.product_sku || '').trim()
+        const key = `${productSku}|${productName}|${rate}`
+        const current = productMap.get(key) || { productName, productSku, quantity:0, rate, selectionCode, grossUnitPrice }
+        current.quantity += 1
+        current.netAmount = roundMoney(current.quantity * current.rate)
+        productMap.set(key, current)
+        reportGrossAmount = roundMoney(reportGrossAmount + grossUnitPrice)
+      })
+      if (missingSelections.size) throw new Error(`V planogramu chybí volby z GP reportu: ${Array.from(missingSelections).join(', ')}.`)
+      const productBreakdown = Array.from(productMap.values()).sort((a, b) => Number(a.selectionCode || 0) - Number(b.selectionCode || 0) || a.rate - b.rate)
+      const sortedDates = [...dates].sort((a, b) => a - b)
+      return {
+        productBreakdown,
+        quantity: partnerRows.length,
+        reportGrossAmount,
+        sourceBreakdown: [{ source:setup.externalReportProvider || 'Externí report', quantity:partnerRows.length }],
+        sourceAttachment: {
+          required: true,
+          provider: setup.externalReportProvider || 'Externí report',
+          fileName: file.name,
+          contentType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          size: file.size,
+          sha256: await sha256Hex(buffer),
+          totalRows: rawRows.length,
+          includedRows: partnerRows.length,
+          excludedRows: rawRows.length - partnerRows.length,
+          periodFrom: externalReportIso(sortedDates[0]),
+          periodTo: externalReportIso(sortedDates[sortedDates.length - 1]),
+          grossAmount: reportGrossAmount
+        }
+      }
+    }
     function partnerMachineLineDescription(templates = {}, machine = {}, range = partnerMonthRange()) {
       const configured = templates && typeof templates === 'object' && !Array.isArray(templates)
         ? templates[String(machine.id)]
@@ -1637,7 +1774,12 @@
         vatRate: unitVatRate,
         unitVatRate,
         billingScope,
-        usesItemizedRates: billingScope === 'settlement_rules',
+        usesItemizedRates: ['settlement_rules', 'external_report'].includes(billingScope),
+        usesExternalReport: billingScope === 'external_report',
+        externalReportProvider: profile.external_report_provider || '',
+        externalReportRequired: Boolean(profile.external_report_required),
+        externalReportFilter: profile.external_report_filter || {},
+        externalReportMachineId: profile.external_report_machine_id || null,
         itemizedGrouping: profile.itemized_grouping || 'product',
         machineLineDescriptions: profile.machine_line_descriptions || {},
         billingDataCompleteFrom: profile.billing_data_complete_from || null,
@@ -1668,10 +1810,14 @@
         .join('')
       const rows = [...(meta.productBreakdown || []), { productName:'Celkem', quantity:meta.quantity, total:true }]
       const groupsByMachine = meta.usesItemizedRates && meta.itemizedGrouping === 'machine'
-      const scopeText = meta.billingScope === 'product_category'
+      const scopeText = meta.usesExternalReport
+        ? `Jen transakce označené ${meta.partnerName || 'partnerem'} ve zdrojovém reportu`
+        : meta.billingScope === 'product_category'
         ? 'Jen hotová jídla / bagety'
         : (meta.usesItemizedRates ? 'Jen položky s nastavenou sazbou' : 'Všechny vydané porce')
-      const breakdownTitle = meta.billingScope === 'product_category'
+      const breakdownTitle = meta.usesExternalReport
+        ? `Vyúčtování podle reportu ${meta.externalReportProvider || ''}`.trim()
+        : meta.billingScope === 'product_category'
         ? 'Struktura prodaných baget'
         : (groupsByMachine ? 'Vyúčtování podle zařízení' : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů'))
       partnerBillingBreakdown.innerHTML = `<div class="partner-billing-breakdown-head"><strong>${escapeHtml(breakdownTitle)}</strong><span>${escapeHtml(scopeText)} · celkem ${escapeHtml(Number(meta.quantity || 0).toLocaleString('cs-CZ'))} ${escapeHtml(meta.quantityUnit || 'porcí')}</span></div>` + rows.map((row) => `
@@ -1683,6 +1829,61 @@
             : Number(row.quantity || 0).toLocaleString('cs-CZ'))}</strong>
         </div>
       `).join('')
+    }
+    async function refreshExternalPartnerBillingPreview(setup, range, requestId) {
+      if (!partnerBillingSourceFile) {
+        currentPartnerBilling = null
+        partnerBillingSourceFileHint.textContent = `Nahraj XLSX od ${setup.externalReportProvider || 'poskytovatele'} za ${range.label}. Bez zdrojového souboru fakturu nepřipravím.`
+        setPartnerBillingStatus(`Čekám na povinný report od ${setup.externalReportProvider || 'poskytovatele'} za ${range.label}.`)
+        return
+      }
+      const configuredMachineIds = Object.values(setup.externalReportFilter?.machineUids || {}).map(Number).filter(Boolean)
+      const machineIds = configuredMachineIds.length ? configuredMachineIds : [setup.externalReportMachineId || setup.machineIds?.[0]].filter(Boolean)
+      const context = await partnerBillingCategoryContext(machineIds)
+      if (requestId !== partnerBillingRequestSequence) return
+      const report = await parseExternalPartnerReport(partnerBillingSourceFile, setup, range, context)
+      if (requestId !== partnerBillingRequestSequence) return
+      const base = partnerBillingSnapshotFromInputs({
+        quantity: report.quantity,
+        productBreakdown: report.productBreakdown,
+        billingMachineIds: machineIds,
+        sourceBreakdown: report.sourceBreakdown,
+        sourceAttachment: report.sourceAttachment
+      })
+      const unitNetAmount = roundMoney(report.productBreakdown.reduce((sum, row) => sum + Number(row.netAmount || 0), 0))
+      const unitVatAmount = roundMoney(report.productBreakdown.reduce((sum, row) => sum + roundMoney(Number(row.netAmount || 0) * base.unitVatRate / 100), 0))
+      const fixedNetAmount = roundMoney(base.fixedAmount)
+      const fixedVatAmount = roundMoney(fixedNetAmount * base.fixedVatRate / 100)
+      const netAmount = roundMoney(unitNetAmount + fixedNetAmount)
+      const vatAmount = roundMoney(unitVatAmount + fixedVatAmount)
+      const grossBeforeRounding = roundMoney(netAmount + vatAmount)
+      const roundingAmount = roundingForTotal(grossBeforeRounding, base.roundingMode)
+      const totalAmount = roundMoney(grossBeforeRounding + roundingAmount)
+      if (Math.abs(totalAmount - report.reportGrossAmount) > 0.01) {
+        throw new Error(`Součet faktury ${formatMoney(totalAmount)} nesouhlasí s GP reportem ${formatMoney(report.reportGrossAmount)}.`)
+      }
+      const duplicate = documents.find((row) => {
+        if (row.status === 'cancelled') return false
+        const existing = extractMeta(row).partnerBilling
+        return existing && String(existing.locationId) === String(base.locationId) && existing.monthValue === base.monthValue
+      })
+      currentPartnerBilling = {
+        ...base,
+        unitNetAmount,
+        unitVatAmount,
+        fixedNetAmount,
+        fixedVatAmount,
+        netAmount,
+        vatAmount,
+        grossBeforeRounding,
+        roundingAmount,
+        totalAmount,
+        preparedAt: new Date().toISOString()
+      }
+      renderPartnerBillingPreview(currentPartnerBilling)
+      partnerBillingSourceFileHint.textContent = `${report.sourceAttachment.fileName} · ${report.sourceAttachment.includedRows.toLocaleString('cs-CZ')} řádků partnera z ${report.sourceAttachment.totalRows.toLocaleString('cs-CZ')} · ${formatMoney(report.reportGrossAmount)} s DPH. XLSX slouží jen k výpočtu; k e-mailu se vytvoří PDF podklad.`
+      if (duplicate) setPartnerBillingStatus(`Pozor: vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`, 'error')
+      else setPartnerBillingStatus(`Hotovo podle ${setup.externalReportProvider || 'externího reportu'}: ${report.quantity.toLocaleString('cs-CZ')} transakcí partnera · ${report.productBreakdown.length} řádků · ${formatMoney(totalAmount)} s DPH.`, 'success')
     }
     async function refreshPartnerBillingPreview() {
       const requestId = ++partnerBillingRequestSequence
@@ -1696,6 +1897,11 @@
       try {
         setPartnerBillingStatus('Načítám a kontroluji výdeje za vybraný měsíc...')
         const range = partnerMonthRange()
+        const setup = partnerBillingSnapshotFromInputs()
+        if (setup.usesExternalReport) {
+          await refreshExternalPartnerBillingPreview(setup, range, requestId)
+          return
+        }
         const machineIds = partnerBillingMachines
           .filter((machine) => String(machine.location_id) === String(partnerBillingLocation.value))
           .map((machine) => machine.id)
@@ -1703,7 +1909,6 @@
         const rawRows = await fetchPartnerTelemetry(machineIds, range)
         if (requestId !== partnerBillingRequestSequence) return
         const rows = selectAuthoritativePartnerTelemetry(rawRows)
-        const setup = partnerBillingSnapshotFromInputs()
         const categoryContext = ['product_category', 'settlement_rules'].includes(setup.billingScope)
           ? await partnerBillingCategoryContext(machineIds)
           : null
@@ -1931,7 +2136,10 @@
       if (partnerBillingRefreshTimer) clearTimeout(partnerBillingRefreshTimer)
       partnerBillingModalBackdrop.classList.remove('show')
       currentPartnerBilling = null
+      partnerBillingSourceFile = null
       partnerBillingForm.reset()
+      partnerBillingSourceFileField.classList.remove('show')
+      partnerBillingSourceFileHint.textContent = 'Nahraj zdrojový měsíční report.'
       partnerBillingSummary.innerHTML = ''
       partnerBillingBreakdown.innerHTML = ''
     }
@@ -1940,6 +2148,7 @@
       if (!currentPartnerBilling.quantity && !currentPartnerBilling.fixedAmount) throw new Error('Za vybraný měsíc nejsou žádné jednotky k vyúčtování ani nastavený fixní poplatek.')
       if (currentPartnerBilling.quantity > 0 && !currentPartnerBilling.rate && !currentPartnerBilling.usesItemizedRates) throw new Error('Doplň sazbu za jednotku.')
       if (currentPartnerBilling.quantity > 0 && currentPartnerBilling.usesItemizedRates && !currentPartnerBilling.unitNetAmount) throw new Error('Položkové sazby nevytvořily žádnou částku k fakturaci.')
+      if (currentPartnerBilling.usesExternalReport && currentPartnerBilling.externalReportRequired && (!currentPartnerBilling.sourceAttachment || !partnerBillingSourceFile)) throw new Error('Nahraj a zkontroluj povinný zdrojový report.')
       if (currentPartnerBilling.quantity > 0 && !currentPartnerBilling.description && !currentPartnerBilling.usesItemizedRates) throw new Error('Doplň popis položky za jednotky.')
       if (currentPartnerBilling.fixedAmount > 0 && !currentPartnerBilling.fixedDescription) throw new Error('Doplň popis fixního poplatku.')
       if (!currentPartnerBilling.contactId) throw new Error('Vyber odběratele faktury.')
@@ -3640,10 +3849,14 @@
       doc.line(margin, 125, pageWidth - margin, 125)
       y = 137
       const groupsByMachine = meta.usesItemizedRates && meta.itemizedGrouping === 'machine'
-      const breakdownTitle = meta.billingScope === 'product_category'
+      const breakdownTitle = meta.usesExternalReport
+        ? `Vyúčtování podle reportu ${meta.externalReportProvider || ''}`.trim()
+        : meta.billingScope === 'product_category'
         ? 'Struktura prodaných baget'
         : (groupsByMachine ? 'Vyúčtování podle zařízení' : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů'))
-      const breakdownScope = meta.billingScope === 'product_category'
+      const breakdownScope = meta.usesExternalReport
+        ? `jen transakce označené ${meta.partnerName || 'partnerem'}`
+        : meta.billingScope === 'product_category'
         ? 'jen hotová jídla / bagety'
         : (meta.usesItemizedRates ? 'jen položky s nastavenou sazbou' : 'všechny vydané porce')
       setFont('bold', 10, ink)
@@ -3740,7 +3953,9 @@
       doc.line(margin, y, pageWidth - margin, y)
       y += 7
       setFont('normal', 7.5, muted)
-      const noteParts = ['Výpočet vychází z evidence výdejů zařízení za uvedené období.']
+      const noteParts = [meta.usesExternalReport
+        ? `Výpočet vychází z povinného reportu ${meta.externalReportProvider || 'poskytovatele'} ${meta.sourceAttachment?.fileName || ''}. Do vyúčtování jsou zahrnuté pouze řádky označené partnerem.`
+        : 'Výpočet vychází z evidence výdejů zařízení za uvedené období.']
       if (meta.quantity > 0 && meta.usesItemizedRates) {
         const rates = Array.from(new Set((meta.productBreakdown || []).map((row) => Number(row.rate || 0)).filter((rate) => rate > 0)))
           .sort((a, b) => a - b)
@@ -4157,6 +4372,7 @@
       const customer = currentCustomerDetail()
       upsertCustomer(customer)
       await savePaymentSettings()
+      const partnerBillingForSave = pendingPartnerBillingMeta || extractMeta(existingDocument).partnerBilling || null
       const meta = {
         customer,
         dueDate: dueDate.value || null,
@@ -4180,7 +4396,7 @@
           account: paymentAccount.value.trim(),
           constantSymbol: constantSymbol.value.trim() || '0308'
         },
-        partnerBilling: pendingPartnerBillingMeta || extractMeta(existingDocument).partnerBilling || null
+        partnerBilling: partnerBillingForSave
       }
       const userNote = documentNote.value.trim()
       const payload = {
@@ -4280,6 +4496,13 @@
       schedulePartnerBillingRefresh()
     })
     partnerBillingScope.addEventListener('change', syncPartnerBillingScopeInputs)
+    partnerBillingSourceFileInput.addEventListener('change', () => {
+      partnerBillingSourceFile = partnerBillingSourceFileInput.files?.[0] || null
+      partnerBillingSourceFileHint.textContent = partnerBillingSourceFile
+        ? `${partnerBillingSourceFile.name} · kontroluji obsah a období...`
+        : 'Nahraj zdrojový měsíční report.'
+      schedulePartnerBillingRefresh(0)
+    })
     ;[
       partnerBillingDevice,
       partnerBillingRate,
