@@ -1572,6 +1572,18 @@
         partner: slot.settlement_partner || ''
       }
     }
+    function partnerMachineLineDescription(templates = {}, machine = {}, range = partnerMonthRange()) {
+      const configured = templates && typeof templates === 'object' && !Array.isArray(templates)
+        ? templates[String(machine.id)]
+        : ''
+      const template = configured || 'Provoz kávového automatu {machine} (EV {evidence_number}) - {month}/{year}'
+      return String(template)
+        .replaceAll('{machine}', machine.model || machine.name || 'kávový automat')
+        .replaceAll('{evidence_number}', String(machine.evidence_number || ''))
+        .replaceAll('{month}', String(range.month))
+        .replaceAll('{month_padded}', range.monthPadded)
+        .replaceAll('{year}', String(range.year))
+    }
     function partnerBillingSnapshotFromInputs(base = {}) {
       const range = partnerMonthRange()
       const location = partnerBillingLocations.find((item) => String(item.id) === String(partnerBillingLocation.value)) || {}
@@ -1615,6 +1627,10 @@
         unitVatRate,
         billingScope,
         usesItemizedRates: billingScope === 'settlement_rules',
+        itemizedGrouping: profile.itemized_grouping || 'product',
+        machineLineDescriptions: profile.machine_line_descriptions || {},
+        billingDataCompleteFrom: profile.billing_data_complete_from || null,
+        billingDataNote: profile.billing_data_note || '',
         productCategoryFilter: profile.product_category_filter || (billingScope === 'product_category' ? 'food_ready' : ''),
         quantityLabel: profile.quantity_label || (billingScope === 'product_category' ? 'Prodané bagety' : 'Vydané porce'),
         quantityUnit: profile.quantity_unit || (billingScope === 'product_category' ? 'baget' : 'porcí'),
@@ -1640,12 +1656,13 @@
         .map(([label, value, className]) => `<div class="partner-billing-card ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
         .join('')
       const rows = [...(meta.productBreakdown || []), { productName:'Celkem', quantity:meta.quantity, total:true }]
+      const groupsByMachine = meta.usesItemizedRates && meta.itemizedGrouping === 'machine'
       const scopeText = meta.billingScope === 'product_category'
         ? 'Jen hotová jídla / bagety'
         : (meta.usesItemizedRates ? 'Jen položky s nastavenou sazbou' : 'Všechny vydané porce')
       const breakdownTitle = meta.billingScope === 'product_category'
         ? 'Struktura prodaných baget'
-        : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů')
+        : (groupsByMachine ? 'Vyúčtování podle zařízení' : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů'))
       partnerBillingBreakdown.innerHTML = `<div class="partner-billing-breakdown-head"><strong>${escapeHtml(breakdownTitle)}</strong><span>${escapeHtml(scopeText)} · celkem ${escapeHtml(Number(meta.quantity || 0).toLocaleString('cs-CZ'))} ${escapeHtml(meta.quantityUnit || 'porcí')}</span></div>` + rows.map((row) => `
         <div class="partner-billing-breakdown-row${row.total ? ' partner-billing-breakdown-total' : ''}">
           <span>${escapeHtml(row.productName)}</span><strong>${escapeHtml(meta.usesItemizedRates
@@ -1703,11 +1720,24 @@
           const quantity = Number(row.quantity || 0)
           if (quantity <= 0) return
           const settlement = setup.usesItemizedRates ? partnerBillingRowSettlement(row, categoryContext) : null
-          const productName = settlement?.productName || normalizedPartnerProductName(row.product_name || row.selection_code)
-          const productSku = settlement?.productSku || ''
+          const machine = partnerBillingMachines.find((item) => String(item.id) === String(row.machine_id)) || { id:row.machine_id }
+          const groupsByMachine = setup.usesItemizedRates && setup.itemizedGrouping === 'machine'
+          const productName = groupsByMachine
+            ? partnerMachineLineDescription(setup.machineLineDescriptions, machine, range)
+            : (settlement?.productName || normalizedPartnerProductName(row.product_name || row.selection_code))
+          const productSku = groupsByMachine ? '' : (settlement?.productSku || '')
           const rate = settlement?.rate ?? setup.rate
-          const productKey = setup.usesItemizedRates ? `${productSku}|${productName}|${rate}` : productName
-          const current = productMap.get(productKey) || { productName, productSku, quantity:0, rate }
+          const productKey = setup.usesItemizedRates
+            ? (groupsByMachine ? `machine:${row.machine_id}|${rate}` : `${productSku}|${productName}|${rate}`)
+            : productName
+          const current = productMap.get(productKey) || {
+            productName,
+            productSku,
+            machineId: groupsByMachine ? row.machine_id : null,
+            machineEvidenceNumber: groupsByMachine ? machine.evidence_number : null,
+            quantity:0,
+            rate
+          }
           current.quantity = roundMoney(current.quantity + quantity)
           current.netAmount = roundMoney(current.quantity * current.rate)
           productMap.set(productKey, current)
@@ -1716,7 +1746,9 @@
         })
         const productBreakdown = Array.from(productMap.values())
           .sort((a, b) => setup.usesItemizedRates
-            ? a.productName.localeCompare(b.productName, 'cs', { sensitivity:'base' }) || a.rate - b.rate
+            ? (setup.itemizedGrouping === 'machine'
+              ? Number(a.machineEvidenceNumber || 0) - Number(b.machineEvidenceNumber || 0) || a.productName.localeCompare(b.productName, 'cs', { sensitivity:'base' })
+              : a.productName.localeCompare(b.productName, 'cs', { sensitivity:'base' }) || a.rate - b.rate)
             : b.quantity - a.quantity || a.productName.localeCompare(b.productName, 'cs'))
         const quantity = roundMoney(productBreakdown.reduce((sum, row) => sum + row.quantity, 0))
         const base = partnerBillingSnapshotFromInputs({
@@ -1756,12 +1788,14 @@
           preparedAt: new Date().toISOString()
         }
         renderPartnerBillingPreview(currentPartnerBilling)
+        const hasIncompleteCoverage = Boolean(base.billingDataCompleteFrom && base.fromDate < base.billingDataCompleteFrom)
         if (!quantity && !base.fixedAmount) setPartnerBillingStatus('Za vybraný měsíc nejsou evidované žádné výdeje a není nastavený fixní poplatek.', 'error')
         else if (quantity && !base.rate && !base.usesItemizedRates) setPartnerBillingStatus('Doplň sazbu za jednotku.', 'error')
         else if (quantity && base.usesItemizedRates && !unitNetAmount) setPartnerBillingStatus('Položkové sazby nevytvořily žádnou částku k fakturaci.', 'error')
         else if (!base.contactId) setPartnerBillingStatus('Vyber odběratele faktury.', 'error')
+        else if (hasIncompleteCoverage) setPartnerBillingStatus(`Období nelze bezpečně vyúčtovat: úplná data jsou až od ${formatDate(base.billingDataCompleteFrom)}. ${base.billingDataNote || ''}`.trim(), 'error')
         else if (duplicate) setPartnerBillingStatus(`Pozor: vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`, 'error')
-        else setPartnerBillingStatus(`Hotovo: ${quantity.toLocaleString('cs-CZ')} ${base.quantityUnit}${base.usesItemizedRates ? ` · ${productBreakdown.length} položkových sazeb` : ''} · ${base.fixedAmount ? `fix ${formatMoney(base.fixedAmount)} · ` : ''}${base.description}`, 'success')
+        else setPartnerBillingStatus(`Hotovo: ${quantity.toLocaleString('cs-CZ')} ${base.quantityUnit}${base.usesItemizedRates ? ` · ${productBreakdown.length} ${base.itemizedGrouping === 'machine' ? 'zařízení' : 'položkových sazeb'}` : ''} · ${base.fixedAmount ? `fix ${formatMoney(base.fixedAmount)} · ` : ''}${base.description}`, 'success')
       } catch (error) {
         if (requestId !== partnerBillingRequestSequence) return
         console.error(error)
@@ -1785,6 +1819,10 @@
         vat_rate: snapshot.unitVatRate,
         unit_vat_rate: snapshot.unitVatRate,
         billing_scope: snapshot.billingScope,
+        itemized_grouping: existingProfile?.itemized_grouping || snapshot.itemizedGrouping || 'product',
+        machine_line_descriptions: existingProfile?.machine_line_descriptions || snapshot.machineLineDescriptions || {},
+        billing_data_complete_from: existingProfile?.billing_data_complete_from || snapshot.billingDataCompleteFrom || null,
+        billing_data_note: existingProfile?.billing_data_note || snapshot.billingDataNote || null,
         product_category_filter: snapshot.billingScope === 'product_category' ? (snapshot.productCategoryFilter || 'food_ready') : null,
         quantity_label: snapshot.quantityLabel,
         quantity_unit: snapshot.quantityUnit,
@@ -1894,6 +1932,9 @@
       if (currentPartnerBilling.fixedAmount > 0 && !currentPartnerBilling.fixedDescription) throw new Error('Doplň popis fixního poplatku.')
       if (!currentPartnerBilling.contactId) throw new Error('Vyber odběratele faktury.')
       if (!currentPartnerBilling.deviceLabel) throw new Error('Doplň označení zařízení.')
+      if (currentPartnerBilling.billingDataCompleteFrom && currentPartnerBilling.fromDate < currentPartnerBilling.billingDataCompleteFrom) {
+        throw new Error(`Období nelze bezpečně vyúčtovat: úplná data jsou až od ${formatDate(currentPartnerBilling.billingDataCompleteFrom)}. ${currentPartnerBilling.billingDataNote || ''}`.trim())
+      }
       const duplicate = documents.find((row) => {
         if (row.status === 'cancelled') return false
         const existing = extractMeta(row).partnerBilling
@@ -1969,7 +2010,7 @@
       }
       updateLineTotals()
       const preparedParts = []
-      if (meta.quantity > 0) preparedParts.push(`${meta.quantity.toLocaleString('cs-CZ')} ${meta.quantityUnit}${meta.usesItemizedRates ? ` v ${(meta.productBreakdown || []).length} položkách` : ''}`)
+      if (meta.quantity > 0) preparedParts.push(`${meta.quantity.toLocaleString('cs-CZ')} ${meta.quantityUnit}${meta.usesItemizedRates ? ` v ${(meta.productBreakdown || []).length} ${meta.itemizedGrouping === 'machine' ? 'zařízeních' : 'položkách'}` : ''}`)
       if (meta.fixedAmount > 0) preparedParts.push(`fix ${formatMoney(meta.fixedAmount)} bez DPH`)
       setLineStatus(`Připraveno: ${preparedParts.join(' + ')} za ${meta.month}/${meta.year}. Zkontroluj doklad a ulož ho.`, 'success')
     }
@@ -3561,9 +3602,10 @@
       doc.line(margin, 97, pageWidth - margin, 97)
       doc.line(margin, 125, pageWidth - margin, 125)
       y = 137
+      const groupsByMachine = meta.usesItemizedRates && meta.itemizedGrouping === 'machine'
       const breakdownTitle = meta.billingScope === 'product_category'
         ? 'Struktura prodaných baget'
-        : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů')
+        : (groupsByMachine ? 'Vyúčtování podle zařízení' : (meta.usesItemizedRates ? 'Vyúčtování podle druhu nápoje' : 'Struktura výdejů'))
       const breakdownScope = meta.billingScope === 'product_category'
         ? 'jen hotová jídla / bagety'
         : (meta.usesItemizedRates ? 'jen položky s nastavenou sazbou' : 'všechny vydané porce')
@@ -3666,7 +3708,9 @@
         const rates = Array.from(new Set((meta.productBreakdown || []).map((row) => Number(row.rate || 0)).filter((rate) => rate > 0)))
           .sort((a, b) => a - b)
           .map((rate) => money(rate))
-        if (rates.length) noteParts.push(`Položkové sazby bez DPH: ${rates.join(' a ')} podle druhu nápoje.`)
+        if (rates.length) noteParts.push(groupsByMachine
+          ? `Sazba bez DPH: ${rates.join(' a ')} podle vyúčtovaného zařízení.`
+          : `Položkové sazby bez DPH: ${rates.join(' a ')} podle druhu nápoje.`)
       } else if (meta.quantity > 0 && meta.rate > 0) {
         noteParts.push(`Sazba činí ${money(meta.rate)} bez DPH za jednu ${meta.billingScope === 'product_category' ? 'prodanou bagetu' : 'vydanou porci'}.`)
       }
