@@ -45,7 +45,7 @@
     input, select, textarea { width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:#fff; padding:8px 10px; min-height:34px; border-radius:6px; outline:none; font-size:13px; font-family:inherit; }
     input:focus, select:focus, textarea:focus { border-color:rgba(213,16,26,0.5); box-shadow:0 0 0 3px rgba(213,16,26,0.12); }
     .table-wrap { overflow-x:auto; }
-    table { width:100%; min-width:1120px; border-collapse:collapse; font-size:12px; }
+    table { width:100%; min-width:1300px; border-collapse:collapse; font-size:12px; }
     th, td { text-align:left; padding:7px 8px; border-bottom:1px solid rgba(255,255,255,0.06); vertical-align:middle; }
     th { position:sticky; top:0; z-index:2; background:#151820; color:#c2c8d3; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }
     tbody tr:hover { background:rgba(255,255,255,0.03); }
@@ -56,6 +56,8 @@
     .badge.bad { color:#ffc5ca; border-color:rgba(255,91,102,0.24); background:rgba(255,91,102,0.12); }
     .badge.info { color:#c5dcff; border-color:rgba(88,166,255,0.22); background:rgba(88,166,255,0.12); }
     .money-cell { font-weight:900; white-space:nowrap; }
+    .email-status-cell { min-width:190px; }
+    .email-error { max-width:260px; overflow:hidden; color:#ffb0b6; text-overflow:ellipsis; white-space:nowrap; }
     .action-row { display:flex; gap:5px; flex-wrap:wrap; }
     .action-menu { position:relative; display:inline-block; }
     .action-menu summary { width:32px; height:30px; display:grid; place-items:center; padding:0; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.055); color:#fff; cursor:pointer; font-size:18px; font-weight:900; line-height:1; letter-spacing:1px; list-style:none; }
@@ -219,6 +221,7 @@
                     <th>Datum</th>
                     <th>Položky</th>
                     <th>Částka</th>
+                    <th>E-mail</th>
                     <th>Akce</th>
                   </tr>
                 </thead>
@@ -1318,6 +1321,11 @@
       rows.push(profile)
       localStorage.setItem(PARTNER_BILLING_LOCAL_KEY, JSON.stringify(rows))
     }
+    function removeLocalPartnerBillingProfile(locationId) {
+      const rows = loadLocalPartnerBillingProfiles().filter((item) => String(item.location_id) !== String(locationId))
+      if (rows.length) localStorage.setItem(PARTNER_BILLING_LOCAL_KEY, JSON.stringify(rows))
+      else localStorage.removeItem(PARTNER_BILLING_LOCAL_KEY)
+    }
     function inferAvePartnerBillingProfile(profileMap, contacts = [], locations = [], historicalDocuments = documents) {
       if (!locations.some((location) => String(location.id) === '17')) return
       const existing = profileMap.get('17') || {}
@@ -1466,7 +1474,10 @@
       const fatalError = profilesResult.error || locationsResult.error || rulesResult.error || contactsResult.error || machinesResult.error
       if (fatalError) throw fatalError
       const profileMap = new Map((profilesResult.data || []).map((profile) => [String(profile.location_id), profile]))
-      loadLocalPartnerBillingProfiles().forEach((profile) => profileMap.set(String(profile.location_id), profile))
+      loadLocalPartnerBillingProfiles().forEach((profile) => {
+        const locationId = String(profile.location_id)
+        if (!profileMap.has(locationId)) profileMap.set(locationId, profile)
+      })
       inferAvePartnerBillingProfile(profileMap, contactsResult.data || [], locationsResult.data || [], aveDocumentsResult.error ? documents : (aveDocumentsResult.data || []))
       partnerBillingProfiles = Array.from(profileMap.values())
       partnerBillingLocations = locationsResult.data || []
@@ -1869,6 +1880,7 @@
         .select('*')
         .single()
       if (profileError) throw profileError
+      removeLocalPartnerBillingProfile(snapshot.locationId)
       const range = partnerMonthRange()
       const existingRule = partnerRuleForLocation(snapshot.locationId, range)
       let savedRule = null
@@ -3061,6 +3073,30 @@
         { label:'Celkem', value: currencies.length === 1 ? formatMoney(total, summaryCurrency) : (totalCzk.missingRate ? 'Chybí kurz' : formatMoney(totalCzk.amount, 'CZK')), note: currencies.length === 1 ? 'Hrubý součet dokladů.' : multiCurrencyNote }
       ].map((card) => `<article class="summary-box"><div class="summary-box-label">${escapeHtml(card.label)}</div><div class="summary-box-value">${escapeHtml(String(card.value))}</div><div class="summary-box-note">${escapeHtml(card.note)}</div></article>`).join('')
     }
+    function formatEmailDateTime(value) {
+      if (!value) return ''
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return ''
+      return date.toLocaleString('cs-CZ', { dateStyle:'short', timeStyle:'short' })
+    }
+    function emailRecipientForRow(row, meta = extractMeta(row)) {
+      return String(meta.email?.to || meta.partnerBilling?.emailRecipient || documentCustomer(row).email || '').trim()
+    }
+    function renderEmailStatus(row, meta = extractMeta(row)) {
+      const email = meta.email || {}
+      const recipient = emailRecipientForRow(row, meta)
+      const sentAt = email.sentAt || (email.status === 'sent' ? email.attemptedAt : '')
+      const failedAt = email.failedAt || (email.status === 'failed' ? email.attemptedAt : '')
+      if (sentAt) {
+        const evidence = email.partnerEvidenceIncluded ? ' · s podkladem' : ''
+        return `<td class="email-status-cell" data-label="E-mail"><span class="badge good">Odesláno</span><span class="subtext">${escapeHtml(formatEmailDateTime(sentAt))}</span><span class="subtext">${escapeHtml(recipient || 'Adresa neuvedena')}${escapeHtml(evidence)}</span></td>`
+      }
+      if (failedAt || email.status === 'failed') {
+        const errorMessage = String(email.error || 'Odeslání se nezdařilo.')
+        return `<td class="email-status-cell" data-label="E-mail"><span class="badge bad">Chyba</span><span class="subtext">${escapeHtml(formatEmailDateTime(failedAt))}${recipient ? ` · ${escapeHtml(recipient)}` : ''}</span><span class="subtext email-error" title="${escapeHtml(errorMessage)}">${escapeHtml(errorMessage)}</span></td>`
+      }
+      return `<td class="email-status-cell" data-label="E-mail"><span class="badge">Neodesláno</span><span class="subtext">${escapeHtml(recipient || 'Bez e-mailové adresy')}</span></td>`
+    }
     function renderRows() {
       const rows = filteredRows().sort(compareDocumentNumberDesc)
       invoiceBody.innerHTML = rows.map((row) => {
@@ -3081,6 +3117,7 @@
             <td data-label="Datum"><strong>${escapeHtml(formatDate(row.issued_at))}</strong><span class="subtext">${escapeHtml(dateSubtext)}</span></td>
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(amountSubtext)}</span></td>
+            ${renderEmailStatus(row, meta)}
             <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="copy" data-id="${escapeHtml(String(row.id))}">Kopírovat</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
           </tr>
         `
@@ -3863,44 +3900,82 @@
       const meta = extractMeta(row)
       const customer = documentCustomer(row)
       const to = String(options.to || '').trim()
-      if (!to) return
-      setStatus(`Připravuji PDF a odesílám doklad ${documentNumber(row)}...`)
-      const pdf = await createInvoicePdf(row)
-      const pdfBase64 = pdf.output('datauristring').split(',')[1]
-      const fileName = `${documentNumber(row)}.pdf`
-      const subject = documentTitle(row)
+      if (!to) throw new Error('Doplň e-mail příjemce.')
       const attachmentMode = meta.partnerBilling?.attachmentMode || 'none'
       const includePartnerEvidence = Boolean(meta.partnerBilling) && attachmentMode !== 'none' && (attachmentMode === 'automatic' || options.includePartnerEvidence)
-      const attachments = [...(options.attachments || [])]
-      if (includePartnerEvidence) attachments.push(await partnerBillingEvidenceAttachment(meta.partnerBilling))
-      const { data, error } = await supabase.functions.invoke('send-issued-invoice-email', {
-        body: {
-          documentId: row.id,
-          to,
-          subject,
-          html: buildInvoiceEmailHtml(row, { includePartnerEvidence }),
-          pdfBase64,
-          fileName,
-          attachments
+      const previousEmail = meta.email || {}
+      const attemptCount = Number(previousEmail.attemptCount || (previousEmail.sentAt || previousEmail.failedAt ? 1 : 0)) + 1
+      const attemptedAt = new Date().toISOString()
+      let data = null
+      try {
+        setStatus(`Připravuji PDF a odesílám doklad ${documentNumber(row)}...`)
+        const pdf = await createInvoicePdf(row)
+        const pdfBase64 = pdf.output('datauristring').split(',')[1]
+        const fileName = `${documentNumber(row)}.pdf`
+        const subject = documentTitle(row)
+        const attachments = [...(options.attachments || [])]
+        if (includePartnerEvidence) attachments.push(await partnerBillingEvidenceAttachment(meta.partnerBilling))
+        const result = await supabase.functions.invoke('send-issued-invoice-email', {
+          body: {
+            documentId: row.id,
+            to,
+            subject,
+            html: buildInvoiceEmailHtml(row, { includePartnerEvidence }),
+            pdfBase64,
+            fileName,
+            attachments
+          }
+        })
+        if (result.error) throw new Error(await functionInvokeErrorMessage(result.error))
+        if (result.data?.error) throw new Error(result.data.error)
+        data = result.data
+      } catch (error) {
+        const message = error?.message || String(error)
+        const failedMeta = {
+          ...meta,
+          customer: { ...customer, email: to },
+          email: {
+            status: 'failed',
+            attemptedAt,
+            failedAt: new Date().toISOString(),
+            to,
+            error: message,
+            partnerEvidenceIncluded: includePartnerEvidence,
+            attemptCount
+          }
         }
-      })
-      if (error) throw new Error(await functionInvokeErrorMessage(error))
-      if (data?.error) throw new Error(data.error)
+        try {
+          const failedNote = noteWithMeta(row, failedMeta)
+          const { error: failedUpdateError } = await supabase.from('sales_documents').update({ note: failedNote }).eq('id', row.id)
+          if (failedUpdateError) throw failedUpdateError
+          row.note = failedNote
+          renderRows()
+        } catch (historyError) {
+          console.error('Nepodařilo se uložit historii neúspěšného odeslání.', historyError)
+        }
+        throw new Error(message)
+      }
+      const sentAt = new Date().toISOString()
       const nextMeta = {
         ...meta,
         customer: { ...customer, email: to },
         email: {
-          sentAt: new Date().toISOString(),
+          status: 'sent',
+          attemptedAt,
+          sentAt,
           to,
           providerId: data?.provider_id || null,
-          partnerEvidenceIncluded: includePartnerEvidence
+          partnerEvidenceIncluded: includePartnerEvidence,
+          attemptCount
         }
       }
+      const nextNote = noteWithMeta(row, nextMeta)
       const { error: updateError } = await supabase
         .from('sales_documents')
-        .update({ note: noteWithMeta(row, nextMeta) })
+        .update({ note: nextNote })
         .eq('id', row.id)
-      if (updateError) throw updateError
+      if (updateError) throw new Error(`E-mail byl odeslán, ale nepodařilo se uložit stav: ${updateError.message}`)
+      row.note = nextNote
       setStatus(`Doklad ${documentNumber(row)} byl odeslán na ${to}.`, 'success')
       await loadPage()
     }
@@ -4333,7 +4408,8 @@
         closeEmailModal()
       } catch (error) {
         console.error(error)
-        setEmailStatus(`E-mail se nepodařilo odeslat: ${error.message}`, 'error')
+        const message = String(error?.message || error)
+        setEmailStatus(message.startsWith('E-mail byl odeslán') ? message : `E-mail se nepodařilo odeslat: ${message}`, 'error')
       } finally {
         sendEmailBtn.disabled = false
       }
