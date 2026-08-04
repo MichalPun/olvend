@@ -918,6 +918,42 @@ function canComposePaymentAmount(quantity: number, targetAmount: number, availab
   return reachable.has(target);
 }
 
+function closestPricedUnitIndexes(
+  saleUnits: Array<{ selection: string; priceAmount: number }>,
+  availableIndexes: number[],
+  quantity: number,
+  targetAmount: number,
+) {
+  const targetQuantity = Math.max(0, Math.min(availableIndexes.length, Math.round(quantity)));
+  if (!targetQuantity) return new Set<number>();
+
+  let states = new Map<string, number[]>([["0:0", []]]);
+  for (const index of availableIndexes) {
+    const next = new Map(states);
+    for (const [key, picked] of states) {
+      const [count, amount] = key.split(":").map(Number);
+      if (count >= targetQuantity) continue;
+      const nextPicked = [...picked, index];
+      const nextKey = `${count + 1}:${amount + saleUnits[index].priceAmount}`;
+      if (!next.has(nextKey)) next.set(nextKey, nextPicked);
+    }
+    states = next;
+  }
+
+  let best: number[] = [];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const [key, picked] of states) {
+    const [count, amount] = key.split(":").map(Number);
+    if (count !== targetQuantity) continue;
+    const distance = Math.abs(amount - Math.max(0, Math.round(targetAmount)));
+    if (distance < bestDistance) {
+      best = picked;
+      bestDistance = distance;
+    }
+  }
+  return new Set(best);
+}
+
 function allocatePaymentDeltas(
   planned: Array<{
     slot: Record<string, unknown>;
@@ -949,7 +985,7 @@ function allocatePaymentDeltas(
 
   if (!saleUnits.length) return allocations;
   if (totalVendDelta <= 0) {
-    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
+    saleUnits.forEach((unit) => assign(unit.selection, "unpaidDispenseDelta"));
     return allocations;
   }
   if (paymentDelta.cashQuantity >= totalVendDelta && paymentDelta.cashlessQuantity === 0) {
@@ -968,10 +1004,29 @@ function allocatePaymentDeltas(
       cashlessAmount: paymentDelta.cashlessAmount,
     });
     const paidQuantity = Math.max(0, Math.round(paymentDelta.totalQuantity));
+    let fallbackCash = new Set<number>();
+    let fallbackCashless = new Set<number>();
+    if (!assignment) {
+      const allIndexes = saleUnits.map((_, index) => index);
+      fallbackCash = closestPricedUnitIndexes(
+        saleUnits,
+        allIndexes,
+        Math.min(paymentDelta.cashQuantity, paidQuantity),
+        paymentDelta.cashAmount,
+      );
+      const remainingIndexes = allIndexes.filter((index) => !fallbackCash.has(index));
+      fallbackCashless = closestPricedUnitIndexes(
+        saleUnits,
+        remainingIndexes,
+        Math.min(paymentDelta.cashlessQuantity, paidQuantity - fallbackCash.size),
+        paymentDelta.cashlessAmount,
+      );
+    }
     saleUnits.forEach((unit, index) => {
       if (assignment?.cash.has(index)) assign(unit.selection, "cashDelta");
       else if (assignment?.cashless.has(index)) assign(unit.selection, "cashlessDelta");
-      else if (!assignment && index < paidQuantity) assign(unit.selection, "unknownPaymentDelta");
+      else if (fallbackCash.has(index)) assign(unit.selection, "cashDelta");
+      else if (fallbackCashless.has(index)) assign(unit.selection, "cashlessDelta");
       else assign(unit.selection, "unpaidDispenseDelta");
     });
     return allocations;
@@ -1032,8 +1087,14 @@ function allocatePaymentDeltas(
   }
 
   if (!cashIndexes) {
-    saleUnits.forEach((unit) => assign(unit.selection, "unknownPaymentDelta"));
-    return allocations;
+    const minimumCashQuantity = Math.max(0, saleUnits.length - cashlessTargetQuantity);
+    const mappedCashQuantity = Math.max(minimumCashQuantity, Math.min(cashTargetQuantity, saleUnits.length));
+    cashIndexes = closestPricedUnitIndexes(
+      saleUnits,
+      saleUnits.map((_, index) => index),
+      mappedCashQuantity,
+      cashTargetAmount,
+    );
   }
 
   saleUnits.forEach((unit, index) => {
@@ -1209,7 +1270,15 @@ Deno.serve(async (req) => {
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
         paymentCounters: parsedDex.payment_counters as Record<string, unknown>,
-        previousPaymentCounters: previousAllocatedPaymentCounters || previousDexPaymentCounters || previousCountersPayload?.payment_counters as Record<string, unknown> | null | undefined,
+        // Payment counters must use the same adjacent DEX window as the product
+        // counters. The persisted allocation checkpoint can remain stale when a
+        // downstream stock/settlement operation fails after sales were saved;
+        // reusing it then turns every later payment delta into one large,
+        // unallocatable batch and incorrectly labels otherwise exact payments as
+        // unknown. The immediately preceding raw DEX ingest is immutable and is
+        // therefore the canonical payment baseline. State is only a fallback for
+        // the first retained ingest of a device.
+        previousPaymentCounters: previousDexPaymentCounters || previousAllocatedPaymentCounters || previousCountersPayload?.payment_counters as Record<string, unknown> | null | undefined,
       });
 
       const { error: allocationStateError } = await adminClient
