@@ -224,6 +224,27 @@
     .rank-row-top { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
     .rank-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .notice { padding: 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .risk-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255,255,255,.04);
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .risk-pill.critical { color: #ff9ca4; border-color: rgba(255,91,102,.34); background: rgba(255,91,102,.11); }
+    .risk-pill.warning { color: #ffd08a; border-color: rgba(255,182,72,.34); background: rgba(255,182,72,.11); }
+    .risk-pill.covered { color: #9ef0bd; border-color: rgba(46,204,113,.30); background: rgba(46,204,113,.10); }
+    .risk-products { display: grid; gap: 5px; min-width: 260px; }
+    .risk-product { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; color: var(--muted); font-size: 12px; }
+    .risk-product strong { color: var(--text); font-size: 12px; }
+    .risk-action { color: var(--info); font-weight: 900; text-decoration: none; white-space: nowrap; }
+    .risk-action:hover { text-decoration: underline; }
     .trend-chart {
       min-height: 128px;
       padding: 8px 12px 8px;
@@ -494,8 +515,10 @@
   <script src="./sidebar.js?v=20260713telemetry-reports-v9"></script>
   <script type="module">
     import { supabase } from './supabase.js'
+    import { loadStockOutlookReport } from './stock-outlook-report.js'
 
     const reports = [
+      { key: 'stockout-risk', label: 'Riziko vyprodání', desc: 'Nízké stavy a pokrytí zítřejšími trasami', title: 'Riziko vyprodání a zítřejší trasy', description: 'Aktuální nízké stavy, odhad spotřeby do zítřejšího příjezdu a kontrola, zda je automat pokrytý naplánovanou trasou.' },
       { key: 'sales-product', label: 'Prodej podle produktu', desc: 'Kusy, tržba a platby podle produktu', title: 'Prodej podle produktu', description: 'Prodej produktů podle počtu kusů, tržby a typu platby ve zvoleném období.' },
       { key: 'sales-machine', label: 'Prodej podle automatu', desc: 'Výkon jednotlivých automatů', title: 'Prodej podle automatu', description: 'Porovnání automatů podle tržby, počtu výdejů a průměrné hodnoty výdeje.' },
       { key: 'sales-location', label: 'Prodej podle lokality', desc: 'Výkon lokalit a zákazníků', title: 'Prodej podle lokality', description: 'Souhrn prodejů podle lokality, města a počtu aktivních automatů.' },
@@ -511,7 +534,7 @@
     const initialReport = new URLSearchParams(window.location.search).get('report');
     const DEFAULT_VAT_RATE = 12;
     let telemetryLoadSequence = 0;
-    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], products: [], machines: [], locations: [], stockLocations: [], currentOutput: [], compareRange: null };
+    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], outlookRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], filteredOutlookRows: [], products: [], machines: [], locations: [], stockLocations: [], outlookMeta: {}, currentOutput: [], compareRange: null };
     const els = {
       status: document.getElementById('statusLine'),
       refresh: document.getElementById('refreshBtn'),
@@ -894,7 +917,7 @@
     function populateFilters() {
       const selectedMachine = els.machine.value;
       const selectedLocation = els.location.value;
-      const allRows = [...state.rows, ...state.compareRows, ...state.fillRows, ...state.compareFillRows];
+      const allRows = [...state.rows, ...state.compareRows, ...state.fillRows, ...state.compareFillRows, ...state.outlookRows];
       const machineIds = new Set(allRows.map((row) => String(row.machine_id || '')).filter(Boolean));
       const machines = [...state.machines].filter((machine) => machineIds.has(String(machine.id))).sort((a, b) => String(a.evidence_number || a.name).localeCompare(String(b.evidence_number || b.name), 'cs', { numeric: true }));
       const locationIds = new Set(allRows.map((row) => String(row.location_id || '')).filter(Boolean));
@@ -917,6 +940,7 @@
       state.filteredCompareRows = state.compareRows.filter(filterRow);
       state.filteredFillRows = state.fillRows.filter(filterRow);
       state.filteredCompareFillRows = state.compareFillRows.filter(filterRow);
+      state.filteredOutlookRows = state.outlookRows.filter(filterRow);
     }
     function netRevenue(rows) {
       return rows.reduce((sum, row) => {
@@ -1255,6 +1279,70 @@
         { label: 'Poznámka', key: 'missingCost', render: (row) => escapeHtml(row.missingCost ? 'Chybí nákupní cena u části prodejů' : row.vatFallback ? `DPH fallback ${DEFAULT_VAT_RATE} %` : 'OK'), csv: (row) => row.missingCost ? 'missing purchase price' : row.vatFallback ? `VAT fallback ${DEFAULT_VAT_RATE}%` : 'ok' }
       ], rows);
     }
+    function renderStockoutRisk() {
+      const rows = state.filteredOutlookRows;
+      const critical = rows.filter((row) => row.critical_now).length;
+      const risk = rows.filter((row) => row.stockout_risk).length;
+      const covered = rows.filter((row) => row.covered).length;
+      const uncovered = rows.filter((row) => !row.covered).length;
+      els.kpis.innerHTML = [
+        ['Kritické teď', critical, 'critical'],
+        ['Hrozí do zítřka', risk, 'warning'],
+        ['Na trase zítra', covered, 'covered'],
+        ['Bez zítřejší trasy', uncovered, ''],
+        ['Nízký stav celkem', rows.length, '']
+      ].map(([label, value, cls]) => `
+        <div class="kpi">
+          <span>${escapeHtml(label)}</span>
+          <strong class="${escapeHtml(cls)}">${escapeHtml(String(value))}</strong>
+          <span class="sub">automatů</span>
+        </div>
+      `).join('');
+
+      els.trend.innerHTML = `
+        <div class="notice">
+          Odhad používá potvrzené IMA/DEX výdeje po hodinách za posledních ${escapeHtml(String(state.outlookMeta.history_days || 14))} dní.
+          U každého automatu dopočítá očekávaný úbytek do plánovaného příjezdu zítřejší trasy; bez trasy počítá orientačně do 17:00.
+        </div>
+      `;
+      els.payment.innerHTML = `
+        <div class="rank-list">
+          <div class="rank-row"><div class="rank-row-top"><strong>Pokryto trasou</strong><span>${escapeHtml(String(covered))}</span></div><div class="bar"><span style="width:${rows.length ? Math.max(4, Math.round((covered / rows.length) * 100)) : 0}%"></span></div></div>
+          <div class="rank-row"><div class="rank-row-top"><strong>Bez trasy</strong><span>${escapeHtml(String(uncovered))}</span></div><div class="bar"><span style="width:${rows.length ? Math.max(4, Math.round((uncovered / rows.length) * 100)) : 0}%"></span></div></div>
+          ${state.outlookMeta.initial_inventory_count ? `<span class="sub">${escapeHtml(String(state.outlookMeta.initial_inventory_count))} kávových automatů čeká na prvotní inventuru a není v odhadu.</span>` : ''}
+        </div>
+      `;
+
+      const urgent = rows.filter((row) => (row.critical_now || row.stockout_risk) && !row.covered).slice(0, 5);
+      els.side.innerHTML = urgent.length ? `<div class="rank-list">${urgent.map((row) => `
+        <div class="rank-row">
+          <div class="rank-row-top"><strong title="${escapeHtml(row.machine_name)}">${escapeHtml(row.machine_name)}</strong><span>${escapeHtml(`${row.lowest_percent} %`)}</span></div>
+          <span class="sub">${escapeHtml(row.location_name || 'Bez lokality')}</span>
+          <a class="risk-action" href="${escapeHtml(row.action_href)}">Naplánovat trasu →</a>
+        </div>
+      `).join('')}</div>` : '<div class="notice">Žádné nepokryté kritické riziko. Aktuální zítřejší plán odpovídá nízkým stavům.</div>';
+
+      table([
+        {
+          label: 'Priorita', key: 'priority',
+          render: (row) => `<span class="risk-pill ${row.critical_now ? 'critical' : row.stockout_risk ? 'warning' : row.covered ? 'covered' : ''}">${escapeHtml(row.critical_now ? 'Vyprodáno nyní' : row.stockout_risk ? 'Hrozí vyprodání' : row.covered ? 'Nízký · pokryto' : 'Nízký · bez trasy')}</span>`,
+          csv: (row) => row.critical_now ? 'Vyprodáno nyní' : row.stockout_risk ? 'Hrozí vyprodání' : row.covered ? 'Nízký stav, pokryto' : 'Nízký stav, bez trasy'
+        },
+        { label: 'Automat', key: 'machine_name', render: (row) => `<span class="strong">${escapeHtml(row.machine_name)}</span><span class="sub">${escapeHtml(row.machine_code || '')}</span>`, csv: (row) => row.machine_name },
+        { label: 'Lokalita', key: 'location_name', render: (row) => `<span class="strong">${escapeHtml(row.location_name || 'Bez lokality')}</span>`, csv: (row) => row.location_name },
+        { label: 'Nízké pozice', key: 'low_count', num: true, render: (row) => `<span class="strong">${escapeHtml(`${row.low_count} pozic`)}</span><span class="sub">nejméně ${escapeHtml(`${row.lowest_percent} %`)}</span>`, csv: (row) => row.low_count },
+        {
+          label: 'Stav a odhad při příjezdu', key: 'products',
+          render: (row) => `<div class="risk-products">${(row.products || []).slice(0, 5).map((product) => `
+            <div class="risk-product"><span>${escapeHtml(`${product.position || '?'} · ${product.product_name}`)}</span><strong>${escapeHtml(product.current_label)}</strong></div>
+            <span class="sub">${escapeHtml(product.empty_now ? 'už 0' : product.forecast > 0.0001 ? `odhad ${product.projected_label} (−${product.forecast_label})` : 'bez předpokládaného úbytku')}</span>
+          `).join('')}</div>`,
+          csv: (row) => (row.products || []).map((product) => `${product.product_name}: ${product.current_label}; odhad ${product.projected_label}`).join(' | ')
+        },
+        { label: 'Zítřejší pokrytí', key: 'route_label', render: (row) => `<span class="risk-pill ${row.covered ? 'covered' : ''}">${escapeHtml(row.covered ? 'Na trase' : 'Není na trase')}</span><span class="sub">${escapeHtml(row.route_label)}</span>`, csv: (row) => row.route_label },
+        { label: 'Akce', key: 'action_href', render: (row) => `<a class="risk-action" href="${escapeHtml(row.action_href)}">${escapeHtml(row.covered ? 'Otevřít trasu' : 'Naplánovat')}</a>`, csv: (row) => row.action_href }
+      ], rows);
+    }
     function render() {
       applyFilters();
       const active = reports.find((report) => report.key === state.activeReport) || reports[0];
@@ -1262,15 +1350,20 @@
       els.description.textContent = active.description;
       els.tableTitle.textContent = active.label;
       const isFilledReport = state.activeReport === 'filled-products';
-      els.trendTitle.textContent = isFilledReport ? 'Trend doplnění' : 'Trend prodejů';
-      els.trendMeta.textContent = isFilledReport ? 'kusy po dnech' : 'po dnech';
-      els.breakdownTitle.textContent = isFilledReport ? 'Kategorie doplnění' : 'Rozpad plateb';
-      els.breakdownMeta.textContent = isFilledReport ? 'podle kusů' : 'hotově / kartou';
-      els.periodBadge.textContent = state.compareRange
+      const isStockoutReport = state.activeReport === 'stockout-risk';
+      els.trendTitle.textContent = isStockoutReport ? 'Jak se odhad počítá' : isFilledReport ? 'Trend doplnění' : 'Trend prodejů';
+      els.trendMeta.textContent = isStockoutReport ? 'IMA/DEX · hodinový profil' : isFilledReport ? 'kusy po dnech' : 'po dnech';
+      els.breakdownTitle.textContent = isStockoutReport ? 'Pokrytí trasami' : isFilledReport ? 'Kategorie doplnění' : 'Rozpad plateb';
+      els.breakdownMeta.textContent = isStockoutReport ? 'zítra' : isFilledReport ? 'podle kusů' : 'hotově / kartou';
+      els.periodBadge.textContent = isStockoutReport
+        ? (state.outlookMeta.target_date_label || 'stav teď → zítra')
+        : state.compareRange
         ? `${formatDate(els.from.value)} - ${formatDate(els.to.value)} vs ${formatRange(state.compareRange)}`
         : `${formatDate(els.from.value)} - ${formatDate(els.to.value)}`;
       renderTabs();
-      if (isFilledReport) {
+      if (isStockoutReport) {
+        renderStockoutRisk();
+      } else if (isFilledReport) {
         renderFillKpis(state.filteredFillRows, state.filteredCompareFillRows);
         renderCharts(state.filteredFillRows, state.filteredCompareFillRows, 'quantity');
         renderSide(state.filteredFillRows);
@@ -1329,11 +1422,12 @@
       els.refresh.disabled = true;
       setStatus('Načítám telemetrické reporty...');
       try {
-        const [salesRows, compareRows, fillRows, compareFillRows] = await Promise.all([
+        const [salesRows, compareRows, fillRows, compareFillRows, outlookData] = await Promise.all([
           fetchSalesRange(currentRange),
           compareRange ? fetchSalesRange(compareRange) : Promise.resolve([]),
           fetchFillRange(currentRange),
-          compareRange ? fetchFillRange(compareRange) : Promise.resolve([])
+          compareRange ? fetchFillRange(compareRange) : Promise.resolve([]),
+          loadStockOutlookReport({ supabase, fetchPaged })
         ]);
         if (loadSequence !== telemetryLoadSequence) return;
         const stockLocationIds = [...new Set([...fillRows, ...compareFillRows].flatMap((row) => [Number(row.from_stock_location_id), Number(row.to_stock_location_id)]).filter(Boolean))];
@@ -1354,7 +1448,7 @@
         if (machinesRes.error) throw machinesRes.error;
         if (productsRes.error) throw productsRes.error;
         if (loadSequence !== telemetryLoadSequence) return;
-        const machines = machinesRes.data || [];
+        const machines = Array.from(new Map([...(machinesRes.data || []), ...(outlookData.machines || [])].map((machine) => [String(machine.id), machine])).values());
         const locationIds = [...new Set(machines.map((machine) => Number(machine.location_id)).filter(Boolean))];
         const locationsRes = locationIds.length
           ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
@@ -1362,7 +1456,7 @@
         if (locationsRes.error) throw locationsRes.error;
         if (loadSequence !== telemetryLoadSequence) return;
         const products = productsRes.data || [];
-        const locations = locationsRes.data || [];
+        const locations = Array.from(new Map([...(locationsRes.data || []), ...(outlookData.locations || [])].map((location) => [String(location.id), location])).values());
         state.compareRange = compareRange;
         state.products = products;
         state.machines = machines;
@@ -1372,11 +1466,13 @@
         state.compareRows = enrichRows(compareRows, machines, locations);
         state.fillRows = enrichFillRows(fillRows, stockLocations, machines, locations, products);
         state.compareFillRows = enrichFillRows(compareFillRows, stockLocations, machines, locations, products);
+        state.outlookRows = outlookData.rows || [];
+        state.outlookMeta = outlookData.meta || {};
         populateFilters();
         render();
         const t = totals(state.rows);
         const compareText = compareRange ? ` Srovnání: ${formatRange(compareRange)} (${state.compareRows.length} řádků).` : '';
-        setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období. Doplnění: ${state.fillRows.length} pohybů.${compareText}`, 'success');
+        setStatus(`Načteno ${state.rows.length} telemetrických řádků, ${qty(t.quantity)} ks a ${money(t.revenue)} za období. Doplnění: ${state.fillRows.length} pohybů. Riziko vyprodání: ${state.outlookRows.length} automatů.${compareText}`, 'success');
       } catch (error) {
         if (loadSequence === telemetryLoadSequence) setStatus(error.message, 'error');
       } finally {
