@@ -3393,7 +3393,7 @@
             <div class="telemetry-toolbar">
               <div class="telemetry-toolbar-title">
                 <strong>Živý přehled prodejů</strong>
-                <span id="telemetryPeriodLabel">Automatická aktualizace každých 30 sekund.</span>
+                <span id="telemetryPeriodLabel">Tichá aktualizace každých 60 sekund.</span>
               </div>
               <div class="telemetry-period-control">
                 <label for="telemetryPeriodFilter">Období</label>
@@ -3725,6 +3725,8 @@
     let telemetryRefreshInFlight = false;
     let telemetryRefreshQueued = false;
     let telemetryHasRenderedData = false;
+    const telemetryMarkupCache = new Map();
+    const TELEMETRY_REFRESH_INTERVAL_MS = 60 * 1000;
     const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
     let managerAttendanceDayMap = new Map();
 
@@ -4775,7 +4777,9 @@
         }
       };
       document.querySelectorAll(".telemetry-low-location").forEach((node) => {
+        if (node.dataset.telemetryDisclosureBound === "true") return;
         node.addEventListener("toggle", saveState);
+        node.dataset.telemetryDisclosureBound = "true";
       });
     }
 
@@ -4833,7 +4837,7 @@
             <span class="critical"><strong>${escapeHtml(String(criticalPositions))}</strong> kritických pozic</span>
             ${inventoryRows.length ? `<span><strong>${escapeHtml(String(inventoryRows.length))}</strong> čeká na prvotní inventuru</span>` : ""}
           </div>
-          <div class="low-stock-board">
+          <div class="low-stock-board" data-refresh-scroll="low-stock">
           ${inventoryRows.map((row) => `
             <article class="low-stock-card">
               <div class="low-stock-card-head">
@@ -4863,7 +4867,7 @@
                 </div>
                 <div class="low-stock-products">${visibleRows.map(renderProduct).join("")}</div>
                 ${hiddenRows.length ? `
-                  <details class="low-stock-more">
+                  <details class="low-stock-more" data-refresh-open="${escapeHtml(group.machineKey)}">
                     <summary>Zobrazit dalších ${escapeHtml(String(hiddenRows.length))} pozic</summary>
                     <div class="low-stock-products">${hiddenRows.map(renderProduct).join("")}</div>
                   </details>
@@ -4978,7 +4982,7 @@
       );
 
       return `
-        <div class="telemetry-low-list telemetry-limited-list">
+        <div class="telemetry-low-list telemetry-limited-list" data-refresh-scroll="expiry">
           ${locations.map((group) => {
             const nearest = group.rows[0];
             const nearestDays = Number(nearest.days_remaining || 0);
@@ -5023,6 +5027,74 @@
       `;
     }
 
+    function captureTelemetryUiState(element) {
+      if (!element) return { openKeys: new Set(), scrollPositions: new Map() };
+      const openKeys = new Set();
+      element.querySelectorAll("details[open]").forEach((node) => {
+        const key = node.dataset.refreshOpen || node.dataset.location;
+        if (key) openKeys.add(key);
+      });
+      const scrollPositions = new Map();
+      const scrollNodes = [element, ...element.querySelectorAll("[data-refresh-scroll]")];
+      scrollNodes.forEach((node) => {
+        const key = node.dataset.refreshScroll;
+        if (key) scrollPositions.set(key, { left: node.scrollLeft, top: node.scrollTop });
+      });
+      return { openKeys, scrollPositions };
+    }
+
+    function restoreTelemetryUiState(element, state) {
+      if (!element || !state) return;
+      element.querySelectorAll("details").forEach((node) => {
+        const key = node.dataset.refreshOpen || node.dataset.location;
+        if (key && state.openKeys.has(key)) node.open = true;
+      });
+      const scrollNodes = [element, ...element.querySelectorAll("[data-refresh-scroll]")];
+      scrollNodes.forEach((node) => {
+        const position = state.scrollPositions.get(node.dataset.refreshScroll);
+        if (!position) return;
+        node.scrollLeft = position.left;
+        node.scrollTop = position.top;
+      });
+    }
+
+    function patchTelemetryBlocks(container, namespace, blocks) {
+      if (!container) return false;
+      const nextKeys = new Set(blocks.map((block) => block.key));
+      let changed = false;
+
+      blocks.forEach((block, index) => {
+        const cacheKey = `${namespace}:${block.key}`;
+        const current = Array.from(container.children).find((node) => node.dataset.telemetryKey === block.key);
+        if (current && telemetryMarkupCache.get(cacheKey) === block.html) return;
+
+        const template = document.createElement("template");
+        template.innerHTML = block.html.trim();
+        const next = template.content.firstElementChild;
+        if (!next) return;
+
+        const state = captureTelemetryUiState(current);
+        if (current) {
+          current.replaceWith(next);
+        } else {
+          container.insertBefore(next, container.children[index] || null);
+        }
+        restoreTelemetryUiState(next, state);
+        telemetryMarkupCache.set(cacheKey, block.html);
+        changed = true;
+      });
+
+      Array.from(container.children).forEach((node) => {
+        const key = node.dataset.telemetryKey;
+        if (key && !nextKeys.has(key)) {
+          node.remove();
+          telemetryMarkupCache.delete(`${namespace}:${key}`);
+          changed = true;
+        }
+      });
+      return changed;
+    }
+
     function renderTelemetrySales({ rows = [], coffeeRows = [], foodRows = [], telemetryCoverage = null, totals = {}, dayRows = [], topProducts = [], topLocations = [], topLocationsByQuantity = [], lowStock = [], lowStockOutlook = {}, expiryRows = [], initialInventory = [], error = "" } = {}) {
       if (!telemetrySalesSummary || !telemetryCommandGrid || !telemetrySalesTable || !telemetrySalesNote) return;
       const quantity = Number(totals.quantity || 0);
@@ -5041,48 +5113,48 @@
           minute: "2-digit",
           second: "2-digit"
         }).format(new Date());
-        telemetryPeriodLabel.textContent = `${periodLabel} · načteno v ${refreshedAt} · automatická aktualizace každých 30 sekund.`;
+        telemetryPeriodLabel.textContent = `${periodLabel} · načteno v ${refreshedAt} · tichá aktualizace každých 60 sekund.`;
       }
 
-      telemetrySalesSummary.innerHTML = `
-        <div class="summary-cell"><span>Prodáno</span><strong>${escapeHtml(String(quantity).replace(".", ","))} ks</strong>${telemetryTrendBadge(quantity, compare.quantity, compareLabel)}</div>
-        <div class="summary-cell"><span>Tržba</span><strong>${escapeHtml(formatMoney(revenue))}</strong>${telemetryTrendBadge(revenue, compare.revenue, compareLabel)}</div>
-        <div class="summary-cell"><span>Hotově</span><strong>${escapeHtml(formatMoney(cashAmount))}</strong>${telemetryTrendBadge(cashAmount, compare.cashAmount, compareLabel)}</div>
-        <div class="summary-cell"><span>Kartou</span><strong>${escapeHtml(formatMoney(cashlessAmount))}</strong>${telemetryTrendBadge(cashlessAmount, compare.cashlessAmount, compareLabel)}</div>
-        <div class="summary-cell"><span>Automaty</span><strong>${escapeHtml(String(machineCount))}</strong><span class="summary-trend">${escapeHtml(`${lowStock.length} nízký stav · ${expiryRows.length} blízká expirace${initialInventory.length ? ` · ${initialInventory.length} prvotní inventura kávy` : ""}`)}</span></div>
-        <div class="summary-cell"><span>Poslední prodej</span><strong>${escapeHtml(lastSeen)}</strong><span class="summary-trend">${escapeHtml(rows[0] ? [rows[0].machine_name, rows[0].location_name].filter(Boolean).join(" · ") : "čekám na data")}</span></div>
-      `;
+      patchTelemetryBlocks(telemetrySalesSummary, "summary", [
+        { key: "quantity", html: `<div class="summary-cell" data-telemetry-key="quantity"><span>Prodáno</span><strong>${escapeHtml(String(quantity).replace(".", ","))} ks</strong>${telemetryTrendBadge(quantity, compare.quantity, compareLabel)}</div>` },
+        { key: "revenue", html: `<div class="summary-cell" data-telemetry-key="revenue"><span>Tržba</span><strong>${escapeHtml(formatMoney(revenue))}</strong>${telemetryTrendBadge(revenue, compare.revenue, compareLabel)}</div>` },
+        { key: "cash", html: `<div class="summary-cell" data-telemetry-key="cash"><span>Hotově</span><strong>${escapeHtml(formatMoney(cashAmount))}</strong>${telemetryTrendBadge(cashAmount, compare.cashAmount, compareLabel)}</div>` },
+        { key: "cashless", html: `<div class="summary-cell" data-telemetry-key="cashless"><span>Kartou</span><strong>${escapeHtml(formatMoney(cashlessAmount))}</strong>${telemetryTrendBadge(cashlessAmount, compare.cashlessAmount, compareLabel)}</div>` },
+        { key: "machines", html: `<div class="summary-cell" data-telemetry-key="machines"><span>Automaty</span><strong>${escapeHtml(String(machineCount))}</strong><span class="summary-trend">${escapeHtml(`${lowStock.length} nízký stav · ${expiryRows.length} blízká expirace${initialInventory.length ? ` · ${initialInventory.length} prvotní inventura kávy` : ""}`)}</span></div>` },
+        { key: "last-sale", html: `<div class="summary-cell" data-telemetry-key="last-sale"><span>Poslední prodej</span><strong>${escapeHtml(lastSeen)}</strong><span class="summary-trend">${escapeHtml(rows[0] ? [rows[0].machine_name, rows[0].location_name].filter(Boolean).join(" · ") : "čekám na data")}</span></div>` }
+      ]);
 
-      telemetryCommandGrid.innerHTML = `
-        <section class="telemetry-panel span-2">
+      const commandGridChanged = patchTelemetryBlocks(telemetryCommandGrid, "command", [
+        { key: "trend", html: `<section class="telemetry-panel span-2" data-telemetry-key="trend">
           <div class="telemetry-panel-head"><h3>Trend telemetrických prodejů</h3><span>14 dní · hotově/kartou</span></div>
           ${renderTelemetryTrendBars(dayRows)}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "totals", html: `<section class="telemetry-panel" data-telemetry-key="totals">
           <div class="telemetry-panel-head"><h3>Total Sales</h3><span>${escapeHtml(periodLabel)}</span></div>
           ${renderTelemetryPaymentTable(totals)}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "products", html: `<section class="telemetry-panel" data-telemetry-key="products">
           <div class="telemetry-panel-head"><h3>Nejvýkonnější produkty</h3><span>${escapeHtml(periodLabel)}</span></div>
           ${renderTelemetryRankedList(topProducts, "Zatím bez prodejů ve vybraném období.")}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "locations-revenue", html: `<section class="telemetry-panel" data-telemetry-key="locations-revenue">
           <div class="telemetry-panel-head"><h3>Nejvýkonnější lokality podle tržeb</h3><span>${escapeHtml(periodLabel)}</span></div>
           ${renderTelemetryRankedList(topLocations, "Zatím bez lokalit.")}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "locations-quantity", html: `<section class="telemetry-panel" data-telemetry-key="locations-quantity">
           <div class="telemetry-panel-head"><h3>Nejvýkonnější lokality podle kusů</h3><span>${escapeHtml(periodLabel)}</span></div>
           ${renderTelemetryRankedList(topLocationsByQuantity, "Zatím bez prodaných kusů.", "quantity")}
-        </section>
-        <section class="telemetry-panel span-all">
+        </section>` },
+        { key: "low-stock", html: `<section class="telemetry-panel span-all" data-telemetry-key="low-stock">
           <div class="telemetry-panel-head"><h3>Automaty s nízkým stavem zásob</h3><span>aktuální stav podle planogramů</span></div>
           ${renderTelemetryLowStock(lowStock, initialInventory)}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "expiry", html: `<section class="telemetry-panel" data-telemetry-key="expiry">
           <div class="telemetry-panel-head"><h3>Blížící se expirace potravin</h3><span>bagety 2 dny · cukrovinky 30 dní</span></div>
           ${renderTelemetryExpiry(expiryRows)}
-        </section>
-        <section class="telemetry-panel">
+        </section>` },
+        { key: "dex-coverage", html: `<section class="telemetry-panel" data-telemetry-key="dex-coverage">
           <div class="telemetry-panel-head"><h3>Kontrola příjmu DEX podle TID</h3><span>${escapeHtml(telemetryCoverage ? `${telemetryCoverage.fresh} z ${telemetryCoverage.total} čerstvých${telemetryCoverage.paused ? ` · ${telemetryCoverage.paused} prázdniny` : ""}` : "načítám")}</span></div>
           ${telemetryCoverage?.items?.length
             ? `<div class="telemetry-ranked-list">${telemetryCoverage.items.map((item) => `
@@ -5093,9 +5165,9 @@
                 </div>
               `).join("")}</div>`
             : '<div class="small-note">Všechny aktivní TID posílají čerstvá data.</div>'}
-        </section>
-      `;
-      bindTelemetryDisclosurePersistence();
+        </section>` }
+      ]);
+      if (commandGridChanged) bindTelemetryDisclosurePersistence();
 
       const renderTransactionBody = (sourceRows, emptyText) => sourceRows.length
         ? sourceRows.map((row) => `
@@ -5115,8 +5187,8 @@
         `).join("")
         : `<tr><td colspan="11"><strong>${escapeHtml(emptyText)}</strong></td></tr>`;
 
-      const renderTransactionTable = (title, subtitle, sourceRows, emptyText) => `
-        <div class="table-scroll">
+      const renderTransactionTable = (key, title, subtitle, sourceRows, emptyText) => `
+        <div class="table-scroll" data-telemetry-key="${escapeHtml(key)}" data-refresh-scroll="${escapeHtml(key)}">
           <div class="telemetry-panel-head"><h3>${escapeHtml(title)}</h3><span>${escapeHtml(subtitle)}</span></div>
           <table class="dashboard-table telemetry-sales-table">
             <thead><tr><th>Čas</th><th>Automat</th><th>Lokalita</th><th>Volba</th><th>Produkt</th><th>Ks</th><th>Hotově</th><th>Kartou</th><th>Bezplatně</th><th>Neurčeno</th><th>Celkem</th></tr></thead>
@@ -5124,14 +5196,15 @@
           </table>
         </div>`;
 
-      telemetrySalesTable.innerHTML = `
-        ${renderTransactionTable("Prodeje kávy", "IMA/DEX · posledních 10 záznamů", coffeeRows, "Zatím bez kávových prodejů")}
-        ${renderTransactionTable("Prodeje potravin", "IMA/DEX · historické záznamy mohou nést původní zdroj VendSoft · posledních 10 záznamů", foodRows, "Zatím bez potravinových prodejů")}
-      `;
+      patchTelemetryBlocks(telemetrySalesTable, "transactions", [
+        { key: "coffee", html: renderTransactionTable("coffee", "Prodeje kávy", "IMA/DEX · posledních 10 záznamů", coffeeRows, "Zatím bez kávových prodejů") },
+        { key: "food", html: renderTransactionTable("food", "Prodeje potravin", "IMA/DEX · historické záznamy mohou nést původní zdroj VendSoft · posledních 10 záznamů", foodRows, "Zatím bez potravinových prodejů") }
+      ]);
 
-      telemetrySalesNote.textContent = error
+      const telemetryNote = error
         ? `Telemetrické prodeje se nepodařilo načíst: ${error}`
         : "Řádek vždy uvádí zdroj. Přímá IMA/DEX telemetrie se zobrazuje pro kávové i potravinové automaty; VendSoft zůstává jen jako historická záloha. Karetní tržba je hrubá DEX tržba v kalendářním období, nikoli netto částka zúčtovací dávky Global Payments po provizi.";
+      if (telemetrySalesNote.textContent !== telemetryNote) telemetrySalesNote.textContent = telemetryNote;
     }
 
     async function loadTelemetrySalesDashboard() {
@@ -5778,7 +5851,7 @@
       telemetryRefreshTimer = window.setInterval(() => {
         if (document.hidden) return;
         renderTelemetrySalesDashboard();
-      }, 30000);
+      }, TELEMETRY_REFRESH_INTERVAL_MS);
     }
 
     function setText(id, value) {
