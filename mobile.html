@@ -4861,7 +4861,7 @@
     function openSkipStopSheet(stopId) {
       const { stop } = findRouteStop(stopId)
       if (!stop || !els.skipStopSheet) return showMessage('Zastávku se nepodařilo najít v dnešní trase.', 'error')
-      if (getRouteStopStatus(stop) !== 'pending') return showMessage('Rozpracovanou nebo uzavřenou zastávku už nelze označit jako nejetou.', 'error')
+      if (!['pending', 'arrived'].includes(getRouteStopStatus(stop))) return showMessage('Uzavřenou zastávku už nelze označit jako nejetou.', 'error')
       activeSkipStopId = String(stopId)
       els.skipStopDestination.textContent = `${getRouteStopTitle(stop)} · ${getRouteStopAddress(stop)}`
       els.skipStopReason.value = ''
@@ -5193,6 +5193,7 @@
           <div class="muted-text">${manualCounterMode ? 'Otevři automat. U každého zásobníku pak zvol počet celých balení, která reálně nasypeš. Jednotlivé prodeje nápojů se zde nezapisují.' : neededCount === 0 ? 'Není potřeba nic brát z auta. Otevři automat a pokračuj kontrolou nebo prvním načtením zásobníků.' : 'Náhledový picklist pro tuto zastávku. Potvrzením se odečte z vozidla, doplnění do automatu se potvrdí až v dalším kroku po otevření automatu.'}</div>
           <div class="route-stop-actions">
             <button class="primary-btn" type="button" data-coffee-action="open-machine" data-stop-id="${escapeHtml(stop.id)}" ${allPicked ? '' : 'disabled'}>${manualCounterMode ? 'Otevřít zásobníky' : allPicked ? picklistButtonLabel : 'Nejdřív dokonči picklist'}</button>
+            <button class="secondary-btn" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Tuto zastávku nejedu</button>
           </div>
           ${manualCounterMode ? '' : `
           <div class="coffee-visit-grid">
@@ -5800,6 +5801,7 @@
                 ? 'Telemetrie zásob je vypnutá. Výchozí volba je „Nic neberu“. Když doplňuješ, vyber příchuť a klepni na „Beru z vozidla“; počet se doplní automaticky.'
                 : 'Výchozí volba je „Nic neberu“. Když doplňuješ, klepni na „Beru z vozidla“; navržený počet se doplní automaticky.'}</span>
             </div>
+            <button class="secondary-btn" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Tuto zastávku nejedu</button>
             <div class="coffee-visit-grid">
               ${neededSlots.length ? neededSlots.map((slot) => {
                 const draft = getFoodSlotDraft(stop.id, slot)
@@ -6254,7 +6256,7 @@
               ${skipped ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}">Navigovat</button>`}
               ${primaryAction}
             </div>
-            ${status === 'pending' ? `<button class="secondary-btn" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Nejel/a jsem tuto zastávku</button>` : ''}
+            ${['pending', 'arrived'].includes(status) ? `<button class="secondary-btn" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Nejel/a jsem tuto zastávku</button>` : ''}
           </article>
         `
       }).join('')
@@ -7757,10 +7759,40 @@
       showMessage(`${allDone ? 'Automat je hotový a celá trasa je dokončená.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
     }
 
+    async function prepareOpenedStopForSkip(stop, visit) {
+      if (!visit?.id) return
+
+      const [itemsResult, checksResult, cashResult, countersResult] = await Promise.all([
+        supabase.from('route_machine_visit_items').select('id').eq('visit_id', visit.id).not('accepted_at', 'is', null).limit(1),
+        supabase.from('route_machine_visit_checks').select('id').eq('visit_id', visit.id).eq('status', 'done').limit(1),
+        supabase.from('route_machine_cash_reports').select('id').eq('visit_id', visit.id).limit(1),
+        supabase.from('machine_manual_counter_readings').select('id').eq('visit_id', visit.id).limit(1)
+      ])
+      const blockingError = [itemsResult.error, checksResult.error, cashResult.error]
+        .find((error) => error && !/schema cache|does not exist/i.test(String(error.message || '')))
+      if (blockingError) throw blockingError
+      if (itemsResult.data?.length || checksResult.data?.length || cashResult.data?.length || countersResult.data?.length) {
+        throw new Error('U automatu už je uložené doplnění, inventura, hotovost nebo kontrolní úkon. Tuto zastávku už nelze označit jako nejetou.')
+      }
+
+      if (getMachineKind(getRouteStopMachine(stop)) === 'coffee') {
+        let detail = getCoffeeDetail(stop.id)
+        if (!detail?.containers?.length || String(detail.visitId || '') !== String(visit.id)) {
+          await loadRouteCoffeeDetail(stop, visit.id)
+          detail = getCoffeeDetail(stop.id)
+        }
+        if (detail?.error) throw new Error(`Před uzavřením zastávky se nepodařilo ověřit zásoby auta. ${detail.error}`)
+        for (const container of detail?.containers || []) {
+          const movedQuantity = await loadCoffeeNetMovedQuantity(detail, container)
+          if (movedQuantity > 0.0001) await syncCoffeePackagesWithVehicle(stop.id, container, 0)
+        }
+      }
+    }
+
     async function skipRouteStop(stopId, reason, note = '') {
       const { plan, stop } = findRouteStop(stopId)
       if (!plan || !stop) throw new Error('Zastávku se nepodařilo najít v dnešní trase.')
-      if (getRouteStopStatus(stop) !== 'pending') throw new Error('Jen neotevřenou zastávku lze označit jako nejetou.')
+      if (!['pending', 'arrived'].includes(getRouteStopStatus(stop))) throw new Error('Jen otevřenou nebo dosud nezahájenou zastávku lze označit jako nejetou.')
       if (!reason) throw new Error('Vyber důvod, proč jsi zastávku nejel/a.')
       const cleanNote = String(note || '').trim()
       if (reason === 'other' && !cleanNote) throw new Error('U jiného důvodu napiš krátkou poznámku.')
@@ -7775,11 +7807,16 @@
       const existing = getRouteVisitForStop(stop)
       let savedVisit = existing
 
+      await prepareOpenedStopForSkip(stop, existing)
+
       if (existing?.id) {
         const { data, error } = await supabase
           .from('route_machine_visits')
           .update({
             status: 'skipped',
+            work_phase: 'picklist',
+            food_preparation: {},
+            arrived_at: null,
             skipped_at: nowIso,
             skip_reason: reason,
             operator_note: cleanNote || null,
@@ -7816,11 +7853,11 @@
 
       const { error: stopError } = await supabase
         .from('route_plan_stops')
-        .update({ status: 'skipped', skipped_at: nowIso })
+        .update({ status: 'skipped', arrived_at: null, skipped_at: nowIso })
         .eq('id', stop.id)
       if (stopError) throw stopError
 
-      if (existing) Object.assign(existing, savedVisit || {}, { status: 'skipped', skipped_at: nowIso, skip_reason: reason, operator_note: cleanNote || null })
+      if (existing) Object.assign(existing, savedVisit || {}, { status: 'skipped', arrived_at: null, skipped_at: nowIso, skip_reason: reason, operator_note: cleanNote || null })
       else state.routeMachineVisits.push(savedVisit || {
         route_plan_id: plan.id,
         route_plan_stop_id: stop.id,
@@ -7831,7 +7868,10 @@
         operator_note: cleanNote || null
       })
       stop.status = 'skipped'
+      stop.arrived_at = null
       stop.skipped_at = nowIso
+      delete state.routeCoffeeDetails[String(stop.id)]
+      delete state.routeFoodDetails[String(stop.id)]
 
       const allClosed = getRouteStops(plan).length > 0 && getRouteStops(plan).every(isRouteStopClosed)
       if (allClosed) {
@@ -7849,6 +7889,7 @@
       renderAssignedRoute()
       renderTodayRouteSummary()
       renderTripWorkSummary()
+      openScreen('vehicle')
       const nextStop = getRouteStops(plan).find((item) => !isRouteStopClosed(item))
       setTimeout(() => document.getElementById(`routeStop-${nextStop?.id || stop.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
       showMessage(allClosed
