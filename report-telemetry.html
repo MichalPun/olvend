@@ -528,7 +528,8 @@
       { key: 'day-location', label: 'Denně podle lokality', desc: 'Denní výkon lokalit', title: 'Denní prodej podle lokality', description: 'Denní souhrn tržeb a kusů podle lokalit.' },
       { key: 'week-location', label: 'Týdně podle lokality', desc: 'Týdenní výkon lokalit', title: 'Týdenní prodej podle lokality', description: 'Týdenní souhrn výkonu lokalit a počtu aktivních automatů.' },
       { key: 'transactions', label: 'Seznam transakcí', desc: 'Poslední telemetrické prodeje', title: 'Seznam transakcí', description: 'Detailní seznam posledních telemetrických prodejů s automatem, volbou, produktem a platbou.' },
-      { key: 'profit-loss', label: 'Ziskovost z telemetrie', desc: 'Hrubý zisk podle nákupních cen', title: 'Ziskovost z telemetrie', description: 'Hrubá ziskovost z telemetrie podle dostupných nákupních cen v produktech. Chybějící ceny jsou označené.' }
+      { key: 'profit-loss', label: 'Ziskovost z telemetrie', desc: 'Hrubý zisk podle nákupních cen', title: 'Ziskovost z telemetrie', description: 'Hrubá ziskovost z telemetrie podle dostupných nákupních cen v produktech. Chybějící ceny jsou označené.' },
+      { key: 'unpaid-control', label: 'Interní kontrola plateb', desc: 'Jen výdeje bez DEX platby po ochranné lhůtě', title: 'Interní kontrola nespárovaných výdejů', description: 'Vzácná interní kontrola PA2 výdejů, ke kterým se ani po dvou hodinách nepodařilo dohledat odpovídající CA2/DA2 platbu. Fyzický skladový odečet probíhá vždy nezávisle.' }
     ];
 
     const initialReport = new URLSearchParams(window.location.search).get('report');
@@ -1343,6 +1344,73 @@
         { label: 'Akce', key: 'action_href', render: (row) => `<a class="risk-action" href="${escapeHtml(row.action_href)}">${escapeHtml(row.covered ? 'Otevřít trasu' : 'Naplánovat')}</a>`, csv: (row) => row.action_href }
       ], rows);
     }
+
+    function renderUnpaidControl() {
+      const cutoff = Date.now() - (2 * 60 * 60 * 1000);
+      const rows = [...state.filteredRows]
+        .filter((row) => Number(row.unpaid_dispense_quantity || 0) > 0)
+        .filter((row) => new Date(row.source_event_at || 0).getTime() <= cutoff)
+        .sort((a, b) => new Date(a.source_event_at || 0) - new Date(b.source_event_at || 0));
+      const unmatchedQuantity = rows.reduce((sum, row) => sum + Number(row.unpaid_dispense_quantity || 0), 0);
+      const machineCount = new Set(rows.map((row) => String(row.machine_id || '')).filter(Boolean)).size;
+      const oldestHours = rows.length
+        ? Math.max(0, (Date.now() - new Date(rows[0].source_event_at || 0).getTime()) / 3600000)
+        : 0;
+      const ageLabel = (row) => {
+        const hours = Math.max(0, (Date.now() - new Date(row.source_event_at || 0).getTime()) / 3600000);
+        return hours >= 24 ? `${Math.floor(hours / 24)} d ${Math.round(hours % 24)} h` : `${Math.max(2, Math.round(hours))} h`;
+      };
+
+      els.kpis.innerHTML = [
+        ['K ověření', `${qty(unmatchedQuantity)} ks`],
+        ['Události', String(rows.length)],
+        ['Automaty', String(machineCount)],
+        ['Nejstarší', rows.length ? `${Math.floor(oldestHours)} h` : '—'],
+        ['Ochranná lhůta', '2 h']
+      ].map(([label, value]) => `
+        <div class="kpi">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join('');
+
+      els.trend.innerHTML = `
+        <div class="notice">
+          PA2 je autoritativní důkaz fyzického výdeje, takže sklad se odečte vždy. Tato sestava neovlivňuje tržbu ani sklad;
+          ukazuje pouze případy, kde po dvou hodinách stále chybí odpovídající přírůstek CA2 nebo DA2.
+        </div>
+      `;
+
+      const byMachine = new Map();
+      rows.forEach((row) => {
+        const key = row.machine_name || row.machine_code || `Automat ${row.machine_id}`;
+        byMachine.set(key, Number(byMachine.get(key) || 0) + Number(row.unpaid_dispense_quantity || 0));
+      });
+      const rankedMachines = [...byMachine.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const maxMachine = Math.max(1, ...rankedMachines.map(([, quantity]) => quantity));
+      els.payment.innerHTML = rankedMachines.length ? `<div class="rank-list">${rankedMachines.map(([label, quantity]) => `
+        <div class="rank-row">
+          <div class="rank-row-top"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(`${qty(quantity)} ks`)}</span></div>
+          <div class="bar"><span style="width:${Math.max(4, Math.round((quantity / maxMachine) * 100))}%"></span></div>
+        </div>
+      `).join('')}</div>` : '<div class="notice">Žádný výdej není po ochranné lhůtě bez odpovídající DEX platby.</div>';
+
+      els.side.innerHTML = rows.length
+        ? `<div class="notice">Kontrolu začni u nejstaršího řádku. Ověř navazující DEX soubor stejného TID; fyzický výdej už je ve skladu zohledněný.</div>`
+        : '<div class="notice">Všechny fyzické výdeje ve zvoleném období mají platbu nebo správné označení bezplatného výdeje.</div>';
+
+      table([
+        { label: 'Stáří', key: 'age', render: (row) => `<span class="risk-pill warning">${escapeHtml(ageLabel(row))}</span>`, csv: (row) => ageLabel(row) },
+        { label: 'Čas výdeje', key: 'source_event_at', render: (row) => `<span class="strong">${escapeHtml(formatDateTime(row.source_event_at))}</span>`, csv: (row) => row.source_event_at },
+        { label: 'Automat', key: 'machine_name', render: (row) => `<span class="strong">${escapeHtml(row.machine_name || 'Automat')}</span><span class="sub">${escapeHtml(row.machine_code || '')}</span>`, csv: (row) => row.machine_name },
+        { label: 'Lokalita', key: 'location_name', render: (row) => escapeHtml(row.location_name || 'Bez lokality'), csv: (row) => row.location_name },
+        { label: 'Volba', key: 'selection_code', render: (row) => escapeHtml(row.selection_code || '-'), csv: (row) => row.selection_code },
+        { label: 'Produkt', key: 'product_name', render: (row) => `<span class="strong">${escapeHtml(row.product_name || 'Bez produktu')}</span><span class="sub">${escapeHtml(row.product_sku ? `SKU ${row.product_sku}` : '')}</span>`, csv: (row) => row.product_name },
+        { label: 'Bez platby', key: 'unpaid_dispense_quantity', num: true, render: (row) => escapeHtml(`${qty(row.unpaid_dispense_quantity)} ks`), csv: (row) => row.unpaid_dispense_quantity },
+        { label: 'Kontrola', key: 'control', render: () => '<span class="strong">Prověřit navazující CA2/DA2</span>', csv: () => 'Prověřit navazující CA2/DA2' }
+      ], rows);
+    }
+
     function render() {
       applyFilters();
       const active = reports.find((report) => report.key === state.activeReport) || reports[0];
@@ -1351,10 +1419,11 @@
       els.tableTitle.textContent = active.label;
       const isFilledReport = state.activeReport === 'filled-products';
       const isStockoutReport = state.activeReport === 'stockout-risk';
-      els.trendTitle.textContent = isStockoutReport ? 'Jak se odhad počítá' : isFilledReport ? 'Trend doplnění' : 'Trend prodejů';
-      els.trendMeta.textContent = isStockoutReport ? 'IMA/DEX · hodinový profil' : isFilledReport ? 'kusy po dnech' : 'po dnech';
-      els.breakdownTitle.textContent = isStockoutReport ? 'Pokrytí trasami' : isFilledReport ? 'Kategorie doplnění' : 'Rozpad plateb';
-      els.breakdownMeta.textContent = isStockoutReport ? 'zítra' : isFilledReport ? 'podle kusů' : 'hotově / kartou';
+      const isUnpaidControl = state.activeReport === 'unpaid-control';
+      els.trendTitle.textContent = isUnpaidControl ? 'Pravidlo kontroly' : isStockoutReport ? 'Jak se odhad počítá' : isFilledReport ? 'Trend doplnění' : 'Trend prodejů';
+      els.trendMeta.textContent = isUnpaidControl ? 'PA2 → 2 h → CA2/DA2' : isStockoutReport ? 'IMA/DEX · hodinový profil' : isFilledReport ? 'kusy po dnech' : 'po dnech';
+      els.breakdownTitle.textContent = isUnpaidControl ? 'Automaty k ověření' : isStockoutReport ? 'Pokrytí trasami' : isFilledReport ? 'Kategorie doplnění' : 'Rozpad plateb';
+      els.breakdownMeta.textContent = isUnpaidControl ? 'po ochranné lhůtě' : isStockoutReport ? 'zítra' : isFilledReport ? 'podle kusů' : 'hotově / kartou';
       els.periodBadge.textContent = isStockoutReport
         ? (state.outlookMeta.target_date_label || 'stav teď → zítra')
         : state.compareRange
@@ -1363,6 +1432,8 @@
       renderTabs();
       if (isStockoutReport) {
         renderStockoutRisk();
+      } else if (isUnpaidControl) {
+        renderUnpaidControl();
       } else if (isFilledReport) {
         renderFillKpis(state.filteredFillRows, state.filteredCompareFillRows);
         renderCharts(state.filteredFillRows, state.filteredCompareFillRows, 'quantity');
@@ -1396,7 +1467,7 @@
       const to = endExclusive(range.to);
       const rows = await fetchPaged(() => supabase
         .from('telemetry_sales_events')
-        .select('id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at')
+        .select('id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at')
         .gte('source_event_at', from.toISOString())
         .lt('source_event_at', to.toISOString())
         .order('source_event_at', { ascending: false })

@@ -474,7 +474,12 @@ async function reconcilePendingUnpaidDispenses(
   const cashQuantity = Math.max(0, Math.floor(params.cashQuantity));
   const cashlessQuantity = Math.max(0, Math.floor(params.cashlessQuantity));
   const paymentQuantity = cashQuantity + cashlessQuantity;
-  if (!paymentQuantity || paymentQuantity > 24) return [];
+  if (!paymentQuantity) return [];
+
+  // A terminal can send the payment counter after several product-counter
+  // intervals. Keep the batch bounded for the subset search, but do not reject
+  // a legitimate delayed batch merely because it contains more than 24 vends.
+  const maximumPendingUnits = Math.min(250, paymentQuantity);
 
   const { data: pending, error: pendingError } = await adminClient
     .from("telemetry_sales_events")
@@ -496,19 +501,58 @@ async function reconcilePendingUnpaidDispenses(
     const unitPrice = Number(sale.unit_price_czk || 0);
     if (!saleId || !unpaid || unitPrice <= 0) continue;
     pendingById.set(saleId, sale);
-    for (let index = 0; index < unpaid && unpaidUnits.length < 24; index += 1) {
+    for (let index = 0; index < unpaid && unpaidUnits.length < maximumPendingUnits; index += 1) {
       unpaidUnits.push({ selection: String(saleId), priceAmount: priceToPaymentAmount(unitPrice) });
     }
-    if (unpaidUnits.length >= 24) break;
+    if (unpaidUnits.length >= maximumPendingUnits) break;
   }
 
-  const assignment = findPaymentUnitAssignments(unpaidUnits, {
+  if (!unpaidUnits.length) return [];
+
+  let assignment = findPaymentUnitAssignments(unpaidUnits, {
     cashQuantity,
     cashAmount: Math.round(params.cashAmount),
     cashlessQuantity,
     cashlessAmount: Math.round(params.cashlessAmount),
   });
-  if (!assignment) return [];
+
+  if (!assignment) {
+    const availableQuantity = unpaidUnits.length;
+    const assignedCashQuantity = paymentQuantity <= availableQuantity
+      ? Math.min(availableQuantity, cashQuantity)
+      : Math.min(
+        availableQuantity,
+        Math.round(availableQuantity * cashQuantity / paymentQuantity),
+      );
+    const assignedCashAmount = cashQuantity > 0
+      ? params.cashAmount * assignedCashQuantity / cashQuantity
+      : 0;
+    const cashIndexes = closestPricedUnitIndexes(
+      unpaidUnits,
+      unpaidUnits.map((_, index) => index),
+      assignedCashQuantity,
+      assignedCashAmount,
+    );
+    const remainingIndexes = unpaidUnits
+      .map((_, index) => index)
+      .filter((index) => !cashIndexes.has(index));
+    const assignedCashlessQuantity = Math.min(
+      remainingIndexes.length,
+      paymentQuantity <= availableQuantity
+        ? cashlessQuantity
+        : availableQuantity - assignedCashQuantity,
+    );
+    const assignedCashlessAmount = cashlessQuantity > 0
+      ? params.cashlessAmount * assignedCashlessQuantity / cashlessQuantity
+      : 0;
+    const cashlessIndexes = closestPricedUnitIndexes(
+      unpaidUnits,
+      remainingIndexes,
+      assignedCashlessQuantity,
+      assignedCashlessAmount,
+    );
+    assignment = { cash: cashIndexes, cashless: cashlessIndexes };
+  }
 
   const allocations = new Map<number, { cash: number; cashless: number }>();
   unpaidUnits.forEach((unit, index) => {
@@ -540,7 +584,13 @@ async function reconcilePendingUnpaidDispenses(
     };
     const { error: updateError } = await adminClient.from("telemetry_sales_events").update(patch).eq("id", saleId);
     if (updateError) throw updateError;
-    reconciled.push({ id: saleId, cash_quantity: allocated.cash, cashless_quantity: allocated.cashless });
+    reconciled.push({
+      id: saleId,
+      cash_quantity: allocated.cash,
+      cashless_quantity: allocated.cashless,
+      cash_amount: allocated.cash * priceToPaymentAmount(unitPrice),
+      cashless_amount: allocated.cashless * priceToPaymentAmount(unitPrice),
+    });
   }
   return reconciled;
 }
@@ -555,8 +605,18 @@ async function applyPlanogramDepletion(
     eventAt: string;
     paymentCounters?: Record<string, unknown> | null;
     previousPaymentCounters?: Record<string, unknown> | null;
+    previousPaymentCredit?: Record<string, unknown> | null;
   },
 ) {
+  const rawPaymentDelta = getPaymentDelta(params.previousPaymentCounters, params.paymentCounters);
+  const carriedPaymentCredit = readPendingPaymentCredit(params.previousPaymentCredit, params.eventAt);
+  const paymentDeltaWithCredit = {
+    cashQuantity: rawPaymentDelta.cashQuantity + carriedPaymentCredit.cashQuantity,
+    cashlessQuantity: rawPaymentDelta.cashlessQuantity + carriedPaymentCredit.cashlessQuantity,
+    cashAmount: rawPaymentDelta.cashAmount + carriedPaymentCredit.cashAmount,
+    cashlessAmount: rawPaymentDelta.cashlessAmount + carriedPaymentCredit.cashlessAmount,
+    totalQuantity: rawPaymentDelta.totalQuantity + carriedPaymentCredit.cashQuantity + carriedPaymentCredit.cashlessQuantity,
+  };
   const selectionTotals = new Map<string, { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string }>();
 
   params.counters.forEach((counter) => {
@@ -579,7 +639,12 @@ async function applyPlanogramDepletion(
     }
   });
 
-  if (!selectionTotals.size) return [];
+  if (!selectionTotals.size) {
+    return {
+      applied: [],
+      pendingPaymentCredit: buildPendingPaymentCredit(paymentDeltaWithCredit, params.eventAt),
+    };
+  }
 
   const { data: slots, error: slotsError } = await adminClient
     .from("machine_planogram_slots")
@@ -588,9 +653,13 @@ async function applyPlanogramDepletion(
     .eq("active", true);
 
   if (slotsError) throw slotsError;
-  if (!slots?.length) return [];
+  if (!slots?.length) {
+    return {
+      applied: [],
+      pendingPaymentCredit: buildPendingPaymentCredit(paymentDeltaWithCredit, params.eventAt),
+    };
+  }
 
-  const paymentDelta = getPaymentDelta(params.previousPaymentCounters, params.paymentCounters);
   const planned: Array<{
     slot: Record<string, unknown>;
     counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string };
@@ -625,6 +694,29 @@ async function applyPlanogramDepletion(
   }
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
+  const zeroPriceVendQuantity = planned.reduce((sum, item) => {
+    const rawPrice = item.slot.customer_price_czk ?? item.slot.dex_price_czk;
+    return sum + (rawPrice != null && Number(rawPrice) === 0 ? Math.max(0, item.delta) : 0);
+  }, 0);
+  const freeCashQuantity = Math.min(paymentDeltaWithCredit.cashQuantity, zeroPriceVendQuantity);
+  const freeCashlessQuantity = Math.min(
+    paymentDeltaWithCredit.cashlessQuantity,
+    Math.max(0, zeroPriceVendQuantity - freeCashQuantity),
+  );
+  const paymentDelta = {
+    cashQuantity: Math.max(0, paymentDeltaWithCredit.cashQuantity - freeCashQuantity),
+    cashlessQuantity: Math.max(0, paymentDeltaWithCredit.cashlessQuantity - freeCashlessQuantity),
+    cashAmount: paymentDeltaWithCredit.cashQuantity > freeCashQuantity
+      ? paymentDeltaWithCredit.cashAmount
+      : 0,
+    cashlessAmount: paymentDeltaWithCredit.cashlessQuantity > freeCashlessQuantity
+      ? paymentDeltaWithCredit.cashlessAmount
+      : 0,
+    totalQuantity: Math.max(
+      0,
+      paymentDeltaWithCredit.totalQuantity - freeCashQuantity - freeCashlessQuantity,
+    ),
+  };
   const availablePaymentAmounts = slots
     .map((slot) => priceToPaymentAmount(Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0)))
     .filter((amount) => amount > 0);
@@ -825,14 +917,18 @@ async function applyPlanogramDepletion(
     });
   }
 
+  const remainingCashQuantity = Math.max(0, paymentDelta.cashQuantity - allocatedCash);
+  const remainingCashlessQuantity = Math.max(0, paymentDelta.cashlessQuantity - allocatedCashless);
+  const remainingCashAmount = Math.max(0, paymentDelta.cashAmount - allocatedCashAmount);
+  const remainingCashlessAmount = Math.max(0, paymentDelta.cashlessAmount - allocatedCashlessAmount);
   const reconciledPayments = await reconcilePendingUnpaidDispenses(adminClient, {
     provider: params.provider,
     machineId: params.machineId,
     beforeEventAt: params.eventAt,
-    cashQuantity: Math.max(0, paymentDelta.cashQuantity - allocatedCash),
-    cashlessQuantity: Math.max(0, paymentDelta.cashlessQuantity - allocatedCashless),
-    cashAmount: Math.max(0, paymentDelta.cashAmount - allocatedCashAmount),
-    cashlessAmount: Math.max(0, paymentDelta.cashlessAmount - allocatedCashlessAmount),
+    cashQuantity: remainingCashQuantity,
+    cashlessQuantity: remainingCashlessQuantity,
+    cashAmount: remainingCashAmount,
+    cashlessAmount: remainingCashlessAmount,
   });
   if (reconciledPayments.length) {
     // A late payment turns a possible stock loss into a confirmed sale. Apply only
@@ -842,7 +938,35 @@ async function applyPlanogramDepletion(
     applied.push({ reconciled_pending_payments: reconciledPayments });
   }
 
-  return applied;
+  const reconciledCashQuantity = reconciledPayments.reduce(
+    (sum, payment) => sum + Number(payment.cash_quantity || 0),
+    0,
+  );
+  const reconciledCashlessQuantity = reconciledPayments.reduce(
+    (sum, payment) => sum + Number(payment.cashless_quantity || 0),
+    0,
+  );
+  const reconciledCashAmount = reconciledPayments.reduce(
+    (sum, payment) => sum + Number(payment.cash_amount || 0),
+    0,
+  );
+  const reconciledCashlessAmount = reconciledPayments.reduce(
+    (sum, payment) => sum + Number(payment.cashless_amount || 0),
+    0,
+  );
+  const pendingPaymentCredit = buildPendingPaymentCredit({
+    cashQuantity: Math.max(0, remainingCashQuantity - reconciledCashQuantity),
+    cashlessQuantity: Math.max(0, remainingCashlessQuantity - reconciledCashlessQuantity),
+    cashAmount: Math.max(0, remainingCashAmount - reconciledCashAmount),
+    cashlessAmount: Math.max(0, remainingCashlessAmount - reconciledCashlessAmount),
+    totalQuantity: Math.max(
+      0,
+      remainingCashQuantity + remainingCashlessQuantity
+        - reconciledCashQuantity - reconciledCashlessQuantity,
+    ),
+  }, params.eventAt);
+
+  return { applied, pendingPaymentCredit };
 }
 
 function nestedNumber(source: Record<string, unknown> | null | undefined, key: string, nestedKey: string) {
@@ -857,6 +981,38 @@ function getPaymentDelta(previous: Record<string, unknown> | null | undefined, c
   const cashAmount = Math.max(0, nestedNumber(current, "cash", "amount") - nestedNumber(previous, "cash", "amount"));
   const cashlessAmount = Math.max(0, nestedNumber(current, "cashless", "amount") - nestedNumber(previous, "cashless", "amount"));
   return { cashQuantity, cashlessQuantity, cashAmount, cashlessAmount, totalQuantity: cashQuantity + cashlessQuantity };
+}
+
+function readPendingPaymentCredit(source: Record<string, unknown> | null | undefined, eventAt: string) {
+  const empty = { cashQuantity: 0, cashlessQuantity: 0, cashAmount: 0, cashlessAmount: 0 };
+  if (!source || typeof source !== "object") return empty;
+  const capturedAt = new Date(String(source.captured_at || "")).getTime();
+  const referenceAt = new Date(eventAt).getTime();
+  if (!Number.isFinite(capturedAt) || !Number.isFinite(referenceAt) || referenceAt - capturedAt > 6 * 60 * 60 * 1000) {
+    return empty;
+  }
+  return {
+    cashQuantity: Math.max(0, Math.floor(Number(source.cash_quantity || 0))),
+    cashlessQuantity: Math.max(0, Math.floor(Number(source.cashless_quantity || 0))),
+    cashAmount: Math.max(0, Number(source.cash_amount || 0)),
+    cashlessAmount: Math.max(0, Number(source.cashless_amount || 0)),
+  };
+}
+
+function buildPendingPaymentCredit(
+  payment: { cashQuantity: number; cashlessQuantity: number; cashAmount: number; cashlessAmount: number; totalQuantity: number },
+  eventAt: string,
+) {
+  const cashQuantity = Math.max(0, Math.floor(payment.cashQuantity));
+  const cashlessQuantity = Math.max(0, Math.floor(payment.cashlessQuantity));
+  if (!cashQuantity && !cashlessQuantity) return null;
+  return {
+    cash_quantity: cashQuantity,
+    cashless_quantity: cashlessQuantity,
+    cash_amount: cashQuantity ? Math.max(0, Math.round(payment.cashAmount)) : 0,
+    cashless_amount: cashlessQuantity ? Math.max(0, Math.round(payment.cashlessAmount)) : 0,
+    captured_at: eventAt,
+  };
 }
 
 function priceToPaymentAmount(priceCzk: number) {
@@ -1238,6 +1394,7 @@ Deno.serve(async (req) => {
     ]);
 
     let planogramDepletion: Record<string, unknown>[] = [];
+    let pendingPaymentCredit: Record<string, unknown> | null = null;
     let coffeeRecipeDepletion: Record<string, unknown>[] = [];
 
     if (machineId) {
@@ -1252,6 +1409,7 @@ Deno.serve(async (req) => {
 
       const previousCountersPayload = previousState?.counters_payload as Record<string, unknown> | null | undefined;
       const previousAllocatedPaymentCounters = previousCountersPayload?.allocated_payment_counters as Record<string, unknown> | null | undefined;
+      const previousPaymentCredit = previousCountersPayload?.pending_payment_credit as Record<string, unknown> | null | undefined;
       const nextCountersPayload = {
         ingest_id: ingest?.id ?? null,
         device_id: deviceId,
@@ -1263,6 +1421,7 @@ Deno.serve(async (req) => {
         raw_product_counter_count: parsedDex.raw_product_counter_count,
         payment_counters: parsedDex.payment_counters,
         allocated_payment_counters: previousAllocatedPaymentCounters || null,
+        pending_payment_credit: previousPaymentCredit || null,
       };
 
       const { error: stateError } = await adminClient
@@ -1278,7 +1437,7 @@ Deno.serve(async (req) => {
 
       if (stateError) throw stateError;
 
-      planogramDepletion = await applyPlanogramDepletion(adminClient, {
+      const planogramResult = await applyPlanogramDepletion(adminClient, {
         provider,
         machineId: Number(machineId),
         ingestId: ingest?.id ?? null,
@@ -1294,7 +1453,10 @@ Deno.serve(async (req) => {
         // therefore the canonical payment baseline. State is only a fallback for
         // the first retained ingest of a device.
         previousPaymentCounters: previousDexPaymentCounters || previousAllocatedPaymentCounters || previousCountersPayload?.payment_counters as Record<string, unknown> | null | undefined,
+        previousPaymentCredit,
       });
+      planogramDepletion = planogramResult.applied;
+      pendingPaymentCredit = planogramResult.pendingPaymentCredit;
 
       const { error: allocationStateError } = await adminClient
         .from("machine_telemetry_state")
@@ -1302,6 +1464,7 @@ Deno.serve(async (req) => {
           counters_payload: {
             ...nextCountersPayload,
             allocated_payment_counters: parsedDex.payment_counters,
+            pending_payment_credit: pendingPaymentCredit,
           },
           updated_at: new Date().toISOString(),
         })
