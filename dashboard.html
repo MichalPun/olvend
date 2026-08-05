@@ -2118,6 +2118,37 @@
       white-space: nowrap;
     }
 
+    .telemetry-payment-state {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 900;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .telemetry-payment-state.partner {
+      color: #9ef0bd;
+      background: rgba(46, 204, 113, 0.14);
+    }
+
+    .telemetry-payment-state.pending {
+      color: #ffd08a;
+      background: rgba(255, 182, 72, 0.18);
+    }
+
+    .telemetry-payment-state.free {
+      color: #a9cfff;
+      background: rgba(88, 166, 255, 0.14);
+    }
+
+    :root[data-olvend-theme="light"] .telemetry-payment-state.partner { color: #137a45; }
+    :root[data-olvend-theme="light"] .telemetry-payment-state.pending { color: #9a5b00; }
+    :root[data-olvend-theme="light"] .telemetry-payment-state.free { color: #1f5f9f; }
+
     .telemetry-sales-table th:nth-child(1),
     .telemetry-sales-table td:nth-child(1) { width: 108px; }
     .telemetry-sales-table th:nth-child(2),
@@ -5170,7 +5201,21 @@
       if (commandGridChanged) bindTelemetryDisclosurePersistence();
 
       const renderTransactionBody = (sourceRows, emptyText) => sourceRows.length
-        ? sourceRows.map((row) => `
+        ? sourceRows.map((row) => {
+          const provider = String(row.provider || "").toLowerCase();
+          const freeQuantity = Number(row.free_vend_quantity || 0);
+          const pendingQuantity = Number(row.unpaid_dispense_quantity || 0);
+          const paidAmount = Number(row.total_amount_czk || 0);
+          const pendingEstimate = pendingQuantity * Number(row.unit_price_czk || 0);
+          const isPartnerPaid = provider !== "vendsoft" && freeQuantity > 0 && pendingQuantity <= 0 && paidAmount <= 0 && row.partner_billing_enabled === true;
+          const totalCell = pendingQuantity > 0
+            ? `<span class="telemetry-payment-state pending">Čeká na DEX</span><span class="subcell">odhad ${escapeHtml(formatMoney(paidAmount + pendingEstimate))}</span>`
+            : isPartnerPaid
+              ? `<span class="telemetry-payment-state partner">Hrazeno partnerem</span><span class="subcell">${escapeHtml(row.partner_settlement_amount_czk > 0 ? `${formatMoney(row.partner_settlement_amount_czk)} / ks · měsíční vyúčtování` : "měsíční vyúčtování")}</span>`
+              : freeQuantity > 0 && paidAmount <= 0
+                ? '<span class="telemetry-payment-state free">Bezplatný výdej</span>'
+                : escapeHtml(provider === "vendsoft" && row.total_amount_czk == null ? "-" : formatMoney(paidAmount));
+          return `
           <tr>
             <td><strong>${escapeHtml(formatTelemetryDateTime(row.source_event_at))}</strong><span class="subcell">${escapeHtml(row.provider || "")}</span></td>
             <td><strong>${escapeHtml(row.machine_name || "Neznámý automat")}</strong><span class="subcell">${escapeHtml(row.machine_code || "")}</span></td>
@@ -5180,11 +5225,12 @@
             <td>${escapeHtml(String(Number(row.quantity || 0)).replace(".", ","))}</td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.cash_amount_czk == null ? "-" : formatMoney(row.cash_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.cash_quantity || 0) > 0 ? `${String(Number(row.cash_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.cashless_amount_czk == null ? "-" : formatMoney(row.cashless_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.cashless_quantity || 0) > 0 ? `${String(Number(row.cashless_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
-            <td>${escapeHtml(Number(row.free_vend_quantity || 0) > 0 ? `${String(Number(row.free_vend_quantity || 0)).replace(".", ",")} ks` : "0 ks")}</td>
+            <td>${escapeHtml(freeQuantity > 0 ? `${String(freeQuantity).replace(".", ",")} ks` : "0 ks")}${isPartnerPaid ? '<span class="subcell">partner</span>' : ""}</td>
             <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.unknown_payment_amount_czk == null ? "-" : formatMoney(row.unknown_payment_amount_czk || 0))}<span class="subcell">${escapeHtml(Number(row.unknown_payment_quantity || 0) > 0 ? `${String(Number(row.unknown_payment_quantity || 0)).replace(".", ",")} ks` : (String(row.provider || "").toLowerCase() === "vendsoft" ? "" : "0 ks"))}</span></td>
-            <td>${escapeHtml(String(row.provider || "").toLowerCase() === "vendsoft" && row.total_amount_czk == null ? "-" : formatMoney(row.total_amount_czk || 0))}</td>
+            <td>${totalCell}</td>
           </tr>
-        `).join("")
+        `;
+        }).join("")
         : `<tr><td colspan="11"><strong>${escapeHtml(emptyText)}</strong></td></tr>`;
 
       const renderTransactionTable = (key, title, subtitle, sourceRows, emptyText) => `
@@ -5203,7 +5249,7 @@
 
       const telemetryNote = error
         ? `Telemetrické prodeje se nepodařilo načíst: ${error}`
-        : "Řádek vždy uvádí zdroj. Přímá IMA/DEX telemetrie se zobrazuje pro kávové i potravinové automaty; VendSoft zůstává jen jako historická záloha. Karetní tržba je hrubá DEX tržba v kalendářním období, nikoli netto částka zúčtovací dávky Global Payments po provizi.";
+        : "Řádek vždy uvádí zdroj. „Hrazeno partnerem“ je bezplatný výdej zákazníkovi, který vstupuje do měsíčního partnerského vyúčtování. „Čeká na DEX“ je dočasný stav do spárování opožděného platebního čítače. Přímá IMA/DEX telemetrie se zobrazuje pro kávové i potravinové automaty; VendSoft zůstává jen jako historická záloha.";
       if (telemetrySalesNote.textContent !== telemetryNote) telemetrySalesNote.textContent = telemetryNote;
     }
 
@@ -5220,17 +5266,17 @@
       const [recentResult, trendRows, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, tomorrowRoutesResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
+          .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .order("source_event_at", { ascending: false })
           .limit(100),
         fetchSupabaseRowsPaged(() => supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
+          .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
           .gte("source_event_at", fetchStart.toISOString())
           .order("source_event_at", { ascending: false })),
         fetchSupabaseRowsPaged(() => supabase
           .from("machine_planogram_slots")
-          .select("id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, desired_units, fill_percent, expiry_date, active")
+          .select("id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, desired_units, fill_percent, expiry_date, active, settlement_type, settlement_amount_czk, settlement_billing_enabled")
           .eq("active", true)),
         supabase
           .from("machine_coffee_containers")
@@ -5277,7 +5323,7 @@
       if (foodMachineIds.length) {
         const { data, error } = await supabase
           .from("telemetry_sales_events")
-          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
+          .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .eq("provider", "ima")
           .in("machine_id", foodMachineIds)
           .order("source_event_at", { ascending: false })
@@ -5309,6 +5355,7 @@
         return date >= range.compareStart && date < range.compareEnd;
       });
       const lowStockRaw = lowStockRows || [];
+      const planogramSlotById = new Map(lowStockRaw.map((slot) => [String(slot.id), slot]));
       const coffeeContainerRaw = coffeeContainersResult.data || [];
       const productBySku = new Map(
         (productsResult.data || [])
@@ -5345,11 +5392,14 @@
       const enrichTelemetryRow = (row) => {
         const machine = machineMap.get(String(row.machine_id));
         const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+        const planogramSlot = row.planogram_slot_id ? planogramSlotById.get(String(row.planogram_slot_id)) : null;
         return {
           ...row,
           machine_name: machine?.name || `Automat ${row.machine_id || ""}`.trim(),
           machine_code: machine?.evidence_number ? `EV ${machine.evidence_number}` : "",
           location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
+          partner_billing_enabled: Boolean(planogramSlot?.settlement_billing_enabled && planogramSlot?.settlement_type === "subsidy_receivable"),
+          partner_settlement_amount_czk: Number(planogramSlot?.settlement_amount_czk || 0),
         };
       };
       const enrichedRows = recentRows.map(enrichTelemetryRow);
