@@ -1180,6 +1180,7 @@
     let products = []
     let productPackagesByProduct = new Map()
     let supplierProductMappings = []
+    let supplierOrderRules = []
     let currentInvoiceImport = null
     let productRecommendationMap = new Map()
     let productLastPurchasePriceMap = new Map()
@@ -2876,6 +2877,41 @@
     function quickOrderSupplierDefault() {
       return suppliers.find((supplier) => normalizeText(supplier.name).includes('jip')) || suppliers[0] || null
     }
+    function supplierOrderRule(supplierId) {
+      return supplierOrderRules.find((rule) => String(rule.supplier_id) === String(supplierId)) || null
+    }
+    function addWorkdays(date, count) {
+      const result = new Date(date)
+      let remaining = Math.max(Number(count || 0), 0)
+      while (remaining > 0) {
+        result.setDate(result.getDate() + 1)
+        if (![0, 6].includes(result.getDay())) remaining -= 1
+      }
+      return result
+    }
+    function supplierExpectedDelivery(rule) {
+      if (!rule) return null
+      const now = new Date()
+      const [hours, minutes] = String(rule.order_cutoff_time || '15:00').split(':').map(Number)
+      const afterCutoff = now.getHours() > hours || (now.getHours() === hours && now.getMinutes() >= minutes)
+      return addWorkdays(now, Number(rule.delivery_lead_workdays || 0) + (afterCutoff ? 1 : 0))
+    }
+    function quickJipRuleSummary(rows) {
+      const rule = supplierOrderRule(quickJipSupplierId.value)
+      if (!rule) return { text: '', failed: false }
+      const category = String(rule.minimum_order_product_category || '')
+      const minimum = Number(rule.minimum_order_value || 0)
+      const categoryValue = rows
+        .filter((row) => !category || row.product?.product_category === category)
+        .reduce((sum, row) => sum + (Number(row.quantity || 0) * recurringItemUnitCost({ product_id: row.product?.id })), 0)
+      const delivery = supplierExpectedDelivery(rule)
+      const deliveryText = delivery ? delivery.toLocaleDateString('cs-CZ') : 'neurčeno'
+      const failed = minimum > 0 && categoryValue + 0.01 < minimum
+      const minimumText = minimum > 0
+        ? ` Cukrovinky ${formatCurrency(categoryValue)} bez DPH / minimum ${formatCurrency(minimum)}${failed ? ` — chybí ${formatCurrency(minimum - categoryValue)}` : ' — splněno'}.`
+        : ''
+      return { text: ` Uzávěrka ${String(rule.order_cutoff_time || '15:00').slice(0, 5)}, očekávaný závoz ${deliveryText}.${minimumText}`, failed }
+    }
     function quickOrderCodeForProduct(supplierId, product) {
       const mapping = supplierMappingForProduct(supplierId, product?.id)
       const mappedCode = String(mapping?.supplier_item_code || '').trim()
@@ -2961,6 +2997,7 @@
         row.article
       ].map((value) => String(value || '').replace(/[;\r\n]+/g, ' ').trim()).join(';'))].join('\r\n')
       const supplier = suppliers.find((item) => String(item.id) === String(quickJipSupplierId.value))
+      const ruleSummary = quickJipRuleSummary(rows)
       if (!rows.length) {
         quickJipStatus.textContent = 'Pro vybraného dodavatele zatím nevychází žádné řádky. Zkontroluj stálou dodávku a množství položek.'
         quickJipStatus.className = 'status-line error'
@@ -2971,8 +3008,8 @@
         quickJipStatus.className = 'status-line error'
         return
       }
-      quickJipStatus.textContent = `Připraveno ${rows.length} řádků pro ${supplier?.name || 'dodavatele'}. Všechny řádky mají kód dodavatele.`
-      quickJipStatus.className = 'status-line success'
+      quickJipStatus.textContent = `Připraveno ${rows.length} řádků pro ${supplier?.name || 'dodavatele'}. Všechny řádky mají kód dodavatele.${ruleSummary.text}`
+      quickJipStatus.className = `status-line ${ruleSummary.failed ? 'error' : 'success'}`
     }
     function openQuickJipOrderModal() {
       quickJipSupplierId.innerHTML = supplierOptionsHtml()
@@ -4158,7 +4195,7 @@
         setStatus('Načítám doklady...')
         const params = new URLSearchParams(window.location.search)
         const preselectedSupplier = params.get('supplier') || ''
-        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, stockLocationsResult, productsResult, productPackagesResult] = await Promise.all([
+        const [recommendationsResult, recurringOrdersResult, recurringItemsResult, purchaseProfilesResult, suppliersResult, ordersResult, itemsResult, warehousesResult, stockLocationsResult, productsResult, productPackagesResult, supplierRulesResult] = await Promise.all([
           supabase.from('purchase_product_recommendations_v13').select('*'),
           supabase.from('purchase_recurring_orders').select('*').order('id', { ascending: true }),
           supabase.from('purchase_recurring_order_items').select('id, recurring_order_id, product_id, active, base_order_quantity, order_quantity_by_weekday, note').order('id', { ascending: true }),
@@ -4169,12 +4206,14 @@
           supabase.from('warehouses').select('id, name, code, active').eq('active', true).order('name', { ascending: true }),
           supabase.from('stock_locations').select('id, warehouse_id, location_type, name, active').eq('location_type', 'warehouse'),
           supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true }),
-          supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false })
+          supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
+          supabase.from('supplier_order_rules').select('*')
         ])
         if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error || productPackagesResult.error) {
           throw recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error || productPackagesResult.error
         }
         suppliers = suppliersResult.data || []
+        supplierOrderRules = supplierRulesResult.error ? [] : (supplierRulesResult.data || [])
         warehouses = warehousesResult.data || []
         if (!warehouses.length) {
           const fallbackWarehouses = await supabase
@@ -4698,6 +4737,13 @@
     quickJipOrderModalBackdrop.addEventListener('click', (event) => { if (event.target === quickJipOrderModalBackdrop) closeQuickJipOrderModal() })
     quickJipSupplierId.addEventListener('change', renderQuickJipOrder)
     quickJipMode.addEventListener('change', renderQuickJipOrder)
+    quickJipOutput.addEventListener('input', () => {
+      const rows = quickJipRowsFromEditor()
+      const summary = quickJipRuleSummary(rows)
+      if (!rows.length) return
+      quickJipStatus.textContent = `Ručně upraveno: ${rows.length} řádků.${summary.text}`
+      quickJipStatus.className = `status-line ${summary.failed ? 'error' : 'success'}`
+    })
     copyQuickJipOrderBtn.addEventListener('click', () => copyQuickJipOrder().catch((error) => {
       console.error(error)
       quickJipStatus.textContent = `Nepodařilo se kopírovat: ${error.message}`
