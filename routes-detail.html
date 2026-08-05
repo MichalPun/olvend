@@ -1028,7 +1028,7 @@
       const completedVisits = visits.filter((visit) => visit?.completed_at)
       const completedAt = completedVisits.length
         ? completedVisits.reduce((latest, visit) => !latest || new Date(visit.completed_at) > new Date(latest) ? visit.completed_at : latest, null)
-        : stop?.completed_at || null
+        : visits.find((visit) => visit?.skipped_at)?.skipped_at || stop?.completed_at || stop?.skipped_at || null
       return { startedAt, completedAt }
     }
 
@@ -1158,6 +1158,18 @@
 
     function renderStopVisitDetail(stop) {
       const visits = getVisitsForStop(stop)
+      const skippedVisit = visits.find((visit) => visit.status === 'skipped')
+      if (skippedVisit) {
+        return `
+          <div class="stop-detail-panel">
+            <div class="visit-empty">
+              <strong>Zastávka nebyla jetá.</strong><br />
+              Důvod: ${escapeHtml(getSkipReasonLabel(skippedVisit.skip_reason))}${skippedVisit.operator_note ? `<br />Poznámka: ${escapeHtml(skippedVisit.operator_note)}` : ''}<br />
+              Zapsáno: ${escapeHtml(formatDateTime(skippedVisit.skipped_at))}
+            </div>
+          </div>
+        `
+      }
       return `
         <div class="stop-detail-panel">
           ${visits.length
@@ -1165,6 +1177,18 @@
             : '<div class="visit-empty">K této zastávce zatím není uložená návštěva z mobilní aplikace.</div>'}
         </div>
       `
+    }
+
+    function getSkipReasonLabel(reason) {
+      const labels = {
+        opening_hours: 'Nestihl/a otevírací dobu',
+        time_shortage: 'Nestihl/a zastávku',
+        location_closed: 'Provozovna byla zavřená',
+        no_access: 'Nebyl možný přístup k automatu',
+        machine_unavailable: 'Automat nebyl dostupný',
+        other: 'Jiný důvod'
+      }
+      return labels[String(reason || '')] || String(reason || 'Důvod neuveden')
     }
 
     function renderCashReportSection(plan) {
@@ -1254,14 +1278,18 @@
     }
 
     function isStopDone(stop) {
-      return stop?.status === 'done' || Boolean(stop?.completed_at)
+      return ['done', 'completed'].includes(String(stop?.status || '')) || Boolean(stop?.completed_at)
+    }
+
+    function isStopClosed(stop) {
+      return isStopDone(stop) || String(stop?.status || '') === 'skipped'
     }
 
     function getEffectiveExecutionStatus(plan) {
       const status = String(plan?.execution_status || 'draft')
       if (['done', 'cancelled'].includes(status)) return status
       const stops = Array.isArray(plan?.orderedStops) ? plan.orderedStops : []
-      const allStopsDone = stops.length > 0 && stops.every(isStopDone)
+      const allStopsDone = stops.length > 0 && stops.every(isStopClosed)
       if (plan?.completed_at || allStopsDone) return 'done'
       return status
     }

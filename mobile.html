@@ -1219,6 +1219,11 @@
       background: rgba(53, 209, 127, 0.08);
     }
 
+    .route-stop-card.skipped {
+      border-color: rgba(255, 184, 76, 0.42);
+      background: rgba(255, 184, 76, 0.08);
+    }
+
     .route-stop-main {
       display: grid;
       grid-template-columns: 42px minmax(0, 1fr) auto;
@@ -1241,6 +1246,11 @@
     .route-stop-card.done .route-stop-order {
       background: rgba(53, 209, 127, 0.18);
       color: #d4ffe2;
+    }
+
+    .route-stop-card.skipped .route-stop-order {
+      background: rgba(255, 184, 76, 0.18);
+      color: #ffe1ad;
     }
 
     .route-stop-title {
@@ -1274,6 +1284,13 @@
       padding: 12px 10px;
       border-radius: 15px;
       font-size: 14px;
+    }
+
+    .route-stop-skip-reason {
+      color: #ffd89a;
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.4;
     }
 
     .coffee-visit-detail {
@@ -1973,6 +1990,8 @@
 
     .navigation-sheet[hidden] { display: none; }
 
+    .skip-stop-sheet[hidden] { display: none; }
+
     .navigation-sheet {
       position: fixed;
       inset: 0;
@@ -1981,6 +2000,33 @@
       align-items: end;
       justify-items: center;
       padding: 18px 14px calc(18px + env(safe-area-inset-bottom));
+    }
+
+    .skip-stop-sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 41;
+      display: grid;
+      align-items: end;
+      justify-items: center;
+      padding: 18px 14px calc(18px + env(safe-area-inset-bottom));
+    }
+
+    .skip-stop-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .skip-stop-form label {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .skip-stop-form textarea {
+      min-height: 88px;
     }
 
     .navigation-sheet-backdrop {
@@ -2769,6 +2815,34 @@
       </section>
     </div>
 
+    <div class="skip-stop-sheet" id="skipStopSheet" hidden>
+      <button class="navigation-sheet-backdrop" type="button" data-skip-stop-close aria-label="Zavřít"></button>
+      <section class="navigation-sheet-card" role="dialog" aria-modal="true" aria-labelledby="skipStopSheetTitle">
+        <h2 id="skipStopSheetTitle">Zastávku dnes nejedu</h2>
+        <span id="skipStopDestination">Vyber důvod. Zastávka se uzavře jako nejetá, ne jako dokončená.</span>
+        <div class="skip-stop-form">
+          <label>
+            Důvod
+            <select id="skipStopReason">
+              <option value="">Vyber důvod</option>
+              <option value="opening_hours">Nestihl/a jsem otevírací dobu</option>
+              <option value="time_shortage">Nestihl/a jsem zastávku</option>
+              <option value="location_closed">Provozovna byla zavřená</option>
+              <option value="no_access">Nebyl možný přístup k automatu</option>
+              <option value="machine_unavailable">Automat nebyl dostupný</option>
+              <option value="other">Jiný důvod</option>
+            </select>
+          </label>
+          <label>
+            Poznámka (volitelná)
+            <textarea id="skipStopNote" placeholder="Např. provozovna zavírá v 15:00"></textarea>
+          </label>
+          <button class="primary-btn" id="confirmSkipStopButton" type="button">Potvrdit, že jsem zastávku nejel/a</button>
+          <button class="secondary-btn" type="button" data-skip-stop-close>Zpět</button>
+        </div>
+      </section>
+    </div>
+
     <nav class="bottom-nav">
       <button class="nav-btn active" data-open-screen="today" type="button"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7"/><path d="M6 10v10h12V10"/></svg><span>Dnes</span></button>
       <button class="nav-btn" data-open-screen="service" type="button"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-3 3-3-3z"/></svg><span>Servis</span></button>
@@ -2844,6 +2918,7 @@
     let activeNavigationStopId = null
     let routeMachineLiveRefreshTimer = null
     let routeMachineLiveRefreshBusy = false
+    let activeSkipStopId = null
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -2951,6 +3026,11 @@
       backToRouteButton: document.getElementById('backToRouteButton'),
       navigationSheet: document.getElementById('navigationSheet'),
       navigationSheetDestination: document.getElementById('navigationSheetDestination'),
+      skipStopSheet: document.getElementById('skipStopSheet'),
+      skipStopDestination: document.getElementById('skipStopDestination'),
+      skipStopReason: document.getElementById('skipStopReason'),
+      skipStopNote: document.getElementById('skipStopNote'),
+      confirmSkipStopButton: document.getElementById('confirmSkipStopButton'),
       employeeSummary: document.getElementById('employeeSummary'),
       hrRequestPanel: document.getElementById('hrRequestPanel'),
       hrRequestType: document.getElementById('hrRequestType'),
@@ -3107,6 +3187,7 @@
       if (action === 'complete-stop') return 'Dokončuji...'
       if (action === 'accept-route') return 'Přebírám...'
       if (action === 'finish-route') return 'Ukončuji...'
+      if (action === 'skip-stop') return 'Ukládám...'
       return 'Pracuji...'
     }
 
@@ -3612,14 +3693,16 @@
 
       const stops = getRouteStops(plan)
       const routeAlreadyDone = ['done', 'completed'].includes(String(plan.execution_status || ''))
-      const completedStops = routeAlreadyDone ? stops.length : stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
-      const nextStop = routeAlreadyDone ? null : stops.find((stop) => getRouteStopStatus(stop) !== 'completed')
+      const completedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
+      const skippedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'skipped').length
+      const closedStops = completedStops + skippedStops
+      const nextStop = routeAlreadyDone ? null : stops.find((stop) => !isRouteStopClosed(stop))
       const routeVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       els.todayRouteSection.hidden = false
       els.todayRouteSection.innerHTML = `
         <div class="section-head">
           <h2>Dnešní trasa</h2>
-          <span>${escapeHtml(completedStops)}/${escapeHtml(stops.length || 0)} hotovo</span>
+          <span>${escapeHtml(closedStops)}/${escapeHtml(stops.length || 0)} uzavřeno</span>
         </div>
         <article class="route-panel">
           <div class="task-head">
@@ -3627,7 +3710,7 @@
               <h4>${escapeHtml(plan.title || 'Trasa z VendSoftu')}</h4>
               <div class="meta">
                 <span>${escapeHtml(routeVehicle?.name || 'Vozidlo z plánu')}${routeVehicle?.plate ? ` · ${escapeHtml(routeVehicle.plate)}` : ''}</span>
-                <span>${nextStop ? `Další: ${escapeHtml(getRouteStopTitle(nextStop))}` : 'Všechny zastávky hotové'}</span>
+                <span>${nextStop ? `Další: ${escapeHtml(getRouteStopTitle(nextStop))}` : `${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''}`}</span>
               </div>
             </div>
             <span class="badge ${nextStop ? 'yellow' : 'green'}">${nextStop ? 'Připraveno' : 'Hotovo'}</span>
@@ -4634,16 +4717,32 @@
     function getRouteStopStatus(stop) {
       const visit = getRouteVisitForStop(stop)
       if (visit?.status === 'completed' || ['done', 'completed'].includes(String(stop?.status || '')) || stop?.completed_at) return 'completed'
-      if (visit?.status === 'arrived' || stop?.status === 'arrived' || stop?.arrived_at) return 'arrived'
       if (visit?.status === 'skipped' || stop?.status === 'skipped') return 'skipped'
+      if (visit?.status === 'arrived' || stop?.status === 'arrived' || stop?.arrived_at) return 'arrived'
       return 'pending'
+    }
+
+    function isRouteStopClosed(stop) {
+      return ['completed', 'skipped'].includes(getRouteStopStatus(stop))
+    }
+
+    function getRouteSkipReasonLabel(reason) {
+      const labels = {
+        opening_hours: 'Nestihl/a otevírací dobu',
+        time_shortage: 'Nestihl/a zastávku',
+        location_closed: 'Provozovna byla zavřená',
+        no_access: 'Nebyl možný přístup k automatu',
+        machine_unavailable: 'Automat nebyl dostupný',
+        other: 'Jiný důvod'
+      }
+      return labels[String(reason || '')] || String(reason || 'Důvod neuveden')
     }
 
     function hasUnfinishedAssignedRoute() {
       const plan = getAssignedRoutePlan()
       if (!plan || ['done', 'completed', 'cancelled'].includes(String(plan.execution_status || ''))) return false
       const stops = getRouteStops(plan)
-      return stops.length > 0 && stops.some((stop) => getRouteStopStatus(stop) !== 'completed')
+      return stops.length > 0 && stops.some((stop) => !isRouteStopClosed(stop))
     }
 
     function getStartupScreen() {
@@ -4757,6 +4856,23 @@
     function closeNavigationChooser() {
       activeNavigationStopId = null
       if (els.navigationSheet) els.navigationSheet.hidden = true
+    }
+
+    function openSkipStopSheet(stopId) {
+      const { stop } = findRouteStop(stopId)
+      if (!stop || !els.skipStopSheet) return showMessage('Zastávku se nepodařilo najít v dnešní trase.', 'error')
+      if (getRouteStopStatus(stop) !== 'pending') return showMessage('Rozpracovanou nebo uzavřenou zastávku už nelze označit jako nejetou.', 'error')
+      activeSkipStopId = String(stopId)
+      els.skipStopDestination.textContent = `${getRouteStopTitle(stop)} · ${getRouteStopAddress(stop)}`
+      els.skipStopReason.value = ''
+      els.skipStopNote.value = ''
+      els.skipStopSheet.hidden = false
+      els.skipStopReason.focus({ preventScroll: true })
+    }
+
+    function closeSkipStopSheet() {
+      activeSkipStopId = null
+      if (els.skipStopSheet) els.skipStopSheet.hidden = true
     }
 
     function launchNavigationApp(app) {
@@ -6096,26 +6212,31 @@
 
       const stops = getRouteStops(plan)
       const completedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
-      const allCompleted = stops.length > 0 && completedStops === stops.length
+      const skippedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'skipped').length
+      const allClosed = stops.length > 0 && stops.every(isRouteStopClosed)
       const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       const normalizedRouteStatus = String(plan.execution_status || '')
       const routeAlreadyDone = ['done', 'completed'].includes(normalizedRouteStatus)
-      const routeStatus = allCompleted || routeAlreadyDone ? 'Hotovo' : (normalizedRouteStatus === 'in_progress' ? 'Převzato' : 'Čeká')
+      const routeStatus = allClosed || routeAlreadyDone ? 'Uzavřeno' : (normalizedRouteStatus === 'in_progress' ? 'Převzato' : 'Čeká')
       const canAccept = !['in_progress', 'started', 'done', 'completed'].includes(normalizedRouteStatus)
-      const canFinish = allCompleted && !routeAlreadyDone
+      const canFinish = allClosed && !routeAlreadyDone
       const stopCards = stops.map((stop) => {
         const machine = getRouteStopMachine(stop)
         const status = getRouteStopStatus(stop)
         const done = status === 'completed'
+        const skipped = status === 'skipped'
         const arrived = status === 'arrived'
+        const visit = getRouteVisitForStop(stop)
         const machineKind = getMachineKind(machine)
         const primaryAction = done
           ? `<button class="secondary-btn" type="button" data-route-action="view-stop" data-stop-id="${escapeHtml(stop.id)}">Zobrazit</button>`
+          : skipped
+            ? ''
           : arrived
             ? `<button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(stop.id)}">Pokračovat</button>`
             : `<button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(stop.id)}">Otevřít práci</button>`
         return `
-          <article class="route-stop-card ${done ? 'done' : ''}" id="routeStop-${escapeHtml(stop.id)}">
+          <article class="route-stop-card ${done ? 'done' : skipped ? 'skipped' : ''}" id="routeStop-${escapeHtml(stop.id)}">
             <div class="route-stop-main">
               <span class="route-stop-order">${escapeHtml(stop.stop_order || '')}</span>
               <div>
@@ -6126,31 +6247,34 @@
                   <span>${escapeHtml(getMachineRouteLabel(machine))}</span>
                 </div>
               </div>
-              <span class="badge ${done ? 'green' : arrived ? 'yellow' : 'blue'}">${done ? 'Hotovo' : arrived ? 'Rozpracováno' : 'Čeká'}</span>
+              <span class="badge ${done ? 'green' : skipped || arrived ? 'yellow' : 'blue'}">${done ? 'Hotovo' : skipped ? 'Nejeto' : arrived ? 'Rozpracováno' : 'Čeká'}</span>
             </div>
+            ${skipped ? `<div class="route-stop-skip-reason">Důvod: ${escapeHtml(getRouteSkipReasonLabel(visit?.skip_reason))}${visit?.operator_note ? ` · ${escapeHtml(visit.operator_note)}` : ''}</div>` : ''}
             <div class="route-stop-actions">
-              <button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}">Navigovat</button>
+              ${skipped ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}">Navigovat</button>`}
               ${primaryAction}
             </div>
+            ${status === 'pending' ? `<button class="secondary-btn" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Nejel/a jsem tuto zastávku</button>` : ''}
           </article>
         `
       }).join('')
 
       els.assignedRoutePanel.innerHTML = `
-        <section class="route-panel ${allCompleted ? 'done' : ''}">
+        <section class="route-panel ${allClosed ? 'done' : ''}">
           <div class="task-head">
             <div>
               <h4>${escapeHtml(plan.title || 'Dnešní trasa')}</h4>
               <div class="meta">
                 <span>${escapeHtml(currentVehicle?.name || 'Vozidlo z plánu')}${currentVehicle?.plate ? ` · ${escapeHtml(currentVehicle.plate)}` : ''}</span>
-                <span>${completedStops}/${stops.length || 0} zastávek hotovo</span>
+                <span>${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''} · ${stops.length || 0} celkem</span>
               </div>
             </div>
-            <span class="badge ${allCompleted || routeAlreadyDone ? 'green' : 'yellow'}">${routeStatus}</span>
+            <span class="badge ${allClosed || routeAlreadyDone ? 'green' : 'yellow'}">${routeStatus}</span>
           </div>
-          ${allCompleted || routeAlreadyDone ? `
+          ${allClosed || routeAlreadyDone ? `
             <div class="attention-box">
-              <strong>Dnešní trasa je hotová.</strong>
+              <strong>Dnešní trasa je uzavřená.</strong>
+              <span>${completedStops} zastávek dokončeno${skippedStops ? `, ${skippedStops} nejeto` : ''}.</span>
               <span>Zítřejší trasa se v mobilu otevře až v den plánování, aby se omylem nerozpracovala dopředu.</span>
             </div>
           ` : ''}
@@ -6204,14 +6328,16 @@
       const routePlan = getAssignedRoutePlan()
       const routeStops = getRouteStops(routePlan)
       const routeDoneCount = routeStops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
+      const routeSkippedCount = routeStops.filter((stop) => getRouteStopStatus(stop) === 'skipped').length
+      const routeClosedCount = routeDoneCount + routeSkippedCount
       els.tripWorkSummary.innerHTML = `
         <article class="task-card">
           <div class="task-head">
             <div>
               <h4>Trasa</h4>
-              <div class="meta"><span>${routePlan ? `${escapeHtml(routePlan.title || 'Dnešní trasa')} · ${routeDoneCount}/${routeStops.length} hotovo` : 'Trasa je případně vedena ve VendSoftu'}</span></div>
+              <div class="meta"><span>${routePlan ? `${escapeHtml(routePlan.title || 'Dnešní trasa')} · ${routeDoneCount} hotovo${routeSkippedCount ? ` · ${routeSkippedCount} nejeto` : ''}` : 'Trasa je případně vedena ve VendSoftu'}</span></div>
             </div>
-            <span class="badge ${routePlan && routeDoneCount === routeStops.length && routeStops.length ? 'green' : routePlan ? 'yellow' : 'blue'}">${routePlan ? (routeDoneCount === routeStops.length && routeStops.length ? 'Hotovo' : 'Jet') : 'Info'}</span>
+            <span class="badge ${routePlan && routeClosedCount === routeStops.length && routeStops.length ? 'green' : routePlan ? 'yellow' : 'blue'}">${routePlan ? (routeClosedCount === routeStops.length && routeStops.length ? 'Uzavřeno' : 'Jet') : 'Info'}</span>
           </div>
         </article>
         <article class="task-card">
@@ -7486,6 +7612,10 @@
       if (getRouteStopStatus(stop) === 'completed') {
         return viewRouteStop(stopId)
       }
+      if (getRouteStopStatus(stop) === 'skipped') {
+        showMessage('Tato zastávka je uzavřená jako nejetá.', 'error')
+        return
+      }
       state.routeMachineReadOnly = false
       if (!['in_progress', 'started'].includes(String(plan.execution_status || ''))) {
         await acceptAssignedRoute()
@@ -7606,7 +7736,7 @@
       let completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
       const updatedPlan = getAssignedRoutePlan() || plan
       const stops = getRouteStops(updatedPlan)
-      const allDone = stops.length > 0 && stops.every((item) => getRouteStopStatus(item) === 'completed')
+      const allDone = stops.length > 0 && stops.every(isRouteStopClosed)
       if (allDone && updatedPlan?.id) {
         const { error: planError } = await supabase
           .from('route_plans')
@@ -7620,20 +7750,119 @@
 
       renderAssignedRoute()
       openScreen('vehicle')
-      const nextStop = getRouteStops(getAssignedRoutePlan()).find((item) => getRouteStopStatus(item) !== 'completed')
+      const nextStop = getRouteStops(getAssignedRoutePlan()).find((item) => !isRouteStopClosed(item))
       const targetId = nextStop?.id || stop.id
       setTimeout(() => document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
       const queuedSuffix = completionQueued ? ' Uloženo offline, odešle se automaticky po návratu signálu.' : ''
       showMessage(`${allDone ? 'Automat je hotový a celá trasa je dokončená.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
     }
 
+    async function skipRouteStop(stopId, reason, note = '') {
+      const { plan, stop } = findRouteStop(stopId)
+      if (!plan || !stop) throw new Error('Zastávku se nepodařilo najít v dnešní trase.')
+      if (getRouteStopStatus(stop) !== 'pending') throw new Error('Jen neotevřenou zastávku lze označit jako nejetou.')
+      if (!reason) throw new Error('Vyber důvod, proč jsi zastávku nejel/a.')
+      const cleanNote = String(note || '').trim()
+      if (reason === 'other' && !cleanNote) throw new Error('U jiného důvodu napiš krátkou poznámku.')
+
+      if (!['in_progress', 'started'].includes(String(plan.execution_status || ''))) {
+        await acceptAssignedRoute()
+      }
+
+      const machine = getRouteStopMachine(stop)
+      if (!machine?.id) throw new Error('Zastávka nemá navázaný automat, důvod proto nelze bezpečně uložit.')
+      const nowIso = new Date().toISOString()
+      const existing = getRouteVisitForStop(stop)
+      let savedVisit = existing
+
+      if (existing?.id) {
+        const { data, error } = await supabase
+          .from('route_machine_visits')
+          .update({
+            status: 'skipped',
+            skipped_at: nowIso,
+            skip_reason: reason,
+            operator_note: cleanNote || null,
+            synced_at: nowIso
+          })
+          .eq('id', existing.id)
+          .select('*')
+          .single()
+        if (error) throw error
+        savedVisit = data
+      } else {
+        const { data, error } = await supabase
+          .from('route_machine_visits')
+          .insert([{
+            route_plan_id: plan.id,
+            route_plan_stop_id: stop.id,
+            machine_id: machine.id,
+            employee_id: state.employee?.id || null,
+            vehicle_id: plan.vehicle_id || getCurrentVehicleId() || null,
+            visit_date: todayIso,
+            machine_kind: getMachineKind(machine),
+            status: 'skipped',
+            skipped_at: nowIso,
+            skip_reason: reason,
+            operator_note: cleanNote || null,
+            offline_created_at: nowIso,
+            synced_at: nowIso
+          }])
+          .select('*')
+          .single()
+        if (error) throw error
+        savedVisit = data
+      }
+
+      const { error: stopError } = await supabase
+        .from('route_plan_stops')
+        .update({ status: 'skipped', skipped_at: nowIso })
+        .eq('id', stop.id)
+      if (stopError) throw stopError
+
+      if (existing) Object.assign(existing, savedVisit || {}, { status: 'skipped', skipped_at: nowIso, skip_reason: reason, operator_note: cleanNote || null })
+      else state.routeMachineVisits.push(savedVisit || {
+        route_plan_id: plan.id,
+        route_plan_stop_id: stop.id,
+        machine_id: machine.id,
+        status: 'skipped',
+        skipped_at: nowIso,
+        skip_reason: reason,
+        operator_note: cleanNote || null
+      })
+      stop.status = 'skipped'
+      stop.skipped_at = nowIso
+
+      const allClosed = getRouteStops(plan).length > 0 && getRouteStops(plan).every(isRouteStopClosed)
+      if (allClosed) {
+        const { error: planError } = await supabase
+          .from('route_plans')
+          .update({ execution_status: 'done', completed_at: nowIso })
+          .eq('id', plan.id)
+        if (planError) throw planError
+        plan.execution_status = 'done'
+        plan.completed_at = nowIso
+      }
+
+      closeSkipStopSheet()
+      persistMobileSnapshot()
+      renderAssignedRoute()
+      renderTodayRouteSummary()
+      renderTripWorkSummary()
+      const nextStop = getRouteStops(plan).find((item) => !isRouteStopClosed(item))
+      setTimeout(() => document.getElementById(`routeStop-${nextStop?.id || stop.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
+      showMessage(allClosed
+        ? 'Zastávka je označená jako nejetá a trasa je uzavřená.'
+        : 'Zastávka je označená jako nejetá. Pokračuj další zastávkou.', 'success')
+    }
+
     async function finishAssignedRoute() {
       const plan = getAssignedRoutePlan()
       if (!plan?.id) return
       const stops = getRouteStops(plan)
-      const allDone = stops.length > 0 && stops.every((item) => getRouteStopStatus(item) === 'completed')
+      const allDone = stops.length > 0 && stops.every(isRouteStopClosed)
       if (!allDone) {
-        showMessage('Nejdřív dokonči všechny zastávky v trase.', 'error')
+        showMessage('Nejdřív dokonči nebo označ jako nejeté všechny zastávky v trase.', 'error')
         return
       }
       const { error } = await supabase
@@ -9156,6 +9385,7 @@
       if (action === 'open-stop') return openRouteStop(stopId)
       if (action === 'view-stop') return viewRouteStop(stopId)
       if (action === 'complete-stop') return completeRouteStop(stopId)
+      if (action === 'skip-stop') return openSkipStopSheet(stopId)
     }
 
     async function reloadData() {
@@ -10460,6 +10690,15 @@
         const appButton = event.target.closest('[data-navigation-app]')
         if (appButton) return launchNavigationApp(appButton.dataset.navigationApp)
         if (event.target.closest('[data-navigation-close]')) closeNavigationChooser()
+      })
+      els.skipStopSheet?.addEventListener('click', (event) => {
+        if (event.target.closest('[data-skip-stop-close]')) closeSkipStopSheet()
+      })
+      els.confirmSkipStopButton?.addEventListener('click', () => {
+        const restore = setButtonBusy(els.confirmSkipStopButton, 'Ukládám...')
+        skipRouteStop(activeSkipStopId, els.skipStopReason.value, els.skipStopNote.value)
+          .catch(handleError)
+          .finally(restore)
       })
       els.routeMachineContent?.addEventListener('click', (event) => {
         const routeButton = event.target.closest('[data-route-action]')
