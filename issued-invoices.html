@@ -3434,7 +3434,7 @@
       cashReceiptList.innerHTML = rows.length ? rows.map((receipt) => `
         <div class="cash-receipt-row">
           <div><strong>${escapeHtml(cashReceiptNumber(receipt))}</strong><span class="subtext">${escapeHtml(formatDate(receipt.received_at))} · ${escapeHtml(formatMoney(receipt.amount, receipt.currency || 'CZK'))}${receipt.email_sent_at ? ` · e-mail ${escapeHtml(formatEmailDateTime(receipt.email_sent_at))}` : ''}</span></div>
-          <div class="action-row"><button class="btn secondary small" type="button" data-cash-receipt-action="print" data-receipt-id="${escapeHtml(String(receipt.id))}">Tisk</button><button class="btn secondary small" type="button" data-cash-receipt-action="email" data-receipt-id="${escapeHtml(String(receipt.id))}">E-mail</button></div>
+          <div class="action-row"><button class="btn secondary small" type="button" data-cash-receipt-action="print" data-receipt-id="${escapeHtml(String(receipt.id))}">Tisk</button><button class="btn secondary small" type="button" data-cash-receipt-action="email" data-receipt-id="${escapeHtml(String(receipt.id))}">E-mail</button><button class="btn secondary small" type="button" data-cash-receipt-action="cancel" data-receipt-id="${escapeHtml(String(receipt.id))}">Zrušit</button></div>
         </div>
       `).join('') : '<div class="empty-state">K této faktuře zatím není vystavený pokladní doklad.</div>'
     }
@@ -3545,6 +3545,7 @@
         email_to: cashReceiptEmail.value.trim() || null,
         email_sent_at: null,
         status: 'issued',
+        invoice_status_before_cash_payment: invoice.status,
         created_at: new Date().toISOString(),
         receipt_number: `PPD${year}-${String(invoice.id).padStart(5, '0')}-${String(sequence).padStart(2, '0')}`
       }
@@ -3562,6 +3563,30 @@
       setCashReceiptStatus(`Pokladní doklad ${receiptNumber} byl vystaven.`, 'success')
       cashReceiptAmount.value = Math.max(0, roundMoney(rowTotal(invoice) - cashReceiptPaidTotal(invoice.id)))
       return receipt
+    }
+    async function cancelCashReceipt(receipt, invoice) {
+      if (!window.confirm(`Opravdu zrušit pokladní doklad ${cashReceiptNumber(receipt)}? Doklad zůstane evidovaný jako stornovaný.`)) return false
+      const meta = extractMeta(invoice)
+      const receipts = (meta.cashPaymentReceipts || []).map((item) => String(item.id) === String(receipt.id)
+        ? { ...item, status:'cancelled', cancelled_at:new Date().toISOString() }
+        : item)
+      const activePaidTotal = roundMoney(receipts.filter((item) => item.status !== 'cancelled').reduce((sum, item) => sum + Number(item.amount || 0), 0))
+      const remainsPaidInCash = activePaidTotal + 0.001 >= rowTotal(invoice)
+      const nextStatus = invoice.status === 'paid' && !remainsPaidInCash
+        ? (receipt.invoice_status_before_cash_payment || 'issued')
+        : invoice.status
+      const nextNote = noteWithMeta(invoice, { ...meta, cashPaymentReceipts: receipts })
+      const { error } = await supabase.from('sales_documents').update({ note: nextNote, status: nextStatus }).eq('id', invoice.id)
+      if (error) throw error
+      invoice.note = nextNote
+      invoice.status = nextStatus
+      receipt.status = 'cancelled'
+      receipt.cancelled_at = receipts.find((item) => String(item.id) === String(receipt.id))?.cancelled_at
+      renderCashReceiptList(invoice)
+      renderRows()
+      cashReceiptAmount.value = Math.max(0, roundMoney(rowTotal(invoice) - cashReceiptPaidTotal(invoice.id)))
+      setCashReceiptStatus(`Pokladní doklad ${cashReceiptNumber(receipt)} byl zrušen.`, 'success')
+      return true
     }
     function qrPaymentPayload(row) {
       const meta = extractMeta(row)
@@ -4908,6 +4933,10 @@
           button.disabled = true
           setCashReceiptStatus(`Odesílám ${cashReceiptNumber(receipt)}...`)
           await sendCashReceiptEmail(receipt, invoice)
+        }
+        if (button.dataset.cashReceiptAction === 'cancel') {
+          button.disabled = true
+          await cancelCashReceipt(receipt, invoice)
         }
       } catch (error) {
         setCashReceiptStatus(`Akce s pokladním dokladem selhala: ${error.message}`, 'error')
