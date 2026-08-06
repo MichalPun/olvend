@@ -21,7 +21,7 @@ type RouteStopPayload = {
 };
 
 type RoutePlanPayload = {
-  mode?: "optimize" | "distance";
+  mode?: "optimize" | "ordered" | "distance";
   origin: LatLngPoint;
   destination?: LatLngPoint;
   stops: RouteStopPayload[];
@@ -182,13 +182,14 @@ Deno.serve(async (req) => {
 
     const stops = rawStops.map(normalizeStop);
 
+    const preserveOrder = payload.mode === "ordered";
     const googleRequest = {
       origin: waypoint(origin),
       destination: waypoint(origin),
       intermediates: stops.map((stop) => waypoint(stop)).filter(Boolean),
       travelMode: "DRIVE",
       routingPreference: "TRAFFIC_AWARE",
-      optimizeWaypointOrder: true,
+      optimizeWaypointOrder: !preserveOrder,
       languageCode: "cs",
       units: "METRIC",
       polylineQuality: "OVERVIEW",
@@ -222,7 +223,7 @@ Deno.serve(async (req) => {
       return json({ error: "Google Routes API returned no route." }, 400);
     }
 
-    const optimizedIndices = Array.isArray(route.optimizedIntermediateWaypointIndex)
+    const optimizedIndices = !preserveOrder && Array.isArray(route.optimizedIntermediateWaypointIndex)
       ? route.optimizedIntermediateWaypointIndex.map((value: unknown) => Number(value))
       : stops.map((_, index) => index);
 
@@ -240,6 +241,7 @@ Deno.serve(async (req) => {
 
     return json({
       provider: "google_routes",
+      mode: preserveOrder ? "ordered" : "optimize",
       routingPreference: "TRAFFIC_AWARE",
       orderedStops,
       optimizedIntermediateWaypointIndex: optimizedIndices,
@@ -250,7 +252,9 @@ Deno.serve(async (req) => {
         encodedPolyline: route?.polyline?.encodedPolyline || null,
       },
       note:
-        "Pouzity je Google Routes API Compute Routes s optimizeWaypointOrder=true a routingPreference=TRAFFIC_AWARE. Google docs uvadeji, ze optimizeWaypointOrder neni kompatibilni s TRAFFIC_AWARE_OPTIMAL.",
+        preserveOrder
+          ? "Poradi zastavek bylo zachovano; Google prepocital vzdalenosti a cas jednotlivych useku."
+          : "Pouzity je Google Routes API Compute Routes s optimizeWaypointOrder=true a routingPreference=TRAFFIC_AWARE. Google docs uvadeji, ze optimizeWaypointOrder neni kompatibilni s TRAFFIC_AWARE_OPTIMAL.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown server error.";

@@ -851,10 +851,48 @@
     }
 
     .route-order-index {
-      display: grid;
-      gap: 7px;
-      justify-items: start;
-      min-width: 70px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 96px;
+    }
+
+    .route-drag-handle {
+      width: 26px;
+      height: 30px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: grab;
+      user-select: none;
+    }
+
+    .route-order-row {
+      cursor: grab;
+      transition: opacity 120ms ease, background 120ms ease;
+    }
+
+    .route-order-row:active,
+    .route-order-row:active .route-drag-handle {
+      cursor: grabbing;
+    }
+
+    .route-order-row.is-dragging {
+      opacity: 0.38;
+    }
+
+    .route-order-row.is-drop-target td {
+      background: rgba(213,16,26,0.1);
+      box-shadow: inset 0 2px 0 rgba(213,16,26,0.75);
+    }
+
+    .route-order-row button,
+    .route-order-row a {
+      cursor: pointer;
     }
 
     .route-move-btn {
@@ -1650,7 +1688,7 @@
                         <div class="panel-header">
                           <div>
                             <h2>Pořadí jízdy</h2>
-                            <p>Po výpočtu můžeš zastávky posouvat šipkami nebo celé pořadí otočit.</p>
+                            <p>Chyť celý řádek a přetáhni ho. Jízda i celkový čas se po změně přepočítají automaticky.</p>
                           </div>
                           <button class="btn secondary" id="openRouteDrawerBtn" type="button" title="První zastávka se stane poslední a naopak">Otočit pořadí</button>
                         </div>
@@ -1800,6 +1838,9 @@
       mapLayer: null,
       routesTablesAvailable: true,
       googleRoutesAvailable: true,
+      draggedRouteStopIndex: null,
+      manualRouteRecalcRevision: 0,
+      manualRouteRecalcTimer: null,
       editingPlanKey: null,
       savingPlan: false,
     }
@@ -2086,14 +2127,14 @@
       const machineId = String(machine?.id || '')
       if (!machineId) return null
       const isFoodMachine = normalizeText(machine?.machine_type) === 'snack'
-      if (!isFoodMachine && !state.telemetryEligibleMachineIds.has(machineId)) return null
+      const hasFreshTelemetry = state.telemetryEligibleMachineIds.has(machineId)
       const rule = state.machineServiceRules.get(machineId)
       if (rule?.route_visit_rules_active === false) return null
       const criticalPercent = Math.max(0, Math.min(100, Number(rule?.stock_critical_percent ?? 19)))
       const maxVisitDays = Math.max(1, Number(rule?.max_visit_interval_days ?? 10))
       const hasInitialInventory = state.inventoriedMachineIds.has(machineId)
 
-      if (!isFoodMachine && !hasInitialInventory) {
+      if (!isFoodMachine && hasFreshTelemetry && !hasInitialInventory) {
         return {
           reasons: [{
             type: 'inventory',
@@ -2148,7 +2189,7 @@
               ? current <= Math.min(2, Math.max(0, capacity - 1))
               : ratio * 100 <= 25
             : false
-          const coffeeLow = !isFoodMachine && ratio != null && ratio * 100 < criticalPercent
+          const coffeeLow = !isFoodMachine && hasFreshTelemetry && ratio != null && ratio * 100 < criticalPercent
           return { container, capacity, current, ratio, low: foodLow || coffeeLow }
         })
         .filter((item) => item.low)
@@ -3036,9 +3077,10 @@
               : ''
 
         return `
-          <tr>
+          <tr class="route-order-row" draggable="true" data-route-drag-index="${index}" aria-label="Zastávka ${index + 1}: ${escapeHtml(stop.name)}. Přetažením změníš pořadí.">
             <td>
               <div class="route-order-index">
+                <span class="route-drag-handle" aria-hidden="true" title="Přetáhnout zastávku">⋮⋮</span>
                 <strong>${formatNumber(index + 1)}</strong>
                 <div class="route-order-controls">
                   <button class="route-move-btn" type="button" data-route-move="${index}" data-route-direction="-1" aria-label="Posunout zastávku ${index + 1} nahoru" title="Posunout nahoru" ${index === 0 ? 'disabled' : ''}>↑</button>
@@ -3092,6 +3134,34 @@
           const index = Number(button.dataset.routeMove)
           const direction = Number(button.dataset.routeDirection)
           moveRouteStop(index, direction)
+        })
+      })
+
+      routeList.querySelectorAll('[data-route-drag-index]').forEach((row) => {
+        row.addEventListener('dragstart', (event) => {
+          const index = Number(row.dataset.routeDragIndex)
+          if (!Number.isInteger(index)) return
+          state.draggedRouteStopIndex = index
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('text/plain', String(index))
+          window.requestAnimationFrame(() => row.classList.add('is-dragging'))
+        })
+        row.addEventListener('dragover', (event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          routeList.querySelectorAll('.is-drop-target').forEach((item) => item.classList.remove('is-drop-target'))
+          if (Number(row.dataset.routeDragIndex) !== state.draggedRouteStopIndex) row.classList.add('is-drop-target')
+        })
+        row.addEventListener('drop', (event) => {
+          event.preventDefault()
+          const fromIndex = Number(event.dataTransfer.getData('text/plain') || state.draggedRouteStopIndex)
+          const toIndex = Number(row.dataset.routeDragIndex)
+          routeList.querySelectorAll('.is-drop-target').forEach((item) => item.classList.remove('is-drop-target'))
+          reorderRouteStop(fromIndex, toIndex)
+        })
+        row.addEventListener('dragend', () => {
+          state.draggedRouteStopIndex = null
+          routeList.querySelectorAll('.is-dragging, .is-drop-target').forEach((item) => item.classList.remove('is-dragging', 'is-drop-target'))
         })
       })
     }
@@ -4092,7 +4162,17 @@
       renderRouteSummary(state.currentPlan)
       renderRouteList(state.currentPlan)
       renderMap(state.currentPlan)
-      setStatus(message, 'success')
+      setStatus(`${message} Přepočítávám přesný čas na cestě...`, 'success')
+      scheduleManualRouteGoogleRecalculation()
+    }
+
+    function reorderRouteStop(fromIndex, toIndex) {
+      const stops = [...(state.currentPlan?.orderedStops || [])]
+      if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) return
+      if (fromIndex < 0 || toIndex < 0 || fromIndex >= stops.length || toIndex >= stops.length) return
+      const [movedStop] = stops.splice(fromIndex, 1)
+      stops.splice(toIndex, 0, movedStop)
+      applyManualRouteOrder(stops, `${movedStop.name || 'Zastávku'} jsem přesunul na pozici ${toIndex + 1}.`)
     }
 
     function moveRouteStop(index, direction) {
@@ -4107,6 +4187,78 @@
       const stops = [...(state.currentPlan?.orderedStops || [])]
       if (stops.length < 2) return
       applyManualRouteOrder(stops.reverse(), 'Pořadí celé trasy jsem otočil.')
+    }
+
+    function scheduleManualRouteGoogleRecalculation() {
+      state.manualRouteRecalcRevision += 1
+      const revision = state.manualRouteRecalcRevision
+      if (state.manualRouteRecalcTimer) window.clearTimeout(state.manualRouteRecalcTimer)
+      state.manualRouteRecalcTimer = window.setTimeout(() => {
+        state.manualRouteRecalcTimer = null
+        recalculateManualOrderWithGoogle(revision)
+      }, 450)
+    }
+
+    async function recalculateManualOrderWithGoogle(revision) {
+      const plan = state.currentPlan
+      if (!plan?.orderedStops?.length || revision !== state.manualRouteRecalcRevision) return
+      if (!state.googleRoutesAvailable || returnMode.value !== 'return') {
+        setStatus('Pořadí je změněné. Čas na cestě je nyní orientační.', 'warning')
+        return
+      }
+
+      try {
+        const accessToken = await getAccessToken()
+        const payload = {
+          mode: 'ordered',
+          origin: plan.startPoint || determineStartPoint(),
+          stops: plan.orderedStops.map((stop) => ({
+            id: stop.id,
+            name: stop.name,
+            city: stop.city,
+            address: stop.address,
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            estimatedServiceMinutes: stop.estimatedServiceMinutes,
+            effectivePriority: stop.effectivePriority,
+            serviceWindow: stop.serviceWindow,
+            routeNote: stop.routeNote,
+            openRequestCount: stop.openRequestCount,
+          })),
+          returnToStart: true,
+          departureTime: buildGoogleDepartureTime(routeDateInput.value),
+        }
+        const data = await invokeGoogleRoutePlanner(payload, accessToken)
+        if (revision !== state.manualRouteRecalcRevision || !state.currentPlan) return
+
+        const exactStops = plan.orderedStops.map((stop, index) => {
+          const googleStop = data?.orderedStops?.[index] || {}
+          return {
+            ...stop,
+            distanceFromPreviousKm: Number(googleStop.googleLegDistanceMeters || 0) / 1000,
+            driveMinutesFromPrevious: Math.round(Number(googleStop.googleLegDurationSeconds || 0) / 60),
+          }
+        })
+        state.currentPlan = {
+          ...state.currentPlan,
+          orderedStops: exactStops,
+          estimatedDistanceKm: Number(data?.route?.distanceMeters || 0) / 1000,
+          estimatedDriveMinutes: Math.round(Number(data?.route?.durationSeconds || 0) / 60),
+          provider: 'google_routes_manual',
+          google: data,
+          manuallyReordered: true,
+        }
+        engineBadge.textContent = 'Google · ručně'
+        engineBadge.className = 'route-badge live'
+        renderRouteSummary(state.currentPlan)
+        renderRouteList(state.currentPlan)
+        renderMap(state.currentPlan)
+        setStatus('Pořadí je uložené v návrhu a čas na cestě je přepočítaný přes Google.', 'success')
+      } catch (error) {
+        console.warn('Manual route time recalculation failed:', error)
+        if (revision !== state.manualRouteRecalcRevision) return
+        setStatus('Pořadí je změněné. Google se teď nepodařilo načíst, proto zůstává orientační čas.', 'warning')
+      }
     }
 
     function findCandidateForRouteStop(stop) {
@@ -4180,6 +4332,40 @@
       return planned.toISOString()
     }
 
+    async function invokeGoogleRoutePlanner(payload, accessToken = '') {
+      let data
+      let error = null
+
+      try {
+        const response = await supabase.functions.invoke('google-route-plan', {
+          body: payload,
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        })
+        data = response.data
+        error = response.error
+      } catch (invokeError) {
+        error = invokeError
+      }
+
+      if (error) {
+        const response = await fetch(GOOGLE_ROUTE_FUNCTION_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: supabaseAnonKey,
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
+        })
+        const responseData = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(responseData?.error || `HTTP ${response.status}`)
+        data = responseData
+      }
+
+      if (data?.error) throw new Error(data.error)
+      return data
+    }
+
     async function optimizeStopsWithGoogle() {
       if (!state.googleRoutesAvailable) {
         throw new Error('Google Routes edge function zatím není dostupná.')
@@ -4224,53 +4410,10 @@
       }
 
       let data
-      let error = null
-
-        try {
-          const response = await supabase.functions.invoke('google-route-plan', {
-            body: payload,
-            headers: accessToken ? {
-              Authorization: `Bearer ${accessToken}`,
-            } : {},
-          })
-
-        data = response.data
-        error = response.error
-      } catch (invokeError) {
-        error = invokeError
-      }
-
-      if (error) {
-        try {
-          const response = await fetch(GOOGLE_ROUTE_FUNCTION_URL, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              apikey: supabaseAnonKey,
-              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-            },
-            body: JSON.stringify(payload),
-          })
-
-          const responseData = await response.json().catch(() => ({}))
-
-          if (!response.ok) {
-            throw new Error(responseData?.error || `HTTP ${response.status}`)
-          }
-
-          data = responseData
-          error = null
-        } catch (directError) {
-          throw new Error(`Google edge function není dostupná: ${directError.message || directError}`)
-        }
-      }
-
-      if (error) {
-        throw error
-      }
-
-      if (data?.error) {
-        throw new Error(data.error)
+      try {
+        data = await invokeGoogleRoutePlanner(payload, accessToken)
+      } catch (error) {
+        throw new Error(`Google edge function není dostupná: ${error.message || error}`)
       }
 
       const orderedStops = (data?.orderedStops || []).map((stop, orderedIndex) => {
