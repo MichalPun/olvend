@@ -893,6 +893,7 @@ async function applyPlanogramDepletion(
       if (settlementError) throw settlementError;
     }
 
+    const appliedUnitPrice = nullableTelemetryPrice(slot.customer_price_czk ?? slot.dex_price_czk);
     applied.push({
       slot_id: slot.id,
       selection_code: selection,
@@ -906,9 +907,9 @@ async function applyPlanogramDepletion(
       unpaid_dispense_delta: unpaidDispenseDelta,
       product_name: slot.product_name ?? null,
       product_sku: slot.product_sku ?? null,
-      unit_price_czk: nullableTelemetryPrice(slot.customer_price_czk ?? slot.dex_price_czk),
-      total_amount_czk: Number.isFinite(unitPrice) && unitPrice >= 0
-        ? Math.round((cashDelta + cashlessDelta + unknownPaymentDelta) * unitPrice * 100) / 100
+      unit_price_czk: appliedUnitPrice,
+      total_amount_czk: appliedUnitPrice != null
+        ? Math.round((cashDelta + cashlessDelta + unknownPaymentDelta) * appliedUnitPrice * 100) / 100
         : null,
       next_units: nextUnits,
       next_fill_percent: nextFillPercent,
@@ -931,10 +932,9 @@ async function applyPlanogramDepletion(
     cashlessAmount: remainingCashlessAmount,
   });
   if (reconciledPayments.length) {
-    // A late payment turns a possible stock loss into a confirmed sale. Apply only
-    // the newly confirmed inventory delta; the RPCs are incremental and idempotent.
-    await applyAtomicCoffeeRecipeDepletion(adminClient, reconciledPayments);
-    await applyTelemetryStockDepletion(adminClient, reconciledPayments);
+    // The physical vend was already deducted when its PA2 product counter arrived.
+    // A delayed CA2/DA2 counter only changes the payment classification and must
+    // never perform a second stock or coffee-recipe deduction.
     applied.push({ reconciled_pending_payments: reconciledPayments });
   }
 
@@ -1297,6 +1297,11 @@ Deno.serve(async (req) => {
     return json({ error: "Unauthorized telemetry ingest." }, 401);
   }
 
+  let auditClient: ReturnType<typeof createClient> | null = null;
+  let auditIngestId: number | null = null;
+  let auditDeviceId = "";
+  let auditProvider = "";
+
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -1334,12 +1339,16 @@ Deno.serve(async (req) => {
       return json({ error: "DEX device or terminal identifier is required." }, 400);
     }
 
+    auditDeviceId = deviceId;
+    auditProvider = provider;
+
     const adminClient = createClient(supabaseUrl, serviceRoleKey, {
       auth: {
         autoRefreshToken: false,
         persistSession: false,
       },
     });
+    auditClient = adminClient;
 
     const ingestPayload = {
       provider,
@@ -1367,6 +1376,7 @@ Deno.serve(async (req) => {
     if (ingestError) {
       return json({ error: ingestError.message }, 400);
     }
+    auditIngestId = Number(ingest?.id || 0) || null;
 
     const eventAt = dexReadDateTime || transmitTime || transactionTime || new Date().toISOString();
     let previousDexPaymentCounters: Record<string, unknown> | null = null;
@@ -1489,7 +1499,33 @@ Deno.serve(async (req) => {
       message: "DEX payload received and parsed.",
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown server error.";
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === "string"
+      ? error
+      : error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message || "Unknown server error.")
+      : "Unknown server error.";
+    console.error("gp-vendsoft-telemetry ingest failed", {
+      message,
+      ingest_id: auditIngestId,
+      provider: auditProvider,
+      device_id: auditDeviceId,
+    });
+    if (auditClient && auditIngestId) {
+      try {
+        const { error: auditError } = await auditClient
+          .from("telemetry_dex_ingests")
+          .update({
+            status: "failed",
+            parse_error: message.slice(0, 1000),
+          })
+          .eq("id", auditIngestId);
+        if (auditError) console.error("Could not persist telemetry ingest failure", auditError.message);
+      } catch (auditError) {
+        console.error("Could not persist telemetry ingest failure", auditError);
+      }
+    }
     return json({ error: message }, 500);
   }
 });
