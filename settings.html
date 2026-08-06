@@ -766,6 +766,38 @@
       min-height: 18px;
     }
 
+    .recipient-grid { display:grid; gap:10px; }
+    .recipient-option { display:flex; align-items:center; gap:12px; padding:13px 14px; border-radius:14px; background:rgba(255,255,255,.03); border:1px solid var(--border); cursor:pointer; }
+    .recipient-option:has(input:checked) { border-color:rgba(213,16,26,.4); background:var(--accent-soft); }
+    .recipient-option input { width:18px; height:18px; accent-color:var(--accent); }
+    .recipient-option strong { display:block; font-size:14px; }
+    .recipient-option span { color:var(--muted); font-size:12px; }
+
+    /* Settings workspace refresh */
+    .main { padding:36px clamp(22px,4vw,54px) 60px; }
+    .main > * { max-width:1380px; margin-left:auto; margin-right:auto; }
+    .page-header { padding:28px 30px; border-radius:24px; background:linear-gradient(135deg,var(--panel),var(--panel-soft)); }
+    .page-title { letter-spacing:-.04em; }
+    .settings-shell { grid-template-columns:290px minmax(0,1fr); gap:22px; align-items:start; }
+    .settings-nav,.settings-content { border-radius:24px; }
+    .settings-nav { padding:12px; position:sticky; top:24px; }
+    .settings-tab { padding:14px; border-radius:15px; }
+    .settings-tab.active { background:var(--accent-soft); border-color:rgba(213,16,26,.28); box-shadow:inset 3px 0 0 var(--accent); }
+    .settings-content { padding:26px; }
+    .content-top { padding-bottom:20px; margin-bottom:20px; }
+    .content-top h2 { font-size:clamp(24px,3vw,34px); letter-spacing:-.04em; }
+    .content-grid { gap:14px; }
+    .content-card { min-height:0; padding:18px 20px; border-radius:18px; background:var(--panel-soft); }
+    .content-card:not(.disabled):hover { transform:translateY(-2px); border-color:rgba(213,16,26,.3); box-shadow:0 12px 30px rgba(15,23,42,.08); }
+    .settings-form-card { padding:24px; border-radius:20px; background:var(--panel); }
+    .recipient-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .recipient-option { min-height:68px; }
+    @media (max-width:720px) {
+      .main { padding:14px; }
+      .settings-content { padding:18px; }
+      .recipient-grid { grid-template-columns:1fr; }
+    }
+
     @media (max-width: 1080px) {
       .page-header,
       .settings-shell {
@@ -1122,11 +1154,11 @@
           },
           {
             title: 'Notifikace a automatizace',
-            state: 'Později',
-            stateClass: '',
-            text: 'Emailové notifikace, servisní upozornění a automatické procesy systému.',
-            href: '#',
-            linkLabel: 'Roadmapa'
+            state: 'Aktivní',
+            stateClass: 'live',
+            text: 'Příjemci e-mailových upozornění z QR hlášení poruch a navazující automatické procesy.',
+            href: '#serviceRecipientsCard',
+            linkLabel: 'Nastavit příjemce'
           }
         ]
       }
@@ -1157,6 +1189,8 @@
     };
     let documentSeriesSettingsCache = null;
     let salesDocumentSeriesSettingsCache = null;
+    let serviceRecipientEmployees = [];
+    let selectedServiceRecipientIds = new Set();
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
@@ -1500,6 +1534,58 @@
       `;
     }
 
+    function renderServiceRecipientsCard() {
+      const employeesMarkup = serviceRecipientEmployees.length
+        ? serviceRecipientEmployees.map((employee) => {
+            const id = String(employee.id);
+            const name = [employee.name, employee.surname].filter(Boolean).join(' ').trim() || employee.email;
+            return `<label class="recipient-option">
+              <input type="checkbox" data-service-recipient value="${escapeHtml(id)}" ${selectedServiceRecipientIds.has(id) ? 'checked' : ''} />
+              <span><strong>${escapeHtml(name)}</strong><span>${escapeHtml(employee.email || 'Chybí emailová adresa')}</span></span>
+            </label>`;
+          }).join('')
+        : '<p>Nejsou dostupní žádní aktivní pracovníci s vyplněným emailem.</p>';
+
+      return `<section class="settings-form-card" id="serviceRecipientsCard">
+        <div><h3>Příjemci QR hlášení poruch</h3><p>Vybraným pracovníkům odejde email okamžitě po odeslání formuláře z QR kódu automatu.</p></div>
+        <div class="recipient-grid">${employeesMarkup}</div>
+        <div class="settings-actions"><button class="settings-action-btn" type="button" id="saveServiceRecipientsBtn">Uložit příjemce</button></div>
+        <div class="settings-status" id="serviceRecipientsStatus"></div>
+      </section>`;
+    }
+
+    async function loadServiceRecipients() {
+      const [{ data: employees, error: employeesError }, { data: recipients, error: recipientsError }] = await Promise.all([
+        supabase.from('employees').select('id, name, surname, email, active').eq('active', true).not('email', 'is', null).order('surname'),
+        supabase.from('service_request_notification_recipients').select('employee_id').eq('active', true)
+      ]);
+      if (employeesError) throw employeesError;
+      if (recipientsError) throw recipientsError;
+      serviceRecipientEmployees = (employees || []).filter((employee) => String(employee.email || '').trim());
+      selectedServiceRecipientIds = new Set((recipients || []).map((row) => String(row.employee_id)));
+    }
+
+    function bindServiceRecipientControls() {
+      document.getElementById('saveServiceRecipientsBtn')?.addEventListener('click', async () => {
+        const status = document.getElementById('serviceRecipientsStatus');
+        const selected = [...document.querySelectorAll('[data-service-recipient]:checked')].map((input) => input.value);
+        try {
+          if (status) status.textContent = 'Ukládám příjemce…';
+          const { error: deleteError } = await supabase.from('service_request_notification_recipients').delete().not('employee_id', 'is', null);
+          if (deleteError) throw deleteError;
+          if (selected.length) {
+            const { error: insertError } = await supabase.from('service_request_notification_recipients').insert(selected.map((employee_id) => ({ employee_id, active:true })));
+            if (insertError) throw insertError;
+          }
+          selectedServiceRecipientIds = new Set(selected);
+          if (status) status.textContent = `Uloženo. Nová hlášení dostane ${selected.length} ${selected.length === 1 ? 'pracovník' : 'pracovníci'}.`;
+        } catch (error) {
+          console.error(error);
+          if (status) status.textContent = `Příjemce se nepodařilo uložit: ${error.message}`;
+        }
+      });
+    }
+
     function bindThemeControls() {
       document.querySelectorAll('[data-theme-preference]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -1538,7 +1624,7 @@
       }).join('');
 
       contentGrid.innerHTML = categoryKey === 'system'
-        ? `${renderThemeCard()}${cardsMarkup}`
+        ? `${renderServiceRecipientsCard()}${renderThemeCard()}${cardsMarkup}`
         : categoryKey === 'documents'
         ? `${renderDocumentSeriesCard()}${renderSalesDocumentSeriesCard()}${cardsMarkup}`
         : cardsMarkup;
@@ -1549,6 +1635,11 @@
 
       if (categoryKey === 'system') {
         bindThemeControls();
+        bindServiceRecipientControls();
+        contentGrid.querySelector('a[href="#serviceRecipientsCard"]')?.addEventListener('click', (event) => {
+          event.preventDefault();
+          document.getElementById('serviceRecipientsCard')?.scrollIntoView({ behavior:'smooth', block:'start' });
+        });
       }
       if (categoryKey === 'documents') {
         bindDocumentSeriesControls();
@@ -1586,9 +1677,9 @@
 
     async function initSettingsPage() {
       try {
-        await loadSeriesSettingsFromDb();
+        await Promise.all([loadSeriesSettingsFromDb(), loadServiceRecipients()]);
       } catch (error) {
-        console.warn('Database settings unavailable, using browser fallback', error);
+        console.warn('Některá databázová nastavení zatím nejsou dostupná.', error);
       }
       renderCategory('organization');
     }
