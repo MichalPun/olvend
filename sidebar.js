@@ -4,6 +4,7 @@
   const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV17";
   const APP_THEME_KEY = "olvendThemePreference";
   const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
+  const COMPACT_NAV_INIT_KEY = "olvendCompactSidebarV2";
   const APP_VERSION = "OLVEND 1.7";
   const MIN_RELEASE_ANNOUNCEMENT = "1.7";
   const RELEASE_NOTES = {
@@ -296,13 +297,8 @@
           href: "technical-jobs.html",
           label: "Technické zásahy",
           children: [
-            { key: "technical-jobs", href: "technical-jobs.html", label: "Technické karty" },
+            { key: "technical-jobs", href: "technical-jobs.html", label: "Přehled zásahů" },
             { key: "service-requests", href: "service-requests.html", label: "Servisní požadavky" },
-            { key: "installations", href: "technical-jobs.html?tab=installation", label: "Instalace" },
-            { key: "deinstallations", href: "technical-jobs.html?tab=deinstallation", label: "Deinstalace" },
-            { key: "transfers", href: "technical-jobs.html?tab=transfer", label: "Přesuny" },
-            { key: "revisions", href: "technical-jobs.html?tab=revision", label: "Revize" },
-            { key: "service-cards", href: "technical-jobs.html?tab=service", label: "Servisní karty" },
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
         },
@@ -311,9 +307,7 @@
           href: "machines.html",
           label: "Stroje",
           children: [
-            { key: "machines", href: "machines.html", label: "Všechny stroje" },
-            { key: "machines-placed", href: "machines.html?placement=placed", label: "Umístěné automaty" },
-            { key: "machines-storage", href: "machines.html?placement=storage", label: "Automaty ve skladu" }
+            { key: "machines", href: "machines.html", label: "Přehled strojů" }
           ]
         },
         {
@@ -523,6 +517,16 @@
     }
   }
 
+  function initializeCompactSidebar() {
+    if (localStorage.getItem(COMPACT_NAV_INIT_KEY) === "1") return;
+    const parentKeys = navGroups
+      .flatMap((group) => group.items)
+      .filter((item) => Array.isArray(item.children) && item.children.length)
+      .map((item) => item.key);
+    localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify(parentKeys));
+    localStorage.setItem(COMPACT_NAV_INIT_KEY, "1");
+  }
+
   function setNavGroupCollapsed(key, collapsed) {
     const collapsedGroups = getCollapsedNavGroups();
     if (collapsed) {
@@ -601,12 +605,9 @@
     return `
       <div class="brand">
         <div class="brand-logo">OL<span>VEND</span></div>
-        <div class="brand-subtitle">Interní servisní systém pro správu vendingového provozu OLMIKA.</div>
       </div>
 
       <div class="nav-group global-nav-group">
-        <div class="nav-title global-nav-title">Hlavní menu</div>
-        <div class="global-nav-note">Struktura je nově rozdělená podle toho, co řešíš dnes, v provozu a v řízení.</div>
         ${renderDesktopNav()}
       </div>
 
@@ -660,7 +661,7 @@
       }
 
       .layout {
-        grid-template-columns: 220px minmax(0, 1fr) !important;
+        grid-template-columns: 196px minmax(0, 1fr) !important;
       }
 
       .brand {
@@ -668,11 +669,11 @@
       }
 
       .brand-logo {
-        font-size: 28px;
+        font-size: 23px;
         font-weight: 800;
         letter-spacing: -0.05em;
         line-height: 1;
-        margin-bottom: 8px;
+        margin-bottom: 0;
         color: #fff;
       }
 
@@ -688,7 +689,7 @@
 
       .global-nav-group,
       .nav-group {
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
 
       .global-nav-title,
@@ -704,7 +705,7 @@
 
       .nav {
         display: grid;
-        gap: 5px;
+        gap: 3px;
       }
 
       .nav-item-shell {
@@ -722,11 +723,11 @@
         display: flex;
         align-items: center;
         gap: 9px;
-        padding: 9px 10px;
-        border-radius: 10px;
+        padding: 8px 9px;
+        border-radius: 6px;
         text-decoration: none;
         color: #fff;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 700;
         transition: 0.2s ease;
         border: 1px solid transparent;
@@ -1795,6 +1796,7 @@
   }
 
   initTheme();
+  initializeCompactSidebar();
 
   const sidebar = document.querySelector(".sidebar");
   if (sidebar) {
