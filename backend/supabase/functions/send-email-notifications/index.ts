@@ -175,6 +175,10 @@ Deno.serve(async (req) => {
     if (!resendApiKey || !emailFrom) {
       return json({ error: "Missing email provider configuration." }, 500);
     }
+    const emailFromAddress = emailFrom.match(/<([^>]+)>/)?.[1]
+      || emailFrom.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
+      || emailFrom;
+    const brandedEmailFrom = `OLVEND by OLMIKA <${emailFromAddress}>`;
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -225,14 +229,24 @@ Deno.serve(async (req) => {
 
     const payload = await req.json().catch(() => ({}));
     const limit = Math.max(1, Math.min(Number(payload?.limit ?? 20), 100));
+    const requestedQueueIdValue = Number(payload?.queue_id ?? 0);
+    const requestedQueueId = Number.isInteger(requestedQueueIdValue) && requestedQueueIdValue > 0
+      ? requestedQueueIdValue
+      : null;
 
-    const { data: queueRows, error: queueError } = await adminClient
+    let queueQuery = adminClient
       .from("email_notification_queue")
       .select("id, employee_id, kind, subject, body, action_url, metadata, scheduled_for")
       .eq("status", "queued")
-      .lte("scheduled_for", new Date().toISOString())
+      .lte("scheduled_for", new Date().toISOString());
+
+    if (requestedQueueId) {
+      queueQuery = queueQuery.eq("id", requestedQueueId);
+    }
+
+    const { data: queueRows, error: queueError } = await queueQuery
       .order("scheduled_for", { ascending: true })
-      .limit(limit);
+      .limit(requestedQueueId ? 1 : limit);
 
     if (queueError) {
       return json({ error: queueError.message }, 400);
@@ -292,7 +306,7 @@ Deno.serve(async (req) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: emailFrom,
+          from: brandedEmailFrom,
           to: [employee.email],
           subject: row.subject,
           html,
