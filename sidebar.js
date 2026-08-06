@@ -545,6 +545,39 @@
     localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedGroups)));
   }
 
+  const NAV_ICON_PATHS = {
+    home: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    contacts: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+    machine: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 6h8M8 10h8M9 18h6M12 14v4"/>',
+    routes: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/>',
+    stock: '<path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>',
+    tools: '<path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-.7Z"/><path d="m10 7-8 8a2.1 2.1 0 0 0 3 3l8-8"/><path d="m14 14 6 6"/>',
+    finance: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5M9 12h6M9 16h6"/>',
+    tasks: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="m8 10 2 2 4-4M8 16h8"/>',
+    people: '<circle cx="12" cy="7" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+    reports: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.53.69.9.9.34.2.73.3 1.1.3H21v4h-.09a1.7 1.7 0 0 0-1.51.8Z"/>',
+    dot: '<circle cx="12" cy="12" r="3"/>'
+  };
+
+  const NAV_ICON_ALIASES = {
+    shift: 'clock', suppliers: 'contacts', 'machines-management': 'machine', machines: 'machine', telemetry: 'reports',
+    'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
+    'stock-management': 'stock', inventory: 'stock', 'purchases-recurring': 'stock',
+    'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
+    'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
+    'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks',
+    'management-people': 'people', hr: 'people', 'hr-planning': 'people', employees: 'people',
+    'management-reports': 'reports', reporty: 'reports', 'management-admin': 'settings', settings: 'settings', company: 'settings'
+  };
+
+  function getNavIcon(item) {
+    const iconKey = NAV_ICON_ALIASES[item.key] || item.key;
+    const paths = NAV_ICON_PATHS[iconKey] || NAV_ICON_PATHS.dot;
+    return `<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg></span>`;
+  }
+
   function renderNavLinks(items) {
     return items.map((item) => {
       const isActive = isItemActive(item);
@@ -557,7 +590,7 @@
         ? `<div class="nav-subitems" id="nav-children-${item.key}">${renderNavLinks(item.children)}</div>`
         : "";
       const itemLabel = `
-        <span class="nav-dot"></span>
+        ${getNavIcon(item)}
         <span>${item.label}</span>
         ${status}
       `;
@@ -604,7 +637,8 @@
   function renderSidebar() {
     return `
       <div class="brand">
-        <div class="brand-logo">OL<span>VEND</span></div>
+        <div class="brand-mark">O</div>
+        <div><div class="brand-logo">OL<span>VEND</span></div><div class="brand-system">Provozní systém</div></div>
       </div>
 
       <div class="nav-group global-nav-group">
@@ -653,23 +687,34 @@
       .sidebar {
         display: flex;
         flex-direction: column;
-        padding: 18px 14px;
+        padding: 16px 12px;
         border-right: 1px solid rgba(255,255,255,0.08);
-        background: rgba(12,13,17,0.92);
+        background: linear-gradient(180deg, rgba(20,22,28,.98), rgba(12,13,17,.98));
         backdrop-filter: blur(14px);
         overflow-y: auto;
       }
 
       .layout {
-        grid-template-columns: 196px minmax(0, 1fr) !important;
+        grid-template-columns: 224px minmax(0, 1fr) !important;
       }
 
       .brand {
-        padding: 6px 8px 16px;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        padding: 4px 7px 16px;
+        margin-bottom:6px;
+        border-bottom:1px solid rgba(255,255,255,.07);
+      }
+
+      .brand-mark {
+        width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+        background:#d5101a;color:#fff;font-size:17px;font-weight:900;
+        box-shadow:0 8px 22px rgba(213,16,26,.28);
       }
 
       .brand-logo {
-        font-size: 23px;
+        font-size: 20px;
         font-weight: 800;
         letter-spacing: -0.05em;
         line-height: 1;
@@ -680,6 +725,8 @@
       .brand-logo span {
         color: #d5101a;
       }
+
+      .brand-system { margin-top:3px;color:#7f8794;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase; }
 
       .brand-subtitle {
         color: #a5a8b2;
@@ -705,7 +752,7 @@
 
       .nav {
         display: grid;
-        gap: 3px;
+        gap: 4px;
       }
 
       .nav-item-shell {
@@ -722,9 +769,10 @@
         width: 100%;
         display: flex;
         align-items: center;
-        gap: 9px;
-        padding: 8px 9px;
-        border-radius: 6px;
+        gap: 8px;
+        min-height:40px;
+        padding: 6px 8px;
+        border-radius: 8px;
         text-decoration: none;
         color: #fff;
         font-size: 12px;
@@ -740,28 +788,25 @@
 
       .nav a:hover,
       .nav-parent-button:hover {
-        background: rgba(255,255,255,0.05);
+        background: rgba(255,255,255,0.055);
       }
 
       .nav a.active,
       .nav-parent-button.active {
-        background: rgba(213,16,26,0.14);
-        border-color: rgba(213,16,26,0.22);
+        background: linear-gradient(90deg, rgba(213,16,26,.18), rgba(213,16,26,.07));
+        border-color: rgba(213,16,26,0.3);
+        box-shadow:inset 3px 0 0 #d5101a;
       }
 
-      .nav-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: rgba(255,255,255,0.28);
-        flex: 0 0 8px;
+      .nav-icon {
+        width:28px;height:28px;display:grid;place-items:center;flex:0 0 28px;
+        border-radius:7px;color:#8d95a3;background:rgba(255,255,255,.035);
+        transition:background .2s ease,color .2s ease,transform .2s ease;
       }
 
-      .nav a.active .nav-dot,
-      .nav-parent-button.active .nav-dot {
-        background: #d5101a;
-        box-shadow: 0 0 12px rgba(213,16,26,0.7);
-      }
+      .nav-icon svg { width:16px;height:16px;display:block; }
+      .nav a:hover .nav-icon,.nav-parent-button:hover .nav-icon { color:#fff;transform:translateY(-1px); }
+      .nav a.active .nav-icon,.nav-parent-button.active .nav-icon { color:#fff;background:#d5101a;box-shadow:0 6px 14px rgba(213,16,26,.28); }
 
       .nav-status {
         margin-left: auto;
@@ -797,8 +842,8 @@
       .nav-subitems {
         display: grid;
         gap: 3px;
-        margin: 0 0 4px 14px;
-        padding-left: 10px;
+        margin: 0 0 5px 20px;
+        padding-left: 12px;
         border-left: 1px solid rgba(255,255,255,0.08);
         max-height: 520px;
         opacity: 1;
@@ -814,18 +859,16 @@
       }
 
       .nav-subitems a {
-        padding: 7px 9px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-weight: 700;
+        min-height:34px;padding: 5px 8px;
+        border-radius: 7px;
+        font-size: 11px;
+        font-weight: 650;
         color: #d7dae0;
       }
 
-      .nav-subitems .nav-dot {
-        width: 6px;
-        height: 6px;
-        flex-basis: 6px;
-      }
+      .nav-subitems .nav-icon { width:22px;height:22px;flex-basis:22px;border-radius:6px;background:transparent; }
+      .nav-subitems .nav-icon svg { width:13px;height:13px; }
+      .nav-subitems a.active { box-shadow:none; }
 
       .sidebar-bottom {
         margin-top: auto;
@@ -1170,7 +1213,7 @@
       :root[data-olvend-theme="light"] .mobile-nav-toggle,
       :root[data-olvend-theme="light"] .mobile-nav-panel,
       :root[data-olvend-theme="light"] .release-card {
-        background: rgba(255,255,255,0.92) !important;
+        background: linear-gradient(180deg,#fff,#f7f8fa) !important;
         border-color: rgba(24,32,42,0.08) !important;
         box-shadow: 0 20px 48px rgba(15, 23, 42, 0.08);
       }
@@ -1271,23 +1314,20 @@
       :root[data-olvend-theme="light"] .nav a.active,
       :root[data-olvend-theme="light"] .nav-parent-button.active,
       :root[data-olvend-theme="light"] .mobile-nav-panel a.active {
-        background: rgba(15, 23, 42, 0.06) !important;
-        border-color: rgba(15, 23, 42, 0.12) !important;
+        background: linear-gradient(90deg,rgba(213,16,26,.12),rgba(213,16,26,.035)) !important;
+        border-color: rgba(213,16,26,.22) !important;
       }
 
-      :root[data-olvend-theme="light"] .nav a.active .nav-dot {
-        background: #d5101a !important;
-        box-shadow: none !important;
-      }
+      :root[data-olvend-theme="light"] .nav-icon { color:#677080;background:rgba(15,23,42,.035); }
+      :root[data-olvend-theme="light"] .nav a.active .nav-icon,
+      :root[data-olvend-theme="light"] .nav-parent-button.active .nav-icon { color:#fff;background:#d5101a; }
 
       :root[data-olvend-theme="light"] .mobile-nav-icon {
         border-right-color: rgba(24,32,42,0.72) !important;
         border-bottom-color: rgba(24,32,42,0.72) !important;
       }
 
-      :root[data-olvend-theme="light"] .nav-dot {
-        background: rgba(24,32,42,0.2) !important;
-      }
+      :root[data-olvend-theme="light"] .brand { border-bottom-color:rgba(15,23,42,.08); }
 
       :root[data-olvend-theme="light"] .tool-btn,
       :root[data-olvend-theme="light"] .back-btn,
