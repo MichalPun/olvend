@@ -7869,7 +7869,8 @@
     function getMobilePickEligibleBatchBalances(row, item) {
       const sourceLocation = getMobilePickSourceLocation(row)
       const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
-      const expiryRequired = isAuditExpiryTracked(product)
+      // Fyzický odpis je zdroj skutečnosti; chybějící šarže nesmí zablokovat jeho převzetí.
+      const expiryRequired = isAuditExpiryTracked(product) && row?.request_type !== 'vehicle_writeoff'
       let balances = stockBalancesV13
         .filter((balance) => String(balance.stock_location_id) === String(sourceLocation?.id)
           && String(balance.product_id) === String(item.product_id)
@@ -8100,7 +8101,8 @@
             ? 'Potvrdit doklad'
           : flow.readyAction
         const shortages = isHistoricalDocument ? [] : getMobilePickShortages(row)
-        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || shortages.length > 0)
+        const physicalWriteoff = row.request_type === 'vehicle_writeoff'
+        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || (!physicalWriteoff && shortages.length > 0))
         const requestedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null }), 0)
         const preparedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity(item), 0)
         const checklistItems = row.items.filter((item) => getMobilePickStockQuantity(item) > 0.0001)
@@ -8558,7 +8560,7 @@
       movements.forEach((movement) => {
         if (!movement.from_stock_location_id || !movement.product_id) return
         const product = productsV13.find((item) => String(item.id) === String(movement.product_id))
-        const allowNegative = product?.product_category === 'food_ready'
+        const allowNegative = Boolean(movement.allow_negative_source) || product?.product_category === 'food_ready'
           && movement.movement_type === 'load_vehicle'
           && movement.reference_type === 'mobile_stock_request'
         if (allowNegative) return
@@ -8676,6 +8678,7 @@
           continue
         }
         if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
+          const isPhysicalWriteoff = request.request_type === 'vehicle_writeoff'
           movements.push(...await moveStockPreservingBatches({
             productId: item.product_id,
             quantity,
@@ -8686,9 +8689,9 @@
             referenceType: 'mobile_stock_request',
             referenceId,
             note: `Mobilní vratka/odpis z automatů #${request.id}`,
-            allowNegative: false,
+            allowNegative: isPhysicalWriteoff,
             applyBalances: false,
-            requireDatedBatches: isAuditExpiryTracked(product)
+            requireDatedBatches: !isPhysicalWriteoff && isAuditExpiryTracked(product)
           }))
           continue
         }
