@@ -208,6 +208,14 @@
       padding: 16px 20px 20px; border-top: 1px solid rgba(255,255,255,0.08);
       display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;
     }
+    .job-form-status {
+      flex: 1 0 100%; padding: 10px 12px; border-radius: 8px;
+      background: rgba(213,16,26,0.11); border: 1px solid rgba(213,16,26,0.28);
+      color: #ffc5ca; font-size: 12px; font-weight: 700; line-height: 1.4;
+    }
+    .job-form-status.success {
+      background: rgba(46,204,113,0.1); border-color: rgba(46,204,113,0.24); color: #b7f3cd;
+    }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
     .field.full { grid-column: 1 / -1; }
     .field.compact textarea { min-height: 74px; }
@@ -409,6 +417,9 @@
     }
     html[data-olvend-theme="light"] .status-line.success { color: #0f6a35; }
     html[data-olvend-theme="light"] .status-line.error { color: #b3202a; }
+    html[data-olvend-theme="light"] .job-form-status {
+      background: #fff0f1; border-color: #efb8bc; color: #9f1720;
+    }
     .focus-strip, #overviewPanel, #servicePanel, .summary-grid { display: none !important; }
     .page-shell { gap: 10px; width: min(100%, 1680px); }
     .title h1 { font-size: 20px; margin-bottom: 4px; }
@@ -1157,6 +1168,7 @@
           </div>
         </div>
         <div class="modal-footer">
+          <div class="job-form-status hidden" id="jobFormStatus" role="alert" aria-live="assertive"></div>
           <button type="button" class="btn secondary" id="cancelJobModalBtn">Zrušit</button>
           <button type="button" class="btn secondary" id="saveDraftJobBtn">Předuložit koncept</button>
           <button type="submit" class="btn" id="saveJobBtn">Uložit technickou kartu</button>
@@ -1251,6 +1263,7 @@
     const closeJobModalBtn = document.getElementById('closeJobModalBtn')
     const cancelJobModalBtn = document.getElementById('cancelJobModalBtn')
     const jobForm = document.getElementById('jobForm')
+    const jobFormStatus = document.getElementById('jobFormStatus')
     const jobId = document.getElementById('jobId')
     const jobType = document.getElementById('jobType')
     const jobPriority = document.getElementById('jobPriority')
@@ -1410,6 +1423,30 @@
       statusLine.textContent = message
       statusLine.className = 'status-line'
       if (type) statusLine.classList.add(type)
+    }
+
+    function setJobFormStatus(message = '', type = 'error') {
+      jobFormStatus.textContent = message
+      jobFormStatus.className = 'job-form-status'
+      if (!message) {
+        jobFormStatus.classList.add('hidden')
+        return
+      }
+      if (type) jobFormStatus.classList.add(type)
+    }
+
+    function validationError(message, fieldId = '') {
+      const error = new Error(message)
+      error.fieldId = fieldId
+      return error
+    }
+
+    function focusJobFormField(fieldId) {
+      if (!fieldId) return
+      const field = document.getElementById(fieldId)
+      if (!field) return
+      field.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      window.setTimeout(() => field.focus(), 120)
     }
 
     setStatus('Inicializuji modul technických zásahů…', '')
@@ -2105,6 +2142,7 @@
     function selectExistingCustomer(customerId) {
       const customer = customers.find((item) => String(item.id) === String(customerId))
       if (!customer) return
+      setJobFormStatus('')
       createLocationToggle.checked = false
       newLocationFields.classList.add('hidden')
       jobCustomerId.value = String(customer.id)
@@ -2124,6 +2162,7 @@
 
     function startInlineCustomerCreation() {
       const query = String(jobCustomerSearch.value || '').trim()
+      setJobFormStatus('')
       createLocationToggle.checked = true
       jobCustomerId.value = ''
       jobLocationId.innerHTML = '<option value="">Nová provozovna bude založena s požadavkem</option>'
@@ -2134,6 +2173,7 @@
     }
 
     function cancelInlineCustomerCreation() {
+      setJobFormStatus('')
       createLocationToggle.checked = false
       newLocationFields.classList.add('hidden')
       jobCustomerHelp.classList.remove('new-customer-selected')
@@ -2146,17 +2186,21 @@
       const locationName = String(newLocationName.value || '').trim()
       const address = String(newLocationAddress.value || '').trim()
       if (!customerName) {
-        newCustomerName.focus()
+        setJobFormStatus('Doplň název nového klienta nebo firmy.')
+        focusJobFormField('newCustomerName')
         return
       }
       if (!locationName) {
-        newLocationName.focus()
+        setJobFormStatus('Doplň název nové provozovny.')
+        focusJobFormField('newLocationName')
         return
       }
       if (!address) {
-        newLocationAddress.focus()
+        setJobFormStatus('Doplň adresu nové provozovny.')
+        focusJobFormField('newLocationAddress')
         return
       }
+      setJobFormStatus('')
       createLocationToggle.checked = true
       jobCustomerSearch.value = customerName
       jobLocationId.innerHTML = `<option value="">${escapeHtml(locationName)} · nová provozovna</option>`
@@ -2393,6 +2437,7 @@
 
     function resetJobForm() {
       jobForm.reset()
+      setJobFormStatus('')
       jobId.value = ''
       jobTitle.dataset.manual = 'false'
       jobType.value = 'installation'
@@ -2444,6 +2489,12 @@
           ? getLocationLabel(jobLocationId.value)
           : ''
       return [typeLabel, machine, location].filter(Boolean).join(' · ') || typeLabel
+    }
+
+    function buildGeneralJobTitle(description = '') {
+      const firstLine = String(description || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || ''
+      if (!firstLine) return ''
+      return firstLine.length > 90 ? `${firstLine.slice(0, 87).trim()}…` : firstLine
     }
 
     function updateGeneratedTitle() {
@@ -2521,12 +2572,15 @@
         : 'Volitelné, většinou není potřeba.'
 
       const descriptionLabel = jobDescriptionField.querySelector('label')
+      const titleLabel = jobTitle.closest('.field')?.querySelector('label')
       if (type === 'general') {
+        if (titleLabel) titleLabel.textContent = 'Název požadavku'
         jobTitle.placeholder = 'Např. Zavést kávu na recepci AZ Klima'
-        jobTitleHelp.textContent = 'Krátký a konkrétní název je u všeobecného požadavku povinný.'
+        jobTitleHelp.textContent = 'Když ho necháš prázdný, doplní se z prvního řádku popisu.'
         descriptionLabel.textContent = 'Co je potřeba udělat'
         jobDescription.placeholder = 'Popiš výsledek, který má odpovědná osoba zajistit.'
       } else {
+        if (titleLabel) titleLabel.textContent = 'Interní název'
         jobTitle.placeholder = 'Vyplní se automaticky podle typu, automatu a lokality'
         jobTitleHelp.textContent = 'Název se skládá automaticky. Přepiš ho jen když chceš vlastní interní popis.'
         descriptionLabel.textContent = 'Poznámka pro technika'
@@ -2956,8 +3010,8 @@
       }
       const customerName = String(newCustomerName.value || '').trim()
       const locationName = String(newLocationName.value || '').trim()
-      if (!customerName) throw new Error('Doplň název nového klienta nebo firmy.')
-      if (!locationName) throw new Error('Doplň název nové lokality.')
+      if (!customerName) throw validationError('Doplň název nového klienta nebo firmy.', 'newCustomerName')
+      if (!locationName) throw validationError('Doplň název nové lokality.', 'newLocationName')
       const customerPayload = {
         contact_type: 'customer',
         name: customerName,
@@ -3514,11 +3568,28 @@
       event?.preventDefault?.()
       saveJobBtn.disabled = true
       saveDraftJobBtn.disabled = true
+      setJobFormStatus('')
       try {
         const capabilities = getJobTypeCapabilities(jobType.value)
         const typedTitle = String(jobTitle.value || '').trim()
-        if (jobType.value === 'general' && !typedTitle) {
-          throw new Error('Doplň krátký název všeobecného požadavku.')
+        const typedDescription = String(jobDescription.value || '').trim()
+        const customerQuery = String(jobCustomerSearch.value || '').trim()
+        if (!createLocationToggle.checked && !jobCustomerId.value && customerQuery) {
+          const normalizedCustomerQuery = normalizeText(customerQuery).replace(/\s+/g, ' ')
+          const exactCustomer = customers.find((item) => {
+            const normalizedName = normalizeText(item.name || '').replace(/\s+/g, ' ')
+            const normalizedCompanyId = normalizeText(item.company_id || '').replace(/\s+/g, ' ')
+            return normalizedName === normalizedCustomerQuery || normalizedCompanyId === normalizedCustomerQuery
+          })
+          if (exactCustomer) {
+            selectExistingCustomer(exactCustomer.id)
+          } else {
+            throw validationError('Vyber klienta z nabídky, nebo použij možnost založit nového klienta.', 'jobCustomerSearch')
+          }
+        }
+        const resolvedTitle = typedTitle || (jobType.value === 'general' ? buildGeneralJobTitle(typedDescription) : buildDefaultJobTitle())
+        if (!resolvedTitle) {
+          throw validationError('Doplň název požadavku nebo napiš, co je potřeba udělat.', 'jobTitle')
         }
         const resolved = await createLocationFromFormIfNeeded()
         const resolvedSourceLocationId = jobType.value === 'transfer'
@@ -3527,8 +3598,8 @@
         const payload = {
           job_type: jobType.value,
           priority: jobPriority.value,
-          title: typedTitle || buildDefaultJobTitle(),
-          description: String(jobDescription.value || '').trim() || null,
+          title: resolvedTitle,
+          description: typedDescription || null,
           location_id: capabilities.customerLocation ? resolved.locationId : null,
           customer_id: capabilities.customerLocation ? resolved.customerId : null,
           machine_id: capabilities.machine && jobMachineId.value ? Number(jobMachineId.value) : null,
@@ -3549,9 +3620,9 @@
           created_by: currentUser?.id || null
         }
 
-        if (!payload.title) throw new Error('Nepodařilo se sestavit název technické karty.')
-        if (!options.draft && !createLocationToggle.checked && !payload.location_id && !payload.target_location_id && !['service', 'workshop_prep'].includes(payload.job_type)) {
-          throw new Error('Vyber lokalitu nebo ji založ přímo z karty.')
+        if (!payload.title) throw validationError('Nepodařilo se sestavit název technické karty.', 'jobTitle')
+        if (!options.draft && !createLocationToggle.checked && !payload.location_id && !payload.target_location_id && !['service', 'workshop_prep', 'general'].includes(payload.job_type)) {
+          throw validationError('Vyber lokalitu nebo ji založ přímo z karty.', 'jobLocationId')
         }
 
         const cleanedPayload = Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined))
@@ -3596,7 +3667,10 @@
         }
         setStatus(`Technická karta byla uložená.${emailWarning}`, emailWarning ? 'warning' : 'success')
       } catch (error) {
-        setStatus(`Nepodařilo se uložit technickou kartu: ${error.message}`, 'error')
+        const message = error?.message || 'Neznámá chyba při ukládání.'
+        setJobFormStatus(message, 'error')
+        setStatus(`Nepodařilo se uložit technickou kartu: ${message}`, 'error')
+        focusJobFormField(error?.fieldId)
       } finally {
         saveJobBtn.disabled = false
         saveDraftJobBtn.disabled = false
@@ -4267,6 +4341,8 @@
       })
       targetLocationId.addEventListener('change', updateGeneratedTitle)
       jobForm.addEventListener('submit', saveJob)
+      jobForm.addEventListener('input', () => setJobFormStatus(''))
+      jobForm.addEventListener('change', () => setJobFormStatus(''))
       saveDraftJobBtn.addEventListener('click', () => saveJob(null, { draft: true }))
       saveSignatureBtn.addEventListener('click', async () => {
         try {
