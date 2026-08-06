@@ -69,7 +69,7 @@
     .action-menu .action-menu-list .btn.secondary:hover { color:#fff; background:rgba(255,255,255,0.1); border-color:rgba(255,255,255,0.08); transform:none; }
     tbody tr[data-row-id] { cursor:pointer; }
     .empty-state { padding:14px; text-align:center; color:var(--muted); border:1px dashed rgba(255,255,255,0.1); border-radius:8px; background:rgba(255,255,255,0.02); font-size:13px; }
-    .money-export-controls { display:grid; grid-template-columns:132px 118px 118px auto; gap:6px; align-items:center; padding:6px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.025); }
+    .money-export-controls { display:grid; grid-template-columns:132px 150px 118px 118px auto; gap:6px; align-items:center; padding:6px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.025); }
     .money-export-controls input,
     .money-export-controls select { min-height:30px; padding:6px 8px; font-size:12px; }
     .money-export-controls .btn { min-height:30px; padding:6px 9px; font-size:12px; }
@@ -166,6 +166,11 @@
                 <option value="previous_month">DUZP minulý měsíc</option>
                 <option value="custom">Vlastní období</option>
               </select>
+              <select id="moneyExportScope" aria-label="Money S3 výběr">
+                <option value="unexported">Jen neexportované</option>
+                <option value="all">Všechny doklady</option>
+                <option value="exported">Jen exportované</option>
+              </select>
               <input id="moneyExportFrom" type="date" aria-label="Money S3 od" />
               <input id="moneyExportTo" type="date" aria-label="Money S3 do" />
               <button class="btn secondary" id="exportMoneyPeriodBtn" type="button">Export Money S3</button>
@@ -212,6 +217,11 @@
                 <option value="duzp_previous_month">DUZP minulý měsíc</option>
                 <option value="unpaid">Nezaplacené</option>
               </select>
+              <select id="moneyStatusFilter">
+                <option value="">Money S3: vše</option>
+                <option value="unexported">Money S3: neexportované</option>
+                <option value="exported">Money S3: exportované</option>
+              </select>
             </div>
             <div class="table-wrap">
               <table>
@@ -224,6 +234,7 @@
                     <th>Položky</th>
                     <th>Částka</th>
                     <th>E-mail</th>
+                    <th>Money S3</th>
                     <th>Akce</th>
                   </tr>
                 </thead>
@@ -564,10 +575,12 @@
     const statusFilter = document.getElementById('statusFilter')
     const typeFilter = document.getElementById('typeFilter')
     const dateFilter = document.getElementById('dateFilter')
+    const moneyStatusFilter = document.getElementById('moneyStatusFilter')
     const invoiceBody = document.getElementById('invoiceBody')
     const invoiceEmpty = document.getElementById('invoiceEmpty')
     const refreshBtn = document.getElementById('refreshBtn')
     const moneyExportPreset = document.getElementById('moneyExportPreset')
+    const moneyExportScope = document.getElementById('moneyExportScope')
     const moneyExportFrom = document.getElementById('moneyExportFrom')
     const moneyExportTo = document.getElementById('moneyExportTo')
     const moneyExportHint = document.getElementById('moneyExportHint')
@@ -3242,6 +3255,7 @@
       const status = statusFilter.value
       const type = typeFilter.value
       const date = dateFilter.value
+      const moneyStatus = moneyStatusFilter?.value || ''
       const today = todayIso()
       const month = today.slice(0, 7)
       const previousMonth = monthBounds(-1).from.slice(0, 7)
@@ -3252,6 +3266,8 @@
         if (status === 'active' && !['draft', 'issued', 'paid'].includes(row.status)) return false
         if (status && status !== 'active' && row.status !== status) return false
         if (type && row.document_type !== type) return false
+        if (moneyStatus === 'exported' && !row.money_s3_exported_at) return false
+        if (moneyStatus === 'unexported' && row.money_s3_exported_at) return false
         const issued = String(row.issued_at || '').slice(0, 10)
         const taxable = meta.taxableSupplyDate || issued
         if (date === 'today' && issued !== today) return false
@@ -3306,6 +3322,12 @@
       }
       return `<td class="email-status-cell" data-label="E-mail"><span class="badge">Neodesláno</span><span class="subtext">${escapeHtml(recipient || 'Bez e-mailové adresy')}</span></td>`
     }
+    function renderMoneyS3Status(row) {
+      if (row.money_s3_exported_at) {
+        return `<td data-label="Money S3"><span class="badge good">Exportováno</span><span class="subtext">${escapeHtml(formatEmailDateTime(row.money_s3_exported_at))}</span></td>`
+      }
+      return '<td data-label="Money S3"><span class="badge">Neevidováno</span><span class="subtext">Zatím bez zaznamenaného exportu</span></td>'
+    }
     function renderRows() {
       const rows = filteredRows().sort(compareDocumentNumberDesc)
       invoiceBody.innerHTML = rows.map((row) => {
@@ -3327,6 +3349,7 @@
             <td data-label="Položky"><strong>${escapeHtml(invoiceItems(row).length ? `${invoiceItems(row).length} řádků` : 'Bez položek')}</strong><span class="subtext">${escapeHtml(itemPreview(row))}</span></td>
             <td data-label="Částka"><span class="money-cell">${escapeHtml(formatMoney(rowTotal(row), currency))}</span><span class="subtext">${escapeHtml(amountSubtext)}</span></td>
             ${renderEmailStatus(row, meta)}
+            ${renderMoneyS3Status(row)}
             <td data-label="Akce"><details class="action-menu"><summary aria-label="Akce pro doklad">...</summary><div class="action-menu-list"><button class="btn secondary small" type="button" data-action="edit" data-id="${escapeHtml(String(row.id))}">Upravit</button><button class="btn secondary small" type="button" data-action="copy" data-id="${escapeHtml(String(row.id))}">Kopírovat</button><button class="btn secondary small" type="button" data-action="print" data-id="${escapeHtml(String(row.id))}">Tisk</button><button class="btn secondary small" type="button" data-action="email" data-id="${escapeHtml(String(row.id))}">E-mail</button><button class="btn secondary small" type="button" data-action="money-s3" data-id="${escapeHtml(String(row.id))}">Money S3</button>${row.status !== 'paid' ? `<button class="btn secondary small" type="button" data-action="paid" data-id="${escapeHtml(String(row.id))}">Zaplaceno</button>` : ''}${row.status !== 'cancelled' ? `<button class="btn secondary small" type="button" data-action="cancel" data-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}</div></details></td>
           </tr>
         `
@@ -4217,14 +4240,36 @@
       const today = todayIso()
       return sanitizeXmlText(`\ufeff<?xml version="1.0" encoding="UTF-8"?>\r\n<MoneyData ICAgendy="04579968" KodAgendy="" HospRokOd="${today.slice(0, 4)}-01-01" HospRokDo="${today.slice(0, 4)}-12-31" description="faktury vydané" ExpZkratka="_FV" ExpDate="${today}" ExpTime="" JazykVerze="CZ" VyberZaznamu="0"><SeznamFaktVyd>${rows.map(moneyS3InvoiceXml).join('')}</SeznamFaktVyd><SeznamFaktVyd_DPP/></MoneyData>`)
     }
-    function exportMoneyS3(row) {
+    async function markMoneyS3Exported(rows) {
+      const ids = rows.map((row) => Number(row.id)).filter(Boolean)
+      if (!ids.length) return null
+      const exportedAt = new Date().toISOString()
+      const batchId = `money-s3:${Date.now()}:${crypto.randomUUID()}`
+      const { error } = await supabase
+        .from('sales_documents')
+        .update({ money_s3_exported_at: exportedAt, money_s3_export_batch_id: batchId })
+        .in('id', ids)
+      if (error) throw error
+      rows.forEach((row) => {
+        row.money_s3_exported_at = exportedAt
+        row.money_s3_export_batch_id = batchId
+      })
+      return { exportedAt, batchId }
+    }
+    async function exportMoneyS3(row) {
       const missingExchange = moneyS3MissingExchangeRows([row])
       if (missingExchange.length) {
         setStatus(`Doplň kurz u dokladu ${documentNumber(row)} před exportem do Money S3.`, 'error')
         return
       }
-      downloadTextFile(`${documentNumber(row)}-money-s3.xml`, moneyS3Xml(row))
-      setStatus(`Export Money S3 pro ${documentNumber(row)} byl připraven ke stažení.`, 'success')
+      try {
+        await markMoneyS3Exported([row])
+        downloadTextFile(`${documentNumber(row)}-money-s3.xml`, moneyS3Xml(row))
+        renderRows()
+        setStatus(`Export Money S3 pro ${documentNumber(row)} byl připraven a označen jako exportovaný.`, 'success')
+      } catch (error) {
+        setStatus(`Export Money S3 se nepodařilo zaznamenat: ${error.message}`, 'error')
+      }
     }
     function moneyPresetBounds(preset) {
       if (preset === 'previous_month') return monthBounds(-1)
@@ -4248,22 +4293,28 @@
       const to = moneyExportTo?.value || ''
       const rows = from && to && from <= to ? moneyPeriodRows(from, to) : []
       const total = sumRowsInCzk(rows)
+      const scopeLabel = moneyExportScope?.value === 'exported'
+        ? 'jen exportované'
+        : moneyExportScope?.value === 'all'
+          ? 'všechny doklady'
+          : 'jen neexportované'
       const label = moneyExportPreset?.value === 'previous_month'
         ? 'DUZP minulý měsíc'
         : moneyExportPreset?.value === 'current_month'
           ? 'DUZP tento měsíc'
           : 'Vlastní období'
       moneyExportHint.textContent = from && to
-        ? `${label}: ${from} až ${to} podle DUZP · ${rows.length} dokladů · ${total.missingRate ? 'chybí kurz' : formatMoney(total.amount, 'CZK')}`
+        ? `${label}: ${from} až ${to} podle DUZP · ${scopeLabel} · ${rows.length} dokladů · ${total.missingRate ? 'chybí kurz' : formatMoney(total.amount, 'CZK')}`
         : 'Export se vybírá podle DUZP.'
     }
     function ensureMoneyExportPeriod() {
       if (!moneyExportFrom?.value || !moneyExportTo?.value) applyMoneyExportPreset(moneyExportPreset?.value || 'current_month')
       else updateMoneyExportHint()
     }
-    function moneyPeriodRows(from, to) {
+    function moneyPeriodRows(from, to, scope = moneyExportScope?.value || 'unexported') {
       return documents
         .filter((row) => String(row.status || '') !== 'cancelled')
+        .filter((row) => scope === 'all' || (scope === 'exported' ? Boolean(row.money_s3_exported_at) : !row.money_s3_exported_at))
         .filter((row) => {
           const meta = extractMeta(row)
           const accountingDate = meta.taxableSupplyDate || String(row.issued_at || '').slice(0, 10)
@@ -4279,7 +4330,7 @@
           return documentNumber(a).localeCompare(documentNumber(b), 'cs')
         })
     }
-    function exportMoneyS3Period() {
+    async function exportMoneyS3Period() {
       ensureMoneyExportPeriod()
       const from = moneyExportFrom?.value || ''
       const to = moneyExportTo?.value || ''
@@ -4301,8 +4352,15 @@
         setStatus(`Doplň kurz před exportem do Money S3: ${missingExchange.map(documentNumber).join(', ')}.`, 'error')
         return
       }
-      downloadTextFile(`money-s3-vystavene-faktury-${from}_${to}.xml`, moneyS3BatchXml(rows))
-      setStatus(`Hromadný export Money S3 za období ${from} až ${to} obsahuje ${rows.length} dokladů.`, 'success')
+      try {
+        await markMoneyS3Exported(rows)
+        const scopeSuffix = moneyExportScope?.value === 'all' ? 'vsechny' : moneyExportScope?.value === 'exported' ? 'exportovane' : 'neexportovane'
+        downloadTextFile(`money-s3-vystavene-faktury-${from}_${to}-${scopeSuffix}.xml`, moneyS3BatchXml(rows))
+        renderRows()
+        setStatus(`Hromadný export Money S3 za období ${from} až ${to} obsahuje ${rows.length} dokladů a byl zaznamenán.`, 'success')
+      } catch (error) {
+        setStatus(`Hromadný export Money S3 se nepodařilo zaznamenat: ${error.message}`, 'error')
+      }
     }
     async function loadPage() {
       try {
@@ -4465,8 +4523,10 @@
     statusFilter.addEventListener('change', renderRows)
     typeFilter.addEventListener('change', renderRows)
     dateFilter.addEventListener('change', renderRows)
+    moneyStatusFilter.addEventListener('change', renderRows)
     refreshBtn.addEventListener('click', loadPage)
     moneyExportPreset.addEventListener('change', () => applyMoneyExportPreset())
+    moneyExportScope.addEventListener('change', updateMoneyExportHint)
     ;[moneyExportFrom, moneyExportTo].forEach((input) => input.addEventListener('change', () => {
       if (moneyExportPreset) moneyExportPreset.value = 'custom'
       updateMoneyExportHint()
