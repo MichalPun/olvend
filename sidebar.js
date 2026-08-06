@@ -284,7 +284,7 @@
       key: "today",
       title: "Dnes",
       items: [
-        { key: "home", href: "dashboard.html", label: "Nástěnka" },
+        { key: "home", href: "dashboard.html", label: "Přehled" },
         { key: "shift", href: "mobile.html", label: "Moje směna" }
       ]
     },
@@ -292,6 +292,36 @@
       key: "operations",
       title: "Provoz",
       items: [
+        { key: "suppliers", href: "suppliers.html", label: "Klienti a kontakty" },
+        {
+          key: "machines-management",
+          href: "machines.html",
+          label: "Stroje",
+          children: [
+            { key: "machines", href: "machines.html", label: "Přehled strojů" },
+            { key: "telemetry", href: "telemetry.html", label: "Telemetrie" }
+          ]
+        },
+        {
+          key: "logistics-management",
+          href: "routes.html",
+          label: "Trasy",
+          children: [
+            { key: "routes", href: "routes.html", label: "Přehled tras" },
+            { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
+            { key: "operations", href: "operations.html", label: "Lokality" },
+            { key: "fleet", href: "vehicles.html", label: "Vozový park" }
+          ]
+        },
+        {
+          key: "stock-management",
+          href: "inventory.html",
+          label: "Sklad",
+          children: [
+            { key: "inventory", href: "inventory.html", label: "Zásoby" },
+            { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" }
+          ]
+        },
         {
           key: "technical-management",
           href: "technical-jobs.html",
@@ -301,38 +331,6 @@
             { key: "service-requests", href: "service-requests.html", label: "Servisní požadavky" },
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
-        },
-        {
-          key: "machines-management",
-          href: "machines.html",
-          label: "Stroje",
-          children: [
-            { key: "machines", href: "machines.html", label: "Přehled strojů" }
-          ]
-        },
-        {
-          key: "logistics-management",
-          href: "routes.html",
-          label: "Logistika",
-          children: [
-            { key: "operations", href: "operations.html", label: "Lokality" },
-            { key: "routes", href: "routes.html", label: "Trasy" },
-            { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
-            { key: "fleet", href: "vehicles.html", label: "Vozový park" }
-          ]
-        },
-        {
-          key: "stock-management",
-          href: "inventory.html",
-          label: "Skladové hospodářství",
-          children: [
-            { key: "purchases", href: "purchases.html?view=received", label: "Přijaté doklady" },
-            { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
-            { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" },
-            { key: "budget", href: "budget.html", label: "Rozpočet" },
-            { key: "inventory", href: "inventory.html", label: "Zásoby" },
-            { key: "suppliers", href: "suppliers.html", label: "Kontakty" }
-          ]
         }
       ]
     },
@@ -341,9 +339,19 @@
       title: "Řízení",
       items: [
         {
+          key: "finance-management",
+          href: "issued-invoices.html",
+          label: "Finance",
+          children: [
+            { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
+            { key: "purchases-overview", href: "purchases.html?view=received", label: "Přijaté doklady" },
+            { key: "budget", href: "budget.html", label: "Rozpočet" }
+          ]
+        },
+        {
           key: "management-work",
           href: "tasks.html",
-          label: "Rozhodnutí a úkoly",
+          label: "Úkoly a schvalování",
           children: [
             { key: "approvals", href: "approval-center.html", label: "Schvalování" },
             { key: "tasks", href: "tasks.html", label: "Manažerský blok" }
@@ -352,7 +360,7 @@
         {
           key: "management-people",
           href: "hr.html",
-          label: "Lidé a směny",
+          label: "Lidé",
           children: [
             { key: "hr", href: "hr.html", label: "HR přehled" },
             { key: "hr-planning", href: "hr-planning.html", label: "Plán směn" },
@@ -362,7 +370,7 @@
         {
           key: "management-reports",
           href: "reporty.html",
-          label: "Reporty a kontrola",
+          label: "Reporty",
           children: [
             { key: "reporty", href: "reporty.html", label: "Přehled reportů" },
             { key: "report-attendance", href: "report-attendance.html", label: "Docházka" },
@@ -377,7 +385,7 @@
         {
           key: "management-admin",
           href: "settings.html",
-          label: "Administrace",
+          label: "Nastavení",
           children: [
             { key: "settings", href: "settings.html", label: "Nastavení systému" },
             { key: "company", href: "company.html", label: "Firma" }
@@ -538,13 +546,12 @@
   }
 
   function renderNavLinks(items) {
-    const collapsedGroups = getCollapsedNavGroups();
     return items.map((item) => {
       const isActive = isItemActive(item);
       const activeClass = isActive ? "active" : "";
       const status = item.soon ? '<span class="nav-status">Brzy</span>' : "";
       const hasChildren = Array.isArray(item.children) && item.children.length;
-      const collapsed = hasChildren && collapsedGroups.has(item.key) && !isActive;
+      const collapsed = hasChildren && !isActive;
       const expanded = hasChildren && !collapsed;
       const childLinks = Array.isArray(item.children) && item.children.length
         ? `<div class="nav-subitems" id="nav-children-${item.key}">${renderNavLinks(item.children)}</div>`
@@ -568,14 +575,7 @@
   }
 
   function renderDesktopNav() {
-    return navGroups.map((group) => `
-      <div class="nav-group">
-        <div class="nav-title">${group.title}</div>
-        <nav class="nav">
-          ${renderNavLinks(group.items)}
-        </nav>
-      </div>
-    `).join("");
+    return `<nav class="nav">${navGroups.map((group) => renderNavLinks(group.items)).join("")}</nav>`;
   }
 
   function renderMobileLinks() {
@@ -1787,6 +1787,17 @@
         const shell = button.closest(".nav-item-shell");
         if (!key || !shell) return;
         const nextCollapsed = !shell.classList.contains("collapsed");
+        if (!nextCollapsed) {
+          root.querySelectorAll(".nav-item-shell.has-children").forEach((otherShell) => {
+            if (otherShell === shell) return;
+            otherShell.classList.add("collapsed");
+            const otherButton = otherShell.querySelector(":scope > .nav-link-row [data-collapse-nav]");
+            if (otherButton) {
+              otherButton.setAttribute("aria-expanded", "false");
+              otherButton.setAttribute("title", "Rozbalit");
+            }
+          });
+        }
         shell.classList.toggle("collapsed", nextCollapsed);
         button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
         button.setAttribute("title", nextCollapsed ? "Rozbalit" : "Sbalit");
