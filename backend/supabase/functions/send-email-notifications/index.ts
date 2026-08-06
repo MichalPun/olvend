@@ -211,7 +211,7 @@ Deno.serve(async (req) => {
 
     const { data: currentEmployee, error: currentEmployeeError } = await adminClient
       .from("employees")
-      .select("id, role, active")
+      .select("id, name, surname, email, role, active")
       .eq("auth_user_id", currentUser.id)
       .maybeSingle();
 
@@ -233,20 +233,30 @@ Deno.serve(async (req) => {
     const requestedQueueId = Number.isInteger(requestedQueueIdValue) && requestedQueueIdValue > 0
       ? requestedQueueIdValue
       : null;
+    const previewQueueIdValue = Number(payload?.preview_queue_id ?? 0);
+    const previewQueueId = Number.isInteger(previewQueueIdValue) && previewQueueIdValue > 0
+      ? previewQueueIdValue
+      : null;
 
     let queueQuery = adminClient
       .from("email_notification_queue")
-      .select("id, employee_id, kind, subject, body, action_url, metadata, scheduled_for")
-      .eq("status", "queued")
-      .lte("scheduled_for", new Date().toISOString());
+      .select("id, employee_id, kind, subject, body, action_url, metadata, scheduled_for");
 
-    if (requestedQueueId) {
+    if (previewQueueId) {
+      queueQuery = queueQuery.eq("id", previewQueueId);
+    } else {
+      queueQuery = queueQuery
+        .eq("status", "queued")
+        .lte("scheduled_for", new Date().toISOString());
+    }
+
+    if (requestedQueueId && !previewQueueId) {
       queueQuery = queueQuery.eq("id", requestedQueueId);
     }
 
     const { data: queueRows, error: queueError } = await queueQuery
       .order("scheduled_for", { ascending: true })
-      .limit(requestedQueueId ? 1 : limit);
+      .limit(requestedQueueId || previewQueueId ? 1 : limit);
 
     if (queueError) {
       return json({ error: queueError.message }, 400);
@@ -257,29 +267,34 @@ Deno.serve(async (req) => {
       return json({ processed: 0, sent: 0, failed: 0, message: "No queued notifications." });
     }
 
-    const employeeIds = [...new Set(rows.map((row) => row.employee_id).filter(Boolean))];
-    const { data: employees, error: employeesError } = await adminClient
-      .from("employees")
-      .select("id, name, surname, email")
-      .in("id", employeeIds);
-
-    if (employeesError) {
-      return json({ error: employeesError.message }, 400);
+    let employees: Array<{ id: string; name: string | null; surname: string | null; email: string | null }> = [];
+    if (!previewQueueId) {
+      const employeeIds = [...new Set(rows.map((row) => row.employee_id).filter(Boolean))];
+      const { data, error } = await adminClient
+        .from("employees")
+        .select("id, name, surname, email")
+        .in("id", employeeIds);
+      if (error) {
+        return json({ error: error.message }, 400);
+      }
+      employees = data ?? [];
     }
 
-    const employeeById = new Map((employees ?? []).map((employee) => [String(employee.id), employee]));
+    const employeeById = new Map(employees.map((employee) => [String(employee.id), employee]));
 
     let sent = 0;
     let failed = 0;
 
     for (const row of rows) {
-      const employee = employeeById.get(String(row.employee_id));
+      const employee = previewQueueId ? currentEmployee : employeeById.get(String(row.employee_id));
       if (!employee?.email) {
         failed += 1;
-        await adminClient
-          .from("email_notification_queue")
-          .update({ status: "failed", last_error: "Employee email is missing." })
-          .eq("id", row.id);
+        if (!previewQueueId) {
+          await adminClient
+            .from("email_notification_queue")
+            .update({ status: "failed", last_error: "Employee email is missing." })
+            .eq("id", row.id);
+        }
         continue;
       }
 
@@ -308,7 +323,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           from: brandedEmailFrom,
           to: [employee.email],
-          subject: row.subject,
+          subject: previewQueueId ? `[NÁHLED] ${row.subject}` : row.subject,
           html,
         }),
       });
@@ -316,25 +331,33 @@ Deno.serve(async (req) => {
       if (!resendResponse.ok) {
         failed += 1;
         const errorText = await resendResponse.text();
-        await adminClient
-          .from("email_notification_queue")
-          .update({ status: "failed", last_error: errorText.slice(0, 1200) })
-          .eq("id", row.id);
+        if (!previewQueueId) {
+          await adminClient
+            .from("email_notification_queue")
+            .update({ status: "failed", last_error: errorText.slice(0, 1200) })
+            .eq("id", row.id);
+        }
         continue;
       }
 
       sent += 1;
-      await adminClient
-        .from("email_notification_queue")
-        .update({ status: "sent", last_error: null })
-        .eq("id", row.id);
+      if (!previewQueueId) {
+        await adminClient
+          .from("email_notification_queue")
+          .update({ status: "sent", last_error: null })
+          .eq("id", row.id);
+      }
     }
 
     return json({
       processed: rows.length,
       sent,
       failed,
-      message: sent ? "Queued email notifications were processed." : "No emails were sent.",
+      preview: Boolean(previewQueueId),
+      recipient: previewQueueId ? currentEmployee.email : null,
+      message: sent
+        ? previewQueueId ? "Email preview was sent to the current user." : "Queued email notifications were processed."
+        : "No emails were sent.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown server error.";

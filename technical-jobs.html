@@ -1238,6 +1238,7 @@
       <div class="modal-footer">
         <button type="button" class="btn secondary" id="detailEditBtn">Upravit kartu</button>
         <button type="button" class="btn secondary hidden" id="detailEmailBtn">Odeslat e-mail zaměstnanci</button>
+        <button type="button" class="btn secondary hidden" id="detailEmailPreviewBtn">Poslat náhled mně</button>
         <button type="button" class="btn secondary" id="detailSignatureBtn">Podpis provozovny</button>
         <button type="button" class="btn secondary" id="detailProtocolBtn">Tisk protokolu</button>
         <button type="button" class="btn warning" id="detailSubmitBtn">Odeslat ke schválení</button>
@@ -1423,6 +1424,7 @@
     const closeDetailBtn = document.getElementById('closeDetailBtn')
     const detailEditBtn = document.getElementById('detailEditBtn')
     const detailEmailBtn = document.getElementById('detailEmailBtn')
+    const detailEmailPreviewBtn = document.getElementById('detailEmailPreviewBtn')
     const detailSignatureBtn = document.getElementById('detailSignatureBtn')
     const detailProtocolBtn = document.getElementById('detailProtocolBtn')
     const detailSubmitBtn = document.getElementById('detailSubmitBtn')
@@ -4145,6 +4147,8 @@
       detailEmailBtn.classList.toggle('hidden', !job.assigned_employee_id || Boolean(job.assignment_notified_at))
       detailEmailBtn.disabled = !isManagerRole() || !assignedEmployee?.email
       detailEmailBtn.textContent = 'Odeslat e-mail zaměstnanci'
+      detailEmailPreviewBtn.classList.toggle('hidden', !job.assignment_notified_at || !isManagerRole())
+      detailEmailPreviewBtn.disabled = !isManagerRole()
       detailConfirmBtn.disabled = !isManagerRole()
       detailSubmitBtn.disabled = !checklist.length
       detailSignatureBtn.classList.toggle('hidden', isGeneral)
@@ -4625,6 +4629,33 @@
         } catch (error) {
           setStatus(`E-mail se nepodařilo odeslat: ${error.message}`, 'error')
           detailEmailBtn.disabled = false
+        }
+      })
+      detailEmailPreviewBtn.addEventListener('click', async () => {
+        const job = jobs.find((item) => String(item.id) === String(activeDetailId))
+        if (!job) return
+        detailEmailPreviewBtn.disabled = true
+        try {
+          const { data: queueRow, error: queueError } = await supabase
+            .from('email_notification_queue')
+            .select('id')
+            .contains('metadata', { technical_job_id: Number(job.id) })
+            .in('kind', ['technical_job_assignment', 'technical_job_update'])
+            .order('id', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (queueError) throw queueError
+          if (!queueRow?.id) throw new Error('Pro tuto kartu zatím neexistuje odeslaný e-mail.')
+          const { data: previewResult, error: previewError } = await supabase.functions.invoke('send-email-notifications', {
+            body: { preview_queue_id: Number(queueRow.id), limit: 1 }
+          })
+          if (previewError) throw previewError
+          if (!previewResult?.sent || previewResult?.failed) throw new Error('Zkušební kopii se nepodařilo odeslat.')
+          setStatus(`Náhled e-mailu byl odeslán na ${previewResult.recipient || 'váš e-mail'}.`, 'success')
+        } catch (error) {
+          setStatus(`Náhled e-mailu se nepodařilo odeslat: ${error.message}`, 'error')
+        } finally {
+          detailEmailPreviewBtn.disabled = false
         }
       })
       detailSignatureBtn.addEventListener('click', () => {
