@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v69-coffee-confirmation-guard';
+const CACHE_NAME = 'olvend-v70-fuel-receipt-gallery';
 const APP_SHELL = [
   './',
   './index.html',
