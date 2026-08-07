@@ -80,6 +80,9 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
   const targetStock = valueRecord(metadata.target_stock_location);
   const customer = valueRecord(metadata.customer);
   const configuration = valueRecord(metadata.configuration);
+  const transferChanges = valueRecord(configuration.transfer_changes);
+  const planogramRows = valueArray(configuration.planogram_rows);
+  const ingredientRows = valueArray(configuration.ingredients);
   const materials = valueArray(metadata.materials);
   const checklist = valueArray(metadata.checklist).filter((item) => item.required !== false);
   const title = String(metadata.title || row.subject || "Technický požadavek");
@@ -90,14 +93,40 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
   const sourceName = [source.name || sourceStock.name, source.address, source.city].filter(Boolean).join(" · ");
   const targetName = [target.name || targetStock.name, target.address, target.city].filter(Boolean).join(" · ");
   const primaryPlace = locationName || targetName || sourceName || "Místo nebylo zadáno";
+  const emailKicker = ({
+    service: "Přidělený servisní zásah",
+    installation: "Přidělená nová instalace",
+    deinstallation: "Přidělený odvoz automatu",
+    transfer: "Přidělený přesun automatu",
+    revision: "Přidělená revize automatu",
+    workshop_prep: "Příprava automatu na dílně",
+    delivery: "Přidělený závoz / odvoz",
+    general: "Přidělený všeobecný požadavek",
+  } as Record<string, string>)[jobType] || "Přidělený technický úkol";
   const routeMarkup = sourceName || targetName ? `
     <div style="border:1px solid #d9dee6;margin-top:12px">
-      <div style="padding:9px 12px;background:#edf0f4;border-bottom:1px solid #d9dee6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#48515d">Trasa</div>
+      <div style="padding:9px 12px;background:#edf0f4;border-bottom:1px solid #d9dee6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#48515d">${jobType === "transfer" ? "Trasa přesunu" : "Trasa"}</div>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr>
-        <td style="padding:15px 14px;width:46%;vertical-align:top"><strong>${escapeHtml(sourceName || "Neuvedeno")}</strong><br><span style="color:#737d8a;font-size:12px">Výchozí místo</span></td>
-        <td style="padding:15px 6px;text-align:center;color:#d5101a;font-size:20px;font-weight:700">→</td>
-        <td style="padding:15px 14px;width:46%;vertical-align:top"><strong>${escapeHtml(targetName || primaryPlace)}</strong><br><span style="color:#737d8a;font-size:12px">Cílové místo</span></td>
+        <td style="padding:15px 12px;width:${jobType === "transfer" ? "31%" : "46%"};vertical-align:top"><span style="display:block;color:#737d8a;font-size:9px;font-weight:700;text-transform:uppercase;margin-bottom:5px">Odkud</span><strong>${escapeHtml(sourceName || "Neuvedeno")}</strong></td>
+        <td style="padding:15px 4px;text-align:center;color:#d5101a;font-size:20px;font-weight:700">→</td>
+        ${jobType === "transfer" ? `<td style="padding:15px 12px;width:31%;vertical-align:top;background:#f7f8fa"><span style="display:block;color:#737d8a;font-size:9px;font-weight:700;text-transform:uppercase;margin-bottom:5px">Automat</span><strong>${escapeHtml(machineName || "Neuvedeno")}</strong></td><td style="padding:15px 4px;text-align:center;color:#d5101a;font-size:20px;font-weight:700">→</td>` : ""}
+        <td style="padding:15px 12px;width:${jobType === "transfer" ? "31%" : "46%"};vertical-align:top"><span style="display:block;color:#737d8a;font-size:9px;font-weight:700;text-transform:uppercase;margin-bottom:5px">Kam</span><strong>${escapeHtml(targetName || primaryPlace)}</strong></td>
       </tr></table>
+    </div>` : "";
+  const transferChangeLabels = [
+    transferChanges.prices ? "Ceny" : "",
+    transferChanges.planogram ? "Planogram" : "",
+    transferChanges.hoppers ? "Zásobníky" : "",
+    transferChanges.telemetry ? "Telemetrie" : "",
+  ].filter(Boolean);
+  const configurationMarkup = jobType === "transfer" && (transferChangeLabels.length || planogramRows.length || ingredientRows.length) ? `
+    <div style="border:1px solid #d9dee6;margin-top:12px">
+      <div style="padding:9px 12px;background:#edf0f4;border-bottom:1px solid #d9dee6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#48515d">Co se při přesunu mění</div>
+      <div style="padding:13px 14px;font-size:12px;line-height:1.6">
+        ${transferChangeLabels.map((label) => `<span style="display:inline-block;margin:0 5px 5px 0;padding:5px 8px;background:#fff1f2;border:1px solid #f0c4c7;color:#991b1b;font-size:10px;font-weight:700">${escapeHtml(label)}</span>`).join("")}
+        ${configuration.summary ? `<div style="margin-top:7px">${escapeHtml(configuration.summary)}</div>` : ""}
+        ${(planogramRows.length || ingredientRows.length) ? `<div style="margin-top:7px;color:#687281">Cílová konfigurace: ${planogramRows.length} voleb · ${ingredientRows.length} zásobníků</div>` : ""}
+      </div>
     </div>` : "";
   const materialsMarkup = materials.length ? `
     <div style="border:1px solid #d9dee6;margin-top:12px">
@@ -125,8 +154,8 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
   return `<div style="margin:0;background:#eef1f5;padding:24px;font-family:Arial,Helvetica,sans-serif;color:#20242d">
     <div style="max-width:680px;margin:0 auto;background:#fff;border:1px solid #d9dee6">
       <div style="background:#20242d;color:#fff;padding:24px 28px;border-top:5px solid #d5101a">
-        <div style="font-weight:800;letter-spacing:.12em;font-size:17px;margin-bottom:20px"><span style="color:#ed1c24">OL</span>VEND</div>
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#aeb6c2;margin-bottom:7px">${isUpdate ? "Aktualizace přiděleného úkolu" : "Byl vám přidělen nový úkol"}</div>
+        <div style="font-weight:800;letter-spacing:.12em;font-size:17px;margin-bottom:20px"><span style="color:#ed1c24">OL</span>VEND <span style="font-size:9px;color:#aeb6c2;letter-spacing:.04em">by OLMIKA</span></div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#aeb6c2;margin-bottom:7px">${isUpdate ? `Aktualizace · ${emailKicker}` : emailKicker}</div>
         <h1 style="font-size:25px;line-height:1.2;margin:0 0 8px;color:#fff">${escapeHtml(title)}</h1>
         <div style="font-size:13px;color:#cbd2dc">TZ-${escapeHtml(metadata.technical_job_id)} · ${escapeHtml(jobTypeLabel(jobType))}${machineName ? ` · ${escapeHtml(machineName)}` : ""}</div>
       </div>
@@ -135,15 +164,15 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
         ${warning}
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #d9dee6;background:#f7f8fa;margin-bottom:18px"><tr>
           <td style="padding:13px 14px;border-right:1px solid #d9dee6"><span style="display:block;font-size:10px;text-transform:uppercase;color:#7b8491;margin-bottom:5px">Termín</span><strong>${escapeHtml(due)}</strong></td>
-          <td style="padding:13px 14px;border-right:1px solid #d9dee6"><span style="display:block;font-size:10px;text-transform:uppercase;color:#7b8491;margin-bottom:5px">Typ</span><strong>${escapeHtml(jobTypeLabel(jobType))}</strong></td>
-          <td style="padding:13px 14px"><span style="display:block;font-size:10px;text-transform:uppercase;color:#7b8491;margin-bottom:5px">Místo</span><strong>${escapeHtml(primaryPlace)}</strong></td>
+          <td style="padding:13px 14px;border-right:1px solid #d9dee6"><span style="display:block;font-size:10px;text-transform:uppercase;color:#7b8491;margin-bottom:5px">Priorita</span><strong>${escapeHtml(priorityLabel(metadata.priority))}</strong></td>
+          <td style="padding:13px 14px"><span style="display:block;font-size:10px;text-transform:uppercase;color:#7b8491;margin-bottom:5px">${jobType === "transfer" ? "Cíl" : "Místo"}</span><strong>${escapeHtml(jobType === "transfer" ? (targetName || "Neuvedeno") : primaryPlace)}</strong></td>
         </tr></table>
         ${routeMarkup}
         <div style="border:1px solid #d9dee6;margin-top:12px">
           <div style="padding:9px 12px;background:#edf0f4;border-bottom:1px solid #d9dee6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#48515d">Rozsah práce</div>
           <div style="padding:14px;font-size:13px;line-height:1.6"><strong>${escapeHtml(machineName || title)}</strong><br>${escapeHtml(metadata.description || configuration.summary || metadata.workshop_note || "Podrobnosti jsou uvedené v OLVENDu.")}</div>
         </div>
-        ${materialsMarkup}${checklistMarkup}${contactMarkup}
+        ${configurationMarkup}${materialsMarkup}${checklistMarkup}${contactMarkup}
         ${actionUrl ? `<div style="text-align:center;padding:23px 0 9px"><a href="${escapeHtml(actionUrl)}" style="display:inline-block;background:#d5101a;color:#fff;text-decoration:none;font-size:13px;font-weight:700;padding:12px 22px;border-radius:4px">Otevřít úkol v OLVENDu</a></div>` : ""}
       </div>
       <div style="border-top:1px solid #e2e6ec;padding:15px 28px;color:#8a929e;font-size:10px;line-height:1.5;background:#fafbfc">Automatická zpráva systému OLVEND · OLMIKA s.r.o.<br>Na tento e-mail není potřeba odpovídat.</div>
