@@ -3987,6 +3987,53 @@
       color: #ff8f98;
     }
 
+    .low-stock-depletion {
+      grid-column: 2 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+      margin-top: -2px;
+      padding-bottom: 2px;
+      color: var(--soft);
+      font-size: 8.5px;
+      line-height: 1.25;
+    }
+
+    .low-stock-depletion strong {
+      color: var(--muted);
+      font-size: 8.5px;
+      font-weight: 850;
+    }
+
+    .low-stock-depletion-status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 19px;
+      padding: 0 6px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(148,163,184,0.1);
+      font-style: normal;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .low-stock-depletion-status.replenished {
+      color: #9ef0bd;
+      background: rgba(46,204,113,0.11);
+    }
+
+    .low-stock-depletion-status.visited {
+      color: #ffd08a;
+      background: rgba(255,182,72,0.11);
+    }
+
+    .low-stock-depletion-status.waiting {
+      color: #ffb6bc;
+      background: rgba(255,91,102,0.09);
+    }
+
     .low-stock-machine-more {
       grid-column: 1 / -1;
     }
@@ -4036,6 +4083,9 @@
     :root[data-olvend-theme="light"] .low-stock-location-critical { color: #b42318; }
     :root[data-olvend-theme="light"] .low-stock-machine-badges .inventory { color: #b54708; }
     :root[data-olvend-theme="light"] .low-stock-product.critical > strong { color: #d92d20; }
+    :root[data-olvend-theme="light"] .low-stock-depletion-status.replenished { color: #137a45; }
+    :root[data-olvend-theme="light"] .low-stock-depletion-status.visited { color: #9a5b00; }
+    :root[data-olvend-theme="light"] .low-stock-depletion-status.waiting { color: #b42318; }
 
     @media (max-width: 900px) {
       .low-stock-machine { grid-template-columns: 1fr; }
@@ -5640,6 +5690,18 @@
       });
     }
 
+    function formatLowStockMoment(value) {
+      const date = value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return "";
+      const now = new Date();
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const time = date.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
+      if (getDateKey(date) === getDateKey(now)) return `dnes v ${time}`;
+      if (getDateKey(date) === getDateKey(yesterday)) return `včera v ${time}`;
+      return `${date.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric", year: date.getFullYear() === now.getFullYear() ? undefined : "numeric" })} v ${time}`;
+    }
+
     function renderTelemetryLowStock(rows, initialInventory = []) {
       const sourceRows = rows || [];
       const inventoryRows = initialInventory || [];
@@ -5721,12 +5783,33 @@
         const percent = Math.max(0, Math.min(100, Number(row.percent || 0)));
         const productName = row.product_name || row.ingredient_name || row.container_name || row.selection_code || "Bez produktu";
         const slotLabel = row.selection_code || row.slot_code || "–";
-        const isCritical = percent <= 10 || Number(row.current || 0) <= 0;
+        const currentQuantity = Number(row.current || 0);
+        const isDepleted = currentQuantity <= 0;
+        const isCritical = percent <= 10 || isDepleted;
+        const soldOutLabel = formatLowStockMoment(row.sold_out_at);
+        let depletionStatus = "";
+        if (isDepleted && soldOutLabel) {
+          if (row.last_replenished_at) {
+            const refillQuantity = Number(row.last_replenished_quantity || 0);
+            const refillDetail = refillQuantity > 0 ? ` · +${refillQuantity.toLocaleString("cs-CZ")} ${row.unit_label || "ks"}` : "";
+            depletionStatus = `<em class="low-stock-depletion-status replenished">Doplněno ${escapeHtml(formatLowStockMoment(row.last_replenished_at))}${escapeHtml(refillDetail)}</em>`;
+          } else if (row.last_visit_at) {
+            depletionStatus = `<em class="low-stock-depletion-status visited">Návštěva ${escapeHtml(formatLowStockMoment(row.last_visit_at))} · bez doplnění pozice</em>`;
+          } else {
+            depletionStatus = '<em class="low-stock-depletion-status waiting">Od té doby bez návštěvy</em>';
+          }
+        }
         return `
-          <div class="low-stock-product ${isCritical ? "critical" : ""}">
+          <div class="low-stock-product ${isCritical ? "critical" : ""} ${isDepleted ? "depleted" : ""}">
             <span class="low-stock-slot" title="Pozice ${escapeHtml(slotLabel)}">${escapeHtml(slotLabel)}</span>
             <span class="low-stock-product-name" title="${escapeHtml(productName)}">${escapeHtml(productName)}</span>
             <strong>${escapeHtml(`${row.current || 0} / ${row.capacity || "?"} ${row.unit_label || "ks"}`)}</strong>
+            ${isDepleted ? `
+              <div class="low-stock-depletion">
+                <strong>${soldOutLabel ? `Vyprodáno ${escapeHtml(soldOutLabel)}` : "Čas vyprodání zatím nelze určit"}</strong>
+                ${depletionStatus}
+              </div>
+            ` : ""}
           </div>
         `;
       };
@@ -6431,6 +6514,7 @@
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
             service_suspended_until: location?.service_suspended_until || null,
             unit_label: "ks",
+            low_stock_item_kind: "food_slot",
             low: isFoodPlanogram
               ? (isSmallFoodSlot ? current <= smallFoodLowThreshold : capacity > 0 && percent <= 25)
               : (capacity > 0 && percent <= 25) || (desired > 0 && current <= desired)
@@ -6465,6 +6549,7 @@
             location_name: [location?.city, location?.name].filter(Boolean).join(" · "),
             service_suspended_until: location?.service_suspended_until || null,
             unit_label: unit,
+            low_stock_item_kind: "coffee_container",
             low: capacity > 0 && percent <= 25
           };
         })
@@ -6474,6 +6559,36 @@
         .filter((item) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(item))
         .filter((item) => !isServiceSuspendedUntil(item.service_suspended_until))
         .sort((a, b) => Number(a.percent || 0) - Number(b.percent || 0));
+
+      const depletedFoodSlotIds = lowStock
+        .filter((item) => item.low_stock_item_kind === "food_slot" && Number(item.current || 0) <= 0)
+        .map((item) => Number(item.id))
+        .filter(Boolean);
+      const depletedCoffeeContainerIds = lowStock
+        .filter((item) => item.low_stock_item_kind === "coffee_container" && Number(item.current || 0) <= 0)
+        .map((item) => Number(item.id))
+        .filter(Boolean);
+      if (depletedFoodSlotIds.length || depletedCoffeeContainerIds.length) {
+        const { data: depletionRows, error: depletionError } = await supabase.rpc("get_low_stock_depletion_context_v25", {
+          p_food_slot_ids: depletedFoodSlotIds,
+          p_coffee_container_ids: depletedCoffeeContainerIds
+        });
+        if (depletionError) {
+          if (!/get_low_stock_depletion_context_v25|schema cache|could not find the function/i.test(String(depletionError.message || ""))) {
+            console.error("Low-stock depletion context failed", depletionError);
+          }
+        } else {
+          const depletionByItem = new Map((depletionRows || []).map((row) => [`${row.item_kind}:${row.item_id}`, row]));
+          lowStock.forEach((item) => {
+            const context = depletionByItem.get(`${item.low_stock_item_kind}:${item.id}`);
+            if (!context) return;
+            item.sold_out_at = context.sold_out_at || null;
+            item.last_visit_at = context.last_visit_at || null;
+            item.last_replenished_at = context.last_replenished_at || null;
+            item.last_replenished_quantity = Number(context.last_replenished_quantity || 0);
+          });
+        }
+      }
 
       const lowStockMachineIds = [...new Set(lowStock.map((item) => Number(item.machine_id)).filter(Boolean))];
       let coffeeRecipeRows = [];
