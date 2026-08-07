@@ -266,6 +266,17 @@
     .email-preview-config-table th { padding:5px;border:0;border-bottom:1px solid #d9dee6;background:#fbfcfd;color:#737d8a;font-size:7px;text-align:left;letter-spacing:0; }
     .email-preview-config-table td { padding:5px;border:0;border-top:1px solid #edf0f4;color:#20242d;vertical-align:top; }
     .email-preview-config-table th.num,.email-preview-config-table td.num { text-align:right; }
+    .email-preview-config-table tr.config-changed > td:first-child { box-shadow:inset 3px 0 0 #f59e0b; }
+    .email-preview-config-table tr.config-added > td:first-child { box-shadow:inset 3px 0 0 #16a34a; }
+    .email-preview-config-table tr.config-removed > td:first-child { box-shadow:inset 3px 0 0 #d5101a; }
+    .email-preview-config-table td.value-changed { background:#fff7e8;color:#7c4a03; }
+    .email-preview-config-table tr.config-removed td { background:#fff1f2;color:#991b1b; }
+    .email-preview-change-badge { display:inline-block;margin-left:4px;padding:2px 4px;border:1px solid #f4c67a;background:#fff7e8;color:#8a5200;font-size:6px;font-weight:900;vertical-align:middle; }
+    .email-preview-change-badge.added { border-color:#9ed7b3;background:#edf9f1;color:#17693a; }
+    .email-preview-change-badge.removed { border-color:#efb5ba;background:#fff1f2;color:#991b1b; }
+    .email-preview-old-value { display:block;color:#8a929e;font-size:6px;text-decoration:line-through; }
+    .email-preview-new-value { display:block;font-weight:800; }
+    .email-preview-diff-summary { margin-top:7px;padding:6px 8px;background:#fff7e8;border-left:3px solid #f59e0b;color:#7c4a03;font-size:8px;font-weight:800; }
     .email-preview-config-rules { margin-top:8px;padding:7px 8px;border-left:3px solid #d5101a;background:#f7f8fa;color:#4b5563;font-size:8px;line-height:1.5;white-space:pre-line; }
     .email-preview-action { display: inline-block; margin-top: 14px; padding: 9px 14px; border-radius: 4px; background: #d5101a; color: #fff; font-weight: 800; }
     .email-preview-footer { padding:10px 20px;border-top:1px solid #e2e6ec;background:#fafbfc;color:#8a929e;font-size:8px;line-height:1.45; }
@@ -2734,6 +2745,56 @@
       })[String(type)] || 'nový technický úkol'
     }
 
+    function emailConfigValuesEqual(left, right) {
+      const a = String(left ?? '').trim()
+      const b = String(right ?? '').trim()
+      if (!a && !b) return true
+      const numeric = /^-?\d+(?:[.,]\d+)?$/
+      if (numeric.test(a) && numeric.test(b)) return Number(a.replace(',', '.')) === Number(b.replace(',', '.'))
+      return normalizeText(a).replace(/\s+/g, ' ') === normalizeText(b).replace(/\s+/g, ' ')
+    }
+
+    function buildEmailConfigDiff(currentRows, baselineRows, keyFields, trackedFields) {
+      const rowKey = (row, index) => {
+        for (const field of keyFields) {
+          const value = String(row?.[field] ?? '').trim()
+          if (value) return `${field}:${normalizeText(value)}`
+        }
+        return `row:${index}`
+      }
+      const baselineMap = new Map((baselineRows || []).map((row, index) => [rowKey(row, index), row]))
+      const seen = new Set()
+      const rows = (currentRows || []).map((current, index) => {
+        const key = rowKey(current, index)
+        const baseline = baselineMap.get(key) || null
+        seen.add(key)
+        if (!baseline) return { key, current, baseline: null, status: 'added', changedFields: new Set(trackedFields) }
+        const changedFields = new Set(trackedFields.filter((field) => !emailConfigValuesEqual(current?.[field], baseline?.[field])))
+        return { key, current, baseline, status: changedFields.size ? 'changed' : 'unchanged', changedFields }
+      })
+      baselineMap.forEach((baseline, key) => {
+        if (!seen.has(key)) rows.push({ key, current: null, baseline, status: 'removed', changedFields: new Set(trackedFields) })
+      })
+      return rows
+    }
+
+    function emailDiffBadge(status) {
+      if (status === 'added') return '<span class="email-preview-change-badge added">NOVÉ</span>'
+      if (status === 'removed') return '<span class="email-preview-change-badge removed">ODEBRÁNO</span>'
+      if (status === 'changed') return '<span class="email-preview-change-badge">ZMĚNA</span>'
+      return ''
+    }
+
+    function renderEmailDiffValue(diff, field, formatter = (value) => String(value ?? '').trim() || '—') {
+      const currentValue = diff.current?.[field]
+      const baselineValue = diff.baseline?.[field]
+      if (diff.status === 'removed') return `<span class="email-preview-old-value">${escapeHtml(formatter(baselineValue))}</span><span class="email-preview-new-value">odebráno</span>`
+      if (diff.status === 'changed' && diff.changedFields.has(field)) {
+        return `<span class="email-preview-old-value">původně ${escapeHtml(formatter(baselineValue))}</span><span class="email-preview-new-value">nově ${escapeHtml(formatter(currentValue))}</span>`
+      }
+      return escapeHtml(formatter(currentValue))
+    }
+
     function renderAssignmentEmailPreview(options = {}) {
       const employee = employees.find((item) => String(item.id) === String(jobAssignedEmployeeId.value || '')) || null
       const canSend = Boolean(employee?.email)
@@ -2811,18 +2872,29 @@
       ].filter(Boolean)
       const emailPlanogramRows = getConfigTableRows(planogramRows)
       const emailIngredientRows = getConfigTableRows(ingredientRows)
+      const hasMachineBaseline = Boolean(loadedMachineConfigBaseline && typeof loadedMachineConfigBaseline === 'object')
+      const baselinePlanogramRows = normalizePlanogramRows(loadedMachineConfigBaseline?.planogram_rows || [])
+      const baselineIngredientRows = normalizeIngredientRows(loadedMachineConfigBaseline?.ingredients || [])
+      const planogramDiffRows = hasMachineBaseline
+        ? buildEmailConfigDiff(emailPlanogramRows, baselinePlanogramRows, ['choice', 'column'], ['product_id', 'product_name', 'cash_price', 'card_price', 'loyalty_price', 'active'])
+        : emailPlanogramRows.map((current, index) => ({ key: `row:${index}`, current, baseline: null, status: 'unchanged', changedFields: new Set() }))
+      const ingredientDiffRows = hasMachineBaseline
+        ? buildEmailConfigDiff(emailIngredientRows, baselineIngredientRows, ['container', 'column'], ['product_id', 'product_name', 'max_capacity', 'unit'])
+        : emailIngredientRows.map((current, index) => ({ key: `row:${index}`, current, baseline: null, status: 'unchanged', changedFields: new Set() }))
+      const changedPlanogramCount = planogramDiffRows.filter((item) => item.status !== 'unchanged').length
+      const changedIngredientCount = ingredientDiffRows.filter((item) => item.status !== 'unchanged').length
       const formatEmailPrice = (value) => String(value ?? '').trim() ? `${String(value).trim()} Kč` : '—'
-      const planogramDetailsMarkup = emailPlanogramRows.length ? `
+      const planogramDetailsMarkup = planogramDiffRows.length ? `
         <table class="email-preview-config-table">
           <caption>Cílové volby a ceny</caption>
           <thead><tr><th>Volba</th><th>Nápoj / produkt</th><th class="num">Hotovost</th><th class="num">Karta</th><th class="num">Věrnostní</th></tr></thead>
-          <tbody>${emailPlanogramRows.map((item) => `<tr><td><strong>${escapeHtml(item.choice || item.column || '—')}</strong></td><td>${escapeHtml(item.product_name || 'Neuvedeno')}</td><td class="num">${escapeHtml(formatEmailPrice(item.cash_price))}</td><td class="num">${escapeHtml(formatEmailPrice(item.card_price))}</td><td class="num">${escapeHtml(formatEmailPrice(item.loyalty_price))}</td></tr>`).join('')}</tbody>
+          <tbody>${planogramDiffRows.map((diff) => { const item = diff.current || diff.baseline || {}; return `<tr class="config-${diff.status}"><td><strong>${escapeHtml(item.choice || item.column || '—')}</strong>${emailDiffBadge(diff.status)}</td><td class="${diff.changedFields.has('product_id') || diff.changedFields.has('product_name') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'product_name', (value) => String(value ?? '').trim() || 'Neuvedeno')}</td><td class="num ${diff.changedFields.has('cash_price') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'cash_price', formatEmailPrice)}</td><td class="num ${diff.changedFields.has('card_price') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'card_price', formatEmailPrice)}</td><td class="num ${diff.changedFields.has('loyalty_price') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'loyalty_price', formatEmailPrice)}</td></tr>` }).join('')}</tbody>
         </table>` : ''
-      const ingredientDetailsMarkup = emailIngredientRows.length ? `
+      const ingredientDetailsMarkup = ingredientDiffRows.length ? `
         <table class="email-preview-config-table">
           <caption>Cílové zásobníky</caption>
           <thead><tr><th>Zásobník</th><th>Surovina</th><th class="num">Kapacita</th></tr></thead>
-          <tbody>${emailIngredientRows.map((item) => `<tr><td><strong>${escapeHtml(item.container || item.column || '—')}</strong></td><td>${escapeHtml(item.product_name || 'Neuvedeno')}</td><td class="num">${escapeHtml(item.max_capacity || '—')} ${escapeHtml(item.unit || '')}</td></tr>`).join('')}</tbody>
+          <tbody>${ingredientDiffRows.map((diff) => { const item = diff.current || diff.baseline || {}; return `<tr class="config-${diff.status}"><td><strong>${escapeHtml(item.container || item.column || '—')}</strong>${emailDiffBadge(diff.status)}</td><td class="${diff.changedFields.has('product_id') || diff.changedFields.has('product_name') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'product_name', (value) => String(value ?? '').trim() || 'Neuvedeno')}</td><td class="num ${diff.changedFields.has('max_capacity') || diff.changedFields.has('unit') ? 'value-changed' : ''}">${renderEmailDiffValue(diff, 'max_capacity', (value) => `${String(value ?? '').trim() || '—'} ${String((diff.current || diff.baseline)?.unit || '').trim()}`.trim())}</td></tr>` }).join('')}</tbody>
         </table>` : ''
       const transferRulesMarkup = priceMatrixInput.value.trim() || telemetryMappingInput.value.trim() ? `
         <div class="email-preview-config-rules">${priceMatrixInput.value.trim() ? `<strong>Platební pravidla:</strong> ${escapeHtml(priceMatrixInput.value.trim())}` : ''}${priceMatrixInput.value.trim() && telemetryMappingInput.value.trim() ? '\n' : ''}${telemetryMappingInput.value.trim() ? `<strong>Telemetrie:</strong> ${escapeHtml(telemetryMappingInput.value.trim())}` : ''}</div>` : ''
@@ -2833,6 +2905,7 @@
             <div class="email-preview-chips">${transferChangeLabels.map((label) => `<span class="email-preview-chip">${escapeHtml(label)}</span>`).join('')}</div>
             ${configurationSummary.value.trim() ? `<div>${escapeHtml(configurationSummary.value.trim())}</div>` : ''}
             <div style="margin-top:5px;color:#687281">Cílová konfigurace: ${emailPlanogramRows.length} voleb · ${emailIngredientRows.length} zásobníků</div>
+            ${hasMachineBaseline ? `<div class="email-preview-diff-summary">Označené změny proti načtenému stavu: ${changedPlanogramCount} voleb · ${changedIngredientCount} zásobníků</div>` : ''}
             ${planogramDetailsMarkup}${ingredientDetailsMarkup}${transferRulesMarkup}
           </div>
         </div>` : ''

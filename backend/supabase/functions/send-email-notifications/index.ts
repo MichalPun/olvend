@@ -56,6 +56,80 @@ const formatPrice = (value: unknown) => {
   return text ? `${escapeHtml(text)} Kč` : "—";
 };
 
+type ConfigDiffRow = {
+  current: Record<string, unknown> | null;
+  baseline: Record<string, unknown> | null;
+  status: "added" | "removed" | "changed" | "unchanged";
+  changedFields: Set<string>;
+};
+
+const comparableConfigValue = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("cs-CZ");
+
+const configValuesEqual = (left: unknown, right: unknown) => {
+  const a = comparableConfigValue(left);
+  const b = comparableConfigValue(right);
+  if (!a && !b) return true;
+  const numeric = /^-?\d+(?:[.,]\d+)?$/;
+  if (numeric.test(a) && numeric.test(b)) return Number(a.replace(",", ".")) === Number(b.replace(",", "."));
+  return a.replace(/\s+/g, " ") === b.replace(/\s+/g, " ");
+};
+
+function buildConfigDiff(
+  currentRows: Array<Record<string, unknown>>,
+  baselineRows: Array<Record<string, unknown>>,
+  keyFields: string[],
+  trackedFields: string[],
+): ConfigDiffRow[] {
+  const rowKey = (row: Record<string, unknown>, index: number) => {
+    for (const field of keyFields) {
+      const value = comparableConfigValue(row[field]);
+      if (value) return `${field}:${value}`;
+    }
+    return `row:${index}`;
+  };
+  const baselineMap = new Map(baselineRows.map((row, index) => [rowKey(row, index), row]));
+  const seen = new Set<string>();
+  const rows: ConfigDiffRow[] = currentRows.map((current, index) => {
+    const key = rowKey(current, index);
+    const baseline = baselineMap.get(key) || null;
+    seen.add(key);
+    if (!baseline) return { current, baseline: null, status: "added", changedFields: new Set(trackedFields) };
+    const changedFields = new Set(trackedFields.filter((field) => !configValuesEqual(current[field], baseline[field])));
+    return { current, baseline, status: changedFields.size ? "changed" : "unchanged", changedFields };
+  });
+  baselineMap.forEach((baseline, key) => {
+    if (!seen.has(key)) rows.push({ current: null, baseline, status: "removed", changedFields: new Set(trackedFields) });
+  });
+  return rows;
+}
+
+const configDiffBadge = (status: ConfigDiffRow["status"]) => {
+  if (status === "added") return '<span style="display:inline-block;margin-left:4px;padding:2px 4px;border:1px solid #9ed7b3;background:#edf9f1;color:#17693a;font-size:7px;font-weight:800">NOVÉ</span>';
+  if (status === "removed") return '<span style="display:inline-block;margin-left:4px;padding:2px 4px;border:1px solid #efb5ba;background:#fff1f2;color:#991b1b;font-size:7px;font-weight:800">ODEBRÁNO</span>';
+  if (status === "changed") return '<span style="display:inline-block;margin-left:4px;padding:2px 4px;border:1px solid #f4c67a;background:#fff7e8;color:#8a5200;font-size:7px;font-weight:800">ZMĚNA</span>';
+  return "";
+};
+
+const configDiffRowStyle = (status: ConfigDiffRow["status"]) => status === "added"
+  ? "border-left:3px solid #16a34a"
+  : status === "removed"
+    ? "border-left:3px solid #d5101a;background:#fff1f2"
+    : status === "changed"
+      ? "border-left:3px solid #f59e0b"
+      : "";
+
+const configDiffCellStyle = (diff: ConfigDiffRow, ...fields: string[]) => fields.some((field) => diff.changedFields.has(field))
+  ? "background:#fff7e8;color:#7c4a03"
+  : "";
+
+const renderConfigDiffValue = (diff: ConfigDiffRow, field: string, formatter: (value: unknown) => string = (value) => escapeHtml(String(value ?? "").trim() || "—")) => {
+  const currentValue = diff.current?.[field];
+  const baselineValue = diff.baseline?.[field];
+  if (diff.status === "removed") return `<span style="display:block;color:#8a929e;font-size:8px;text-decoration:line-through">${formatter(baselineValue)}</span><strong style="display:block;color:#991b1b">odebráno</strong>`;
+  if (diff.status === "changed" && diff.changedFields.has(field)) return `<span style="display:block;color:#8a929e;font-size:8px;text-decoration:line-through">původně ${formatter(baselineValue)}</span><strong style="display:block;color:#7c4a03">nově ${formatter(currentValue)}</strong>`;
+  return formatter(currentValue);
+};
+
 const jobTypeLabel = (value: unknown) => ({
   service: "Servis",
   installation: "Nová instalace",
@@ -88,6 +162,18 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
   const transferChanges = valueRecord(configuration.transfer_changes);
   const planogramRows = valueArray(configuration.planogram_rows);
   const ingredientRows = valueArray(configuration.ingredients);
+  const machineBaseline = valueRecord(configuration.machine_baseline);
+  const hasMachineBaseline = Object.keys(machineBaseline).length > 0;
+  const baselinePlanogramRows = valueArray(machineBaseline.planogram_rows);
+  const baselineIngredientRows = valueArray(machineBaseline.ingredients);
+  const planogramDiffRows = hasMachineBaseline
+    ? buildConfigDiff(planogramRows, baselinePlanogramRows, ["choice", "column"], ["product_id", "product_name", "cash_price", "card_price", "loyalty_price", "active"])
+    : planogramRows.map((current) => ({ current, baseline: null, status: "unchanged" as const, changedFields: new Set<string>() }));
+  const ingredientDiffRows = hasMachineBaseline
+    ? buildConfigDiff(ingredientRows, baselineIngredientRows, ["container", "column"], ["product_id", "product_name", "max_capacity", "unit"])
+    : ingredientRows.map((current) => ({ current, baseline: null, status: "unchanged" as const, changedFields: new Set<string>() }));
+  const changedPlanogramCount = planogramDiffRows.filter((item) => item.status !== "unchanged").length;
+  const changedIngredientCount = ingredientDiffRows.filter((item) => item.status !== "unchanged").length;
   const materials = valueArray(metadata.materials);
   const checklist = valueArray(metadata.checklist).filter((item) => item.required !== false);
   const title = String(metadata.title || row.subject || "Technický požadavek");
@@ -124,20 +210,20 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
     transferChanges.hoppers ? "Zásobníky" : "",
     transferChanges.telemetry ? "Telemetrie" : "",
   ].filter(Boolean);
-  const planogramDetailsMarkup = planogramRows.length ? `
+  const planogramDetailsMarkup = planogramDiffRows.length ? `
     <div style="margin-top:11px;border:1px solid #d9dee6">
       <div style="padding:7px 9px;background:#f7f8fa;border-bottom:1px solid #d9dee6;font-size:10px;font-weight:700;text-transform:uppercase;color:#596270">Cílové volby a ceny</div>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
         <tr style="background:#fbfcfd;color:#737d8a;text-transform:uppercase"><th style="padding:6px;text-align:left">Volba</th><th style="padding:6px;text-align:left">Nápoj / produkt</th><th style="padding:6px;text-align:right">Hotovost</th><th style="padding:6px;text-align:right">Karta</th><th style="padding:6px;text-align:right">Věrnostní</th></tr>
-        ${planogramRows.map((item) => `<tr><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.choice || item.column)}</td><td style="padding:6px;border-top:1px solid #edf0f4">${escapeHtml(item.product_name || item.product || "Neuvedeno")}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.cash_price)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.card_price)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.loyalty_price)}</td></tr>`).join("")}
+        ${planogramDiffRows.map((diff) => { const item = diff.current || diff.baseline || {}; return `<tr style="${configDiffRowStyle(diff.status)}"><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.choice || item.column)}${configDiffBadge(diff.status)}</td><td style="padding:6px;border-top:1px solid #edf0f4;${configDiffCellStyle(diff, "product_id", "product_name")}">${renderConfigDiffValue(diff, "product_name", (value) => escapeHtml(String(value ?? "").trim() || "Neuvedeno"))}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right;${configDiffCellStyle(diff, "cash_price")}">${renderConfigDiffValue(diff, "cash_price", formatPrice)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right;${configDiffCellStyle(diff, "card_price")}">${renderConfigDiffValue(diff, "card_price", formatPrice)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right;${configDiffCellStyle(diff, "loyalty_price")}">${renderConfigDiffValue(diff, "loyalty_price", formatPrice)}</td></tr>`; }).join("")}
       </table>
     </div>` : "";
-  const ingredientDetailsMarkup = ingredientRows.length ? `
+  const ingredientDetailsMarkup = ingredientDiffRows.length ? `
     <div style="margin-top:11px;border:1px solid #d9dee6">
       <div style="padding:7px 9px;background:#f7f8fa;border-bottom:1px solid #d9dee6;font-size:10px;font-weight:700;text-transform:uppercase;color:#596270">Cílové zásobníky</div>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
         <tr style="background:#fbfcfd;color:#737d8a;text-transform:uppercase"><th style="padding:6px;text-align:left">Zásobník</th><th style="padding:6px;text-align:left">Surovina</th><th style="padding:6px;text-align:right">Kapacita</th></tr>
-        ${ingredientRows.map((item) => `<tr><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.container || item.column || "—")}</td><td style="padding:6px;border-top:1px solid #edf0f4">${escapeHtml(item.product_name || item.ingredient || "Neuvedeno")}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${escapeHtml(item.max_capacity || "—")} ${escapeHtml(item.unit || "")}</td></tr>`).join("")}
+        ${ingredientDiffRows.map((diff) => { const item = diff.current || diff.baseline || {}; return `<tr style="${configDiffRowStyle(diff.status)}"><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.container || item.column || "—")}${configDiffBadge(diff.status)}</td><td style="padding:6px;border-top:1px solid #edf0f4;${configDiffCellStyle(diff, "product_id", "product_name")}">${renderConfigDiffValue(diff, "product_name", (value) => escapeHtml(String(value ?? "").trim() || "Neuvedeno"))}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right;${configDiffCellStyle(diff, "max_capacity", "unit")}">${renderConfigDiffValue(diff, "max_capacity", (value) => `${escapeHtml(String(value ?? "").trim() || "—")} ${escapeHtml(String((diff.current || diff.baseline)?.unit || ""))}`.trim())}</td></tr>`; }).join("")}
       </table>
     </div>` : "";
   const transferRulesMarkup = configuration.pricing || configuration.telemetry_mapping_raw ? `
@@ -152,6 +238,7 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
         ${transferChangeLabels.map((label) => `<span style="display:inline-block;margin:0 5px 5px 0;padding:5px 8px;background:#fff1f2;border:1px solid #f0c4c7;color:#991b1b;font-size:10px;font-weight:700">${escapeHtml(label)}</span>`).join("")}
         ${configuration.summary ? `<div style="margin-top:7px">${escapeHtml(configuration.summary)}</div>` : ""}
         ${(planogramRows.length || ingredientRows.length) ? `<div style="margin-top:7px;color:#687281">Cílová konfigurace: ${planogramRows.length} voleb · ${ingredientRows.length} zásobníků</div>` : ""}
+        ${hasMachineBaseline ? `<div style="margin-top:8px;padding:7px 9px;background:#fff7e8;border-left:3px solid #f59e0b;color:#7c4a03;font-size:10px;font-weight:700">Označené změny proti načtenému stavu: ${changedPlanogramCount} voleb · ${changedIngredientCount} zásobníků</div>` : ""}
         ${planogramDetailsMarkup}${ingredientDetailsMarkup}${transferRulesMarkup}
       </div>
     </div>` : "";
