@@ -2556,40 +2556,45 @@
                   Vozidlo
                   <select id="stockVehicleSelect"></select>
                 </label>
+                <div class="attention-box stock-form-full" id="routeWasteUnloadPanel" hidden>
+                  <strong>Odpisy svezené z tras</strong>
+                  <span>Nejsou součástí použitelné zásoby auta. Ve skladu jen potvrď jejich fyzické odevzdání.</span>
+                  <div class="stack" id="routeWasteUnloadList"></div>
+                </div>
                 <div class="attention-box stock-form-full" id="freshRouteRecommendation" hidden></div>
                 <label class="stock-form-full" id="stockRequestDateLabel">
                   Termín
                   <input id="stockRequestDateInput" type="date" />
                 </label>
-                <label class="stock-form-full">
+                <label class="stock-form-full" data-stock-manual-entry>
                   Produkt
                   <input id="stockProductInput" autocomplete="off" placeholder="Název, SKU nebo EAN" />
                   <datalist id="productOptions"></datalist>
                 </label>
-                <div class="product-search-panel stock-form-full" id="stockProductSearchPanel" hidden></div>
-                <label>
+                <div class="product-search-panel stock-form-full" id="stockProductSearchPanel" data-stock-manual-entry hidden></div>
+                <label data-stock-manual-entry>
                   Množství
                   <input id="stockQuantityInput" inputmode="decimal" value="1" />
                   <span class="helper-line" id="stockQuantityHelp">Vyber produkt.</span>
                 </label>
-                <label>
+                <label data-stock-manual-entry>
                   Jednotka
                   <select id="stockUnitSelect"></select>
                 </label>
-                <label class="stock-form-full" id="stockBatchLabel" hidden>
+                <label class="stock-form-full" id="stockBatchLabel" data-stock-manual-entry hidden>
                   Expirace / šarže
                   <select id="stockBatchSelect"><option value="">Automaticky podle nejbližší expirace</option></select>
                   <span class="helper-line">Šarže se přenese do vozidla a následně do automatu.</span>
                 </label>
               </div>
-              <details class="stock-optional-note">
+              <details class="stock-optional-note" data-stock-manual-entry>
                 <summary>Volitelná poznámka</summary>
                 <label>
                   Poznámka k dokladu
                   <textarea id="stockNoteInput" placeholder="Doplň jen pokud je potřeba něco vysvětlit"></textarea>
                 </label>
               </details>
-              <button class="secondary-btn" id="addStockDraftItemButton" type="button">+ Přidat položku</button>
+              <button class="secondary-btn" id="addStockDraftItemButton" data-stock-manual-entry type="button">+ Přidat položku</button>
               <button class="secondary-btn" id="loadWholeVehicleButton" type="button" style="display:none;">Načíst celé vozidlo</button>
               <div class="stock-draft" id="stockDraftList"></div>
               <button class="primary-btn" id="createStockRequestButton" type="button">Uložit požadavek</button>
@@ -2903,6 +2908,8 @@
       stockModeInitialized: false,
       showAllStockRequests: false,
       stockDraftItems: [],
+      routeWasteItems: [],
+      routeWasteTableAvailable: true,
       stockRequestSubmitting: false,
       fuelReceiptUploading: false,
       endingShift: false,
@@ -3006,6 +3013,8 @@
       stockNoteInput: document.getElementById('stockNoteInput'),
       addStockDraftItemButton: document.getElementById('addStockDraftItemButton'),
       loadWholeVehicleButton: document.getElementById('loadWholeVehicleButton'),
+      routeWasteUnloadPanel: document.getElementById('routeWasteUnloadPanel'),
+      routeWasteUnloadList: document.getElementById('routeWasteUnloadList'),
       stockDraftList: document.getElementById('stockDraftList'),
       createStockRequestButton: document.getElementById('createStockRequestButton'),
       stockRequestList: document.getElementById('stockRequestList'),
@@ -4099,6 +4108,7 @@
       })
       const isPreparedLoadMode = state.selectedStockType === 'vehicle_load' && !state.manualVehicleLoad
       const isManualLoadMode = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad
+      const isRouteWasteUnloadMode = state.selectedStockType === 'vehicle_writeoff'
       const stockScreenActive = document.querySelector('.screen[data-screen="stock"]')?.classList.contains('active')
       if (isManualLoadMode && stockScreenActive && !state.freshRouteRecommendationLoaded) {
         state.freshRouteRecommendationLoaded = true
@@ -4154,7 +4164,7 @@
       els.createStockRequestButton.textContent = state.selectedStockType === 'vehicle_order'
         ? 'Odeslat objednávku'
         : state.selectedStockType === 'vehicle_writeoff'
-          ? 'Odeslat vratku ke schválení'
+          ? 'Potvrdit vyložení odpisu'
           : isManualLoadMode
             ? 'Naložit na auto'
           : 'Uložit doklad'
@@ -4168,6 +4178,11 @@
       if (els.loadWholeVehicleButton) {
         els.loadWholeVehicleButton.style.display = state.selectedStockType === 'vehicle_unload' ? '' : 'none'
       }
+      document.querySelectorAll('[data-stock-manual-entry]').forEach((element) => {
+        element.hidden = isRouteWasteUnloadMode
+      })
+      if (els.routeWasteUnloadPanel) els.routeWasteUnloadPanel.hidden = !isRouteWasteUnloadMode
+      if (els.stockDraftList) els.stockDraftList.hidden = isRouteWasteUnloadMode
       els.stockFormDetails.style.display = isPreparedLoadMode ? 'none' : ''
       if (els.stockVehicleField) els.stockVehicleField.hidden = Boolean(getCurrentVehicleId())
       els.stockRequestSectionTitle.textContent = isPreparedLoadMode ? 'Připravené nakládky' : 'Historie skladových dokladů'
@@ -4175,6 +4190,7 @@
       els.stockRequestListTitle.textContent = isPreparedLoadMode ? 'Připravené nakládky' : 'Historie skladových dokladů'
       if (isPreparedLoadMode) els.stockRequestDetails.open = true
       renderStockVehicleSelect()
+      renderPendingRouteWaste()
       renderStockDraft()
 
       const allVisibleRequests = isPreparedLoadMode
@@ -4234,6 +4250,10 @@
 
     function renderStockDraft() {
       if (!els.stockDraftList) return
+      if (state.selectedStockType === 'vehicle_writeoff') {
+        els.createStockRequestButton.disabled = !state.routeWasteItems.length || !state.routeWasteTableAvailable
+        return
+      }
       els.createStockRequestButton.disabled = !state.stockDraftItems.length && !els.stockProductInput.value.trim()
       if (!state.stockDraftItems.length) {
         els.stockDraftList.innerHTML = '<div class="empty">Rozpracovaný doklad je zatím prázdný. Přidej první položku.</div>'
@@ -4256,6 +4276,79 @@
           </div>
         `).join('')}
       `
+    }
+
+    const routeWasteReasonLabels = {
+      expired: 'Prošlá expirace',
+      shaken: 'Vytřepané / zdeformované',
+      damaged: 'Poškozené',
+      opened: 'Otevřené',
+      other: 'Jiný důvod'
+    }
+
+    function renderPendingRouteWaste() {
+      if (!els.routeWasteUnloadList) return
+      if (!state.routeWasteTableAvailable) {
+        els.routeWasteUnloadList.innerHTML = '<div class="empty">Evidence svozu odpisů ještě není připravená v databázi.</div>'
+        return
+      }
+      if (!state.routeWasteItems.length) {
+        els.routeWasteUnloadList.innerHTML = '<div class="empty">V tomto autě nyní není žádný odpis čekající na vyložení.</div>'
+        return
+      }
+      els.routeWasteUnloadList.innerHTML = state.routeWasteItems.map((item) => `
+        <div class="draft-line">
+          <div>
+            <strong>${escapeHtml(item.product_name || item.product_sku || 'Produkt')}</strong>
+            <span>${escapeHtml(`${formatNumber(item.quantity)} ${item.unit || 'ks'} · ${routeWasteReasonLabels[item.reason] || item.reason || 'Odpis'}`)}</span>
+            <span>${escapeHtml([item.machine_name, item.location_name, item.expiry_date ? `expirace ${new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ')}` : ''].filter(Boolean).join(' · '))}</span>
+          </div>
+          <span class="badge yellow">K vyložení</span>
+        </div>
+      `).join('')
+    }
+
+    async function loadPendingRouteWaste() {
+      const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
+      if (!vehicleId) {
+        state.routeWasteItems = []
+        renderPendingRouteWaste()
+        return
+      }
+      const { data, error } = await supabase
+        .from('route_vehicle_waste_items')
+        .select('*')
+        .eq('vehicle_id', vehicleId)
+        .eq('status', 'pending')
+        .order('collected_at', { ascending: true })
+      if (error) {
+        const message = String(error.message || '')
+        if (/route_vehicle_waste_items|schema cache|does not exist/i.test(message)) {
+          state.routeWasteTableAvailable = false
+          state.routeWasteItems = []
+          renderPendingRouteWaste()
+          return
+        }
+        throw error
+      }
+      state.routeWasteTableAvailable = true
+      state.routeWasteItems = data || []
+      renderPendingRouteWaste()
+      renderStockDraft()
+    }
+
+    async function confirmPendingRouteWasteUnload() {
+      if (!state.routeWasteItems.length) throw new Error('V autě není žádný odpis k vyložení.')
+      const wasteIds = state.routeWasteItems.map((item) => item.id)
+      const { data, error } = await supabase.rpc('confirm_route_vehicle_waste_unload_v29', {
+        waste_ids: wasteIds,
+        unloading_employee_id: state.employee?.id || null
+      })
+      if (error) throw new Error(`Vyložení odpisu se nepodařilo potvrdit: ${error.message}`)
+      const unloadedCount = Number(data?.unloaded_count || wasteIds.length)
+      state.routeWasteItems = []
+      showMessage(`Vyložení je potvrzené. Odevzdáno ${unloadedCount} řádků odpisu; použitelné zásoby auta se nezměnily.`, 'success')
+      renderStockRequests()
     }
 
     function getVehicleInventoryItems(auditId) {
@@ -6939,6 +7032,9 @@
       state.selectedStockType = type
       state.manualVehicleLoad = Boolean(options.manualLoad)
       renderStockRequests()
+      if (type === 'vehicle_writeoff') {
+        loadPendingRouteWaste().catch(handleError)
+      }
       if (type === 'vehicle_load' && !state.manualVehicleLoad) {
         els.stockRequestDetails.open = true
         showMessage('Tady jen potvrzuješ nakládku, kterou už připravil skladník.')
@@ -6963,7 +7059,7 @@
       }
       window.setTimeout(() => {
         els.stockFormDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        els.stockProductInput.focus({ preventScroll: true })
+        if (type !== 'vehicle_writeoff') els.stockProductInput.focus({ preventScroll: true })
       }, 60)
     }
 
@@ -8563,6 +8659,36 @@
         ? await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
         : await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
       if (result.error) throw result.error
+      if (wasteItems.length) {
+        const visit = state.routeMachineVisits.find((item) => String(item.id) === String(detail.visitId))
+        const machine = state.machines.find((item) => String(item.id) === String(slot.machine_id))
+        const location = state.locations.find((item) => String(item.id) === String(machine?.location_id || ''))
+        const wasteProduct = existingProduct || plannedProduct || selectedProduct
+        const wasteRows = wasteItems.map((waste, wasteIndex) => ({
+          stock_reference_id: `route_visit_${detail.visitId}_food_slot_${slot.id}_waste_${wasteIndex}_${waste.reason}`,
+          route_plan_id: visit?.route_plan_id || null,
+          route_machine_visit_id: detail.visitId,
+          route_machine_visit_item_id: result.data.id,
+          machine_id: slot.machine_id,
+          employee_id: state.employee?.id || visit?.employee_id || null,
+          vehicle_id: vehicleId,
+          product_id: wasteProduct.id,
+          product_sku: wasteProduct.sku || null,
+          product_name: wasteProduct.name || slot.product_name || null,
+          quantity: waste.quantity,
+          unit: 'ks',
+          reason: waste.reason,
+          expiry_date: existingExpiryDate || null,
+          machine_name: machine?.name || (machine?.evidence_number ? `Automat ${machine.evidence_number}` : `Automat ${slot.machine_id}`),
+          location_name: location?.name || location?.city || null,
+          note: `Pozice ${slot.slot_code}`,
+          status: 'pending'
+        }))
+        const { error: wasteTrackingError } = await supabase
+          .from('route_vehicle_waste_items')
+          .upsert(wasteRows, { onConflict: 'stock_reference_id', ignoreDuplicates: true })
+        if (wasteTrackingError) throw new Error(`Odpis byl odečten z automatu, ale nepodařilo se zapsat jeho svoz do skladu: ${wasteTrackingError.message}`)
+      }
       const { error: fillsDeleteError } = await supabase.from('route_machine_visit_food_fills').delete().eq('visit_id', detail.visitId).eq('planogram_slot_id', slot.id)
       if (fillsDeleteError) throw fillsDeleteError
       if (fillItems.length) {
@@ -9773,6 +9899,20 @@
 
     async function createStockRequest() {
       if (state.stockRequestSubmitting) return
+      if (state.selectedStockType === 'vehicle_writeoff') {
+        state.stockRequestSubmitting = true
+        const originalButtonText = els.createStockRequestButton.textContent
+        els.createStockRequestButton.disabled = true
+        els.createStockRequestButton.textContent = 'Potvrzuji vyložení...'
+        try {
+          await confirmPendingRouteWasteUnload()
+        } finally {
+          state.stockRequestSubmitting = false
+          els.createStockRequestButton.textContent = originalButtonText
+          renderStockRequests()
+        }
+        return
+      }
       if (els.stockProductInput.value.trim() && !addStockDraftItem({ silent: true })) {
         return
       }
@@ -10727,6 +10867,9 @@
       })
       els.createServiceButton?.addEventListener('click', () => createMobileServiceRequest().catch(handleError))
     els.addStockDraftItemButton.addEventListener('click', () => addStockDraftItem())
+    els.stockVehicleSelect?.addEventListener('change', () => {
+      if (state.selectedStockType === 'vehicle_writeoff') loadPendingRouteWaste().catch(handleError)
+    })
     els.freshRouteRecommendation?.addEventListener('click', (event) => {
       if (event.target.closest('[data-load-fresh-recommendation]')) addFreshRecommendationToDraft()
     })
