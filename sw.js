@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v68-mobile-network-retry';
+const CACHE_NAME = 'olvend-v69-coffee-confirmation-guard';
 const APP_SHELL = [
   './',
   './index.html',

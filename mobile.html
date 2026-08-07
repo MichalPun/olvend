@@ -2918,6 +2918,7 @@
     let activeNavigationStopId = null
     let routeMachineLiveRefreshTimer = null
     let routeMachineLiveRefreshBusy = false
+    const coffeeActionLocks = new Set()
     let activeSkipStopId = null
 
     const els = {
@@ -5326,24 +5327,24 @@
               const added = getCoffeeAddedQuantity(stop.id, container)
               const after = getCoffeeAfterQuantity(stop.id, container)
               const capacity = Number(container.capacity_quantity || 0)
-              const accepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
-                || (!manualCounterMode && packages <= 0)
+              const explicitlyAccepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
+              const autoNoFill = !manualCounterMode && packages <= 0 && !explicitlyAccepted
+              const accepted = explicitlyAccepted || autoNoFill
               const vehiclePackages = detail.vehiclePackages?.[String(container.product_id)]
               const maxPackages = getCoffeeSelectableMaxPackages(stop.id, container)
-              const explicitlyAccepted = Boolean(detail.draft?.containers?.[String(container.id)]?.accepted)
               const canTakeMore = !readOnly && !explicitlyAccepted && packages < maxPackages
               const stockMismatch = Boolean(detail.draft?.containers?.[String(container.id)]?.stockMismatch)
               const currentPct = capacity ? Math.round((current / capacity) * 100) : 0
               const afterPct = capacity ? Math.round((after / capacity) * 100) : 0
               const cardOpen = !readOnly && !accepted && String(container.id) === String(firstPendingContainerId)
               return `
-                <details class="coffee-visit-row food-machine-card coffee-machine-card ${accepted ? 'ready' : ''}" data-coffee-machine-card data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${cardOpen ? 'open' : ''}>
+                <details class="coffee-visit-row food-machine-card coffee-machine-card ${explicitlyAccepted ? 'ready' : ''} ${autoNoFill ? 'auto-no-fill' : ''}" data-coffee-machine-card data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${cardOpen ? 'open' : ''}>
                   <summary>
                     <div>
                       <strong>Zásobník ${escapeHtml(container.container_code || 'Z')}</strong>
                       <small>${escapeHtml(container.product_name || 'Surovina')}</small>
                     </div>
-                    <span>${escapeHtml(`${formatNumber(after)}/${formatNumber(capacity)} ${container.unit || 'g'}`)} ${accepted ? '✓' : ''}</span>
+                    <span>${escapeHtml(`${formatNumber(after)}/${formatNumber(capacity)} ${container.unit || 'g'}`)} ${explicitlyAccepted ? '✓' : autoNoFill ? '· bez doplnění' : ''}</span>
                   </summary>
                   <div class="food-machine-body">
                     <div class="food-machine-stats">
@@ -5389,7 +5390,7 @@
                           ${packages > 0 && !accepted ? `<button class="secondary-btn" type="button" data-coffee-action="skip-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}">Nevložil jsem nic</button>` : ''}
                         </div>
                       </section>
-                      <button class="primary-btn" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${accepted ? 'disabled' : ''}>${accepted ? 'Zásobník potvrzen ✓' : packages > 0 ? `3. Potvrdit doplnění · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : '3. Potvrdit bez doplnění'}</button>
+                      <button class="${explicitlyAccepted ? 'primary-btn' : 'secondary-btn'}" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}" ${accepted ? 'disabled' : ''}>${explicitlyAccepted ? 'Zásobník potvrzen ✓' : autoNoFill ? 'Podle PC se nedoplňuje' : packages > 0 ? `3. Potvrdit doplnění · ${escapeHtml(getCoffeePackageCountLabel(packages, container))}` : '3. Potvrdit bez doplnění'}</button>
                     `}
                   </div>
                 </details>
@@ -10788,21 +10789,32 @@
         const coffeeButton = event.target.closest('[data-coffee-action]')
         if (!coffeeButton) return
         if (coffeeButton.disabled || coffeeButton.classList.contains('is-busy')) return
+        const coffeeAction = coffeeButton.dataset.coffeeAction
+        const coffeeStopId = String(coffeeButton.dataset.stopId || '')
+        const instantActions = ['step-container', 'calibration-step']
+        const locksVisit = !instantActions.includes(coffeeAction)
+        if (locksVisit && coffeeActionLocks.has(coffeeStopId)) {
+          showMessage('Dokončuji předchozí akci. Chvíli počkej.', 'info')
+          return
+        }
         rememberCoffeeMachineRenderAnchor(coffeeButton, {
-          open: ['accept-container', 'adjust-container', 'skip-container'].includes(coffeeButton.dataset.coffeeAction)
+          open: ['accept-container', 'adjust-container', 'skip-container'].includes(coffeeAction)
             ? false
             : undefined
         })
-        const instantActions = ['step-container', 'calibration-step', 'back-picklist']
-        const restore = instantActions.includes(coffeeButton.dataset.coffeeAction)
+        if (locksVisit) coffeeActionLocks.add(coffeeStopId)
+        const restore = instantActions.includes(coffeeAction)
           ? () => {}
-          : setButtonBusy(coffeeButton, getBusyLabel(coffeeButton.dataset.coffeeAction))
-        handleCoffeeAction(coffeeButton.dataset.coffeeAction, coffeeButton.dataset.stopId, coffeeButton)
+          : setButtonBusy(coffeeButton, getBusyLabel(coffeeAction))
+        handleCoffeeAction(coffeeAction, coffeeStopId, coffeeButton)
           .catch((error) => {
             coffeeMachineRenderAnchor = null
             handleError(error)
           })
-          .finally(restore)
+          .finally(() => {
+            if (locksVisit) coffeeActionLocks.delete(coffeeStopId)
+            restore()
+          })
       })
       els.routeMachineContent?.addEventListener('input', (event) => {
         const foodFillField = event.target.closest('[data-food-fill-field]')
