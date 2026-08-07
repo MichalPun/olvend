@@ -51,6 +51,11 @@ const formatDate = (value: unknown, withTime = false) => {
   });
 };
 
+const formatPrice = (value: unknown) => {
+  const text = String(value ?? "").trim();
+  return text ? `${escapeHtml(text)} Kč` : "—";
+};
+
 const jobTypeLabel = (value: unknown) => ({
   service: "Servis",
   installation: "Nová instalace",
@@ -119,6 +124,27 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
     transferChanges.hoppers ? "Zásobníky" : "",
     transferChanges.telemetry ? "Telemetrie" : "",
   ].filter(Boolean);
+  const planogramDetailsMarkup = planogramRows.length ? `
+    <div style="margin-top:11px;border:1px solid #d9dee6">
+      <div style="padding:7px 9px;background:#f7f8fa;border-bottom:1px solid #d9dee6;font-size:10px;font-weight:700;text-transform:uppercase;color:#596270">Cílové volby a ceny</div>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+        <tr style="background:#fbfcfd;color:#737d8a;text-transform:uppercase"><th style="padding:6px;text-align:left">Volba</th><th style="padding:6px;text-align:left">Nápoj / produkt</th><th style="padding:6px;text-align:right">Hotovost</th><th style="padding:6px;text-align:right">Karta</th><th style="padding:6px;text-align:right">Věrnostní</th></tr>
+        ${planogramRows.map((item) => `<tr><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.choice || item.column)}</td><td style="padding:6px;border-top:1px solid #edf0f4">${escapeHtml(item.product_name || item.product || "Neuvedeno")}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.cash_price)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.card_price)}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${formatPrice(item.loyalty_price)}</td></tr>`).join("")}
+      </table>
+    </div>` : "";
+  const ingredientDetailsMarkup = ingredientRows.length ? `
+    <div style="margin-top:11px;border:1px solid #d9dee6">
+      <div style="padding:7px 9px;background:#f7f8fa;border-bottom:1px solid #d9dee6;font-size:10px;font-weight:700;text-transform:uppercase;color:#596270">Cílové zásobníky</div>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+        <tr style="background:#fbfcfd;color:#737d8a;text-transform:uppercase"><th style="padding:6px;text-align:left">Zásobník</th><th style="padding:6px;text-align:left">Surovina</th><th style="padding:6px;text-align:right">Kapacita</th></tr>
+        ${ingredientRows.map((item) => `<tr><td style="padding:6px;border-top:1px solid #edf0f4;font-weight:700">${escapeHtml(item.container || item.column || "—")}</td><td style="padding:6px;border-top:1px solid #edf0f4">${escapeHtml(item.product_name || item.ingredient || "Neuvedeno")}</td><td style="padding:6px;border-top:1px solid #edf0f4;text-align:right">${escapeHtml(item.max_capacity || "—")} ${escapeHtml(item.unit || "")}</td></tr>`).join("")}
+      </table>
+    </div>` : "";
+  const transferRulesMarkup = configuration.pricing || configuration.telemetry_mapping_raw ? `
+    <div style="margin-top:10px;padding:9px 10px;background:#f7f8fa;border-left:3px solid #d5101a;font-size:10px;line-height:1.5">
+      ${configuration.pricing ? `<strong>Platební pravidla:</strong> ${escapeHtml(Array.isArray(configuration.pricing) ? configuration.pricing.join(" · ") : configuration.pricing)}<br>` : ""}
+      ${configuration.telemetry_mapping_raw ? `<strong>Telemetrie:</strong> ${escapeHtml(configuration.telemetry_mapping_raw)}` : ""}
+    </div>` : "";
   const configurationMarkup = jobType === "transfer" && (transferChangeLabels.length || planogramRows.length || ingredientRows.length) ? `
     <div style="border:1px solid #d9dee6;margin-top:12px">
       <div style="padding:9px 12px;background:#edf0f4;border-bottom:1px solid #d9dee6;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#48515d">Co se při přesunu mění</div>
@@ -126,6 +152,7 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
         ${transferChangeLabels.map((label) => `<span style="display:inline-block;margin:0 5px 5px 0;padding:5px 8px;background:#fff1f2;border:1px solid #f0c4c7;color:#991b1b;font-size:10px;font-weight:700">${escapeHtml(label)}</span>`).join("")}
         ${configuration.summary ? `<div style="margin-top:7px">${escapeHtml(configuration.summary)}</div>` : ""}
         ${(planogramRows.length || ingredientRows.length) ? `<div style="margin-top:7px;color:#687281">Cílová konfigurace: ${planogramRows.length} voleb · ${ingredientRows.length} zásobníků</div>` : ""}
+        ${planogramDetailsMarkup}${ingredientDetailsMarkup}${transferRulesMarkup}
       </div>
     </div>` : "";
   const materialsMarkup = materials.length ? `
