@@ -6676,6 +6676,7 @@
       const countedTotal = Number(audit.counted_quantity_total || items.reduce((sum, item) => sum + Number(item.counted_quantity || 0), 0))
       const diffTotal = Number(audit.difference_quantity_total || items.reduce((sum, item) => sum + Number(item.difference_quantity || 0), 0))
       const valueTotal = Number(audit.difference_value_total || items.reduce((sum, item) => sum + Number(item.difference_value || 0), 0))
+      const canDecideResponsibility = ['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)
       currentDetailContext = { type: 'audit', auditId }
       detailMoveBtn.style.display = 'none'
       detailEditBtn.style.display = ['assigned', 'counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? '' : 'none'
@@ -6705,12 +6706,74 @@
             ])}
           </section>
           <section class="detail-sheet-section">
+            <h5>Vyjádření operátora a rozhodnutí</h5>
+            <div class="status-line ${audit.operator_statement ? 'success' : ''}">
+              ${audit.operator_statement
+                ? `<strong>Vyjádření odesláno ${escapeHtml(audit.operator_statement_at ? new Date(audit.operator_statement_at).toLocaleString('cs-CZ') : '')}</strong><br>${escapeHtml(audit.operator_statement)}`
+                : 'Operátor zatím neposlal vyjádření. Samotný inventurní rozdíl neznamená automatické uznání odpovědnosti.'}
+            </div>
+            ${canDecideResponsibility ? `<div class="form-grid" style="margin-top:14px;">
+              <div class="field">
+                <label>Výsledek prověření</label>
+                <select data-audit-responsibility-status>
+                  <option value="pending" ${(!audit.responsibility_status || audit.responsibility_status === 'pending') ? 'selected' : ''}>Zatím nerozhodnuto</option>
+                  <option value="not_operator" ${audit.responsibility_status === 'not_operator' ? 'selected' : ''}>Bez odpovědnosti operátora</option>
+                  <option value="operator" ${audit.responsibility_status === 'operator' ? 'selected' : ''}>Odpovědnost operátora</option>
+                  <option value="cancelled" ${audit.responsibility_status === 'cancelled' ? 'selected' : ''}>Případ zrušen</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Dopad do nenárokové prémie (Kč)</label>
+                <input data-audit-bonus-impact inputmode="decimal" value="${escapeHtml(audit.bonus_impact_amount == null ? '' : String(audit.bonus_impact_amount))}" placeholder="Bez dopadu" />
+              </div>
+              <div class="field">
+                <label>Prémiové období</label>
+                <input data-audit-bonus-period type="month" value="${escapeHtml(audit.bonus_period ? String(audit.bonus_period).slice(0, 7) : '')}" />
+              </div>
+              <div class="field full">
+                <label>Odůvodnění rozhodnutí</label>
+                <textarea data-audit-decision-note placeholder="Jaké pohyby byly prověřeny a z čeho rozhodnutí vychází">${escapeHtml(audit.responsibility_decision_note || '')}</textarea>
+              </div>
+            </div>
+            <div class="action-row" style="justify-content:flex-end;margin-top:14px;">
+              <button class="btn" type="button" data-detail-action="save-audit-responsibility" data-audit-id="${escapeHtml(String(audit.id))}">Uložit rozhodnutí</button>
+            </div>` : '<div class="status-line" style="margin-top:14px;">Rozhodnutí půjde zapsat až po odeslání fyzických počtů operátorem.</div>'}
+          </section>
+          <section class="detail-sheet-section">
             <h5>Položky k počítání</h5>
             ${renderCategorizedAuditDetail(items, audit)}
           </section>
         </div>
       `
       openDetailModal()
+    }
+    async function saveVehicleAuditResponsibility(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!audit) throw new Error('Inventura už není v načteném seznamu.')
+      if (!['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status)) throw new Error('Nejdřív musí být odeslané fyzické počty inventury.')
+      const responsibilityStatus = detailModalContent.querySelector('[data-audit-responsibility-status]')?.value || 'pending'
+      const decisionNote = detailModalContent.querySelector('[data-audit-decision-note]')?.value.trim() || null
+      const bonusRaw = detailModalContent.querySelector('[data-audit-bonus-impact]')?.value.trim() || ''
+      const bonusValue = bonusRaw === '' ? null : Number(bonusRaw.replace(',', '.'))
+      const bonusMonth = detailModalContent.querySelector('[data-audit-bonus-period]')?.value || ''
+      if (bonusValue != null && !Number.isFinite(bonusValue)) throw new Error('Dopad do prémie musí být číslo.')
+      if (bonusValue != null && !bonusMonth) throw new Error('K dopadu do prémie vyber prémiové období.')
+      if (responsibilityStatus === 'operator' && !decisionNote) throw new Error('U odpovědnosti operátora doplň odůvodnění rozhodnutí.')
+      const decided = responsibilityStatus === 'pending' ? null : new Date().toISOString()
+      const payload = {
+        responsibility_status: responsibilityStatus,
+        responsibility_decision_note: decisionNote,
+        responsibility_decided_at: decided,
+        bonus_impact_amount: responsibilityStatus === 'operator' ? bonusValue : null,
+        bonus_period: responsibilityStatus === 'operator' && bonusMonth ? `${bonusMonth}-01` : null
+      }
+      const { data, error } = await supabase.from('inventory_audits').update(payload).eq('id', audit.id).select('id')
+      if (error) throw error
+      if (!data?.length) throw new Error('Rozhodnutí se nepodařilo uložit.')
+      Object.assign(audit, payload)
+      auditStatus.textContent = 'Rozhodnutí inventury bylo uložené a operátor ho uvidí v mobilu.'
+      auditStatus.className = 'status-line success'
+      openVehicleAuditDetail(audit.id)
     }
     function getDesktopAuditDraftKey(auditId) {
       return `olvend.desktopAuditDraft.v1:${auditId}`
@@ -8834,7 +8897,7 @@
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_issue').order('created_at', { ascending: false }).limit(5000),
           supabase.from('stock_movements_v13').select('id, product_id, from_stock_location_id, to_stock_location_id, movement_type, quantity_base_units, unit_price, reference_type, reference_id, note, created_at').eq('reference_type', 'manual_correction').order('created_at', { ascending: false }).limit(1000),
           supabase.from('employees').select('id, name, surname, role, active').eq('active', true).order('surname', { ascending: true }),
-          supabase.from('inventory_audits').select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, instruction_id, responsible_name, note, status, book_quantity_total, counted_quantity_total, difference_quantity_total, difference_value_total, counted_at, transfer_confirmed_at, evaluated_at, closed_at, created_at').in('scope_type', ['vehicle', 'warehouse']).order('created_at', { ascending: false }).limit(30),
+          supabase.from('inventory_audits').select('id, audit_date, scope_type, stock_location_id, vehicle_id, assigned_employee_id, instruction_id, responsible_name, note, status, book_quantity_total, counted_quantity_total, difference_quantity_total, difference_value_total, counted_at, transfer_confirmed_at, evaluated_at, closed_at, operator_statement, operator_statement_at, statement_due_date, responsibility_status, responsibility_decision_note, responsibility_decided_at, bonus_impact_amount, bonus_period, created_at').in('scope_type', ['vehicle', 'warehouse']).order('created_at', { ascending: false }).limit(30),
           supabase.from('vehicle_auto_load_profiles').select('id, product_id, active, min_trip_usage_ratio, stale_vehicle_days, safety_stock_quantity, history_days, note').eq('active', true),
           supabase.from('vehicle_auto_load_deferred_needs').select('id, vehicle_id, product_id, quantity_base_units, unit, status, first_deferred_for_date, last_deferred_for_date, last_reason, last_scope, last_min_trip_usage_ratio, last_usage_ratio, note, updated_at').eq('status', 'open')
         ])
@@ -12732,6 +12795,20 @@
       }
       if (button.dataset.detailAction === 'count-audit-desktop') {
         openVehicleAuditCorrection(button.dataset.auditId)
+        return
+      }
+      if (button.dataset.detailAction === 'save-audit-responsibility') {
+        try {
+          button.disabled = true
+          button.textContent = 'Ukládám...'
+          await saveVehicleAuditResponsibility(button.dataset.auditId)
+        } catch (error) {
+          console.error(error)
+          auditStatus.textContent = error.message || 'Rozhodnutí inventury se nepodařilo uložit.'
+          auditStatus.className = 'status-line error'
+          button.disabled = false
+          button.textContent = 'Uložit rozhodnutí'
+        }
         return
       }
       if (button.dataset.detailAction === 'save-audit-correction' || button.dataset.detailAction === 'save-audit-draft') {
