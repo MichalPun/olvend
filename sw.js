@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v67-stock-preview-match';
+const CACHE_NAME = 'olvend-v68-mobile-network-retry';
 const APP_SHELL = [
   './',
   './index.html',

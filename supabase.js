@@ -31,13 +31,31 @@ async function offlineAwareFetch(input, init = {}) {
     headers: init.headers || request?.headers,
     body: init.body
   }
-  const controller = new AbortController()
-  const timeoutMs = canQueueRequest(url, requestInit) ? 3000 : 12000
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(input, { ...init, signal: init.signal || controller.signal })
-  } catch (error) {
-    if (!canQueueRequest(url, requestInit)) throw error
+  const queueable = canQueueRequest(url, requestInit)
+  const method = String(requestInit.method || 'GET').toUpperCase()
+  const maxAttempts = !queueable && (method === 'GET' || method === 'HEAD') && !init.signal ? 2 : 1
+  let lastError = null
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController()
+    const timeoutMs = queueable ? 3000 : (attempt === 0 ? 18000 : 25000)
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await fetch(input, { ...init, signal: init.signal || controller.signal })
+    } catch (error) {
+      lastError = error
+      const wasAborted = error?.name === 'AbortError' || /abort/i.test(String(error?.message || error || ''))
+      if (attempt + 1 < maxAttempts && wasAborted) {
+        await new Promise((resolve) => window.setTimeout(resolve, 400))
+        continue
+      }
+      break
+    } finally {
+      window.clearTimeout(timer)
+    }
+  }
+
+  if (queueable) {
     const queue = readOfflineQueue()
     queue.push({
       id: crypto.randomUUID(),
@@ -52,9 +70,8 @@ async function offlineAwareFetch(input, init = {}) {
       status: String(requestInit.method).toUpperCase() === 'DELETE' ? 204 : 201,
       headers: { 'content-type': 'application/json', 'x-olvend-offline': 'queued' }
     })
-  } finally {
-    window.clearTimeout(timer)
   }
+  throw lastError
 }
 
 export async function syncOfflineRequests() {
