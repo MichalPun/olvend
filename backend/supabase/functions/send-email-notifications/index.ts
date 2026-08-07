@@ -122,6 +122,12 @@ const configDiffCellStyle = (diff: ConfigDiffRow, ...fields: string[]) => fields
   ? "background:#fff7e8;color:#7c4a03"
   : "";
 
+const formatChangeCount = (count: number, one: string, few: string, many: string) => {
+  if (count === 1) return `${count} ${one}`;
+  if (count >= 2 && count <= 4) return `${count} ${few}`;
+  return `${count} ${many}`;
+};
+
 const renderConfigDiffValue = (diff: ConfigDiffRow, field: string, formatter: (value: unknown) => string = (value) => escapeHtml(String(value ?? "").trim() || "—")) => {
   const currentValue = diff.current?.[field];
   const baselineValue = diff.baseline?.[field];
@@ -238,7 +244,7 @@ function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: strin
         ${transferChangeLabels.map((label) => `<span style="display:inline-block;margin:0 5px 5px 0;padding:5px 8px;background:#fff1f2;border:1px solid #f0c4c7;color:#991b1b;font-size:10px;font-weight:700">${escapeHtml(label)}</span>`).join("")}
         ${configuration.summary ? `<div style="margin-top:7px">${escapeHtml(configuration.summary)}</div>` : ""}
         ${(planogramRows.length || ingredientRows.length) ? `<div style="margin-top:7px;color:#687281">Cílová konfigurace: ${planogramRows.length} voleb · ${ingredientRows.length} zásobníků</div>` : ""}
-        ${hasMachineBaseline ? `<div style="margin-top:8px;padding:7px 9px;background:#fff7e8;border-left:3px solid #f59e0b;color:#7c4a03;font-size:10px;font-weight:700">Označené změny proti načtenému stavu: ${changedPlanogramCount} voleb · ${changedIngredientCount} zásobníků</div>` : ""}
+        ${hasMachineBaseline ? `<div style="margin-top:8px;padding:7px 9px;background:#fff7e8;border-left:3px solid #f59e0b;color:#7c4a03;font-size:10px;font-weight:700">Označené změny proti načtenému stavu: ${formatChangeCount(changedPlanogramCount, "volba", "volby", "voleb")} · ${formatChangeCount(changedIngredientCount, "zásobník", "zásobníky", "zásobníků")}</div>` : ""}
         ${planogramDetailsMarkup}${ingredientDetailsMarkup}${transferRulesMarkup}
       </div>
     </div>` : "";
