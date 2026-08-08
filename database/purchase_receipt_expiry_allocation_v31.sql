@@ -30,8 +30,12 @@ declare
   v_storage_bin_code text;
   v_batch_id bigint;
   v_balance record;
+  v_assignable_quantity numeric(14,3);
+  v_issued_quantity numeric(14,3);
+  v_batch_balance_quantity numeric(14,3);
   v_unit_price numeric(12,4);
   v_created_batches integer := 0;
+  v_total_already_issued numeric(14,3) := 0;
 begin
   if p_lines is null or jsonb_typeof(p_lines) <> 'array' then
     raise exception 'Položky expirací musí být pole.';
@@ -132,13 +136,15 @@ begin
     limit 1
     for update;
 
-    if v_balance.id is null or v_balance.quantity_on_hand + 0.0001 < v_source_quantity then
-      raise exception 'Nezařazená zásoba položky % už není v plném množství na skladu.', v_item.product_name;
-    end if;
+    v_assignable_quantity := least(coalesce(v_balance.quantity_on_hand, 0), v_source_quantity);
+    v_issued_quantity := greatest(v_source_quantity - v_assignable_quantity, 0);
+    v_total_already_issued := v_total_already_issued + v_issued_quantity;
 
-    update public.stock_location_balances
-    set quantity_on_hand = round((quantity_on_hand - v_source_quantity)::numeric, 3), updated_at = now()
-    where id = v_balance.id;
+    if v_balance.id is not null and v_assignable_quantity > 0 then
+      update public.stock_location_balances
+      set quantity_on_hand = round((quantity_on_hand - v_assignable_quantity)::numeric, 3), updated_at = now()
+      where id = v_balance.id;
+    end if;
 
     delete from public.stock_movements_v13
     where reference_type = 'purchase_order'
@@ -147,11 +153,16 @@ begin
       and product_id = v_item.product_id
       and batch_id is null;
 
-    for v_allocation in select value from jsonb_array_elements(v_line->'allocations')
+    for v_allocation in
+      select value
+      from jsonb_array_elements(v_line->'allocations')
+      order by (value->>'expiry_date')::date, (value->>'storage_bin_code')
     loop
       v_quantity := (v_allocation->>'quantity')::numeric;
       v_expiry_date := (v_allocation->>'expiry_date')::date;
       v_storage_bin_code := upper(btrim(v_allocation->>'storage_bin_code'));
+      v_batch_balance_quantity := greatest(v_quantity - least(v_issued_quantity, v_quantity), 0);
+      v_issued_quantity := greatest(v_issued_quantity - v_quantity, 0);
 
       insert into public.inventory_batches (
         product_id, best_before_date, use_by_date, received_at, supplier_name,
@@ -166,11 +177,13 @@ begin
         'Zařazeno z přijatého dokladu #' || p_purchase_order_id
       ) returning id into v_batch_id;
 
-      insert into public.stock_location_balances (
-        stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at
-      ) values (
-        v_location_id, v_item.product_id, v_batch_id, round(v_quantity::numeric, 3), 0, now()
-      );
+      if v_batch_balance_quantity > 0 then
+        insert into public.stock_location_balances (
+          stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at
+        ) values (
+          v_location_id, v_item.product_id, v_batch_id, round(v_batch_balance_quantity::numeric, 3), 0, now()
+        );
+      end if;
 
       insert into public.stock_movements_v13 (
         product_id, batch_id, to_stock_location_id, movement_type,
@@ -187,6 +200,7 @@ begin
   return jsonb_build_object(
     'purchase_order_id', p_purchase_order_id,
     'created_batches', v_created_batches,
+    'already_issued_quantity', v_total_already_issued,
     'status', 'assigned'
   );
 end
