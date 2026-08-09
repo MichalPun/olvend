@@ -54,8 +54,11 @@ Deno.serve(async (req) => {
       return json({ error: "Invalid inventory result payload." }, 400);
     }
 
-    const { data: audit, error: auditError } = await admin.from("inventory_audits").select("id, assigned_employee_id, resolution_status").eq("id", auditId).maybeSingle();
+    const { data: audit, error: auditError } = await admin.from("inventory_audits").select("id, assigned_employee_id, status, resolution_status").eq("id", auditId).maybeSingle();
     if (auditError || !audit) return json({ error: auditError?.message || "Inventory audit not found." }, 404);
+    if (audit.status !== "closed") {
+      return json({ error: "Inventory must be reconciled and closed before the result is sent." }, 409);
+    }
     if (audit.resolution_status !== "ready_to_send" && audit.resolution_status !== "sent") {
       return json({ error: "Inventory resolution is not ready to send." }, 409);
     }
