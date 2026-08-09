@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v74-stock-receipt-all';
+const CACHE_NAME = 'olvend-v75-machine-item-reason';
 const APP_SHELL = [
   './',
   './index.html',
