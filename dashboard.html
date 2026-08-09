@@ -4552,15 +4552,69 @@
     let telemetryRefreshTimer = null;
     let telemetryRefreshInFlight = false;
     let telemetryRefreshQueued = false;
+    let telemetryRefreshQueuedForce = false;
     let telemetryHasRenderedData = false;
+    let telemetryLastRefreshAt = 0;
+    let dashboardInitialLoadComplete = false;
     const telemetryMarkupCache = new Map();
     const TELEMETRY_REFRESH_INTERVAL_MS = 60 * 1000;
+    const TELEMETRY_BACKGROUND_MIN_AGE_MS = 20 * 1000;
     const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
+    const DASHBOARD_SNAPSHOT_VERSION = 1;
+    const DASHBOARD_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
     let managerAttendanceDayMap = new Map();
 
     function getPersonalizationKey(suffix) {
       const identity = (currentUser?.email || currentUser?.name || currentUser?.role || "default").toLowerCase().replace(/\s+/g, "_");
       return `olvendDashboard_${suffix}_${identity}`;
+    }
+
+    function getDashboardSnapshotKey(segment) {
+      return getPersonalizationKey(`snapshot_v${DASHBOARD_SNAPSHOT_VERSION}_${segment}`);
+    }
+
+    function getTelemetrySnapshotSegment() {
+      return `telemetry_${telemetryPeriodFilter?.value || "today"}`;
+    }
+
+    function getFinanceSnapshotSegment() {
+      return [
+        "finance",
+        financePeriodFilter?.value || "30",
+        financeDateFrom?.value || "",
+        financeDateTo?.value || "",
+        financeLocationFilter?.value || ""
+      ].join("_");
+    }
+
+    function readDashboardSnapshot(segment) {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(getDashboardSnapshotKey(segment)) || "null");
+        const savedAt = Number(parsed?.savedAt || 0);
+        if (!savedAt || !parsed?.data || Date.now() - savedAt > DASHBOARD_SNAPSHOT_MAX_AGE_MS) return null;
+        return { savedAt, data: parsed.data };
+      } catch {
+        return null;
+      }
+    }
+
+    function writeDashboardSnapshot(segment, data) {
+      if (!segment || !data) return;
+      try {
+        localStorage.setItem(getDashboardSnapshotKey(segment), JSON.stringify({ savedAt: Date.now(), data }));
+      } catch (error) {
+        console.warn("Dashboard snapshot could not be saved", error);
+      }
+    }
+
+    function formatDashboardSnapshotTime(value) {
+      const date = new Date(Number(value || 0));
+      if (Number.isNaN(date.getTime())) return "";
+      const today = getDateKey(new Date());
+      const dateLabel = getDateKey(date) === today
+        ? "dnes"
+        : date.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric" });
+      return `${dateLabel} v ${date.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}`;
     }
 
     function getPinnedActions() {
@@ -6118,7 +6172,7 @@
       return changed;
     }
 
-    function renderTelemetrySales({ rows = [], coffeeRows = [], foodRows = [], telemetryCoverage = null, totals = {}, dayRows = [], topProducts = [], topLocations = [], topLocationsByQuantity = [], lowStock = [], lowStockOutlook = {}, expiryRows = [], initialInventory = [], error = "" } = {}) {
+    function renderTelemetrySales({ rows = [], coffeeRows = [], foodRows = [], telemetryCoverage = null, totals = {}, dayRows = [], topProducts = [], topLocations = [], topLocationsByQuantity = [], lowStock = [], expiryRows = [], initialInventory = [], error = "" } = {}) {
       if (!telemetrySalesSummary || !telemetryCommandGrid || !telemetrySalesTable || !telemetryControlGrid || !telemetrySalesNote) return;
       const quantity = Number(totals.quantity || 0);
       const revenue = Number(totals.revenue || 0);
@@ -6263,27 +6317,45 @@
       if (telemetrySalesNote.textContent !== telemetryNote) telemetrySalesNote.textContent = telemetryNote;
     }
 
+    async function loadDashboardTelemetryAggregate(range, fetchStart, trendStart, trendEnd) {
+      const { data, error } = await supabase.rpc("get_dashboard_telemetry_summary_v27", {
+        p_period_start: range.start.toISOString(),
+        p_period_end: range.end.toISOString(),
+        p_compare_start: range.compareStart.toISOString(),
+        p_compare_end: range.compareEnd.toISOString(),
+        p_compare_date_keys: range.compareDateKeys || [],
+        p_compare_elapsed_ms: range.compareElapsedMs == null ? null : Math.round(range.compareElapsedMs),
+        p_trend_start: trendStart.toISOString(),
+        p_trend_end: trendEnd.toISOString()
+      });
+      if (!error && data) return { summary: data, rawRows: [] };
+      if (error && !/get_dashboard_telemetry_summary_v27|schema cache|could not find the function/i.test(String(error.message || ""))) {
+        throw error;
+      }
+      const rawRows = await fetchSupabaseRowsPaged(() => supabase
+        .from("telemetry_sales_events")
+        .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
+        .gte("source_event_at", fetchStart.toISOString())
+        .order("source_event_at", { ascending: false }));
+      return { summary: null, rawRows };
+    }
+
     async function loadTelemetrySalesDashboard() {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const tomorrowStart = new Date(todayStart);
       tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-      const tomorrowKey = getDateKey(tomorrowStart);
       const range = getTelemetryDateRange(telemetryPeriodFilter?.value || "today");
       const trendStart = new Date(todayStart);
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
-      const [recentResult, trendRows, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, tomorrowRoutesResult] = await Promise.all([
+      const [recentResult, telemetryAggregate, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .order("source_event_at", { ascending: false })
           .limit(100),
-        fetchSupabaseRowsPaged(() => supabase
-          .from("telemetry_sales_events")
-          .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at")
-          .gte("source_event_at", fetchStart.toISOString())
-          .order("source_event_at", { ascending: false })),
+        loadDashboardTelemetryAggregate(range, fetchStart, trendStart, tomorrowStart),
         fetchSupabaseRowsPaged(() => supabase
           .from("machine_planogram_slots")
           .select("id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, desired_units, fill_percent, expiry_date, active, settlement_type, settlement_amount_czk, settlement_billing_enabled")
@@ -6307,12 +6379,7 @@
         supabase
           .from("products")
           .select("id, sku, name, base_unit, product_category, expiry_tracking_mode, expiry_warning_days")
-          .eq("active", true),
-        supabase
-          .from("route_plans")
-          .select("id, planning_date, planned_departure_time, title, execution_status, estimated_drive_minutes, route_plan_stops(id, machine_id, stop_order, status, estimated_service_minutes)")
-          .eq("planning_date", tomorrowKey)
-          .neq("execution_status", "cancelled")
+          .eq("active", true)
       ]);
 
       if (recentResult.error) throw recentResult.error;
@@ -6321,7 +6388,6 @@
       if (telemetryStatesResult.error) throw telemetryStatesResult.error;
       if (inventoriedItemsResult.error) throw inventoriedItemsResult.error;
       if (productsResult.error) throw productsResult.error;
-      if (tomorrowRoutesResult.error) throw tomorrowRoutesResult.error;
 
       const { data: foodMachines, error: foodMachinesError } = await supabase
         .from("machines")
@@ -6346,12 +6412,15 @@
       const recentRows = dedupeTelemetryRows(Array.from(recentByEventId.values()))
         .sort((a, b) => new Date(b.source_event_at || 0) - new Date(a.source_event_at || 0))
         .slice(0, 10);
-      const allTrendRows = dedupeTelemetryRows(trendRows || []);
-      const periodRows = allTrendRows.filter((row) => {
+      const telemetrySummary = telemetryAggregate.summary || null;
+      const allTrendRows = telemetrySummary
+        ? []
+        : dedupeTelemetryRows(telemetryAggregate.rawRows || []);
+      const periodRows = telemetrySummary ? [] : allTrendRows.filter((row) => {
         const date = new Date(row.source_event_at);
         return date >= range.start && date < range.end;
       });
-      const compareRows = allTrendRows.filter((row) => {
+      const compareRows = telemetrySummary ? [] : allTrendRows.filter((row) => {
         const date = new Date(row.source_event_at);
         if (range.compareMode === "weekday_average") {
           if (!range.compareDateKeys.includes(getDateKey(date))) return false;
@@ -6419,8 +6488,8 @@
       const foodRows = enrichedRows
         .filter((row) => String(machineMap.get(String(row.machine_id))?.machine_type || "").trim().toLowerCase() === "snack")
         .slice(0, 10);
-      const enrichedPeriodRows = periodRows.map(enrichTelemetryRow);
-      const enrichedTrendRows = allTrendRows.map(enrichTelemetryRow);
+      const enrichedPeriodRows = telemetrySummary ? [] : periodRows.map(enrichTelemetryRow);
+      const enrichedTrendRows = telemetrySummary ? [] : allTrendRows.map(enrichTelemetryRow);
       const getTotalsForRows = (sourceRows) => ({
         quantity: sourceRows.reduce((sum, row) => sum + getTelemetrySaleQuantity(row), 0),
         revenue: sourceRows.reduce((sum, row) => sum + Number(row.total_amount_czk || 0), 0),
@@ -6434,10 +6503,12 @@
         pendingQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unpaid_dispense_quantity || 0), 0),
         unknownQuantity: sourceRows.reduce((sum, row) => sum + Number(row.unknown_payment_quantity || 0), 0)
       });
-      const rawCompareTotals = getTotalsForRows(compareRows);
-      const compareSampleCount = range.compareMode === "weekday_average"
-        ? new Set(compareRows.map((row) => getDateKey(row.source_event_at))).size
-        : 1;
+      const rawCompareTotals = telemetrySummary?.compare_totals || getTotalsForRows(compareRows);
+      const compareSampleCount = telemetrySummary
+        ? Number(telemetrySummary.compare_sample_count || 0)
+        : range.compareMode === "weekday_average"
+          ? new Set(compareRows.map((row) => getDateKey(row.source_event_at))).size
+          : 1;
       const compareDivisor = Math.max(1, compareSampleCount);
       const compareTotals = Object.fromEntries(
         Object.entries(rawCompareTotals).map(([key, value]) => [key, Number(value || 0) / compareDivisor])
@@ -6470,8 +6541,10 @@
         .sort((a, b) => new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0));
 
       const totals = {
-        ...getTotalsForRows(periodRows),
-        machineCount: new Set(periodRows.map((row) => String(row.machine_id || "")).filter(Boolean)).size,
+        ...(telemetrySummary?.period_totals || getTotalsForRows(periodRows)),
+        machineCount: telemetrySummary
+          ? Number(telemetrySummary.period_totals?.machineCount || 0)
+          : new Set(periodRows.map((row) => String(row.machine_id || "")).filter(Boolean)).size,
         lastSeen: recentRows[0]?.source_event_at || null,
         compare: compareTotals,
         compareLabel: range.compareMode === "weekday_average"
@@ -6480,9 +6553,9 @@
         periodLabel: range.label
       };
 
-      const dayRows = buildTelemetryDayRows(enrichedTrendRows, 14);
-      const topProducts = aggregateTelemetryRows(enrichedPeriodRows, (row) => row.product_name || row.product_sku || "Bez produktu");
-      const topLocations = aggregateTelemetryRows(enrichedPeriodRows, (row) => row.location_name || row.machine_name || "Bez lokality");
+      const dayRows = telemetrySummary?.day_rows || buildTelemetryDayRows(enrichedTrendRows, 14);
+      const topProducts = telemetrySummary?.top_products || aggregateTelemetryRows(enrichedPeriodRows, (row) => row.product_name || row.product_sku || "Bez produktu");
+      const topLocations = telemetrySummary?.top_locations || aggregateTelemetryRows(enrichedPeriodRows, (row) => row.location_name || row.machine_name || "Bez lokality");
       const topLocationsByQuantity = [...topLocations]
         .sort((a, b) => Number(b.quantity || 0) - Number(a.quantity || 0) || Number(b.revenue || 0) - Number(a.revenue || 0));
       const lowStockSlots = lowStockRaw
@@ -6590,241 +6663,6 @@
         }
       }
 
-      const lowStockMachineIds = [...new Set(lowStock.map((item) => Number(item.machine_id)).filter(Boolean))];
-      let coffeeRecipeRows = [];
-      if (lowStockMachineIds.length) {
-        const { data, error } = await supabase
-          .from("machine_coffee_recipe_items")
-          .select("machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)")
-          .in("machine_id", lowStockMachineIds)
-          .eq("active", true);
-        if (error && !/machine_coffee_recipe_items|schema cache/i.test(String(error.message || ""))) throw error;
-        coffeeRecipeRows = data || [];
-      }
-
-      const products = productsResult.data || [];
-      const productById = new Map(products.map((product) => [String(product.id), product]));
-      const productByName = new Map(products.map((product) => [normalizeText(product.name || ""), product]).filter(([key]) => key));
-      const recipesByMachineSelection = new Map();
-      coffeeRecipeRows.forEach((item) => {
-        const key = `${item.machine_id}::${normalizeText(item.machine_coffee_buttons?.selection_code || "")}`;
-        const rows = recipesByMachineSelection.get(key) || [];
-        rows.push(item);
-        recipesByMachineSelection.set(key, rows);
-      });
-      const routeCoverageByMachine = new Map();
-      (tomorrowRoutesResult.data || []).forEach((route) => {
-        const stops = [...(route.route_plan_stops || [])]
-          .filter((stop) => stop.machine_id && String(stop.status || "planned") !== "skipped")
-          .sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0));
-        const departure = new Date(`${route.planning_date}T${String(route.planned_departure_time || "07:00").slice(0, 5)}:00`);
-        const drivePerStop = stops.length ? Number(route.estimated_drive_minutes || 0) / stops.length : 0;
-        let precedingServiceMinutes = 0;
-        stops.forEach((stop, index) => {
-          const arrival = new Date(departure.getTime() + ((index + 1) * drivePerStop + precedingServiceMinutes) * 60000);
-          const key = String(stop.machine_id);
-          const current = routeCoverageByMachine.get(key);
-          if (!current || arrival < current.arrival) {
-            routeCoverageByMachine.set(key, {
-              routeId: route.id,
-              routeTitle: route.title || `Trasa ${route.planning_date}`,
-              stopOrder: Number(stop.stop_order || index + 1),
-              arrival,
-              executionStatus: route.execution_status || "planned"
-            });
-          }
-          precedingServiceMinutes += Number(stop.estimated_service_minutes || 0);
-        });
-      });
-
-      const coverageStartByMachine = new Map();
-      const salesByMachineProduct = new Map();
-      const addForecastSale = (machineId, productId, sourceEventAt, quantity) => {
-        const at = new Date(sourceEventAt || "");
-        const amount = Number(quantity || 0);
-        if (!machineId || !productId || Number.isNaN(at.getTime()) || amount <= 0.0001) return;
-        const key = `${machineId}::${productId}`;
-        const values = salesByMachineProduct.get(key) || [];
-        values.push({ at, quantity: amount });
-        salesByMachineProduct.set(key, values);
-      };
-      const convertForecastQuantity = (quantity, fromUnit, toUnit) => {
-        const from = normalizeText(fromUnit || "");
-        const to = normalizeText(toUnit || "");
-        if (!from || !to || from === to) return Number(quantity || 0);
-        const massToGrams = { g: 1, gram: 1, gramy: 1, kg: 1000, kilogram: 1000 };
-        const volumeToMillilitres = { ml: 1, l: 1000, litr: 1000, litry: 1000 };
-        if (massToGrams[from] && massToGrams[to]) return Number(quantity || 0) * massToGrams[from] / massToGrams[to];
-        if (volumeToMillilitres[from] && volumeToMillilitres[to]) return Number(quantity || 0) * volumeToMillilitres[from] / volumeToMillilitres[to];
-        return Number(quantity || 0);
-      };
-      allTrendRows.forEach((sale) => {
-        const confirmedQuantity = getTelemetrySaleQuantity(sale);
-        if (confirmedQuantity <= 0.0001) return;
-        const at = new Date(sale.source_event_at || "");
-        if (!Number.isNaN(at.getTime())) {
-          const machineKey = String(sale.machine_id || "");
-          const currentCoverageStart = coverageStartByMachine.get(machineKey);
-          if (!currentCoverageStart || at < currentCoverageStart) coverageStartByMachine.set(machineKey, at);
-        }
-        const directProduct = productBySku.get(String(sale.product_sku || ""))
-          || productByName.get(normalizeText(sale.product_name || ""));
-        if (directProduct) addForecastSale(sale.machine_id, directProduct.id, sale.source_event_at, confirmedQuantity);
-        (recipesByMachineSelection.get(`${sale.machine_id}::${normalizeText(sale.selection_code || "")}`) || [])
-          .forEach((item) => {
-            const ingredient = productById.get(String(item.product_id));
-            const consumption = confirmedQuantity * convertForecastQuantity(
-              Number(item.quantity_per_vend || 0),
-              item.unit || ingredient?.base_unit,
-              ingredient?.base_unit || item.unit
-            );
-            addForecastSale(sale.machine_id, item.product_id, sale.source_event_at, consumption);
-          });
-      });
-
-      const countObservedForecastHours = (coverageStart, coverageEnd, targetHour, targetWeekday = null) => {
-        if (!coverageStart || !coverageEnd || coverageEnd <= coverageStart) return 0;
-        const cursor = new Date(coverageStart);
-        cursor.setMinutes(0, 0, 0);
-        if (cursor < coverageStart) cursor.setHours(cursor.getHours() + 1);
-        let count = 0;
-        while (cursor.getTime() + 3600000 <= coverageEnd.getTime()) {
-          if (cursor.getHours() === targetHour && (targetWeekday === null || cursor.getDay() === targetWeekday)) count += 1;
-          cursor.setHours(cursor.getHours() + 1);
-        }
-        return count;
-      };
-      const estimateConfirmedSalesUntil = (machineId, productId, arrival) => {
-        const now = new Date();
-        const coverageStart = coverageStartByMachine.get(String(machineId || ""));
-        const historyRows = salesByMachineProduct.get(`${machineId}::${productId}`) || [];
-        if (!(arrival instanceof Date) || Number.isNaN(arrival.getTime()) || arrival <= now || !coverageStart || now - coverageStart < 86400000 || !historyRows.length) return 0;
-        const byHour = new Map();
-        const byWeekdayHour = new Map();
-        historyRows.forEach((row) => {
-          const hour = row.at.getHours();
-          const weekdayHour = `${row.at.getDay()}::${hour}`;
-          byHour.set(hour, Number(((byHour.get(hour) || 0) + row.quantity).toFixed(4)));
-          byWeekdayHour.set(weekdayHour, Number(((byWeekdayHour.get(weekdayHour) || 0) + row.quantity).toFixed(4)));
-        });
-        let expected = 0;
-        let cursor = new Date(now);
-        while (cursor < arrival) {
-          const bucketEnd = new Date(cursor);
-          bucketEnd.setMinutes(0, 0, 0);
-          bucketEnd.setHours(bucketEnd.getHours() + 1);
-          const segmentEnd = bucketEnd < arrival ? bucketEnd : arrival;
-          const segmentHours = Math.max(0, (segmentEnd - cursor) / 3600000);
-          const hour = cursor.getHours();
-          const weekday = cursor.getDay();
-          const allOccurrences = countObservedForecastHours(coverageStart, now, hour);
-          const allRate = allOccurrences > 0 ? Number(byHour.get(hour) || 0) / allOccurrences : 0;
-          const weekdayOccurrences = countObservedForecastHours(coverageStart, now, hour, weekday);
-          const weekdayQuantity = Number(byWeekdayHour.get(`${weekday}::${hour}`) || 0);
-          const rate = weekdayOccurrences > 0 ? (weekdayQuantity + allRate * 2) / (weekdayOccurrences + 2) : allRate;
-          expected += rate * segmentHours;
-          cursor = segmentEnd;
-        }
-        return Math.max(0, Number(expected.toFixed(3)));
-      };
-
-      const lowStockByMachine = new Map();
-      lowStock.forEach((item) => {
-        const machineKey = String(item.machine_id || "");
-        const machine = machineMap.get(machineKey);
-        const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
-        const machineGroup = lowStockByMachine.get(machineKey) || {
-          machineId: item.machine_id,
-          machineName: item.machine_name,
-          machineCode: machine?.evidence_number ? `EV ${machine.evidence_number}` : "",
-          locationName: [location?.city, location?.name].filter(Boolean).join(" · "),
-          items: [],
-          products: new Map(),
-          lowestPercent: 100
-        };
-        machineGroup.items.push(item);
-        machineGroup.lowestPercent = Math.min(machineGroup.lowestPercent, Number(item.percent || 0));
-        const product = productBySku.get(String(item.product_sku || "")) || productByName.get(normalizeText(item.product_name || ""));
-        const productKey = product?.id ? String(product.id) : `name:${normalizeText(item.product_name || item.product_sku || item.selection_code || "unknown")}`;
-        const currentProduct = machineGroup.products.get(productKey) || {
-          product,
-          productName: item.product_name || item.product_sku || "Bez produktu",
-          current: 0,
-          capacity: 0,
-          unit: item.unit_label || item.unit || product?.base_unit || "ks",
-          positions: []
-        };
-        currentProduct.current += Number(item.current || 0);
-        currentProduct.capacity += Number(item.capacity || 0);
-        currentProduct.positions.push(item.selection_code || item.slot_code || item.container_code || "?");
-        machineGroup.products.set(productKey, currentProduct);
-        lowStockByMachine.set(machineKey, machineGroup);
-      });
-
-      const fallbackArrival = new Date(tomorrowStart);
-      fallbackArrival.setHours(17, 0, 0, 0);
-      const quantityLabel = (value, unit) => {
-        const amount = Number(value || 0);
-        const decimals = normalizeText(unit) === "ks" ? 0 : 2;
-        return `${amount.toLocaleString("cs-CZ", { minimumFractionDigits: 0, maximumFractionDigits: decimals })} ${unit || "ks"}`;
-      };
-      const lowStockOutlookRows = Array.from(lowStockByMachine.values()).map((machineGroup) => {
-        const route = routeCoverageByMachine.get(String(machineGroup.machineId));
-        const arrival = route?.arrival || fallbackArrival;
-        const productsForMachine = Array.from(machineGroup.products.values()).map((item) => {
-          const forecastQuantity = item.product?.id ? Math.min(item.current, estimateConfirmedSalesUntil(machineGroup.machineId, item.product.id, arrival)) : 0;
-          const projected = Math.max(0, Number((item.current - forecastQuantity).toFixed(3)));
-          const emptyNow = item.current <= 0.0001;
-          const stockoutRisk = !emptyNow && forecastQuantity > 0.0001 && projected <= 0.0001;
-          return {
-            ...item,
-            position: item.positions.join(", "),
-            forecastQuantity,
-            projected,
-            emptyNow,
-            stockoutRisk,
-            currentLabel: `${quantityLabel(item.current, item.unit)} / ${quantityLabel(item.capacity, item.unit)}`,
-            projectedLabel: quantityLabel(projected, item.unit),
-            forecastLabel: quantityLabel(forecastQuantity, item.unit)
-          };
-        }).sort((a, b) => Number(b.emptyNow) - Number(a.emptyNow) || Number(b.stockoutRisk) - Number(a.stockoutRisk) || a.current - b.current);
-        const criticalNow = productsForMachine.some((item) => item.emptyNow);
-        const stockoutRisk = productsForMachine.some((item) => item.stockoutRisk);
-        const arrivalTime = route?.arrival && !Number.isNaN(route.arrival.getTime())
-          ? route.arrival.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })
-          : "";
-        return {
-          machineId: machineGroup.machineId,
-          machineName: machineGroup.machineName,
-          machineCode: machineGroup.machineCode,
-          locationName: machineGroup.locationName,
-          lowCount: machineGroup.items.length,
-          lowestPercent: Math.max(0, Math.round(machineGroup.lowestPercent)),
-          products: productsForMachine,
-          criticalNow,
-          stockoutRisk,
-          covered: Boolean(route),
-          routeLabel: route ? `${route.routeTitle} · zastávka ${route.stopOrder} · ETA ${arrivalTime}` : `Bez trasy na ${tomorrowStart.toLocaleDateString("cs-CZ")}`,
-          actionHref: route ? `routes-create.html?edit=${encodeURIComponent(route.routeId)}` : `routes-create.html?date=${encodeURIComponent(tomorrowKey)}`
-        };
-      }).sort((a, b) => Number(b.criticalNow && !b.covered) - Number(a.criticalNow && !a.covered)
-        || Number(b.stockoutRisk && !b.covered) - Number(a.stockoutRisk && !a.covered)
-        || Number(b.criticalNow) - Number(a.criticalNow)
-        || Number(b.stockoutRisk) - Number(a.stockoutRisk)
-        || Number(a.covered) - Number(b.covered)
-        || a.lowestPercent - b.lowestPercent);
-      const lowStockOutlook = {
-        targetLabel: "zítřejšího příjezdu",
-        targetDateLabel: `stav teď → ${tomorrowStart.toLocaleDateString("cs-CZ")}`,
-        counts: {
-          criticalNow: lowStockOutlookRows.filter((row) => row.criticalNow).length,
-          stockoutRisk: lowStockOutlookRows.filter((row) => row.stockoutRisk).length,
-          covered: lowStockOutlookRows.filter((row) => row.covered).length,
-          uncovered: lowStockOutlookRows.filter((row) => !row.covered).length
-        },
-        rows: lowStockOutlookRows
-      };
-
       const expiryToday = new Date();
       expiryToday.setHours(0, 0, 0, 0);
       const expiryRows = lowStockRaw
@@ -6894,13 +6732,18 @@
         items: [...problemCoverageItems, ...pausedCoverageItems].sort((a, b) => a.machine_label.localeCompare(b.machine_label, "cs"))
       };
 
-      return { rows: enrichedRows, coffeeRows, foodRows, telemetryCoverage, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, lowStockOutlook, expiryRows, initialInventory };
+      return { rows: enrichedRows, coffeeRows, foodRows, telemetryCoverage, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, expiryRows, initialInventory };
     }
 
-    async function renderTelemetrySalesDashboard() {
+    async function renderTelemetrySalesDashboard(options = {}) {
       if (!telemetrySalesTable) return;
+      const force = Boolean(options.force);
+      if (!force && telemetryLastRefreshAt && Date.now() - telemetryLastRefreshAt < TELEMETRY_BACKGROUND_MIN_AGE_MS) return;
       if (telemetryRefreshInFlight) {
-        telemetryRefreshQueued = true;
+        if (options.queueIfBusy) {
+          telemetryRefreshQueued = true;
+          telemetryRefreshQueuedForce = telemetryRefreshQueuedForce || force;
+        }
         return;
       }
       telemetryRefreshInFlight = true;
@@ -6917,6 +6760,8 @@
         const scrollYBeforeRender = window.scrollY;
         renderTelemetrySales(nextTelemetryData);
         telemetryHasRenderedData = true;
+        telemetryLastRefreshAt = Date.now();
+        writeDashboardSnapshot(getTelemetrySnapshotSegment(), nextTelemetryData);
         if (window.scrollX !== scrollXBeforeRender || window.scrollY !== scrollYBeforeRender) {
           window.scrollTo(scrollXBeforeRender, scrollYBeforeRender);
         }
@@ -6934,8 +6779,10 @@
         telemetryRefreshInFlight = false;
         telemetrySalesWidget?.setAttribute("aria-busy", "false");
         if (telemetryRefreshQueued) {
+          const queuedForce = telemetryRefreshQueuedForce;
           telemetryRefreshQueued = false;
-          window.queueMicrotask(() => renderTelemetrySalesDashboard());
+          telemetryRefreshQueuedForce = false;
+          window.queueMicrotask(() => renderTelemetrySalesDashboard({ force: queuedForce, reason: "queued" }));
         }
       }
     }
@@ -6944,7 +6791,7 @@
       if (telemetryRefreshTimer) window.clearInterval(telemetryRefreshTimer);
       telemetryRefreshTimer = window.setInterval(() => {
         if (document.hidden) return;
-        renderTelemetrySalesDashboard();
+        renderTelemetrySalesDashboard({ reason: "interval" });
       }, TELEMETRY_REFRESH_INTERVAL_MS);
     }
 
@@ -7544,17 +7391,51 @@
       });
     }
 
+    async function loadDashboardFinanceSource(filters) {
+      const sinceDate = formatDateInput(filters.startDate);
+      const untilDate = formatDateInput(filters.endDate);
+      const { data, error } = await supabase.rpc("get_dashboard_finance_source_v27", {
+        p_from: sinceDate,
+        p_to: untilDate,
+        p_stock_location_id: filters.locationId ? Number(filters.locationId) : null
+      });
+      if (!error && data) {
+        return {
+          balances: Array.isArray(data.balances) ? data.balances : [],
+          movements: Array.isArray(data.movements) ? data.movements : []
+        };
+      }
+      if (error && !/get_dashboard_finance_source_v27|schema cache|could not find the function/i.test(String(error.message || ""))) {
+        throw error;
+      }
+
+      const fallbackStart = new Date(filters.startDate);
+      fallbackStart.setDate(fallbackStart.getDate() - 3);
+      const fallbackEnd = new Date(filters.endDate);
+      fallbackEnd.setDate(fallbackEnd.getDate() + 3);
+      const [balances, movements] = await Promise.all([
+        fetchSupabaseRowsPaged(() => supabase.from("stock_location_balances").select("stock_location_id, product_id, quantity_on_hand")),
+        fetchSupabaseRowsPaged(() => supabase
+          .from("stock_movements_v13")
+          .select("product_id, movement_type, quantity_base_units, unit_price, created_at, reference_type, from_stock_location_id, note")
+          .in("movement_type", ["sale", "sale_revenue"])
+          .gte("created_at", fallbackStart.toISOString())
+          .lt("created_at", fallbackEnd.toISOString())
+          .order("created_at", { ascending: false }))
+      ]);
+      return { balances, movements };
+    }
+
     async function loadFinanceDashboardData() {
       updateFinanceCustomDateVisibility();
       const filters = getFinanceFilters();
       const sinceDate = formatDateInput(filters.startDate);
       const untilDate = formatDateInput(filters.endDate);
-      const [productsResult, packagesResult, locationsResult, balancesResult, movementsRows, salesDocumentRows, salesDocumentItemRows, telemetryFinanceResult] = await Promise.all([
+      const [productsResult, packagesResult, locationsResult, financeSource, salesDocumentRows, salesDocumentItemRows, telemetryFinanceResult] = await Promise.all([
         supabase.from("products").select("id, sku, name, product_category, usage_type, purchase_price, sale_price, base_unit, note, active"),
         supabase.from("product_packages").select("id, product_id, package_name, units_per_package, is_default, active").eq("active", true).order("is_default", { ascending: false }),
         supabase.from("stock_locations").select("id, name, location_type, active").eq("active", true).order("name", { ascending: true }),
-        fetchSupabaseRowsPaged(() => supabase.from("stock_location_balances").select("stock_location_id, product_id, quantity_on_hand")),
-        fetchSupabaseRowsPaged(() => supabase.from("stock_movements_v13").select("product_id, movement_type, quantity_base_units, unit_price, created_at, reference_type, from_stock_location_id, note").in("movement_type", ["sale", "sale_revenue"]).order("created_at", { ascending: false })),
+        loadDashboardFinanceSource(filters),
         fetchSupabaseRowsPaged(() => supabase.from("sales_documents").select("id, document_type, status, issued_at, created_at, note").in("status", ["issued", "paid"]).order("issued_at", { ascending: false })),
         fetchSupabaseRowsPaged(() => supabase.from("sales_document_items").select("id, document_id, product_id, product_name, unit, unit_cost, quantity, unit_price, source_type").order("id", { ascending: true })),
         supabase.rpc("get_telemetry_finance_summary_v19", {
@@ -7568,6 +7449,9 @@
       if (packagesResult.error) throw packagesResult.error;
       if (locationsResult.error) throw locationsResult.error;
       if (telemetryFinanceResult.error) throw telemetryFinanceResult.error;
+
+      const balancesResult = financeSource.balances || [];
+      const movementsRows = financeSource.movements || [];
 
       const productMap = new Map((productsResult.data || []).map((product) => [String(product.id), product]));
       const productBySku = new Map((productsResult.data || []).filter((product) => product.sku).map((product) => [String(product.sku), product]));
@@ -7663,7 +7547,8 @@
           quantity: qty,
           itemRevenue: sale,
           itemCost,
-          date
+          date,
+          rowCount: Number(movement.source_count || 1)
         });
       }
 
@@ -7813,6 +7698,9 @@
         warning: `Finanční přehled se nepodařilo načíst: ${error.message}`
       }));
       renderFinanceDashboard(financeData);
+      if (!financeData.warning?.startsWith("Finanční přehled se nepodařilo")) {
+        writeDashboardSnapshot(getFinanceSnapshotSegment(), financeData);
+      }
     }
 
     function toIsoDateString(value) {
@@ -8849,6 +8737,60 @@
       }
     }
 
+    function renderServiceDashboardPayload(liveData, fallbackData) {
+      renderKpis(liveData.kpis || fallbackData.kpis);
+      renderList("operationsList", liveData.today || fallbackData.today, { mobileLimit: 3, moreHref: "mobile.html" });
+      renderList("priorityList", liveData.priority || fallbackData.priority, { mobileLimit: 3, moreHref: "technical-jobs.html?tab=service" });
+      renderList("completedList", liveData.completed || fallbackData.completed, { mobileLimit: 3, moreHref: "hr.html" });
+      setText("operationsNote", liveData.operationsNote || fallbackData.todayNote);
+    }
+
+    function getFinanceDashboardFallback(error = null) {
+      return {
+        revenue: 0,
+        cost: 0,
+        profit: 0,
+        margin: 0,
+        stockValue: 0,
+        periodLabel: getFinanceDateRange(financePeriodFilter?.value || "30").label,
+        locationLabel: "",
+        movementCount: 0,
+        stockSplit: [],
+        daily: [],
+        typeSplit: [],
+        products: [],
+        warning: error
+          ? `Finanční přehled se nepodařilo načíst: ${error.message}`
+          : "Finanční přehled zatím nemá uložený stav."
+      };
+    }
+
+    function renderCachedDashboardSnapshots(fallbackData) {
+      const cached = { service: false, finance: false, telemetry: false };
+      const serviceSnapshot = readDashboardSnapshot("service");
+      if (serviceSnapshot?.data) {
+        renderServiceDashboardPayload(serviceSnapshot.data, fallbackData);
+        cached.service = true;
+      }
+
+      const financeSnapshot = readDashboardSnapshot(getFinanceSnapshotSegment());
+      if (financeSnapshot?.data) {
+        renderFinanceDashboard(financeSnapshot.data);
+        cached.finance = true;
+      }
+
+      const telemetrySnapshot = readDashboardSnapshot(getTelemetrySnapshotSegment());
+      if (telemetrySnapshot?.data) {
+        renderTelemetrySales(telemetrySnapshot.data);
+        telemetryHasRenderedData = true;
+        if (telemetryPeriodLabel) {
+          telemetryPeriodLabel.textContent = `Poslední stav ${formatDashboardSnapshotTime(telemetrySnapshot.savedAt)} · aktualizuji na pozadí`;
+        }
+        cached.telemetry = true;
+      }
+      return cached;
+    }
+
     async function renderDashboard(mode, options = {}) {
       currentMode = mode;
       const normalizedMode = "service";
@@ -8864,74 +8806,36 @@
       setText("completedTitle", data.completedTitle);
       setText("completedSubtitle", data.completedSubtitle);
       setText("operationsNote", data.todayNote);
-
-      try {
-        const liveData = await loadServiceDashboardData({ forceReload: options.forceReload });
-        const fallbackRange = getFinanceDateRange(financePeriodFilter?.value || "30");
-        const financeData = await loadFinanceDashboardData().catch((error) => ({
-          revenue: 0,
-          cost: 0,
-          profit: 0,
-          margin: 0,
-          stockValue: 0,
-          periodLabel: fallbackRange.label,
-          locationLabel: "",
-          movementCount: 0,
-          stockSplit: [],
-          daily: [],
-          typeSplit: [],
-          products: [],
-          warning: `Finanční přehled se nepodařilo načíst: ${error.message}`
-        }));
-        renderKpis(liveData.kpis);
-        await renderStockChecklist();
-        await renderTelemetrySalesDashboard();
-        renderFinanceDashboard(financeData);
-        renderList("operationsList", liveData.today, { mobileLimit: 3, moreHref: "mobile.html" });
-        renderList("priorityList", liveData.priority, { mobileLimit: 3, moreHref: "technical-jobs.html?tab=service" });
-        renderList("completedList", liveData.completed, { mobileLimit: 3, moreHref: "hr.html" });
-        setText("operationsNote", liveData.operationsNote || data.todayNote);
-      } catch (error) {
-        console.error(error);
-        renderKpis(data.kpis);
-        await renderStockChecklist();
-        await renderTelemetrySalesDashboard();
-        renderList("priorityList", data.priority.length ? data.priority : [{
-          title: "Přehled se nepodařilo načíst",
-          subtitle: `Nástěnka teď nedotáhla reálná data: ${error.message}`,
-          badgeClass: "red",
-          badge: "Chyba"
-        }], { mobileLimit: 3, moreHref: "technical-jobs.html?tab=service" });
-        renderList("operationsList", data.today.length ? data.today : [{
-          title: "Dočasně bez dat",
-          subtitle: "Otevři prosím přímo HR, Servis nebo Vozový park.",
-          badgeClass: "blue",
-          badge: "Fallback"
-        }], { mobileLimit: 3, moreHref: "mobile.html" });
-        renderList("completedList", data.completed.length ? data.completed : [{
-          title: "Dočasně bez dat",
-          subtitle: "Po obnovení se znovu zkusí načíst reálná data.",
-          badgeClass: "blue",
-          badge: "Fallback"
-        }], { mobileLimit: 3, moreHref: "hr.html" });
-        renderFinanceDashboard({
-          revenue: 0,
-          cost: 0,
-          profit: 0,
-          margin: 0,
-          stockValue: 0,
-          periodLabel: getFinanceDateRange(financePeriodFilter?.value || "30").label,
-          locationLabel: "",
-          movementCount: 0,
-          stockSplit: [],
-          daily: [],
-          typeSplit: [],
-          products: [],
-          warning: "Finanční přehled není v fallback režimu dostupný."
+      const cached = renderCachedDashboardSnapshots(data);
+      const serviceTask = loadServiceDashboardData({ forceReload: options.forceReload })
+        .then((liveData) => {
+          renderServiceDashboardPayload(liveData, data);
+          writeDashboardSnapshot("service", liveData);
+        })
+        .catch((error) => {
+          console.error(error);
+          if (!cached.service) renderServiceDashboardPayload(data, data);
+          setText("headlineText", cached.service
+            ? "Zobrazuji poslední provozní stav; nové údaje se nepodařilo načíst."
+            : `Nástěnka se načetla jen částečně: ${error.message}`);
         });
-        setText("operationsNote", "Otevři detail v příslušném modulu.");
-        setText("headlineText", `Nástěnka se načetla jen částečně: ${error.message}`);
-      }
+      const financeTask = loadFinanceDashboardData()
+        .then((financeData) => {
+          renderFinanceDashboard(financeData);
+          writeDashboardSnapshot(getFinanceSnapshotSegment(), financeData);
+        })
+        .catch((error) => {
+          console.error(error);
+          if (!cached.finance) renderFinanceDashboard(getFinanceDashboardFallback(error));
+        });
+      const independentTasks = [
+        serviceTask,
+        financeTask,
+        renderStockChecklist(),
+        renderTelemetrySalesDashboard({ force: true, reason: "initial" }),
+      ];
+      await Promise.allSettled(independentTasks);
+      dashboardInitialLoadComplete = true;
 
       currentMode = normalizedMode;
       updateDashboardMenu(normalizedMode);
@@ -8987,7 +8891,7 @@
     [financePeriodFilter, financeDateFrom, financeDateTo, financeLocationFilter, financeProductTypeFilter, financeMinRevenueFilter].forEach((filter) => {
       filter?.addEventListener("change", refreshFinanceDashboard);
     });
-    telemetryPeriodFilter?.addEventListener("change", renderTelemetrySalesDashboard);
+    telemetryPeriodFilter?.addEventListener("change", () => renderTelemetrySalesDashboard({ force: true, queueIfBusy: true, reason: "filter" }));
     stockChecklistDate?.addEventListener("change", renderStockChecklist);
     stockChecklistTable?.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-stock-checklist-action]");
@@ -9305,10 +9209,14 @@
       startTelemetryAutoRefresh();
       window.addEventListener("resize", refreshResponsiveState);
       document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) renderTelemetrySalesDashboard();
+        if (!document.hidden && dashboardInitialLoadComplete) renderTelemetrySalesDashboard({ reason: "visibility" });
       });
-      window.addEventListener("focus", () => renderTelemetrySalesDashboard());
-      window.addEventListener("online", () => renderTelemetrySalesDashboard());
+      window.addEventListener("focus", () => {
+        if (dashboardInitialLoadComplete) renderTelemetrySalesDashboard({ reason: "focus" });
+      });
+      window.addEventListener("online", () => {
+        if (dashboardInitialLoadComplete) renderTelemetrySalesDashboard({ force: true, queueIfBusy: true, reason: "online" });
+      });
       await renderPromise;
     }
 
@@ -9319,6 +9227,6 @@
       window.location.href = "index.html";
     });
   </script>
-  <script src="./pwa.js?v=20260731-live-api-v3" defer></script>
+  <script src="./pwa.js?v=20260809-dashboard-fast-start-v1" defer></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v75-machine-item-reason';
+const CACHE_NAME = 'olvend-v76-dashboard-fast-start';
 const APP_SHELL = [
   './',
   './index.html',
@@ -79,14 +79,20 @@ self.addEventListener('fetch', (event) => {
     || requestUrl.pathname.endsWith('.css');
 
   if (isFreshAsset) {
+    const networkResponse = fetch(event.request)
+      .then(async (response) => {
+        if (response?.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, response.clone());
+        }
+        return response;
+      });
+    event.waitUntil(networkResponse.catch(() => undefined));
     event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
-          return response;
-        })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) return cachedResponse;
+        return networkResponse.catch(() => caches.match('./index.html'));
+      })
     );
     return;
   }
