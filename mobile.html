@@ -2715,7 +2715,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.8 · build 2026.08.09.14</p>
+        <p class="eyebrow">Mobilní režim 1.8 · build 2026.08.09.15</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -3950,7 +3950,15 @@
         stopRouteMachineLiveRefresh()
       }
       if (screen === 'stock') renderStockRequests()
-      if (screen === 'inventory') renderInventoryWorkspace()
+      if (screen === 'inventory') {
+        renderInventoryWorkspace()
+        if (navigator.onLine) {
+          loadVehicleInventories().then(() => {
+            if (document.querySelector('.screen[data-screen="inventory"]')?.classList.contains('active')) renderInventoryWorkspace()
+            persistMobileSnapshot()
+          }).catch(console.warn)
+        }
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' })
       if (requestedScreen !== screen) renderShiftState()
     }
@@ -5186,7 +5194,11 @@
       return getVehicleInventoryItems(audit?.id).filter((item) => item.counted_at).map((item) => {
         const operatorUnit = getInventoryOperatorUnit(getInventoryItemProduct(item))
         const differenceBase = Number((Number(item.counted_quantity || 0) - Number(item.book_quantity || 0)).toFixed(3))
-        const differenceValue = Number((differenceBase * Number(item.unit_cost || 0)).toFixed(2))
+        const calculatedDifferenceValue = Number((differenceBase * Number(item.unit_cost || 0)).toFixed(2))
+        const storedDifferenceValue = item.difference_value == null ? null : Number(item.difference_value)
+        const differenceValue = storedDifferenceValue != null && Number.isFinite(storedDifferenceValue)
+          ? storedDifferenceValue
+          : calculatedDifferenceValue
         return {
           item,
           differenceBase,
@@ -5197,6 +5209,8 @@
     }
 
     function getInventoryShortageValue(audit) {
+      const storedTotal = audit?.difference_value_total == null ? null : Number(audit.difference_value_total)
+      if (storedTotal != null && Number.isFinite(storedTotal)) return Math.max(0, -storedTotal)
       return getInventoryAuditDifferenceRows(audit).reduce((sum, row) => row.differenceValue < 0 ? sum + Math.abs(row.differenceValue) : sum, 0)
     }
 
@@ -12120,8 +12134,9 @@
         if (!hasUser) return
         await reloadData()
         if (navigator.onLine && getCombinedOfflineRequestCount()) {
-          await syncOfflineRequests().catch(console.warn)
-          await syncCoffeeOfflineStockQueue().catch(console.warn)
+          const requestResult = await syncOfflineRequests().catch((error) => ({ error, synced: 0 }))
+          const coffeeResult = await syncCoffeeOfflineStockQueue().catch((error) => ({ error, synced: 0 }))
+          if (Number(requestResult?.synced || 0) + Number(coffeeResult?.synced || 0) > 0) await reloadData()
         }
         openScreen(getStartupScreen())
         showStartupMessage()

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v70-fuel-receipt-gallery';
+const CACHE_NAME = 'olvend-v71-mobile-inventory-totals';
 const APP_SHELL = [
   './',
   './index.html',
