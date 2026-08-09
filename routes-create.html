@@ -1843,6 +1843,9 @@
       manualRouteRecalcTimer: null,
       editingPlanKey: null,
       savingPlan: false,
+      selectionRevision: 0,
+      previousPlanSnapshot: null,
+      lastPlanComparison: '',
     }
 
     const requestedRouteDate = new URLSearchParams(window.location.search).get('date')
@@ -2610,6 +2613,12 @@
       return `${hours} h ${remainder} min`
     }
 
+    function formatDurationDelta(minutes) {
+      const value = Math.round(Number(minutes) || 0)
+      if (!value) return 'beze změny'
+      return `${value > 0 ? '+' : '−'}${formatDuration(Math.abs(value))}`
+    }
+
     function formatTimeOfDay(value) {
       if (!(value instanceof Date) || Number.isNaN(value.getTime())) return '—'
       return value.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
@@ -2716,6 +2725,45 @@
       }
     }
 
+    function snapshotPlanForComparison(plan) {
+      if (!plan?.orderedStops?.length) return null
+      const timing = getRouteTiming(plan)
+      return {
+        stopCount: plan.orderedStops.length,
+        driveMinutes: timing.driveMinutes,
+        serviceMinutes: timing.serviceMinutes,
+        waitingMinutes: timing.waitingMinutes,
+        totalMinutes: timing.totalMinutes,
+      }
+    }
+
+    function invalidatePlanAfterSelectionChange() {
+      if (state.currentPlan?.orderedStops?.length) {
+        state.previousPlanSnapshot = snapshotPlanForComparison(state.currentPlan)
+      }
+      state.selectionRevision += 1
+      state.currentPlan = null
+      state.lastPlanComparison = ''
+      renderRouteSummary()
+      renderRouteList()
+      renderMap()
+    }
+
+    function buildPlanComparison(plan) {
+      const previous = state.previousPlanSnapshot
+      state.previousPlanSnapshot = null
+      if (!previous) return ''
+
+      const current = snapshotPlanForComparison(plan)
+      if (!current) return ''
+      const stopDelta = current.stopCount - previous.stopCount
+      const stopChange = stopDelta === 0
+        ? `${formatStopCount(current.stopCount)} beze změny`
+        : `${previous.stopCount} → ${current.stopCount} zastávek`
+
+      return `Proti minulému výpočtu: ${stopChange}; jízda ${formatDurationDelta(current.driveMinutes - previous.driveMinutes)}, obsluha ${formatDurationDelta(current.serviceMinutes - previous.serviceMinutes)}, čekání ${formatDurationDelta(current.waitingMinutes - previous.waitingMinutes)}, celkem ${formatDurationDelta(current.totalMinutes - previous.totalMinutes)}.`
+    }
+
     function renderRouteTimeCheck(plan = null) {
       if (!routeTimeCheck) return
       const timing = getRouteTiming(plan)
@@ -2748,6 +2796,7 @@
         : timing.tone === 'tight'
           ? 'Počítej s minimální rezervou na zdržení.'
           : 'Trasu lze přiřadit v nastaveném limitu.'
+      const comparison = state.lastPlanComparison
 
       routeTimeCheck.innerHTML = `
         <div class="route-time-check-grid">
@@ -2757,7 +2806,7 @@
           ${timing.waitingMinutes ? `<div class="route-time-cell"><div class="route-time-label">Čekání na otevření</div><div class="route-time-value">${escapeHtml(formatDuration(timing.waitingMinutes))}</div></div>` : ''}
           <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">${escapeHtml(formatDuration(timing.totalMinutes))}</div></div>
           <div class="route-time-cell"><div class="route-time-label">Maximální čas</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
-          <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}</div></div>
+          <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}${comparison ? `<br><strong>${escapeHtml(comparison)}</strong>` : ''}</div></div>
         </div>
       `
     }
@@ -3023,6 +3072,7 @@
         checkbox.addEventListener('change', (event) => {
           const key = event.target.dataset.key
           if (!key) return
+          invalidatePlanAfterSelectionChange()
           if (event.target.checked) {
             state.selectedKeys.add(key)
           } else {
@@ -5386,11 +5436,15 @@
     })
 
     selectVisibleBtn.addEventListener('click', () => {
+      const hasNewSelection = state.filteredCandidates.some((candidate) => !state.selectedKeys.has(candidate.key))
+      if (hasNewSelection) invalidatePlanAfterSelectionChange()
       state.filteredCandidates.forEach((candidate) => state.selectedKeys.add(candidate.key))
       renderCandidates()
     })
 
     selectAllBtn.addEventListener('click', () => {
+      const hasNewSelection = state.candidates.some((candidate) => !state.selectedKeys.has(candidate.key))
+      if (hasNewSelection) invalidatePlanAfterSelectionChange()
       state.candidates.forEach((candidate) => state.selectedKeys.add(candidate.key))
       renderCandidates()
       setStatus(`Do výběru jsem přidal všech ${state.candidates.length} aktivních lokalit se souřadnicemi.`, 'success')
@@ -5443,6 +5497,8 @@
       try {
         optimizeBtn.disabled = true
         optimizeBtn.textContent = 'Počítám trasu...'
+        const calculationRevision = state.selectionRevision
+        const calculationSelectedCount = state.selectedKeys.size
         let plan
 
         try {
@@ -5474,6 +5530,13 @@
             : `Google teď není dostupný, takže jsem použil přibližný výpočet. ${message}`, 'warning')
         }
 
+        if (calculationRevision !== state.selectionRevision || calculationSelectedCount !== state.selectedKeys.size) {
+          throw new Error('Výběr zastávek se během výpočtu změnil. Klikni prosím znovu na Spočítat trasu.')
+        }
+        if ((plan?.orderedStops?.length || 0) !== calculationSelectedCount) {
+          throw new Error(`Výpočet nevrátil správný počet zastávek (${plan?.orderedStops?.length || 0} z ${calculationSelectedCount}). Zkus trasu spočítat znovu.`)
+        }
+
         try {
           plan.telemetryRevenue = await loadTelemetryRevenueForPlan(plan)
         } catch (telemetryError) {
@@ -5482,7 +5545,12 @@
           setStatus('Trasa je spočítaná, ale online tržbu se teď nepodařilo načíst.', 'warning')
         }
 
+        if (calculationRevision !== state.selectionRevision) {
+          throw new Error('Výběr zastávek se během výpočtu změnil. Klikni prosím znovu na Spočítat trasu.')
+        }
+
         state.currentPlan = plan
+        state.lastPlanComparison = buildPlanComparison(plan)
         renderRouteSummary(plan)
         renderRouteList(plan)
         renderMap(plan)
