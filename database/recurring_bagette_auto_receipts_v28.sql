@@ -41,9 +41,12 @@ declare
   v_order public.purchase_recurring_orders%rowtype;
   v_item record;
   v_purchase_order_id bigint;
+  v_purchase_order_item_id bigint;
   v_batch_id bigint;
   v_quantity numeric(12,3);
+  v_draft_quantity numeric(12,3);
   v_expiry_date date;
+  v_reusing_draft boolean;
   v_created_orders integer := 0;
   v_created_items integer := 0;
   v_movements jsonb;
@@ -88,6 +91,7 @@ begin
     order by purchase.id desc
     limit 1
     for update;
+    v_reusing_draft := v_purchase_order_id is not null;
 
     if v_purchase_order_id is null then
       insert into public.purchase_orders (
@@ -123,7 +127,8 @@ begin
           updated_at = now()
       where id = v_purchase_order_id;
 
-      delete from public.purchase_order_items
+      update public.purchase_order_items
+      set received_quantity = 0
       where purchase_order_id = v_purchase_order_id;
     end if;
 
@@ -140,11 +145,31 @@ begin
         and product.product_category = 'food_ready'
       order by item.id
     loop
+      v_purchase_order_item_id := null;
+      v_draft_quantity := null;
       v_quantity := coalesce(
         nullif(v_item.order_quantity_by_weekday ->> v_iso_day::text, '')::numeric,
         v_item.base_order_quantity,
         0
       );
+
+      -- Existující návrh je skutečně objednaný doklad a jeho množství má
+      -- přednost před obecným rozpisem stálé objednávky.
+      if v_reusing_draft then
+        select item.id, item.ordered_quantity
+          into v_purchase_order_item_id, v_draft_quantity
+        from public.purchase_order_items item
+        where item.purchase_order_id = v_purchase_order_id
+          and item.recurring_order_item_id = v_item.id
+          and item.product_id = v_item.product_id
+        order by item.id
+        limit 1
+        for update;
+        if v_purchase_order_item_id is not null then
+          v_quantity := v_draft_quantity;
+        end if;
+      end if;
+
       if v_quantity <= 0 then
         continue;
       end if;
@@ -165,23 +190,30 @@ begin
         format('Automatický příjem stálé dodávky #%s', v_order.id)
       ) returning id into v_batch_id;
 
-      insert into public.purchase_order_items (
-        purchase_order_id,
-        recurring_order_item_id,
-        product_id,
-        ordered_quantity,
-        received_quantity,
-        unit_cost,
-        note
-      ) values (
-        v_purchase_order_id,
-        v_item.id,
-        v_item.product_id,
-        v_quantity,
-        v_quantity,
-        nullif(v_item.purchase_price, 0),
-        format('Automaticky přijato; spotřebujte do %s.', to_char(v_expiry_date, 'DD.MM.YYYY'))
-      );
+      if v_purchase_order_item_id is null then
+        insert into public.purchase_order_items (
+          purchase_order_id,
+          recurring_order_item_id,
+          product_id,
+          ordered_quantity,
+          received_quantity,
+          unit_cost,
+          note
+        ) values (
+          v_purchase_order_id,
+          v_item.id,
+          v_item.product_id,
+          v_quantity,
+          v_quantity,
+          nullif(v_item.purchase_price, 0),
+          format('Automaticky přijato; spotřebujte do %s.', to_char(v_expiry_date, 'DD.MM.YYYY'))
+        );
+      else
+        update public.purchase_order_items
+        set received_quantity = v_quantity,
+            note = format('Automaticky přijato; spotřebujte do %s.', to_char(v_expiry_date, 'DD.MM.YYYY'))
+        where id = v_purchase_order_item_id;
+      end if;
 
       v_movements := v_movements || jsonb_build_array(jsonb_build_object(
         'product_id', v_item.product_id,
