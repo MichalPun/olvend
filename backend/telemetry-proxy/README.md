@@ -61,3 +61,22 @@ https://<render-service>.onrender.com/gp-vendsoft-telemetry?proxy_token=...
 ```
 
 The XML body remains unchanged.
+
+## Let's Encrypt VPS deployment
+
+If a GP terminal does not trust Render/Supabase certificates issued by Google Trust Services, deploy the same proxy behind Caddy on a VPS. Caddy automatically issues a Let's Encrypt certificate.
+
+Files:
+
+```text
+Dockerfile
+Caddyfile
+docker-compose.letsencrypt.yml
+.env.letsencrypt.example
+```
+
+Detailed runbook:
+
+```text
+docs/telemetry-letsencrypt-proxy.md
+```
