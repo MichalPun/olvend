@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v73-instruction-flow';
+const CACHE_NAME = 'olvend-v74-stock-receipt-all';
 const APP_SHELL = [
   './',
   './index.html',
