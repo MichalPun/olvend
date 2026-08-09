@@ -100,7 +100,8 @@ Deno.serve(async (req) => {
     }).eq("id", auditId);
     if (updateError) return json({ error: updateError.message }, 400);
 
-    if (audit.assigned_employee_id) {
+    const chargeTotal = Number(protocol.charge_total || 0);
+    if (audit.assigned_employee_id && chargeTotal > 0) {
       await admin.from("daily_instructions").insert({
         title: `Výsledek inventury #${auditId}`,
         message: `Vyhodnocení inventury je dokončeno. Navržená částka k úhradě: ${money(protocol.charge_total)}. Detail najdeš v Mobil > Sklad > Inventury.`,
