@@ -186,7 +186,7 @@ async function getVendSoftCookie(email: string, password: string, force = false)
   return loginToVendSoft(email, password);
 }
 
-async function downloadReport(cookie: string, day: string) {
+async function downloadReport(cookie: string, fromDate: string, toDate = fromDate) {
   const response = await fetch(`${VENDSOFT_BASE_URL}/report/v3`, {
     method: "POST",
     headers: {
@@ -199,10 +199,10 @@ async function downloadReport(cookie: string, day: string) {
       products: "",
       report_format: "xlsx",
       drivers: "",
-      from_date: day,
+      from_date: fromDate,
       locations: "",
       machines: "",
-      to_date: day,
+      to_date: toDate,
     }),
   });
 
@@ -256,6 +256,16 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
+  const requestBody = await req.json().catch(() => ({})) as Record<string, unknown>;
+  const historyMode = requestBody.mode === "history";
+  const dryRun = requestBody.dry_run === true;
+  const requestedFrom = asText(requestBody.from_date);
+  const requestedTo = asText(requestBody.to_date || requestBody.from_date);
+  const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (historyMode && (!isoDatePattern.test(requestedFrom) || !isoDatePattern.test(requestedTo))) {
+    return json({ error: "History mode requires from_date and to_date in YYYY-MM-DD format." }, 400);
+  }
+
   const attemptAt = new Date().toISOString();
   await admin
     .from("vendsoft_food_sync_state")
@@ -271,14 +281,16 @@ Deno.serve(async (req) => {
 
     const startedAt = new Date(state.started_at);
     const day = localDateString();
+    const reportFrom = historyMode ? requestedFrom : day;
+    const reportTo = historyMode ? requestedTo : day;
     let cookie = await getVendSoftCookie(email, password);
     let report: Uint8Array;
     try {
-      report = await downloadReport(cookie, day);
+      report = await downloadReport(cookie, reportFrom, reportTo);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "VENDSOFT_SESSION_EXPIRED") throw error;
       cookie = await getVendSoftCookie(email, password, true);
-      report = await downloadReport(cookie, day);
+      report = await downloadReport(cookie, reportFrom, reportTo);
     }
     const rows = parseReport(report);
 
@@ -289,7 +301,7 @@ Deno.serve(async (req) => {
       const selection = asText(row.Selection);
       const quantity = asNumber(row.Quantity) ?? 0;
       if (!machine.code || !eventAt || !selection || quantity <= 0) continue;
-      if (new Date(eventAt) <= startedAt) continue;
+      if (!historyMode && new Date(eventAt) <= startedAt) continue;
 
       candidates.push({
         machine,
@@ -305,6 +317,173 @@ Deno.serve(async (req) => {
     }
 
     candidates.sort((a, b) => a.eventAt.localeCompare(b.eventAt));
+
+    if (historyMode) {
+      const { data: machines, error: machinesError } = await admin
+        .from("machines")
+        .select("id, evidence_number, machine_type");
+      if (machinesError) throw machinesError;
+
+      const machineByCode = new Map<string, Record<string, unknown>>(
+        (machines || []).map((machine) => [asText(machine.evidence_number), machine]),
+      );
+      const machineIds = (machines || []).map((machine) => Number(machine.id)).filter(Boolean);
+      const missingMachineExamples = [...new Map(
+        candidates
+          .filter((item) => !machineByCode.has(item.machine.code))
+          .map((item) => [item.machine.code, { code: item.machine.code, name: item.machine.name }]),
+      ).values()];
+
+      if (!dryRun && missingMachineExamples.length) {
+        const { data: legacyMachines, error: legacyMachinesError } = await admin
+          .from("machines")
+          .insert(missingMachineExamples.map((machine) => ({
+            evidence_number: Number(machine.code),
+            qr_token: `vendsoft-${machine.code}`,
+            name: machine.name || `VendSoft automat ${machine.code}`,
+            machine_type: "Legacy",
+            status: "removed",
+            active: false,
+            sales_tracking_mode: "none",
+            note: "Historický automat vytvořený při migraci prodejů z VendSoftu; není součástí aktivního provozu.",
+          })))
+          .select("id, evidence_number, machine_type");
+        if (legacyMachinesError) throw legacyMachinesError;
+        for (const machine of legacyMachines || []) {
+          machineByCode.set(asText(machine.evidence_number), machine);
+          machineIds.push(Number(machine.id));
+        }
+      }
+      const { data: slots, error: slotsError } = await admin
+        .from("machine_planogram_slots")
+        .select("id, machine_id, slot_code, product_name, product_sku, customer_price_czk, dex_price_czk")
+        .eq("active", true)
+        .in("machine_id", machineIds);
+      if (slotsError) throw slotsError;
+      const slotByMachineAndCode = new Map(
+        (slots || []).map((slot) => [`${slot.machine_id}|${asText(slot.slot_code)}`, slot]),
+      );
+
+      const rangeStart = `${reportFrom}T00:00:00+02:00`;
+      const rangeEndDate = new Date(`${reportTo}T00:00:00Z`);
+      rangeEndDate.setUTCDate(rangeEndDate.getUTCDate() + 1);
+      const rangeEnd = rangeEndDate.toISOString();
+      const { data: imaSales, error: imaSalesError } = await admin
+        .from("telemetry_sales_events")
+        .select("machine_id, source_event_at")
+        .ilike("provider", "ima")
+        .gte("source_event_at", rangeStart)
+        .lt("source_event_at", rangeEnd)
+        .order("source_event_at", { ascending: true });
+      if (imaSalesError) throw imaSalesError;
+      const firstImaAtByMachine = new Map<number, string>();
+      for (const sale of imaSales || []) {
+        const machineId = Number(sale.machine_id);
+        if (!firstImaAtByMachine.has(machineId)) firstImaAtByMachine.set(machineId, sale.source_event_at);
+      }
+
+      const { data: existingImports, error: existingImportsError } = await admin
+        .from("vendsoft_food_sales_imports")
+        .select("event_key")
+        .gte("source_event_at", rangeStart)
+        .lt("source_event_at", rangeEnd);
+      if (existingImportsError) throw existingImportsError;
+      const existingKeys = new Set((existingImports || []).map((row) => row.event_key));
+
+      const importRows = [];
+      const telemetryRows = [];
+      let duplicates = 0;
+      let skippedDirectIma = 0;
+      let unmatchedMachines = 0;
+      let unmatchedSlots = 0;
+
+      for (const item of candidates) {
+        const eventKey = await sha256([
+          item.machine.code, item.eventAt, item.selection, item.product, item.quantity,
+          item.totalAmount ?? "", item.creditCardAmount ?? "",
+        ].join("|"));
+        if (existingKeys.has(eventKey)) {
+          duplicates += 1;
+          continue;
+        }
+        existingKeys.add(eventKey);
+
+        const machine = machineByCode.get(item.machine.code);
+        if (!machine) {
+          unmatchedMachines += 1;
+          importRows.push({
+            event_key: eventKey, vendsoft_machine_code: item.machine.code,
+            selection_code: item.selection, location_name: item.location || null,
+            machine_name: item.machine.name || null, product_name: item.product || null,
+            quantity: item.quantity, unit_price_czk: item.unitPrice,
+            total_amount_czk: item.totalAmount, credit_card_amount_czk: item.creditCardAmount,
+            source_event_at: item.eventAt, status: "unmatched_machine",
+            note: "Historický import: automat s tímto VendSoft kódem nebyl nalezen.",
+          });
+          continue;
+        }
+
+        const firstImaAt = firstImaAtByMachine.get(Number(machine.id));
+        if (firstImaAt && item.eventAt >= firstImaAt) {
+          skippedDirectIma += 1;
+          continue;
+        }
+
+        const slot = slotByMachineAndCode.get(`${machine.id}|${item.selection}`);
+        if (!slot) unmatchedSlots += 1;
+        importRows.push({
+          event_key: eventKey, machine_id: machine.id, planogram_slot_id: slot?.id || null,
+          vendsoft_machine_code: item.machine.code, selection_code: item.selection,
+          location_name: item.location || null, machine_name: item.machine.name || null,
+          product_name: item.product || slot?.product_name || null, quantity: item.quantity,
+          unit_price_czk: item.unitPrice, total_amount_czk: item.totalAmount,
+          credit_card_amount_czk: item.creditCardAmount, source_event_at: item.eventAt,
+          status: "applied",
+          note: slot ? "Historický import z VendSoftu; stav zásobníku nebyl změněn."
+            : "Historický import: původní pozice již není v aktivním planogramu; prodej byl zachován bez skladové vazby.",
+        });
+
+        const totalAmount = item.totalAmount ?? (item.unitPrice == null ? null : item.unitPrice * item.quantity);
+        telemetryRows.push({
+          provider: "VendSoft", ingest_id: null, machine_id: machine.id,
+          source_event_key: eventKey,
+          source_location_name: item.location || null,
+          source_machine_name: item.machine.name || null,
+          planogram_slot_id: slot?.id || null, selection_code: item.selection,
+          product_name: item.product || slot?.product_name || "Historický prodej",
+          product_sku: slot?.product_sku || null,
+          quantity: item.quantity, cash_quantity: 0, cashless_quantity: 0,
+          unknown_payment_quantity: item.quantity,
+          unit_price_czk: item.unitPrice ?? slot?.customer_price_czk ?? slot?.dex_price_czk ?? null,
+          total_amount_czk: totalAmount, cash_amount_czk: null, cashless_amount_czk: null,
+          unknown_payment_amount_czk: totalAmount, source_event_at: item.eventAt,
+        });
+      }
+
+      if (!dryRun) {
+        for (let offset = 0; offset < importRows.length; offset += 500) {
+          const { error } = await admin.from("vendsoft_food_sales_imports")
+            .upsert(importRows.slice(offset, offset + 500), { onConflict: "event_key", ignoreDuplicates: true });
+          if (error) throw error;
+        }
+        for (let offset = 0; offset < telemetryRows.length; offset += 500) {
+          const { error } = await admin.from("telemetry_sales_events")
+            .upsert(telemetryRows.slice(offset, offset + 500), {
+              onConflict: "provider,source_event_key",
+              ignoreDuplicates: true,
+            });
+          if (error) throw error;
+        }
+      }
+
+      return json({
+        ok: true, mode: "history", dry_run: dryRun, report_from: reportFrom, report_to: reportTo,
+        report_rows: rows.length, candidates: candidates.length, importable: telemetryRows.length,
+        duplicates, skipped_direct_ima: skippedDirectIma,
+        unmatched_machines: unmatchedMachines, unmatched_slots: unmatchedSlots,
+        unmatched_machine_examples: missingMachineExamples.slice(0, 50),
+      });
+    }
 
     // VendSoft is only a temporary fallback for food machines that do not yet
     // deliver usable sales through IMA. A machine is protected as soon as it
@@ -420,7 +599,11 @@ Deno.serve(async (req) => {
       last_seen_event_at: lastSeenEventAt,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown VendSoft sync error.";
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null
+        ? JSON.stringify(error)
+        : String(error || "Unknown VendSoft sync error.");
     const failedAt = new Date().toISOString();
     await admin
       .from("vendsoft_food_sync_state")
