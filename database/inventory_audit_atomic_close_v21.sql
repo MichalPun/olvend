@@ -256,7 +256,22 @@ begin
           where id = v_balance_id;
         end if;
       end loop;
-    elsif abs(coalesce(v_item.difference_quantity, 0)) > 0.0001 then
+    else
+      -- Inventura je autoritativní fyzický stav. Mezi vytvořením soupisu a
+      -- uzavřením mohly proběhnout další nakládky či doplnění, takže nelze
+      -- přičítat snapshotový rozdíl k aktuálnímu zůstatku. Nastav přesně
+      -- napočítané množství; expirační položky jsou řešeny větví výše.
+      update public.stock_location_balances
+      set quantity_on_hand = 0,
+          reserved_quantity = 0,
+          updated_at = now()
+      where stock_location_id = v_item.stock_location_id
+        and product_id = v_item.product_id;
+
+      if coalesce(v_item.counted_quantity, 0) <= 0 then
+        continue;
+      end if;
+
       select id into v_balance_id
       from public.stock_location_balances
       where stock_location_id = v_item.stock_location_id
@@ -271,11 +286,13 @@ begin
           stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity, updated_at
         ) values (
           v_item.stock_location_id, v_item.product_id, v_item.batch_id,
-          v_item.difference_quantity, 0, now()
+          v_item.counted_quantity, 0, now()
         );
       else
         update public.stock_location_balances
-        set quantity_on_hand = quantity_on_hand + v_item.difference_quantity, updated_at = now()
+        set quantity_on_hand = v_item.counted_quantity,
+            reserved_quantity = 0,
+            updated_at = now()
         where id = v_balance_id;
       end if;
     end if;
