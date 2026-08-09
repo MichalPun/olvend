@@ -148,7 +148,11 @@ begin
     raise exception 'Inventura % musí být před uzavřením vyhodnocená (aktuálně %).', p_audit_id, v_audit.status;
   end if;
 
-  perform public.sync_inventory_audit_expiry_counts(p_audit_id);
+  -- Expirace se vedou na skladu. Vozidlová inventura je autoritativní pouze
+  -- pro fyzické množství a nesmí se zablokovat chybějícím rozpisem šarží.
+  if v_audit.scope_type = 'warehouse' then
+    perform public.sync_inventory_audit_expiry_counts(p_audit_id);
+  end if;
 
   for v_item in
     select i.*, p.expiry_tracking_mode, p.requires_batch_tracking
@@ -164,7 +168,8 @@ begin
     from public.inventory_audit_expiry_counts e
     where e.audit_item_id = v_item.id;
 
-    if (v_item.requires_batch_tracking or v_item.expiry_tracking_mode <> 'none')
+    if v_audit.scope_type = 'warehouse'
+       and (v_item.requires_batch_tracking or v_item.expiry_tracking_mode <> 'none')
        and v_item.counted_quantity > 0
        and abs(v_expiry_total - v_item.counted_quantity) > 0.001 then
       raise exception 'Položka %: součet expirací % neodpovídá napočítanému množství %.',
@@ -189,7 +194,8 @@ begin
       );
     end if;
 
-    if exists (select 1 from public.inventory_audit_expiry_counts e where e.audit_item_id = v_item.id) then
+    if v_audit.scope_type = 'warehouse'
+       and exists (select 1 from public.inventory_audit_expiry_counts e where e.audit_item_id = v_item.id) then
       update public.stock_location_balances
       set quantity_on_hand = 0, updated_at = now()
       where stock_location_id = v_item.stock_location_id
