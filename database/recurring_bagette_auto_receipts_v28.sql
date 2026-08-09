@@ -74,30 +74,58 @@ begin
     end if;
 
     v_expiry_date := v_delivery_date + v_order.shelf_life_days;
+    v_purchase_order_id := null;
 
-    insert into public.purchase_orders (
-      supplier_id,
-      recurring_order_id,
-      order_scope,
-      status,
-      document_type,
-      order_date,
-      delivery_date,
-      received_at,
-      received_stock_location_id,
-      note
-    ) values (
-      v_order.supplier_id,
-      v_order.id,
-      case when v_order.pilot_scope = 'bagette' then 'bagette_pilot' else 'general' end,
-      'received',
-      'internal_receipt',
-      v_delivery_date - greatest(v_order.lead_time_days, 0),
-      v_delivery_date,
-      timezone('Europe/Prague', v_delivery_date::timestamp),
-      v_order.auto_receive_stock_location_id,
-      format('Automatický příjem ze stálé dodávky. Expirace %s.', to_char(v_expiry_date, 'DD.MM.YYYY'))
-    ) returning id into v_purchase_order_id;
+    -- Generátor stálých objednávek už může mít pro tento den připravený návrh.
+    -- Při příjmu ho použijeme a jeho řádky níže nahradíme množstvím platným
+    -- pro konkrétní den; v seznamu tak nevznikne druhý duplicitní doklad.
+    select purchase.id
+      into v_purchase_order_id
+    from public.purchase_orders purchase
+    where purchase.recurring_order_id = v_order.id
+      and purchase.delivery_date = v_delivery_date
+      and purchase.status in ('draft', 'ordered')
+    order by purchase.id desc
+    limit 1
+    for update;
+
+    if v_purchase_order_id is null then
+      insert into public.purchase_orders (
+        supplier_id,
+        recurring_order_id,
+        order_scope,
+        status,
+        order_date,
+        delivery_date,
+        received_at,
+        received_stock_location_id,
+        note
+      ) values (
+        v_order.supplier_id,
+        v_order.id,
+        case when v_order.pilot_scope = 'bagette' then 'bagette_pilot' else 'general' end,
+        'received',
+        v_delivery_date - greatest(v_order.lead_time_days, 0),
+        v_delivery_date,
+        timezone('Europe/Prague', v_delivery_date::timestamp),
+        v_order.auto_receive_stock_location_id,
+        format('Automatický příjem ze stálé dodávky. Expirace %s.', to_char(v_expiry_date, 'DD.MM.YYYY'))
+      ) returning id into v_purchase_order_id;
+    else
+      update public.purchase_orders
+      set supplier_id = v_order.supplier_id,
+          order_scope = case when v_order.pilot_scope = 'bagette' then 'bagette_pilot' else 'general' end,
+          status = 'received',
+          order_date = v_delivery_date - greatest(v_order.lead_time_days, 0),
+          received_at = timezone('Europe/Prague', v_delivery_date::timestamp),
+          received_stock_location_id = v_order.auto_receive_stock_location_id,
+          note = format('Automatický příjem ze stálé dodávky. Expirace %s.', to_char(v_expiry_date, 'DD.MM.YYYY')),
+          updated_at = now()
+      where id = v_purchase_order_id;
+
+      delete from public.purchase_order_items
+      where purchase_order_id = v_purchase_order_id;
+    end if;
 
     v_movements := '[]'::jsonb;
 
