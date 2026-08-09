@@ -8697,11 +8697,13 @@
         warehouseLocationId = await ensureStockLocation('warehouse', warehouseId, warehouse?.name || `Sklad ${warehouseId}`)
       }
       const allowPreparedSnapshotShortage = request.status === 'ready' && ['vehicle_order', 'vehicle_load'].includes(request.request_type)
-      const aggregateMachinesLocationId = ['vehicle_return', 'vehicle_writeoff'].includes(request.request_type)
+      const aggregateMachinesLocationId = request.request_type === 'vehicle_return'
         ? await ensureAggregateMachinesStockLocation()
         : null
       for (const item of items) {
-        const quantity = getMobilePickStockQuantity(item)
+        const quantity = request.request_type === 'vehicle_writeoff'
+          ? getMobilePickQuantity(item)
+          : getMobilePickStockQuantity(item)
         if (!item.product_id || quantity <= 0) continue
         const product = productsV13.find((row) => String(row.id) === String(item.product_id))
         const allowNegativeLoad = product?.product_category === 'food_ready' || allowPreparedSnapshotShortage
@@ -8740,8 +8742,7 @@
           }))
           continue
         }
-        if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
-          const isPhysicalWriteoff = request.request_type === 'vehicle_writeoff'
+        if (request.request_type === 'vehicle_return') {
           movements.push(...await moveStockPreservingBatches({
             productId: item.product_id,
             quantity,
@@ -8752,9 +8753,26 @@
             referenceType: 'mobile_stock_request',
             referenceId,
             note: `Mobilní vratka/odpis z automatů #${request.id}`,
-            allowNegative: isPhysicalWriteoff,
+            allowNegative: false,
             applyBalances: false,
-            requireDatedBatches: !isPhysicalWriteoff && isAuditExpiryTracked(product)
+            requireDatedBatches: isAuditExpiryTracked(product)
+          }))
+          continue
+        }
+        if (request.request_type === 'vehicle_writeoff') {
+          movements.push(...await moveStockPreservingBatches({
+            productId: item.product_id,
+            quantity,
+            fromStockLocationId: vehicleLocationId,
+            toStockLocationId: null,
+            movementType: 'waste',
+            unitPrice: null,
+            referenceType: 'mobile_stock_request',
+            referenceId,
+            note: `Mobilní odpis z vozidla #${request.id}`,
+            allowNegative: false,
+            applyBalances: false,
+            requireDatedBatches: isAuditExpiryTracked(product)
           }))
           continue
         }

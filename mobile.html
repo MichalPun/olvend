@@ -11185,13 +11185,15 @@
       if (vehicleId) {
         vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : `Vozidlo ${vehicleId}`)
       }
-      if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
+      if (request.request_type === 'vehicle_return') {
         aggregateMachinesLocationId = await ensureAggregateMachinesStockLocation()
       }
 
       for (const item of items) {
         const productId = item.product_id
-        const quantity = getRequestQuantity(item)
+        const quantity = request.request_type === 'vehicle_writeoff'
+          ? Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
+          : getRequestQuantity(item)
         if (!productId || quantity <= 0) continue
 
         if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
@@ -11239,9 +11241,8 @@
           })
         }
 
-        if (request.request_type === 'vehicle_return' || request.request_type === 'vehicle_writeoff') {
-          if (!aggregateMachinesLocationId) throw new Error('Pro vratku/odpis chybí sklad Automaty.')
-          const isPhysicalWriteoff = request.request_type === 'vehicle_writeoff'
+        if (request.request_type === 'vehicle_return') {
+          if (!aggregateMachinesLocationId) throw new Error('Pro vratku chybí sklad Automaty.')
           movementRows.push(...await moveStockPreservingBatches({
             productId,
             quantity,
@@ -11250,7 +11251,21 @@
             movementType: 'waste',
             referenceId,
             note: `Mobilní vratka/odpis z automatů #${request.id}`,
-            allowNegative: isPhysicalWriteoff
+            allowNegative: false
+          }))
+        }
+
+        if (request.request_type === 'vehicle_writeoff') {
+          if (!vehicleLocationId) throw new Error('Pro odpis chybí konkrétní vozidlo.')
+          movementRows.push(...await moveStockPreservingBatches({
+            productId,
+            quantity,
+            fromStockLocationId: vehicleLocationId,
+            toStockLocationId: null,
+            movementType: 'waste',
+            referenceId,
+            note: `Mobilní odpis z vozidla #${request.id}`,
+            allowNegative: false
           }))
         }
       }
