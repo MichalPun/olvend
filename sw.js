@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v71-mobile-inventory-totals';
+const CACHE_NAME = 'olvend-v72-release-1-8-stock';
 const APP_SHELL = [
   './',
   './index.html',
@@ -18,6 +18,7 @@ const APP_SHELL = [
   './report-monthly-review.html',
   './report-invoice-comparison.html',
   './report-attendance.html',
+  './operational-requests.html',
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',

@@ -1,13 +1,24 @@
 (function () {
   const currentPath = window.location.pathname.split("/").pop() || "dashboard.html";
   const currentPathWithQuery = `${currentPath}${window.location.search || ""}`;
-  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV17";
+  const RELEASE_NOTES_KEY = "olvendSeenReleaseNotesV18";
   const APP_THEME_KEY = "olvendThemePreference";
   const NAV_COLLAPSE_KEY = "olvendCollapsedNavGroups";
   const COMPACT_NAV_INIT_KEY = "olvendCompactSidebarV2";
-  const APP_VERSION = "OLVEND 1.7";
-  const MIN_RELEASE_ANNOUNCEMENT = "1.7";
+  const APP_VERSION = "OLVEND 1.8";
+  const MIN_RELEASE_ANNOUNCEMENT = "1.8";
   const RELEASE_NOTES = {
+    "1.8": {
+      title: "OLVEND 1.8 je připraven",
+      subtitle: "Trasy, inventury a sklad teď navazují v jednom pracovním toku.",
+      items: [
+        "Mobilní trasy vedou operátora od převzetí přes práci u automatu až po uzavření návštěvy.",
+        "Cílené inventury vybírají rizikové položky a zachovávají vysvětlení i rozhodnutí nadřízeného.",
+        "Nový mobilní Sklad sjednocuje převzetí, nakládku, vrácení, odpisy a provozní požadavky.",
+        "Dodávky partnerům přecházejí ze skladu do fronty pro fakturaci podle skutečně vydaného množství.",
+        "Průběžné ukládání a opravené přepočty zvyšují spolehlivost při slabém připojení."
+      ]
+    },
     "1.7": {
       title: "Nová verze 1.7",
       subtitle: "Skladové hospodářství dostává automatickou nakládku, balení v kartách zásob a paměť odložených potřeb.",
@@ -97,8 +108,15 @@
       currentLabel: "Kontrolní trasy",
       activeKey: "controlling",
       versionLabel: "Návrh verze",
-      versionValue: "OLVEND 1.7",
+      versionValue: APP_VERSION,
       versionNote: "PC část kontrolingu"
+    },
+    "operational-requests.html": {
+      currentLabel: "Požadavky a výdeje",
+      activeKey: "operational-requests",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
     },
     "service-requests.html": {
       currentLabel: "Servisní požadavky",
@@ -319,6 +337,7 @@
           label: "Sklad",
           children: [
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
+            { key: "operational-requests", href: "operational-requests.html", label: "Požadavky a výdeje" },
             { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" }
           ]
         },
@@ -564,7 +583,7 @@
   const NAV_ICON_ALIASES = {
     shift: 'clock', suppliers: 'contacts', 'machines-management': 'machine', machines: 'machine', telemetry: 'reports',
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
-    'stock-management': 'stock', inventory: 'stock', 'purchases-recurring': 'stock',
+    'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
     'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks',
@@ -650,6 +669,7 @@
           <div class="version-label">${meta.versionLabel}</div>
           <div class="version-value">${meta.versionValue}</div>
           ${meta.versionNote ? `<div class="version-note">${meta.versionNote}</div>` : ""}
+          <button class="release-btn" type="button" id="openReleaseNotesButton" style="width:100%;margin-top:8px;padding:8px 10px;color:#fff;background:rgba(255,255,255,.06)">Novinky 1.8</button>
         </div>
       </div>
     `;
@@ -1085,6 +1105,12 @@
       .release-body {
         padding: 18px 22px 22px;
       }
+
+      .release-role-switch { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin:14px 22px 0; padding:4px; border-radius:8px; background:rgba(255,255,255,.06); }
+      .release-role-switch button { min-height:40px; border:0; border-radius:6px; background:transparent; color:#a5a8b2; font-weight:800; cursor:pointer; }
+      .release-role-switch button.active { background:#fff; color:#17191f; }
+      .release-role-note { margin:0 0 12px; color:#a5a8b2; font-size:13px; font-weight:700; }
+      .release-rule { margin-top:12px; padding:11px 14px; border-left:4px solid #66a9ff; background:rgba(102,169,255,.09); color:#cbd8ea; font-size:13px; line-height:1.5; }
 
       .release-note {
         margin-top: 14px;
@@ -1754,13 +1780,14 @@
             <h2 id="releaseTitle">${notes.title}</h2>
             <p>${notes.subtitle}</p>
           </div>
+          <div class="release-role-switch" id="releaseRoleSwitch">
+            <button class="active" type="button" data-release-role="operator">Operátorka</button>
+            <button type="button" data-release-role="warehouse">Sklad</button>
+            <button type="button" data-release-role="management">Vedení</button>
+          </div>
           <div class="release-body">
-            <ul class="release-list">
-              ${notes.items.map((item) => `<li>${item}</li>`).join("")}
-            </ul>
-            <div class="release-note">
-              Okno se zobrazí jen jednou na zařízení. Pak už můžeš rovnou pokračovat do práce.
-            </div>
+            <div id="releaseRoleContent"></div>
+            <div class="release-note">Po potvrzení se okno na tomto zařízení znovu neukáže.</div>
           </div>
           <div class="release-footer">
             <button class="release-btn primary" type="button" id="releaseConfirmBtn">Začít používat ${version}</button>
@@ -1770,7 +1797,7 @@
     `;
   }
 
-  function setupReleaseNotes() {
+  function setupReleaseNotes(force = false) {
     const currentVersion = extractVersionNumber(meta.versionValue);
     if (!currentVersion) return;
     if (compareVersions(currentVersion, MIN_RELEASE_ANNOUNCEMENT) < 0) return;
@@ -1779,7 +1806,7 @@
     if (!notes) return;
 
     const seenVersion = localStorage.getItem(RELEASE_NOTES_KEY);
-    if (seenVersion === currentVersion) return;
+    if (!force && seenVersion === currentVersion) return;
 
     const wrapper = document.createElement("div");
     wrapper.innerHTML = renderReleaseModal(currentVersion, notes);
@@ -1788,6 +1815,25 @@
     const backdrop = document.getElementById("releaseBackdrop");
     const confirmBtn = document.getElementById("releaseConfirmBtn");
     if (!backdrop || !confirmBtn) return;
+
+    const roleContent = {
+      operator: { note: "Přehled pro operátorku", items: ["Trasa, zastávky a práce u automatu jsou na jednom místě.", "Cílená inventura ukáže jen rizikové položky.", "Nový mobilní Sklad vede převzetí, nakládku, vrácení i odpis.", "Rozpracovaná práce lépe zvládá slabý signál."], rule: "Skutečné doplnění, inventura i výjimka se zapisují přímo v kroku, kde vznikly." },
+      warehouse: { note: "Přehled pro skladníka", items: ["U vychystání je vidět, kdo zboží připravil a převzal.", "Expirace pracují s dostupnými šaržemi a dřívějším datem.", "Použitelné vratky a neprodejné odpisy jsou oddělené.", "Dodávky partnerům přicházejí rovnou do skladové fronty."], rule: "Sklad a vozidlo se mění až potvrzeným pohybem se skutečným množstvím." },
+      management: { note: "Přehled pro vedení a kontrolu", items: ["Trasy porovnávají plán, návštěvy, čas a svoz.", "Inventurní rozdíly mají vysvětlení a konečné rozhodnutí.", "Telemetrie pomáhá plánovat návštěvy podle zásob a prodejů.", "Požadavky a partnerské dodávky mají společnou historii."], rule: "Výjimky zůstávají průchodné, ale vždy dohledatelné." }
+    };
+    const renderRole = (role) => {
+      const data = roleContent[role] || roleContent.operator;
+      const host = document.getElementById("releaseRoleContent");
+      if (!host) return;
+      host.innerHTML = `<p class="release-role-note">${data.note}</p><ul class="release-list">${data.items.map((item) => `<li>${item}</li>`).join("")}</ul><div class="release-rule">${data.rule}</div>`;
+    };
+    document.getElementById("releaseRoleSwitch")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-release-role]");
+      if (!button) return;
+      document.querySelectorAll("[data-release-role]").forEach((item) => item.classList.toggle("active", item === button));
+      renderRole(button.dataset.releaseRole);
+    });
+    renderRole("operator");
 
     const closeModal = (markSeen) => {
       if (markSeen) {
@@ -1854,6 +1900,7 @@
     injectSidebarReorderStyles();
     sidebar.innerHTML = renderSidebar();
     setupSidebarCollapsing(sidebar);
+    sidebar.querySelector("#openReleaseNotesButton")?.addEventListener("click", () => setupReleaseNotes(true));
   }
 
   const mobileShell = document.querySelector(".mobile-nav-shell");
