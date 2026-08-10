@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v77-food-returned-item';
+const CACHE_NAME = 'olvend-v78-manual-counters-fallback';
 const APP_SHELL = [
   './',
   './index.html',
