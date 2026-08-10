@@ -5859,17 +5859,20 @@
           const pendingBeforeTarget = { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 }
           const plannedVehicleQty = Number((currentVehicleQty + pendingLoadQty).toFixed(3))
           const projectedVehicleBeforeTarget = Math.max(0, Number((plannedVehicleQty - pendingBeforeTarget.pending).toFixed(3)))
-          const fixedSafetyQty = 0
-          const dynamicSafetyQty = 0
-          const safetyQty = 0
           const resolvedDeferredNeeds = []
           const deferredNeeds = []
           const deferredNeed = null
           const deferredQty = 0
           const sameTargetDeferredQty = 0
           const tripDemandQty = Number(estimate.expected.toFixed(3))
+          const fixedSafetyQty = Math.max(0, Number(profile.safety_stock_quantity || 0))
+          const rawDynamicSafetyQty = Math.max(0, tripDemandQty * AUTO_LOAD_DEFAULT_RESERVE_RATIO)
+          const dynamicSafetyQty = normalizeText(product.base_unit || '') === 'ks'
+            ? Math.ceil(rawDynamicSafetyQty - 0.0001)
+            : Number(rawDynamicSafetyQty.toFixed(3))
+          const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
           const stockoutBonusQty = 0
-          const targetNeedQty = tripDemandQty
+          const targetNeedQty = Number((tripDemandQty + safetyQty).toFixed(3))
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
           const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
           const canCarryDeferredNeed = pendingBeforeTarget.pending > 0.0001 || projectedVehicleBeforeTarget <= 0.0001
@@ -5877,6 +5880,7 @@
           const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
           let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
           let stockoutOverride = false
+          let routeCoverageOverride = false
           if (routeForecast.stockoutMachines > 0 && requiredFromNew > 0.0001 && Number(packagePlan.deferredAfterLoadQty || 0) > 0.0001) {
             stockoutOverride = true
             packagePlan = {
@@ -5893,11 +5897,28 @@
               looseStockoutLoad: true
             }
           }
+          const minimumRouteLoadQty = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
+          if (!stockoutOverride && Number(packagePlan.approvedQty || 0) + 0.0001 < minimumRouteLoadQty) {
+            routeCoverageOverride = true
+            packagePlan = {
+              ...packagePlan,
+              packageCount: 0,
+              suggestedQty: minimumRouteLoadQty,
+              approvedPackageCount: 0,
+              approvedQty: minimumRouteLoadQty,
+              usageRatio: packageQty > 0 ? Math.min(1, Number((minimumRouteLoadQty / packageQty).toFixed(3))) : 1,
+              deferredAfterLoadQty: Math.max(0, Number((requiredFromNew - minimumRouteLoadQty).toFixed(3))),
+              blockedPackageCount: 0,
+              blockedQty: 0,
+              blockedUsageRatio: 0,
+              looseRouteLoad: true
+            }
+          }
           let skippedDeferredCarry = false
           const tripUsageRatio = packagePlan.approvedQty > 0
             ? Number((Math.min(expectedUseFromNew, packagePlan.approvedQty) / packagePlan.approvedQty).toFixed(3))
             : Number(packagePlan.usageRatio || 0)
-          if (packagePlan.approvedQty > 0 && !stockoutOverride && stockoutBonusQty <= 0.0001 && tripUsageRatio + 0.0001 < minRatio) {
+          if (packagePlan.approvedQty > 0 && !stockoutOverride && !routeCoverageOverride && stockoutBonusQty <= 0.0001 && tripUsageRatio + 0.0001 < minRatio) {
             packagePlan = {
               ...packagePlan,
               packageCount: 0,
@@ -5953,6 +5974,9 @@
           }
           if (stockoutOverride) {
             reasons.push(`hrozí nulový stav u ${routeForecast.stockoutMachines} automatů — naložit potřebné množství i rozbalené`)
+          }
+          if (routeCoverageOverride) {
+            reasons.push('potřeba trasy musí být pokrytá celá — chybějící kusy naložit i z rozbaleného balení')
           }
           if (stockoutBonusQty > 0.0001) {
             reasons.push(`balení navíc, po minulé jízdě zůstalo auto na 0`)
@@ -6032,6 +6056,7 @@
             minRatio,
             packagePlanBlockedUsageRatio: Number(packagePlan.blockedUsageRatio || 0),
             stockoutOverride,
+            routeCoverageOverride,
             autoSuggestedPackageCount: approvedPackageCount,
             autoSuggestedQty: approvedQty,
             approvedPackageCount,
@@ -6193,7 +6218,7 @@
         const statusClass = row.manualOverride ? 'auto-load-warn' : row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
         const suggestedLabel = row.manualAdded
           ? 'bez systémového návrhu'
-          : row.stockoutOverride
+          : row.stockoutOverride || row.routeCoverageOverride
           ? `${formatQuantityValue(automaticQty, unit)} · i rozbalené`
           : automaticQty > 0
           ? `${automaticPackageCount} bal. / ${formatQuantityValue(automaticQty, unit)}`
@@ -6206,6 +6231,8 @@
               : 'nenakládat'
         const suggestedNote = row.stockoutOverride
           ? 'naložit povinně, hrozí nulový stav'
+          : row.routeCoverageOverride
+          ? 'naložit povinně, aby vystačila celá trasa'
           : row.approvedQty > 0
           ? `po jízdě cca ${formatQuantityValue(row.projectedVehicleAfterTrip, unit)}`
           : row.requiredFromNew > 0
@@ -6315,6 +6342,8 @@
               ? `${row.manualAdded ? 'ručně přidáno' : 'ručně upraveno'} před předáním skladu: ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}`
               : row.stockoutOverride
               ? `výjimka hrozící nuly: vychystat ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')} i z rozbaleného balení`
+              : row.routeCoverageOverride
+              ? `povinné pokrytí trasy: vychystat ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')} i z rozbaleného balení`
               : `auto návrh: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
             storeAsPackage ? `do evidence ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}` : '',
             `odhad jízdy ${row.expectedDemand}`,
