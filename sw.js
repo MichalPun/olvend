@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v76-dashboard-fast-start';
+const CACHE_NAME = 'olvend-v77-food-returned-item';
 const APP_SHELL = [
   './',
   './index.html',
