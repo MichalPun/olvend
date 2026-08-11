@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v97-mail-delete-cache';
+const CACHE_NAME = 'olvend-v98-purchase-action-menu';
 const APP_SHELL = [
   './',
   './index.html',
