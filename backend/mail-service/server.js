@@ -147,6 +147,8 @@ async function listMessages(account, folder, limit = 50) {
 
 async function syncIndex(account, employeeId) {
   const messages = await listMessages(account, 'INBOX', 100)
+  const { error: clearError } = await admin.from('mail_message_index').delete().eq('account_id', account.id).eq('folder_path', 'INBOX')
+  if (clearError) throw clearError
   if (messages.length) {
     const rows = messages.map(item => ({ account_id: account.id, employee_id: employeeId, folder_path: 'INBOX', ...item, recipients: [], synced_at: new Date().toISOString() }))
     const { error } = await admin.from('mail_message_index').upsert(rows, { onConflict: 'account_id,folder_path,uid' })
