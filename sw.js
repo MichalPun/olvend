@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v82-telemetry-last-month';
+const CACHE_NAME = 'olvend-v83-telemetry-net-revenue-pdf';
 const APP_SHELL = [
   './',
   './index.html',
