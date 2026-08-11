@@ -180,6 +180,20 @@ async function route(req, res) {
     const client = await imapClient(account), folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid'))
     try { const lock = await client.getMailboxLock(folder); try { const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true }); if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 }); const parsed = await simpleParser(item.source); await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }); await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid); return send(req, res, 200, { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }) } finally { lock.release() } } finally { await client.logout().catch(() => {}) }
   }
+  if (req.method === 'DELETE' && url.pathname === '/message') {
+    const client = await imapClient(account), folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid'))
+    if (!Number.isFinite(uid) || uid <= 0) throw Object.assign(new Error('Invalid message identifier.'), { status: 400 })
+    try {
+      const folders = await client.list()
+      const trash = folders.find(item => item.specialUse === '\\Trash') || folders.find(item => /^(trash|deleted items|deleted messages|koš)$/i.test(item.path || item.name || ''))
+      if (!trash) throw Object.assign(new Error('Trash folder was not found.'), { status: 409 })
+      if (folder === trash.path) throw Object.assign(new Error('Message is already in Trash.'), { status: 409 })
+      const lock = await client.getMailboxLock(folder)
+      try { await client.messageMove(uid, trash.path, { uid: true }) } finally { lock.release() }
+      await admin.from('mail_message_index').delete().eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid)
+      return send(req, res, 200, { ok: true, moved_to: trash.path })
+    } finally { await client.logout().catch(() => {}) }
+  }
   if (req.method === 'POST' && url.pathname === '/send') {
     const input = await body(req), authHeader = String(req.headers.authorization || '')
     const attachments = Array.isArray(input.attachments) ? input.attachments.map(a => ({ filename: String(a.filename || 'priloha'), content: Buffer.from(String(a.content || ''), 'base64'), contentType: a.content_type || undefined })) : []

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v88-mail-account-status';
+const CACHE_NAME = 'olvend-v90-mail-reading-state';
 const APP_SHELL = [
   './',
   './index.html',
