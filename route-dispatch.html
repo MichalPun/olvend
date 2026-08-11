@@ -199,7 +199,7 @@
     const PREPARATION_MINUTES = 15;
     const COFFEE_SERVICE_MINUTES = 17;
     const FOOD_SERVICE_MINUTES = 17;
-    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), omittedCandidates: [], unlocatedMachineCount: 0, planningExcludedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set() };
+    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), omittedCandidates: [], unlocatedMachineCount: 0, planningExcludedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set(), publishedShiftRows: [], publishedShiftPlan: null };
     const els = {
       date: document.getElementById('planningDate'), warehouse: document.getElementById('warehouseSelect'), strategy: document.getElementById('strategy'),
       crew: document.getElementById('crewRows'), plans: document.getElementById('planRows'), detail: document.getElementById('routeDetail'), detailStops: document.getElementById('detailStops'),
@@ -283,28 +283,41 @@
         || state.ownership.has(`employee:${employee.id}:area`)
         || state.km30.has(String(employee.id))
       );
-      const shown = operational.length ? operational : state.employees;
+      const routeShiftTypes = new Set(['operator','technician_field','manager_field']);
+      const shiftEmployeeIds = new Set(state.publishedShiftRows.filter((row) => routeShiftTypes.has(row.shift_type)).map((row) => String(row.employee_id)));
+      const fallbackShown = operational.length ? operational : state.employees;
+      const shown = state.publishedShiftPlan
+        ? state.employees.filter((employee) => shiftEmployeeIds.has(String(employee.id)) || state.scheduledEmployees.has(String(employee.id)))
+        : fallbackShown;
       const used = new Set(state.scheduledVehicles);
       const teamKmTotal = shown.reduce((sum, employee) => sum + Number(state.km30.get(String(employee.id)) || 0), 0);
       els.crew.innerHTML = shown.map((employee, index) => {
-        const preferred = preferredVehicle(employee, used); if (preferred) used.add(String(preferred.id));
+        const shift = state.publishedShiftRows.find((row) => String(row.employee_id) === String(employee.id));
+        const shiftVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(shift?.vehicle_id || ''));
+        const preferred = shiftVehicle || preferredVehicle(employee, used); if (preferred) used.add(String(preferred.id));
         const employeeName = fullName(employee); const lowerName = norm(employeeName);
-        const checked = /dvor|nerud|punc/.test(lowerName) || (index < 3 && !shown.some((item) => /dvor|nerud|punc/.test(norm(fullName(item)))));
+        const checked = shift ? routeShiftTypes.has(shift.shift_type) : (/dvor|nerud|punc/.test(lowerName) || (index < 3 && !shown.some((item) => /dvor|nerud|punc/.test(norm(fullName(item))))));
         const km = Number(state.km30.get(String(employee.id)) || 0);
         const avg = shown.length ? teamKmTotal / shown.length : 0;
         const delta = Math.round(km - avg);
         const alreadyPlanned = state.scheduledEmployees.has(String(employee.id));
         const reserve = /management|manager|jednatel|owner|admin/.test(norm(employee.role));
-        return `<tr data-employee-id="${esc(employee.id)}"><td><input class="check crew-check" type="checkbox" ${checked && !alreadyPlanned ? 'checked' : ''} ${alreadyPlanned ? 'disabled' : ''}></td><td><div class="person">${esc(employeeName)}</div><div class="sub">${esc(employee.role || 'Provoz')}</div></td><td><select class="inline-select" data-vehicle>${state.vehicles.map((vehicle) => `<option value="${esc(vehicle.id)}" ${preferred && String(preferred.id) === String(vehicle.id) ? 'selected' : ''} ${state.scheduledVehicles.has(String(vehicle.id)) ? 'disabled' : ''}>${esc(vehicleName(vehicle))} · ${vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený'}${state.scheduledVehicles.has(String(vehicle.id)) ? ' · již v trase' : ''}</option>`).join('')}</select></td><td><input class="time" data-departure type="time" value="${/dvor|nerud/.test(lowerName) ? '06:00' : '07:00'}"></td><td><input class="hours" data-hours type="number" value="${/nerud/.test(lowerName) ? '10' : '8'}" step="0.5"></td><td><select class="inline-select" data-priority><option value="standard" ${reserve ? '' : 'selected'}>Běžná trasa</option><option value="reserve" ${reserve ? 'selected' : ''}>Záloha</option></select></td><td>${esc(state.ownership.get(`employee:${employee.id}:area`) || 'Podle historie')}</td><td><b>${Math.round(km).toLocaleString('cs-CZ')} km</b><div class="sub">${delta ? `${delta > 0 ? '+' : ''}${delta} km proti týmu` : 'týmový průměr'}</div></td><td><span class="badge ${alreadyPlanned ? 'blue' : checked ? 'green' : 'gray'}">${alreadyPlanned ? 'Již má trasu' : checked ? reserve ? 'Záloha' : 'Připraveno' : 'Nejede'}</span></td></tr>`;
+        const departure = String(shift?.planned_start || (/dvor|nerud/.test(lowerName) ? '06:00' : '07:00')).slice(0,5);
+        const maxHours = shift?.planned_minutes ? Math.max(1, Number(shift.planned_minutes) / 60) : (/nerud/.test(lowerName) ? 10 : 8);
+        const sourceLabel = alreadyPlanned ? 'Již má trasu' : shift ? (shift.vehicle_id ? 'Z publikované směny' : 'Chybí vozidlo') : checked ? reserve ? 'Záloha' : 'Doporučení' : 'Nejede';
+        return `<tr data-employee-id="${esc(employee.id)}"><td><input class="check crew-check" type="checkbox" ${checked && !alreadyPlanned ? 'checked' : ''} ${alreadyPlanned ? 'disabled' : ''}></td><td><div class="person">${esc(employeeName)}</div><div class="sub">${esc(employee.role || 'Provoz')}${shift ? ' · publikovaná směna' : ''}</div></td><td><select class="inline-select" data-vehicle><option value="">Bez vozidla</option>${state.vehicles.map((vehicle) => `<option value="${esc(vehicle.id)}" ${preferred && String(preferred.id) === String(vehicle.id) ? 'selected' : ''} ${state.scheduledVehicles.has(String(vehicle.id)) ? 'disabled' : ''}>${esc(vehicleName(vehicle))} · ${vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený'}${state.scheduledVehicles.has(String(vehicle.id)) ? ' · již v trase' : ''}</option>`).join('')}</select></td><td><input class="time" data-departure type="time" value="${esc(departure)}"></td><td><input class="hours" data-hours type="number" value="${esc(maxHours)}" step="0.5"></td><td><select class="inline-select" data-priority><option value="standard" ${reserve ? '' : 'selected'}>Běžná trasa</option><option value="reserve" ${reserve ? 'selected' : ''}>Záloha</option></select></td><td>${esc(state.ownership.get(`employee:${employee.id}:area`) || 'Podle historie')}</td><td><b>${Math.round(km).toLocaleString('cs-CZ')} km</b><div class="sub">${delta ? `${delta > 0 ? '+' : ''}${delta} km proti týmu` : 'týmový průměr'}</div></td><td><span class="badge ${alreadyPlanned ? 'blue' : shift?.vehicle_id ? 'green' : shift ? 'amber' : checked ? 'green' : 'gray'}">${esc(sourceLabel)}</span></td></tr>`;
       }).join('') || '<tr><td colspan="9">Nejsou dostupní zaměstnanci.</td></tr>';
       syncCrew();
+      els.note.textContent = state.publishedShiftPlan
+        ? `Tým je předvyplněný z publikovaného plánu směn pro ${els.date.value}.`
+        : 'Pro tento den není publikovaný plán směn; zobrazuji provozní doporučení.';
     }
 
     function syncCrew() {
       const rows = [...els.crew.querySelectorAll('tr[data-employee-id]')];
       const active = rows.filter((row) => row.querySelector('.crew-check')?.checked);
       els.badge.textContent = `${active.length} aktivní`;
-      rows.forEach((row) => { const check = row.querySelector('.crew-check'); const enabled = check?.checked; const reserve = row.querySelector('[data-priority]')?.value === 'reserve'; const badge = row.querySelector('.badge'); if (badge) { const planned = check?.disabled; badge.className = `badge ${planned ? 'blue' : enabled ? reserve ? 'amber' : 'green' : 'gray'}`; badge.textContent = planned ? 'Již má trasu' : enabled ? reserve ? 'Záloha' : 'Připraveno' : 'Nejede'; } });
+      rows.forEach((row) => { const check = row.querySelector('.crew-check'); const enabled = check?.checked; const reserve = row.querySelector('[data-priority]')?.value === 'reserve'; const badge = row.querySelector('.badge'); const shift = state.publishedShiftRows.find((item) => String(item.employee_id) === String(row.dataset.employeeId)); if (badge) { const planned = check?.disabled; const missingVehicle = enabled && !row.querySelector('[data-vehicle]')?.value; badge.className = `badge ${planned ? 'blue' : missingVehicle ? 'amber' : enabled ? reserve ? 'amber' : 'green' : 'gray'}`; badge.textContent = planned ? 'Již má trasu' : missingVehicle ? 'Chybí vozidlo' : enabled ? shift ? 'Z publikované směny' : reserve ? 'Záloha' : 'Připraveno' : 'Nejede'; } });
       state.routes = []; els.approve.disabled = true; els.note.textContent = 'Po změně týmu je potřeba návrh znovu vypočítat.';
     }
 
@@ -751,6 +764,8 @@
     }
 
     async function calculateDispatch() {
+      const checkedRows = [...els.crew.querySelectorAll('tr[data-employee-id]')].filter((row) => row.querySelector('.crew-check')?.checked);
+      if (checkedRows.some((row) => !row.querySelector('[data-vehicle]')?.value)) throw new Error('U označené směny chybí vozidlo. Doplňte ho v Plánu směn nebo přímo tady.');
       const crew = selectedCrew();
       if (!crew.length) throw new Error('Vyberte alespoň jednoho zaměstnance a vozidlo.');
       const vehicleIds = crew.map((item) => String(item.vehicle.id));
@@ -833,9 +848,22 @@
       finally { els.approve.textContent='Schválit a vytvořit trasy'; }
     }
 
+    async function loadPublishedShiftTeam(planningDate) {
+      state.publishedShiftRows = [];
+      state.publishedShiftPlan = null;
+      const [year, month] = String(planningDate).slice(0, 7).split('-').map(Number);
+      const { data: plans, error: planError } = await supabase.from('shift_plans').select('id,name,status,published_at').eq('period_type','month').eq('period_year',year).eq('period_month',month).eq('status','published').order('published_at',{ascending:false}).limit(1);
+      if (planError || !plans?.[0]) return;
+      state.publishedShiftPlan = plans[0];
+      const { data: rows, error: rowsError } = await supabase.from('shift_plan_days').select('employee_id,plan_date,shift_type,planned_start,planned_end,planned_minutes,warehouse_id,vehicle_id,note,status').eq('shift_plan_id',plans[0].id).eq('plan_date',planningDate).eq('status','published');
+      if (rowsError) { state.publishedShiftPlan = null; return; }
+      state.publishedShiftRows = rows || [];
+    }
+
     async function loadData({ preserveDate = false } = {}) {
       if (!preserveDate || !els.date.value) els.date.value = dateKey(new Date(Date.now()+86400000));
       els.status.textContent = 'Načítám podklady';
+      await loadPublishedShiftTeam(els.date.value);
       const historyStart=daysAgo(90); const kmStart=daysAgo(30);
       const [employees,vehicles,warehouses,machines,locations,containerRows,slotRows,requests,visits,rules,history,logs,scheduled] = await Promise.all([
         supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname'),
@@ -861,7 +889,7 @@
       state.machines.forEach((machine)=>{ const options=state.employees.map((employee)=>({id:employee.id,count:Number(ownerCounts.get(`${machine.id}:${employee.id}`)||0)})).sort((a,b)=>b.count-a.count); if(options[0]?.count) state.ownership.set(String(machine.id),options[0].id); });
       state.employees.forEach((employee)=>{ const owned=state.machines.filter((machine)=>String(state.ownership.get(String(machine.id))||'')===String(employee.id)); const cities=owned.map((machine)=>state.locations.find((location)=>String(location.id)===String(machine.location_id))?.city).filter(Boolean); const counts=new Map(); cities.forEach((city)=>counts.set(city,(counts.get(city)||0)+1)); const area=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([city])=>city).join(' / '); if(area) state.ownership.set(`employee:${employee.id}:area`,area); });
       els.warehouse.innerHTML=state.warehouses.map((row)=>`<option value="${esc(row.id)}">${esc([row.name,row.city].filter(Boolean).join(' · '))}</option>`).join(''); const preferred=state.warehouses.find((row)=>norm(row.name).includes('blucina')); if(preferred) els.warehouse.value=String(preferred.id);
-      buildCandidates({ machines:state.machines, locations:state.locations, containers:containerRows, slots:slotRows, requests:requests.data||[], visits:visits.data||[], rules:rules.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent='Připraveno'; document.querySelector('.metric strong').textContent=state.candidates.length;
+      buildCandidates({ machines:state.machines, locations:state.locations, containers:containerRows, slots:slotRows, requests:requests.data||[], visits:visits.data||[], rules:rules.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu'; document.querySelector('.metric strong').textContent=state.candidates.length;
     }
 
     els.crew.addEventListener('change',syncCrew);
