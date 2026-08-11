@@ -223,6 +223,20 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "mail.html": {
+      currentLabel: "E-mail",
+      activeKey: "mail",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
+    "mail-settings.html": {
+      currentLabel: "Nastavení e-mailu",
+      activeKey: "mail",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "report-attendance.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
@@ -391,6 +405,7 @@
             { key: "tasks", href: "tasks.html", label: "Manažerský blok" }
           ]
         },
+        { key: "mail", href: "mail.html", label: "E-mail" },
         {
           key: "management-people",
           href: "hr.html",
@@ -531,6 +546,7 @@
     vehicle: '<path d="M5 17h14l-1-7a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2l-1 7Z"/><path d="M3 17h18M7 17v3M17 17v3M8 12h8"/>',
     invoice: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5M9 12h6M9 16h4"/><path d="m15 18 1.5 1.5L20 16"/>',
     telemetry: '<path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><circle cx="18" cy="6" r="1"/>',
+    mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.53.69.9.9.34.2.73.3 1.1.3H21v4h-.09a1.7 1.7 0 0 0-1.51.8Z"/>',
     dot: '<circle cx="12" cy="12" r="3"/>'
   };
@@ -541,7 +557,7 @@
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
     'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
-    'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks',
+    'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', employees: 'people',
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',
     'report-attendance': 'calendar', 'report-shift-overview': 'clock', 'report-routes-daily': 'routes',

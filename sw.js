@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v86-report-icons';
+const CACHE_NAME = 'olvend-v87-private-mail-client';
 const APP_SHELL = [
   './',
   './index.html',
@@ -15,6 +15,9 @@ const APP_SHELL = [
   './budget.html',
   './reporty.html',
   './payroll.html',
+  './mail.html',
+  './mail-settings.html',
+  './mail-api.js',
   './report-telemetry.html',
   './report-monthly-review.html',
   './report-invoice-comparison.html',
