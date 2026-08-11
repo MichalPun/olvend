@@ -362,6 +362,19 @@
       return state.candidates.filter((candidate) => !state.excludedLocationKeys.has(String(candidate.locationId || `machine-${candidate.id}`)));
     }
 
+    async function fetchSupabaseRowsPaged(buildQuery, pageSize = 1000, maxPages = 20) {
+      const rows = [];
+      for (let page = 0; page < maxPages; page += 1) {
+        const from = page * pageSize;
+        const result = await buildQuery().range(from, from + pageSize - 1);
+        if (result.error) throw result.error;
+        const data = result.data || [];
+        rows.push(...data);
+        if (data.length < pageSize) break;
+      }
+      return rows;
+    }
+
     function renderCandidateSelection() {
       const units = locationUnits(state.candidates).sort((left, right) =>
         Number(right.priority || 0) - Number(left.priority || 0)
@@ -817,14 +830,14 @@
       if (!preserveDate || !els.date.value) els.date.value = dateKey(new Date(Date.now()+86400000));
       els.status.textContent = 'Načítám podklady';
       const historyStart=daysAgo(90); const kmStart=daysAgo(30);
-      const [employees,vehicles,warehouses,machines,locations,containers,slots,requests,visits,rules,history,logs,scheduled] = await Promise.all([
+      const [employees,vehicles,warehouses,machines,locations,containerRows,slotRows,requests,visits,rules,history,logs,scheduled] = await Promise.all([
         supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname'),
         supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate'),
         supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name'),
         supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active').eq('active',true),
         supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true),
-        supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true),
-        supabase.from('machine_planogram_slots').select('machine_id,product_name,current_units,capacity_units,active').eq('active',true).limit(5000),
+        fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true)),
+        fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('machine_id,product_name,current_units,capacity_units,active').eq('active',true)),
         supabase.from('service_requests').select('id,machine_id,location_id,title,priority,status,estimated_duration_minutes,assigned_employee_id,active').eq('active',true),
         supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500),
         supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active'),
@@ -832,7 +845,7 @@
         supabase.from('vehicle_operation_logs').select('employee_id,distance_km,log_date').gte('log_date',kmStart),
         supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled')
       ]);
-      const results=[employees,vehicles,warehouses,machines,locations,containers,slots,requests,visits,rules,history,logs,scheduled]; const failed=results.find((result)=>result.error); if(failed) throw failed.error;
+      const results=[employees,vehicles,warehouses,machines,locations,requests,visits,rules,history,logs,scheduled]; const failed=results.find((result)=>result.error); if(failed) throw failed.error;
       state.ownership.clear(); state.km30.clear(); state.scheduledEmployees.clear(); state.scheduledVehicles.clear();
       state.employees=employees.data||[]; state.vehicles=vehicles.data||[]; state.warehouses=(warehouses.data||[]).map((row)=>({...row,latitude:Number(row.latitude),longitude:Number(row.longitude)})); state.machines=machines.data||[]; state.locations=locations.data||[];
       (scheduled.data||[]).forEach((plan)=>{ if(plan.planned_employee_id) state.scheduledEmployees.add(String(plan.planned_employee_id)); if(plan.vehicle_id) state.scheduledVehicles.add(String(plan.vehicle_id)); });
@@ -841,7 +854,7 @@
       state.machines.forEach((machine)=>{ const options=state.employees.map((employee)=>({id:employee.id,count:Number(ownerCounts.get(`${machine.id}:${employee.id}`)||0)})).sort((a,b)=>b.count-a.count); if(options[0]?.count) state.ownership.set(String(machine.id),options[0].id); });
       state.employees.forEach((employee)=>{ const owned=state.machines.filter((machine)=>String(state.ownership.get(String(machine.id))||'')===String(employee.id)); const cities=owned.map((machine)=>state.locations.find((location)=>String(location.id)===String(machine.location_id))?.city).filter(Boolean); const counts=new Map(); cities.forEach((city)=>counts.set(city,(counts.get(city)||0)+1)); const area=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([city])=>city).join(' / '); if(area) state.ownership.set(`employee:${employee.id}:area`,area); });
       els.warehouse.innerHTML=state.warehouses.map((row)=>`<option value="${esc(row.id)}">${esc([row.name,row.city].filter(Boolean).join(' · '))}</option>`).join(''); const preferred=state.warehouses.find((row)=>norm(row.name).includes('blucina')); if(preferred) els.warehouse.value=String(preferred.id);
-      buildCandidates({ machines:state.machines, locations:state.locations, containers:containers.data||[], slots:slots.data||[], requests:requests.data||[], visits:visits.data||[], rules:rules.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent='Připraveno'; document.querySelector('.metric strong').textContent=state.candidates.length;
+      buildCandidates({ machines:state.machines, locations:state.locations, containers:containerRows, slots:slotRows, requests:requests.data||[], visits:visits.data||[], rules:rules.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent='Připraveno'; document.querySelector('.metric strong').textContent=state.candidates.length;
     }
 
     els.crew.addEventListener('change',syncCrew);
