@@ -738,7 +738,7 @@ async function applyPlanogramDepletion(
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
-    const { slot, counter, isInitialCounter, previousTotal, delta, selection } = item;
+    const { slot, counter, previous, isInitialCounter, previousTotal, delta, selection } = item;
     const { cashDelta, cashlessDelta, freeVendDelta, unknownPaymentDelta, unpaidDispenseDelta } = paymentAllocations.get(selection) ||
       { cashDelta: 0, cashlessDelta: 0, freeVendDelta: 0, unknownPaymentDelta: delta, unpaidDispenseDelta: 0 };
 
