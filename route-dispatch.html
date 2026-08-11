@@ -199,7 +199,7 @@
     const PREPARATION_MINUTES = 15;
     const COFFEE_SERVICE_MINUTES = 17;
     const FOOD_SERVICE_MINUTES = 17;
-    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), omittedCandidates: [], unlocatedMachineCount: 0, holidayMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set() };
+    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), omittedCandidates: [], unlocatedMachineCount: 0, planningExcludedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set() };
     const els = {
       date: document.getElementById('planningDate'), warehouse: document.getElementById('warehouseSelect'), strategy: document.getElementById('strategy'),
       crew: document.getElementById('crewRows'), plans: document.getElementById('planRows'), detail: document.getElementById('routeDetail'), detailStops: document.getElementById('detailStops'),
@@ -215,6 +215,15 @@
     const minutesLabel = (minutes) => `${Math.floor(Number(minutes || 0) / 60)} h ${String(Math.round(Number(minutes || 0)) % 60).padStart(2, '0')} min`;
     const dateKey = (date) => date.toLocaleDateString('en-CA');
     const daysAgo = (days) => { const date = new Date(); date.setDate(date.getDate() - days); return dateKey(date); };
+    function isMachinePlanningExcluded(rule, planningDate) {
+      if (!rule) return false;
+      if (rule.route_visit_rules_active === false) return true;
+      const month = planningDate.getMonth() + 1;
+      if ((rule.route_planning_excluded_months || []).map(Number).includes(month)) return true;
+      if (!rule.route_planning_paused_until) return false;
+      const pausedUntil = new Date(`${rule.route_planning_paused_until}T23:59:59`);
+      return !Number.isNaN(pausedUntil.getTime()) && planningDate.getTime() <= pausedUntil.getTime();
+    }
     const showToast = (message) => { els.toast.textContent = message; els.toast.classList.add('show'); clearTimeout(window.toastTimer); window.toastTimer = setTimeout(() => els.toast.classList.remove('show'), 2600); };
     const haversine = (a, b) => {
       if (!a || !b) return 0;
@@ -321,7 +330,7 @@
       const today = new Date(`${els.date.value}T12:00:00`);
       state.omittedCandidates = [];
       state.unlocatedMachineCount = 0;
-      state.holidayMachineCount = 0;
+      state.planningExcludedMachineCount = 0;
       state.candidates = data.machines.map((machine) => {
         const location = locationMap.get(String(machine.location_id));
         if (!location) { state.unlocatedMachineCount += 1; return null; }
@@ -330,11 +339,9 @@
         const last = lastVisit.get(String(machine.id)); const days = last ? Math.floor((today - new Date(last)) / 86400000) : 999;
         const rule = ruleMap.get(String(machine.id));
         const maxDays = Math.max(1, Number(rule?.max_visit_interval_days || 10));
-        const periodicVisitDue = rule?.route_visit_rules_active !== false && days >= maxDays;
+        const periodicVisitDue = days >= maxDays;
         if (!lows.length && !requests.length && !periodicVisitDue) return null;
-        const planningMonth = today.getMonth() + 1;
-        const summerHolidayExcluded = [7, 8].includes(planningMonth) && ['18', '20', '35', '45'].includes(String(machine.evidence_number || ''));
-        if (summerHolidayExcluded) { state.holidayMachineCount += 1; return null; }
+        if (isMachinePlanningExcluded(rule, today)) { state.planningExcludedMachineCount += 1; return null; }
         if (location?.service_suspended_until && new Date(location.service_suspended_until) >= today) return null;
         if (location.latitude == null || location.longitude == null) {
           state.omittedCandidates.push({ machine, location, reason: 'chybí souřadnice' });
@@ -353,8 +360,8 @@
       const locationCount = new Set(state.candidates.map((item) => String(item.locationId))).size;
       const omittedText = state.omittedCandidates.length ? ` Pozor: ${state.omittedCandidates.length} umístěných automatů nelze naplánovat, protože jejich lokalita nemá souřadnice.` : '';
       const unlocatedText = state.unlocatedMachineCount ? ' Stroje bez umístění (sklad / rezerva) se do návštěv správně nepočítají.' : '';
-      const holidayText = state.holidayMachineCount ? ` O prázdninách vynecháno: ${state.holidayMachineCount}.` : '';
-      els.candidateSummary.textContent = `${state.candidates.length} potřebných automatů v ${locationCount} lokalitách: zásoby ${lowCount} · servis ${serviceCount} · interval návštěvy ${intervalCount}. Jedna lokalita se vždy přidělí pouze jednomu člověku.${holidayText}${omittedText}${unlocatedText}`;
+      const exceptionText = state.planningExcludedMachineCount ? ` Podle pravidel automatů vynecháno: ${state.planningExcludedMachineCount}.` : '';
+      els.candidateSummary.textContent = `${state.candidates.length} potřebných automatů v ${locationCount} lokalitách: zásoby ${lowCount} · servis ${serviceCount} · interval návštěvy ${intervalCount}. Jedna lokalita se vždy přidělí pouze jednomu člověku.${exceptionText}${omittedText}${unlocatedText}`;
       renderCandidateSelection();
     }
 
@@ -840,7 +847,7 @@
         fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('machine_id,product_name,current_units,capacity_units,active').eq('active',true)),
         supabase.from('service_requests').select('id,machine_id,location_id,title,priority,status,estimated_duration_minutes,assigned_employee_id,active').eq('active',true),
         supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500),
-        supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active'),
+        supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note'),
         supabase.from('route_plans').select('planned_employee_id,planning_date,execution_status,route_plan_stops(machine_id,location_id,status)').gte('planning_date',historyStart).neq('execution_status','cancelled'),
         supabase.from('vehicle_operation_logs').select('employee_id,distance_km,log_date').gte('log_date',kmStart),
         supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled')

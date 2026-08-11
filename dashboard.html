@@ -5436,18 +5436,14 @@
         || text.includes("lid");
     }
 
-    function isTelemetrySchoolLocation(row) {
-      const text = normalizeText([
-        row?.location_name,
-        row?.machine_name
-      ].filter(Boolean).join(" "));
-      return /\b(skola|skolni|zakladni|stredni|gymnazium|vos|sos|sou|ss)\b/.test(text);
-    }
-
-    function schoolsAreVisibleOnDashboard(date = new Date()) {
-      const month = date.getMonth();
-      const day = date.getDate();
-      return !(month === 6 || (month === 7 && day < 24));
+    function isMachinePlanningExcluded(machineId, ruleMap, date = new Date()) {
+      const rule = ruleMap.get(String(machineId));
+      if (!rule) return false;
+      if (rule.route_visit_rules_active === false) return true;
+      if ((rule.route_planning_excluded_months || []).map(Number).includes(date.getMonth() + 1)) return true;
+      if (!rule.route_planning_paused_until) return false;
+      const pausedUntil = new Date(`${rule.route_planning_paused_until}T23:59:59`);
+      return !Number.isNaN(pausedUntil.getTime()) && date.getTime() <= pausedUntil.getTime();
     }
 
     function isServiceSuspendedUntil(value, date = new Date()) {
@@ -6388,7 +6384,7 @@
           .eq("active", true),
         supabase
           .from("machine_service_rules")
-          .select("machine_id, stock_critical_percent")
+          .select("machine_id, stock_critical_percent, route_visit_rules_active, route_planning_paused_until, route_planning_excluded_months, route_planning_note")
       ]);
 
       if (recentResult.error) throw recentResult.error;
@@ -6451,6 +6447,7 @@
           .filter((product) => product.sku != null)
           .map((product) => [String(product.sku), product])
       );
+      const serviceRuleByMachine = new Map((serviceRulesResult.data || []).map((rule) => [String(rule.machine_id), rule]));
       const stockLimitByMachine = new Map(
         (serviceRulesResult.data || []).map((rule) => [
           String(rule.machine_id),
@@ -6541,7 +6538,6 @@
         && new Date(item.last_seen_at || 0).getTime() >= telemetryFreshCutoffMs
       );
       const freshTelemetryMachineIds = new Set(freshTelemetryStates.map((item) => String(item.machine_id)));
-      const showSchoolsOnDashboard = schoolsAreVisibleOnDashboard();
       const initialInventory = freshTelemetryStates
         .filter((item) => !inventoriedMachineIds.has(String(item.machine_id)))
         .map((item) => {
@@ -6556,7 +6552,7 @@
           };
         })
         .filter((item) => String(machineMap.get(String(item.machine_id))?.machine_type || "").trim().toLowerCase() !== "snack")
-        .filter((item) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(item))
+        .filter((item) => !isMachinePlanningExcluded(item.machine_id, serviceRuleByMachine))
         .filter((item) => !isServiceSuspendedUntil(item.service_suspended_until))
         .sort((a, b) => new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0));
 
@@ -6648,7 +6644,7 @@
         .filter((container) => container.low && freshTelemetryMachineIds.has(String(container.machine_id)) && inventoriedMachineIds.has(String(container.machine_id)));
       const lowStock = [...lowStockSlots, ...lowStockCoffeeContainers]
         .filter((item) => !isTelemetryLidItem(item))
-        .filter((item) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(item))
+        .filter((item) => !isMachinePlanningExcluded(item.machine_id, serviceRuleByMachine))
         .filter((item) => !isServiceSuspendedUntil(item.service_suspended_until))
         .sort((a, b) => Number(a.percent || 0) - Number(b.percent || 0));
 
@@ -6708,7 +6704,7 @@
         })
         .filter((slot) => String(slot.expiry_tracking_mode || "").toLowerCase() !== "none")
         .filter((slot) => slot.days_remaining <= slot.expiry_warning_days)
-        .filter((slot) => showSchoolsOnDashboard || !isTelemetrySchoolLocation(slot))
+        .filter((slot) => !isMachinePlanningExcluded(slot.machine_id, serviceRuleByMachine))
         .filter((slot) => !isServiceSuspendedUntil(slot.service_suspended_until))
         .sort((a, b) => Number(a.days_remaining || 0) - Number(b.days_remaining || 0));
 

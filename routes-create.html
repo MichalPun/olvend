@@ -2077,24 +2077,15 @@
         || text.includes('lid')
     }
 
-    function isSchoolCandidate(candidate) {
-      const text = normalizeText([
-        candidate?.name,
-        candidate?.parentLocationName,
-        candidate?.address,
-        candidate?.routeNote,
-      ].filter(Boolean).join(' '))
-      return /\b(skola|skolni|zakladni|stredni|gymnazium|vos|sos|sou|ss)\b/.test(text)
-    }
-
-    function schoolsAreVisibleForPlanningDate(dateString = routeDateInput.value) {
-      if (!dateString) return true
-      const date = new Date(`${dateString}T12:00:00`)
-      if (Number.isNaN(date.getTime())) return true
-      const month = date.getMonth()
-      const day = date.getDate()
-      const isSummerClosure = month === 6 || (month === 7 && day < 24)
-      return !isSummerClosure
+    function isMachinePlanningExcluded(rule, dateString = routeDateInput.value) {
+      if (!rule || !dateString) return rule?.route_visit_rules_active === false
+      if (rule.route_visit_rules_active === false) return true
+      const planningDate = new Date(`${dateString}T12:00:00`)
+      if (Number.isNaN(planningDate.getTime())) return false
+      if ((rule.route_planning_excluded_months || []).map(Number).includes(planningDate.getMonth() + 1)) return true
+      if (!rule.route_planning_paused_until) return false
+      const pausedUntil = new Date(`${rule.route_planning_paused_until}T23:59:59`)
+      return !Number.isNaN(pausedUntil.getTime()) && planningDate.getTime() <= pausedUntil.getTime()
     }
 
     function isCandidateServiceSuspended(candidate, dateString = routeDateInput.value) {
@@ -2134,7 +2125,7 @@
       const isFoodMachine = normalizeText(machine?.machine_type) === 'snack'
       const hasFreshTelemetry = state.telemetryEligibleMachineIds.has(machineId)
       const rule = state.machineServiceRules.get(machineId)
-      if (rule?.route_visit_rules_active === false) return null
+      if (isMachinePlanningExcluded(rule)) return null
       const criticalPercent = Math.max(0, Math.min(100, Number(rule?.stock_critical_percent ?? 19)))
       const maxVisitDays = Math.max(1, Number(rule?.max_visit_interval_days ?? 10))
       const hasInitialInventory = state.inventoriedMachineIds.has(machineId)
@@ -3904,9 +3895,6 @@
         ))
       }
 
-      if (sourceMode === 'recommended' && !schoolsAreVisibleForPlanningDate()) {
-        filtered = filtered.filter((candidate) => !isSchoolCandidate(candidate))
-      }
 
       if (sourceMode === 'recommended') {
         filtered = filtered.filter((candidate) => (
@@ -5061,10 +5049,10 @@
     async function loadMachineServiceRules() {
       const { data, error } = await supabase
         .from('machine_service_rules')
-        .select('machine_id, stock_critical_percent, max_visit_interval_days, route_visit_rules_active')
+        .select('machine_id, stock_critical_percent, max_visit_interval_days, route_visit_rules_active, route_planning_paused_until, route_planning_excluded_months, route_planning_note')
 
       if (error) {
-        if (/stock_critical_percent|max_visit_interval_days|route_visit_rules_active|schema cache/i.test(String(error.message || ''))) {
+        if (/stock_critical_percent|max_visit_interval_days|route_visit_rules_active|route_planning_|schema cache/i.test(String(error.message || ''))) {
           state.machineServiceRules = new Map()
           return
         }

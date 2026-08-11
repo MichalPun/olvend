@@ -224,6 +224,9 @@
       font-weight:800;
     }
     .machine-telemetry-status small { color:#64748b; font-size:11px; font-weight:750; }
+    .planning-months { display:flex; flex-wrap:wrap; gap:6px; }
+    .planning-month-option { display:inline-flex; align-items:center; gap:5px; min-height:34px; padding:6px 9px; border:1px solid #d9dee7; border-radius:6px; background:#fff; color:#334155; font-size:12px; font-weight:800; cursor:pointer; }
+    .planning-month-option input { width:auto; margin:0; }
     .detail-metrics {
       display:grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -732,6 +735,31 @@
             <div class="field full">
               <label><input id="routeVisitRulesActive" name="routeVisitRulesActive" type="checkbox" checked style="width:auto; margin-right:10px;" /> Doporučovat automat do trasy podle zásoby a intervalu návštěv</label>
             </div>
+            <div class="field">
+              <label for="routePlanningPausedUntil">Dočasně neplánovat do</label>
+              <input id="routePlanningPausedUntil" name="routePlanningPausedUntil" type="date" />
+            </div>
+            <div class="field full">
+              <label>Měsíce bez automatického plánování</label>
+              <div class="planning-months" id="routePlanningExcludedMonths">
+                <label class="planning-month-option"><input type="checkbox" value="1" />Led</label>
+                <label class="planning-month-option"><input type="checkbox" value="2" />Úno</label>
+                <label class="planning-month-option"><input type="checkbox" value="3" />Bře</label>
+                <label class="planning-month-option"><input type="checkbox" value="4" />Dub</label>
+                <label class="planning-month-option"><input type="checkbox" value="5" />Kvě</label>
+                <label class="planning-month-option"><input type="checkbox" value="6" />Čvn</label>
+                <label class="planning-month-option"><input type="checkbox" value="7" />Čvc</label>
+                <label class="planning-month-option"><input type="checkbox" value="8" />Srp</label>
+                <label class="planning-month-option"><input type="checkbox" value="9" />Zář</label>
+                <label class="planning-month-option"><input type="checkbox" value="10" />Říj</label>
+                <label class="planning-month-option"><input type="checkbox" value="11" />Lis</label>
+                <label class="planning-month-option"><input type="checkbox" value="12" />Pro</label>
+              </div>
+            </div>
+            <div class="field full">
+              <label for="routePlanningNote">Důvod výjimky</label>
+              <input id="routePlanningNote" name="routePlanningNote" type="text" placeholder="Např. školní prázdniny nebo rekonstrukce" />
+            </div>
             <div class="field full">
               <label for="serviceRuleNote">Poznámka k servisu</label>
               <textarea id="serviceRuleNote" name="serviceRuleNote" placeholder="Specifika zásahu, přístup, intervaly, citlivé body..."></textarea>
@@ -1124,6 +1152,33 @@
 
     function normalizeText(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+    }
+
+    const planningMonthLabels = ['Led', 'Úno', 'Bře', 'Dub', 'Kvě', 'Čvn', 'Čvc', 'Srp', 'Zář', 'Říj', 'Lis', 'Pro']
+
+    function normalizePlanningMonths(values) {
+      return [...new Set((Array.isArray(values) ? values : []).map(Number).filter((month) => Number.isInteger(month) && month >= 1 && month <= 12))].sort((a, b) => a - b)
+    }
+
+    function renderPlanningMonthOptions(selectedMonths = [], idPrefix = 'month') {
+      const selected = new Set(normalizePlanningMonths(selectedMonths))
+      return planningMonthLabels.map((label, index) => {
+        const month = index + 1
+        return `<label class="planning-month-option" for="${escapeHtml(idPrefix)}PlanningMonth${month}"><input id="${escapeHtml(idPrefix)}PlanningMonth${month}" type="checkbox" value="${month}"${selected.has(month) ? ' checked' : ''} />${escapeHtml(label)}</label>`
+      }).join('')
+    }
+
+    function getPlanningMonthSelection(container) {
+      if (!container) return []
+      return normalizePlanningMonths([...container.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value))
+    }
+
+    function setPlanningMonthSelection(container, selectedMonths = []) {
+      if (!container) return
+      const selected = new Set(normalizePlanningMonths(selectedMonths))
+      container.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+        input.checked = selected.has(Number(input.value))
+      })
     }
 
     function productOptionLabel(product) {
@@ -1842,6 +1897,9 @@
       document.getElementById('stockCriticalPercent').value = '19'
       document.getElementById('maxVisitIntervalDays').value = '10'
       document.getElementById('routeVisitRulesActive').checked = true
+      document.getElementById('routePlanningPausedUntil').value = ''
+      setPlanningMonthSelection(document.getElementById('routePlanningExcludedMonths'), [])
+      document.getElementById('routePlanningNote').value = ''
       modalTitle.textContent = 'Přidat stroj'
       saveBtn.textContent = 'Uložit stroj'
       isEditMode = false
@@ -2035,6 +2093,9 @@
       document.getElementById('stockCriticalPercent').value = rule?.stock_critical_percent ?? 19
       document.getElementById('maxVisitIntervalDays').value = rule?.max_visit_interval_days ?? 10
       document.getElementById('routeVisitRulesActive').checked = rule?.route_visit_rules_active !== false
+      document.getElementById('routePlanningPausedUntil').value = rule?.route_planning_paused_until || ''
+      setPlanningMonthSelection(document.getElementById('routePlanningExcludedMonths'), rule?.route_planning_excluded_months || [])
+      document.getElementById('routePlanningNote').value = rule?.route_planning_note || ''
       document.getElementById('serviceRuleNote').value = rule?.note || ''
       document.getElementById('note').value = machine.note || ''
       document.getElementById('active').checked = machine.active !== false
@@ -2310,13 +2371,27 @@
                   <option value="false"${rule?.route_visit_rules_active === false ? ' selected' : ''}>Vypnuté</option>
                 </select>
               </div>
-              <button class="btn secondary" type="button" data-route-rule-action="save" data-machine-id="${machine.id}"${routeRulesEligible ? '' : ' disabled'}>Uložit pravidla návštěvy</button>
               <div class="machine-telemetry-status">
                 <span>${routeRulesEligible ? 'Individuální pravidla automatu' : 'Čeká na první telemetrii'}</span>
                 <small>${routeRulesEligible ? 'Mohou se lišit podle prašnosti, provozu nebo požadavků lokality.' : 'Funkce vyžaduje povolené napojení a telemetrická data přijatá během posledních 48 hodin.'}</small>
               </div>
             </div>
             `}
+            <div class="machine-telemetry">
+              <div class="machine-telemetry-field">
+                <label for="detailRoutePlanningPausedUntil">Dočasně neplánovat do</label>
+                <input id="detailRoutePlanningPausedUntil" data-route-rule-paused-until type="date" value="${escapeHtml(rule?.route_planning_paused_until || '')}" />
+              </div>
+              <div class="machine-telemetry-field" style="grid-column:span 2;">
+                <label>Měsíce bez automatického plánování</label>
+                <div class="planning-months" data-route-rule-months>${renderPlanningMonthOptions(rule?.route_planning_excluded_months || [], 'detail')}</div>
+              </div>
+              <div class="machine-telemetry-field">
+                <label for="detailRoutePlanningNote">Důvod výjimky</label>
+                <input id="detailRoutePlanningNote" data-route-rule-note type="text" value="${escapeHtml(rule?.route_planning_note || '')}" placeholder="Např. školní prázdniny" />
+              </div>
+              <button class="btn secondary" type="button" data-route-rule-action="save" data-machine-id="${machine.id}">Uložit plánovací pravidla</button>
+            </div>
             <div class="detail-metrics">
               <div class="detail-metric"><div class="detail-metric-label">${isCoffeeMachine ? 'Tlačítka' : 'Sloty'}</div><div class="detail-metric-value">${escapeHtml(isCoffeeMachine ? coffeeButtons.length : activeSlots)}</div></div>
               <div class="detail-metric"><div class="detail-metric-label">${isCoffeeMachine ? 'Zásobníky' : 'Doplnit'}</div><div class="detail-metric-value">${escapeHtml(isCoffeeMachine ? coffeeContainers.length : lowSlots)}</div></div>
@@ -2404,6 +2479,9 @@
         stock_critical_percent: Number(document.getElementById('stockCriticalPercent').value || 19),
         max_visit_interval_days: Number(document.getElementById('maxVisitIntervalDays').value || 10),
         route_visit_rules_active: document.getElementById('routeVisitRulesActive').checked,
+        route_planning_paused_until: document.getElementById('routePlanningPausedUntil').value || null,
+        route_planning_excluded_months: getPlanningMonthSelection(document.getElementById('routePlanningExcludedMonths')),
+        route_planning_note: document.getElementById('routePlanningNote').value.trim() || null,
         note: document.getElementById('serviceRuleNote').value.trim() || null
       }
     }
@@ -2425,7 +2503,7 @@
         .order('created_at', { ascending: false })
       const rulesQuery = supabase
         .from('machine_service_rules')
-        .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at, stock_critical_percent, max_visit_interval_days, route_visit_rules_active')
+        .select('machine_id, service_frequency, fill_frequency, note, last_service_at, last_fill_at, stock_critical_percent, max_visit_interval_days, route_visit_rules_active, route_planning_paused_until, route_planning_excluded_months, route_planning_note')
       const imaLinksQuery = supabase
         .from('machine_external_links')
         .select('machine_id, external_machine_id, telemetry_enabled')
@@ -2985,9 +3063,14 @@
       const routeRuleButton = event.target.closest('[data-route-rule-action]')
       if (routeRuleButton?.dataset.routeRuleAction === 'save') {
         const machineId = Number(routeRuleButton.dataset.machineId || 0)
-        const stockCriticalPercent = Number(detailModalBody.querySelector('[data-route-rule-stock]')?.value)
-        const maxVisitIntervalDays = Number(detailModalBody.querySelector('[data-route-rule-days]')?.value)
-        const routeVisitRulesActive = detailModalBody.querySelector('[data-route-rule-active]')?.value !== 'false'
+        const existingRule = getMachineRule(machineId)
+        const stockCriticalPercent = Number(detailModalBody.querySelector('[data-route-rule-stock]')?.value ?? existingRule?.stock_critical_percent ?? 19)
+        const maxVisitIntervalDays = Number(detailModalBody.querySelector('[data-route-rule-days]')?.value ?? existingRule?.max_visit_interval_days ?? 10)
+        const routeRuleActiveInput = detailModalBody.querySelector('[data-route-rule-active]')
+        const routeVisitRulesActive = routeRuleActiveInput ? routeRuleActiveInput.value !== 'false' : existingRule?.route_visit_rules_active !== false
+        const routePlanningPausedUntil = detailModalBody.querySelector('[data-route-rule-paused-until]')?.value || null
+        const routePlanningExcludedMonths = getPlanningMonthSelection(detailModalBody.querySelector('[data-route-rule-months]'))
+        const routePlanningNote = detailModalBody.querySelector('[data-route-rule-note]')?.value.trim() || null
         if (!machineId || !Number.isFinite(stockCriticalPercent) || stockCriticalPercent < 0 || stockCriticalPercent > 100 || !Number.isInteger(maxVisitIntervalDays) || maxVisitIntervalDays < 1 || maxVisitIntervalDays > 365) {
           setStatus('Zkontroluj limit zásoby (0–100 %) a interval návštěvy (1–365 dnů).', 'error')
           return
@@ -2999,9 +3082,11 @@
             machine_id: machineId,
             stock_critical_percent: stockCriticalPercent,
             max_visit_interval_days: maxVisitIntervalDays,
-            route_visit_rules_active: routeVisitRulesActive
+            route_visit_rules_active: routeVisitRulesActive,
+            route_planning_paused_until: routePlanningPausedUntil,
+            route_planning_excluded_months: routePlanningExcludedMonths,
+            route_planning_note: routePlanningNote
           }
-          const existingRule = getMachineRule(machineId)
           const result = existingRule
             ? await supabase.from('machine_service_rules').update(payload).eq('machine_id', machineId)
             : await supabase.from('machine_service_rules').insert([payload])
