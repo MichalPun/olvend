@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v85-reports-cleanup';
+const CACHE_NAME = 'olvend-v86-report-icons';
 const APP_SHELL = [
   './',
   './index.html',

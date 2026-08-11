@@ -592,6 +592,11 @@
     tasks: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="m8 10 2 2 4-4M8 16h8"/>',
     people: '<circle cx="12" cy="7" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
     reports: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="m8 15 2 2 5-5"/>',
+    payroll: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h3M8 16h3M15 12v5M13 14h4"/>',
+    vehicle: '<path d="M5 17h14l-1-7a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2l-1 7Z"/><path d="M3 17h18M7 17v3M17 17v3M8 12h8"/>',
+    invoice: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5M9 12h6M9 16h4"/><path d="m15 18 1.5 1.5L20 16"/>',
+    telemetry: '<path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><circle cx="18" cy="6" r="1"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.53.69.9.9.34.2.73.3 1.1.3H21v4h-.09a1.7 1.7 0 0 0-1.51.8Z"/>',
     dot: '<circle cx="12" cy="12" r="3"/>'
   };
@@ -604,7 +609,10 @@
     'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', employees: 'people',
-    'management-reports': 'reports', reporty: 'reports', 'management-admin': 'settings', settings: 'settings', company: 'settings'
+    'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',
+    'report-attendance': 'calendar', 'report-shift-overview': 'clock', 'report-routes-daily': 'routes',
+    'report-vehicles': 'vehicle', 'report-monthly-review': 'finance', 'report-invoice-comparison': 'invoice',
+    'report-telemetry': 'telemetry', 'management-admin': 'settings', settings: 'settings', company: 'settings'
   };
 
   function getNavIcon(item) {
