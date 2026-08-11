@@ -13,6 +13,7 @@ const ALLOWED_ORIGIN = process.env.MAIL_ALLOWED_ORIGIN || 'https://olvend.onrend
 const BODY_LIMIT = 28 * 1024 * 1024
 const messageCache = new Map()
 const MESSAGE_CACHE_LIMIT = 12
+const deletedMessageTombstones = new Map()
 
 if (!SUPABASE_URL || !SERVICE_KEY || !/^[a-f0-9]{64}$/i.test(ENCRYPTION_KEY_HEX)) {
   console.warn('Mail service is missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or a 64-character MAIL_CREDENTIAL_ENCRYPTION_KEY.')
@@ -146,7 +147,9 @@ async function listMessages(account, folder, limit = 50) {
 }
 
 async function syncIndex(account, employeeId) {
-  const messages = await listMessages(account, 'INBOX', 100)
+  const now = Date.now()
+  for (const [key, expiresAt] of deletedMessageTombstones) if (expiresAt <= now) deletedMessageTombstones.delete(key)
+  const messages = (await listMessages(account, 'INBOX', 100)).filter(message => !deletedMessageTombstones.has(`${account.id}:INBOX:${message.uid}`))
   const { error: clearError } = await admin.from('mail_message_index').delete().eq('account_id', account.id).eq('folder_path', 'INBOX')
   if (clearError) throw clearError
   if (messages.length) {
@@ -237,7 +240,11 @@ async function route(req, res) {
       if (!trash) throw Object.assign(new Error('Trash folder was not found.'), { status: 409 })
       if (folder === trash.path) throw Object.assign(new Error('Message is already in Trash.'), { status: 409 })
       const lock = await client.getMailboxLock(folder)
-      try { await client.messageMove(uid, trash.path, { uid: true }) } finally { lock.release() }
+      try {
+        const moved = await client.messageMove(uid, trash.path, { uid: true })
+        if (!moved) throw Object.assign(new Error('Message was not found in the selected folder.'), { status: 404 })
+      } finally { lock.release() }
+      deletedMessageTombstones.set(`${account.id}:${folder}:${uid}`, Date.now() + 10 * 60 * 1000)
       messageCache.delete(`${account.id}:${folder}:${uid}`)
       await admin.from('mail_message_index').delete().eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid)
       return send(req, res, 200, { ok: true, moved_to: trash.path })
