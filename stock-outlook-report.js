@@ -138,7 +138,7 @@ export async function loadStockOutlookReport({ supabase, fetchPaged }) {
   ].map(Number).filter(Boolean))];
 
   const machinesResult = machineIds.length
-    ? await supabase.from('machines').select('id, evidence_number, name, machine_type, location_id, active').in('id', machineIds)
+    ? await supabase.from('machines').select('id, evidence_number, name, machine_type, location_id, active, stock_initialized_at').in('id', machineIds)
     : { data: [], error: null };
   if (machinesResult.error) throw machinesResult.error;
   const machines = machinesResult.data || [];
@@ -156,6 +156,9 @@ export async function loadStockOutlookReport({ supabase, fetchPaged }) {
   const productBySku = new Map(products.filter((product) => product.sku != null).map((product) => [String(product.sku), product]));
   const productByName = new Map(products.map((product) => [normalize(product.name), product]).filter(([key]) => key));
   const inventoryMachineIds = new Set((inventoriedResult.data || []).map((row) => String(row.machine_id)));
+  machines.forEach((machine) => {
+    if (machine.stock_initialized_at) inventoryMachineIds.add(String(machine.id));
+  });
   const enabledLinks = new Set(links.map((link) => `${link.machine_id}:${normalize(link.provider)}`));
   const freshCutoff = Date.now() - 15 * 60 * 1000;
   const freshStates = states.filter((state) => enabledLinks.has(`${state.machine_id}:${normalize(state.provider)}`)
