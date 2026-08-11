@@ -601,7 +601,7 @@
   }
 
   function renderDesktopNav() {
-    return `<nav class="nav">${navGroups.map((group) => renderNavLinks(group.items)).join("")}</nav>`;
+    return `<nav class="nav">${navGroups.map((group) => renderNavLinks(group.items.filter((item) => item.key !== "shift"))).join("")}</nav>`;
   }
 
   function renderMobileLinks() {
