@@ -435,7 +435,7 @@
           <div class="field">
             <label for="compareMode">Srovnat s</label>
             <select id="compareMode">
-              <option value="previous_period" selected>Předchozí období</option>
+              <option value="previous_period" selected>Stejné dny minulého měsíce</option>
               <option value="previous_month">Minulý měsíc</option>
               <option value="none">Bez srovnání</option>
             </select>
@@ -719,12 +719,13 @@
         const end = new Date(currentFrom.getFullYear(), currentFrom.getMonth(), 0);
         return { from: toInputDate(start), to: toInputDate(end), label: 'minulý měsíc' };
       }
-      const days = Math.max(1, Math.round((currentTo.getTime() - currentFrom.getTime()) / 86400000) + 1);
-      const end = new Date(currentFrom);
-      end.setDate(currentFrom.getDate() - 1);
-      const start = new Date(end);
-      start.setDate(end.getDate() - days + 1);
-      return { from: toInputDate(start), to: toInputDate(end), label: 'předchozí období' };
+      const previousMonthDate = (date) => {
+        const day = date.getDate();
+        const month = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+        const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+        return new Date(month.getFullYear(), month.getMonth(), Math.min(day, lastDay));
+      };
+      return { from: toInputDate(previousMonthDate(currentFrom)), to: toInputDate(previousMonthDate(currentTo)), label: 'stejné dny minulého měsíce' };
     }
     function applyPreset() {
       const today = startOfToday();
@@ -854,23 +855,44 @@
       if (sorted.length) output.push(summarizeAggregateRows(sorted, 'Celkem', 'grand'));
       return output;
     }
-    function enrichRows(rows, machines, locations) {
+    function historicalLocationId(machine, eventAt, transfersByMachine) {
+      if (!machine) return '';
+      const eventTime = new Date(eventAt || 0).getTime();
+      const transfers = transfersByMachine.get(String(machine.id)) || [];
+      if (Number.isFinite(eventTime)) {
+        const nextTransfer = transfers.find((transfer) => new Date(transfer.transferred_at).getTime() > eventTime);
+        if (nextTransfer) return nextTransfer.from_location_id || '';
+      }
+      return machine.location_id || '';
+    }
+    function groupTransfers(transfers) {
+      const grouped = new Map();
+      transfers.forEach((transfer) => {
+        const key = String(transfer.machine_id);
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(transfer);
+      });
+      grouped.forEach((rows) => rows.sort((a, b) => new Date(a.transferred_at) - new Date(b.transferred_at)));
+      return grouped;
+    }
+    function enrichRows(rows, machines, locations, transfersByMachine) {
       const machineMap = new Map(machines.map((item) => [String(item.id), item]));
       const locationMap = new Map(locations.map((item) => [String(item.id), item]));
       return rows.map((row) => {
         const machine = machineMap.get(String(row.machine_id));
-        const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+        const locationId = historicalLocationId(machine, row.source_event_at || row.created_at, transfersByMachine);
+        const location = locationId ? locationMap.get(String(locationId)) : null;
         return {
           ...row,
           machine_name: row.source_machine_name || machine?.name || `Automat ${row.machine_id || ''}`.trim(),
           machine_code: machine?.evidence_number ? `EV ${machine.evidence_number}` : '',
           machine_type: machine?.machine_type || '',
-          location_id: machine?.location_id || '',
+          location_id: locationId,
           location_name: row.source_location_name || [location?.city, location?.name].filter(Boolean).join(' · ') || 'Bez lokality'
         };
       });
     }
-    function enrichFillRows(rows, stockLocations, machines, locations, products) {
+    function enrichFillRows(rows, stockLocations, machines, locations, products, transfersByMachine) {
       const stockLocationMap = new Map(stockLocations.map((item) => [String(item.id), item]));
       const machineMap = new Map(machines.map((item) => [String(item.id), item]));
       const locationMap = new Map(locations.map((item) => [String(item.id), item]));
@@ -878,7 +900,8 @@
       return rows.map((row) => {
         const target = stockLocationMap.get(String(row.to_stock_location_id));
         const machine = target?.machine_id ? machineMap.get(String(target.machine_id)) : null;
-        const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+        const locationId = historicalLocationId(machine, row.created_at, transfersByMachine);
+        const location = locationId ? locationMap.get(String(locationId)) : null;
         const product = productMap.get(String(row.product_id));
         const quantity = Number(row.quantity_base_units || 0);
         const unitCost = Number(row.unit_price || product?.purchase_price || 0);
@@ -887,7 +910,7 @@
           machine_id: machine?.id || target?.machine_id || '',
           machine_name: machine?.name || target?.name || 'Bez automatu',
           machine_code: machine?.evidence_number ? `EV ${machine.evidence_number}` : '',
-          location_id: machine?.location_id || '',
+          location_id: locationId,
           location_name: [location?.city, location?.name].filter(Boolean).join(' · ') || 'Bez lokality',
           product_name: product?.name || `Produkt ${row.product_id || ''}`.trim(),
           product_sku: product?.sku || '',
@@ -1141,11 +1164,11 @@
         </div>
       `).join('')}</div>` : '<div class="notice">Ve vybraném období zatím nejsou telemetrické prodeje.</div>';
     }
-    function table(columns, rows) {
+    function table(columns, rows, exportRows = rows) {
       els.tableHead.innerHTML = `<tr>${columns.map((col) => `<th class="${col.num ? 'num' : ''}">${escapeHtml(col.label)}</th>`).join('')}</tr>`;
       els.tableBody.innerHTML = rows.length ? rows.map((row) => `<tr class="${row._summary === 'grand' ? 'grand-row' : row._summary ? 'summary-row' : ''}">${columns.map((col) => `<td class="${col.num ? 'num' : ''}">${col.render(row)}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${columns.length}"><span class="strong">Bez dat</span><span class="sub">Změň období nebo filtr.</span></td></tr>`;
-      els.rowCount.textContent = `${rows.length} řádků`;
-      state.currentOutput = rows.map((row) => Object.fromEntries(columns.map((col) => [col.label, col.csv ? col.csv(row) : String(row[col.key] ?? '')])));
+      els.rowCount.textContent = exportRows.length > rows.length ? `${rows.length} z ${exportRows.length} řádků` : `${rows.length} řádků`;
+      state.currentOutput = exportRows.map((row) => Object.fromEntries(columns.map((col) => [col.label, col.csv ? col.csv(row) : String(row[col.key] ?? '')])));
     }
     function renderAggregate(kind) {
       const rows = state.filteredRows;
@@ -1250,17 +1273,20 @@
       ], rows);
     }
     function renderTransactions() {
-      const rows = [...state.filteredRows].sort((a, b) => new Date(b.source_event_at) - new Date(a.source_event_at)).slice(0, 500);
-      table([
+      const allRows = [...state.filteredRows].sort((a, b) => new Date(b.source_event_at) - new Date(a.source_event_at));
+      const rows = allRows.slice(0, 500);
+      const columns = [
         { label: 'Čas', key: 'source_event_at', render: (row) => `<span class="strong">${escapeHtml(formatDateTime(row.source_event_at))}</span><span class="sub">${escapeHtml(row.provider || '')}</span>`, csv: (row) => row.source_event_at },
         { label: 'Automat', key: 'machine_name', render: (row) => `<span class="strong">${escapeHtml(row.machine_name)}</span><span class="sub">${escapeHtml(row.machine_code || row.location_name)}</span>`, csv: (row) => row.machine_name },
+        { label: 'Lokalita', key: 'location_name', render: (row) => escapeHtml(row.location_name || 'Bez lokality'), csv: (row) => row.location_name || 'Bez lokality' },
         { label: 'Volba', key: 'selection_code', render: (row) => escapeHtml(row.selection_code || '-'), csv: (row) => row.selection_code },
         { label: 'Produkt', key: 'product_name', render: (row) => `<span class="strong">${escapeHtml(row.product_name || 'Bez produktu')}</span><span class="sub">${escapeHtml(row.product_sku ? `SKU ${row.product_sku}` : '')}</span>`, csv: (row) => row.product_name },
         { label: 'Ks', key: 'quantity', num: true, render: (row) => escapeHtml(qty(row.quantity)), csv: (row) => row.quantity },
         { label: 'Hotově', key: 'cash_amount_czk', num: true, render: (row) => escapeHtml(money(row.cash_amount_czk)), csv: (row) => row.cash_amount_czk },
         { label: 'Kartou', key: 'cashless_amount_czk', num: true, render: (row) => escapeHtml(money(row.cashless_amount_czk)), csv: (row) => row.cashless_amount_czk },
         { label: 'Celkem', key: 'total_amount_czk', num: true, render: (row) => escapeHtml(money(row.total_amount_czk)), csv: (row) => row.total_amount_czk }
-      ], rows);
+      ];
+      table(columns, rows, allRows);
     }
     function renderProfitLoss() {
       const keyFn = (row) => row.product_name || row.product_sku || 'Bez produktu';
@@ -1510,17 +1536,25 @@
         const stockLocations = stockLocationsRes.data || [];
         const fillMachineIds = stockLocations.map((location) => Number(location.machine_id)).filter(Boolean);
         const machineIds = [...new Set([...salesRows, ...compareRows].map((row) => Number(row.machine_id)).concat(fillMachineIds).filter(Boolean))];
-        const [machinesRes, productsRes] = await Promise.all([
+        const [machinesRes, productsRes, transfersRes] = await Promise.all([
           machineIds.length
             ? supabase.from('machines').select('id, evidence_number, name, machine_type, brand, model, location_id, active').in('id', machineIds)
             : Promise.resolve({ data: [], error: null }),
-          supabase.from('products').select('id, sku, name, purchase_price, sale_price, vat_rate, product_category, usage_type, note, active')
+          supabase.from('products').select('id, sku, name, purchase_price, sale_price, vat_rate, product_category, usage_type, note, active'),
+          machineIds.length
+            ? supabase.from('machine_transfers').select('machine_id, from_location_id, to_location_id, transferred_at').in('machine_id', machineIds).order('transferred_at', { ascending:true })
+            : Promise.resolve({ data:[], error:null })
         ]);
         if (machinesRes.error) throw machinesRes.error;
         if (productsRes.error) throw productsRes.error;
+        if (transfersRes.error) console.warn('Historie přesunů automatů není dostupná, report použije aktuální umístění.', transfersRes.error);
         if (loadSequence !== telemetryLoadSequence) return;
         const machines = Array.from(new Map([...(machinesRes.data || []), ...(outlookData.machines || [])].map((machine) => [String(machine.id), machine])).values());
-        const locationIds = [...new Set(machines.map((machine) => Number(machine.location_id)).filter(Boolean))];
+        const transfers = transfersRes.error ? [] : (transfersRes.data || []);
+        const locationIds = [...new Set([
+          ...machines.map((machine) => Number(machine.location_id)),
+          ...transfers.flatMap((transfer) => [Number(transfer.from_location_id), Number(transfer.to_location_id)])
+        ].filter(Boolean))];
         const locationsRes = locationIds.length
           ? await supabase.from('locations').select('id, name, city').in('id', locationIds)
           : { data: [], error: null };
@@ -1528,15 +1562,16 @@
         if (loadSequence !== telemetryLoadSequence) return;
         const products = productsRes.data || [];
         const locations = Array.from(new Map([...(locationsRes.data || []), ...(outlookData.locations || [])].map((location) => [String(location.id), location])).values());
+        const transfersByMachine = groupTransfers(transfers);
         state.compareRange = compareRange;
         state.products = products;
         state.machines = machines;
         state.locations = locations;
         state.stockLocations = stockLocations;
-        state.rows = enrichRows(salesRows, machines, locations);
-        state.compareRows = enrichRows(compareRows, machines, locations);
-        state.fillRows = enrichFillRows(fillRows, stockLocations, machines, locations, products);
-        state.compareFillRows = enrichFillRows(compareFillRows, stockLocations, machines, locations, products);
+        state.rows = enrichRows(salesRows, machines, locations, transfersByMachine);
+        state.compareRows = enrichRows(compareRows, machines, locations, transfersByMachine);
+        state.fillRows = enrichFillRows(fillRows, stockLocations, machines, locations, products, transfersByMachine);
+        state.compareFillRows = enrichFillRows(compareFillRows, stockLocations, machines, locations, products, transfersByMachine);
         state.outlookRows = outlookData.rows || [];
         state.outlookMeta = outlookData.meta || {};
         populateFilters();
@@ -1561,8 +1596,11 @@
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = `olvend-telemetry-${state.activeReport}-${els.from.value}-${els.to.value}.csv`;
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(link.href);
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      setStatus(`Exportováno ${state.currentOutput.length.toLocaleString('cs-CZ')} řádků do CSV.`, 'success');
     }
 
     applyPreset();
