@@ -104,6 +104,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "route-dispatch.html": {
+      currentLabel: "Denní plán tras",
+      activeKey: "route-dispatch",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "controlling.html": {
       currentLabel: "Kontrolní trasy",
       activeKey: "controlling",
@@ -333,6 +340,7 @@
           label: "Trasy",
           children: [
             { key: "routes", href: "routes.html", label: "Přehled tras" },
+            { key: "route-dispatch", href: "route-dispatch.html", label: "Naplánovat tým" },
             { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
             { key: "operations", href: "operations.html", label: "Lokality" },
             { key: "fleet", href: "vehicles.html", label: "Vozový park" }
