@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v92-mail-action-bar';
+const CACHE_NAME = 'olvend-v93-mail-list-scroll';
 const APP_SHELL = [
   './',
   './index.html',
