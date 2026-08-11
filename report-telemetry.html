@@ -375,6 +375,10 @@
     :root[data-olvend-theme="light"] tr.summary-row td { background: #eef6ff; }
     :root[data-olvend-theme="light"] tr.grand-row td { background: #fff1f2; }
     :root[data-olvend-theme="light"] .stage-head { background: linear-gradient(135deg, rgba(213,16,26,.07), #fff); }
+    :root[data-olvend-theme="light"] .top-actions .btn.export-csv,
+    .top-actions .btn.export-csv { background: #d5101a; border-color: #d5101a; color: #fff; }
+    :root[data-olvend-theme="light"] .top-actions .btn.export-pdf,
+    .top-actions .btn.export-pdf { background: #17212b; border-color: #17212b; color: #fff; }
     @media (max-width: 1180px) {
       .workspace, .split, .chart-grid { grid-template-columns: 1fr; }
       .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -409,7 +413,8 @@
           </div>
           <div class="top-actions">
             <button class="btn" type="button" id="refreshBtn">Obnovit</button>
-            <button class="btn primary" type="button" id="exportBtn">Export CSV</button>
+            <button class="btn export-csv" type="button" id="exportBtn">Export CSV</button>
+            <button class="btn export-pdf" type="button" id="pdfBtn">Export PDF</button>
           </div>
         </section>
 
@@ -534,12 +539,17 @@
 
     const initialReport = new URLSearchParams(window.location.search).get('report');
     const DEFAULT_VAT_RATE = 12;
+    const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+    const AUTOTABLE_URL = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
+    const FONT_REGULAR_URL = './assets/fonts/Aptos-Narrow.ttf';
+    const FONT_BOLD_URL = './assets/fonts/Aptos-Narrow-Bold.ttf';
     let telemetryLoadSequence = 0;
-    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], outlookRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], filteredOutlookRows: [], products: [], machines: [], locations: [], stockLocations: [], outlookMeta: {}, currentOutput: [], compareRange: null };
+    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], outlookRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], filteredOutlookRows: [], products: [], machines: [], locations: [], stockLocations: [], outlookMeta: {}, currentOutput: [], compareRange: null, jsPdfPromise:null, fontPromise:null };
     const els = {
       status: document.getElementById('statusLine'),
       refresh: document.getElementById('refreshBtn'),
       export: document.getElementById('exportBtn'),
+      pdf: document.getElementById('pdfBtn'),
       tabs: document.getElementById('reportTabs'),
       from: document.getElementById('fromDate'),
       to: document.getElementById('toDate'),
@@ -1602,6 +1612,90 @@
       window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       setStatus(`Exportováno ${state.currentOutput.length.toLocaleString('cs-CZ')} řádků do CSV.`, 'success');
     }
+    function loadScript(url, test, message) {
+      if (test()) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = () => test() ? resolve() : reject(new Error(message));
+        script.onerror = () => reject(new Error(message));
+        document.head.appendChild(script);
+      });
+    }
+    function bufferToBase64(buffer) {
+      let output = '';
+      const bytes = new Uint8Array(buffer);
+      for (let index = 0; index < bytes.length; index += 0x8000) output += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      return btoa(output);
+    }
+    async function getJsPdf() {
+      if (!state.jsPdfPromise) {
+        state.jsPdfPromise = loadScript(JSPDF_URL, () => Boolean(window.jspdf?.jsPDF), 'Nepodařilo se načíst PDF knihovnu.')
+          .then(() => loadScript(AUTOTABLE_URL, () => Boolean(window.jspdf?.jsPDF?.API?.autoTable), 'Nepodařilo se načíst PDF tabulky.'))
+          .then(() => window.jspdf.jsPDF);
+      }
+      return state.jsPdfPromise;
+    }
+    async function addPdfFonts(doc) {
+      if (!state.fontPromise) state.fontPromise = Promise.all([fetch(FONT_REGULAR_URL).then((response) => response.arrayBuffer()), fetch(FONT_BOLD_URL).then((response) => response.arrayBuffer())]);
+      const [regular, bold] = await state.fontPromise;
+      doc.addFileToVFS('Aptos-Narrow.ttf', bufferToBase64(regular));
+      doc.addFileToVFS('Aptos-Narrow-Bold.ttf', bufferToBase64(bold));
+      doc.addFont('Aptos-Narrow.ttf', 'AptosNarrow', 'normal');
+      doc.addFont('Aptos-Narrow-Bold.ttf', 'AptosNarrow', 'bold');
+    }
+    async function exportPdf() {
+      if (!state.currentOutput.length) {
+        setStatus('Není co exportovat do PDF.', 'error');
+        return;
+      }
+      const originalLabel = els.pdf.textContent;
+      els.pdf.disabled = true;
+      els.pdf.textContent = 'Připravuji PDF…';
+      try {
+        const JsPDF = await getJsPdf();
+        const doc = new JsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
+        await addPdfFonts(doc);
+        const active = reports.find((report) => report.key === state.activeReport) || reports[0];
+        const headers = Object.keys(state.currentOutput[0]);
+        const body = state.currentOutput.map((row) => headers.map((header) => String(row[header] ?? '')));
+        doc.setFillColor(23, 33, 43);
+        doc.rect(0, 0, 297, 14, 'F');
+        doc.setFont('AptosNarrow', 'bold');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(10);
+        doc.text('OLVEND · TELEMETRICKÉ REPORTY', 12, 9);
+        doc.setTextColor(23, 33, 43);
+        doc.setFontSize(18);
+        doc.text(active.title, 12, 26);
+        doc.setFont('AptosNarrow', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(95, 107, 124);
+        doc.text(`${formatDate(els.from.value)} - ${formatDate(els.to.value)}${state.compareRange ? ` · srovnání ${formatRange(state.compareRange)}` : ''}`, 12, 32);
+        doc.autoTable({
+          head:[headers], body, startY:38, theme:'grid', horizontalPageBreak:true, horizontalPageBreakRepeat:0,
+          styles:{ font:'AptosNarrow', fontSize:7, cellPadding:1.8, textColor:[38,49,61], lineColor:[220,226,232], lineWidth:.15, overflow:'linebreak' },
+          headStyles:{ font:'AptosNarrow', fontStyle:'bold', fillColor:[213,16,26], textColor:[255,255,255] },
+          alternateRowStyles:{ fillColor:[246,248,250] }, margin:{ left:10, right:10, top:12, bottom:12 },
+          didDrawPage:(data) => {
+            doc.setFont('AptosNarrow', 'normal');
+            doc.setFontSize(7);
+            doc.setTextColor(95,107,124);
+            doc.text(`OLVEND · ${active.label}`, 10, 204);
+            doc.text(`Strana ${doc.internal.getCurrentPageInfo().pageNumber}`, 287, 204, { align:'right' });
+          }
+        });
+        const filename = `olvend-telemetry-${state.activeReport}-${els.from.value}-${els.to.value}.pdf`;
+        doc.save(filename);
+        setStatus(`PDF vytvořeno z ${state.currentOutput.length.toLocaleString('cs-CZ')} řádků.`, 'success');
+      } catch (error) {
+        console.error(error);
+        setStatus(`PDF se nepodařilo vytvořit: ${error.message || error}`, 'error');
+      } finally {
+        els.pdf.disabled = false;
+        els.pdf.textContent = originalLabel;
+      }
+    }
 
     applyPreset();
     renderTabs();
@@ -1610,8 +1704,9 @@
     [els.machine, els.location, els.search].forEach((input) => input.addEventListener('input', render));
     els.refresh.addEventListener('click', loadData);
     els.export.addEventListener('click', exportCsv);
+    els.pdf.addEventListener('click', exportPdf);
     loadData();
   </script>
-  <script src="./pwa.js?v=20260713telemetry-reports-v9" defer></script>
+  <script src="./pwa.js?v=20260811telemetry-export-v10" defer></script>
 </body>
 </html>

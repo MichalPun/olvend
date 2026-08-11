@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v78-manual-counters-fallback';
+const CACHE_NAME = 'olvend-v79-telemetry-export-pdf';
 const APP_SHELL = [
   './',
   './index.html',
