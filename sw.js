@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v80-telemetry-readable-pdf';
+const CACHE_NAME = 'olvend-v81-network-first-reports';
 const APP_SHELL = [
   './',
   './index.html',
@@ -88,12 +88,10 @@ self.addEventListener('fetch', (event) => {
         return response;
       });
     event.waitUntil(networkResponse.catch(() => undefined));
-    event.respondWith(
-      caches.match(event.request).then((cachedResponse) => {
-        if (cachedResponse) return cachedResponse;
-        return networkResponse.catch(() => caches.match('./index.html'));
-      })
-    );
+    event.respondWith(networkResponse.catch(async () => {
+      const cachedResponse = await caches.match(event.request);
+      return cachedResponse || caches.match('./index.html');
+    }));
     return;
   }
 
