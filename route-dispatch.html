@@ -174,8 +174,8 @@
     import { supabase } from './supabase.js';
 
     const ROAD_FACTOR = 1.23;
-    const AVG_SPEED_KMH = 52;
-    const PREPARATION_MINUTES = 30;
+    const AVG_SPEED_KMH = 64;
+    const PREPARATION_MINUTES = 15;
     const COFFEE_SERVICE_MINUTES = 17;
     const FOOD_SERVICE_MINUTES = 17;
     const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], omittedCandidates: [], unlocatedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set() };
@@ -304,9 +304,27 @@
     }
 
     function compatible(route, candidate) { return route.vehicle.service_scope !== 'coffee_only' || !candidate.snack; }
+    function routeDistance(stops, start) {
+      let cursor = start; let distance = 0;
+      stops.forEach((stop) => { distance += haversine(cursor, stop); cursor = stop; });
+      return distance + (stops.length ? haversine(cursor, start) : 0);
+    }
     function routeOrder(stops, start) {
-      const remaining = [...stops]; const ordered = []; let cursor = start;
+      const remaining = [...stops]; let ordered = []; let cursor = start;
       while (remaining.length) { remaining.sort((a,b) => haversine(cursor,a) - haversine(cursor,b)); const next = remaining.shift(); ordered.push(next); cursor = next; }
+      let bestDistance = routeDistance(ordered, start);
+      for (let pass = 0; pass < 12; pass += 1) {
+        let improved = false;
+        for (let from = 0; from < ordered.length - 1; from += 1) {
+          for (let to = from + 1; to < ordered.length; to += 1) {
+            const candidate = [...ordered.slice(0, from), ...ordered.slice(from, to + 1).reverse(), ...ordered.slice(to + 1)];
+            const distance = routeDistance(candidate, start);
+            if (distance + 0.05 >= bestDistance) continue;
+            ordered = candidate; bestDistance = distance; improved = true;
+          }
+        }
+        if (!improved) break;
+      }
       return ordered;
     }
     function calculateMetrics(route, warehouse) {
@@ -331,6 +349,64 @@
     function ownershipPenalty(stop, route) {
       if (!stop.ownerId || String(stop.ownerId) === String(route.employee.id)) return 0;
       return els.strategy.value === 'territory' ? 22 : els.strategy.value === 'distance' ? 0 : 6;
+    }
+
+    function assignmentScore(option, candidate, minHistoricalKm) {
+      const route = option.route;
+      const strategy = els.strategy.value;
+      const ownBonus = strategy === 'territory' ? -65 : strategy === 'distance' ? -8 : -30;
+      const foreignPenalty = strategy === 'territory' ? 22 : strategy === 'distance' ? 3 : 10;
+      const distanceWeight = strategy === 'territory' ? 0.9 : strategy === 'distance' ? 1.6 : 1.15;
+      const balanceDivisor = strategy === 'balanced' ? 18 : strategy === 'territory' ? 35 : 50;
+      const ownership = String(candidate.ownerId || '') === String(route.employee.id) ? ownBonus : candidate.ownerId ? foreignPenalty : 0;
+      const kmBalance = (Number(state.km30.get(String(route.employee.id)) || 0) - minHistoricalKm) / balanceDivisor;
+      const incrementalKm = Math.max(0, option.estimate.distanceKm - route.distanceKm);
+      const load = option.estimate.totalMinutes / Math.max(60, route.maxHours * 60) * 18;
+      return incrementalKm * distanceWeight + ownership + kmBalance + load;
+    }
+
+    function applyEstimate(route, estimate) {
+      route.stops = estimate.ordered;
+      route.distanceKm = estimate.distanceKm;
+      route.driveMinutes = estimate.driveMinutes;
+      route.serviceMinutes = estimate.serviceMinutes;
+      route.totalMinutes = estimate.totalMinutes;
+    }
+
+    function assignCandidate(candidate, routes, warehouse, minHistoricalKm) {
+      const fitting = routes
+        .filter((route) => compatible(route, candidate))
+        .map((route) => ({ route, estimate: estimateStops([...route.stops, candidate], warehouse) }))
+        .filter((option) => option.estimate.totalMinutes <= option.route.maxHours * 60)
+        .sort((a, b) => assignmentScore(a, candidate, minHistoricalKm) - assignmentScore(b, candidate, minHistoricalKm));
+      if (!fitting.length) return false;
+      applyEstimate(fitting[0].route, fitting[0].estimate);
+      return true;
+    }
+
+    function assignmentOrder(candidates, warehouse) {
+      return [...candidates].sort((a, b) =>
+        Number(b.snack) - Number(a.snack)
+        || haversine(warehouse, b) - haversine(warehouse, a)
+        || b.priority - a.priority
+      );
+    }
+
+    function retryUnassigned(candidates, routes, warehouse, minHistoricalKm) {
+      let remaining = [...candidates];
+      for (let pass = 0; pass < 4 && remaining.length; pass += 1) {
+        improveAssignments(routes, warehouse);
+        let assigned = 0;
+        const next = [];
+        assignmentOrder(remaining, warehouse).forEach((candidate) => {
+          if (assignCandidate(candidate, routes, warehouse, minHistoricalKm)) assigned += 1;
+          else next.push(candidate);
+        });
+        remaining = next;
+        if (!assigned) break;
+      }
+      improveAssignments(routes, warehouse);
+      return remaining;
     }
 
     function improveAssignments(routes, warehouse) {
@@ -398,6 +474,74 @@
       return route;
     }
 
+    async function rebalanceWithGoogle(routes, warehouse) {
+      for (let pass = 0; pass < 6; pass += 1) {
+        const currentOverrun = routes.reduce((sum, route) => sum + Math.max(0, route.totalMinutes - route.maxHours * 60), 0);
+        const currentConflicts = routes.filter((route) => route.totalMinutes > route.maxHours * 60).length;
+        if (!currentOverrun) break;
+        let bestMove = null;
+        routes.forEach((fromRoute, fromIndex) => {
+          if (fromRoute.totalMinutes <= fromRoute.maxHours * 60) return;
+          const fromCurrent = estimateStops(fromRoute.stops, warehouse);
+          fromRoute.stops.forEach((stop, stopIndex) => {
+            routes.forEach((toRoute, toIndex) => {
+              if (fromIndex === toIndex || !compatible(toRoute, stop)) return;
+              const toCurrent = estimateStops(toRoute.stops, warehouse);
+              const fromNext = estimateStops(fromRoute.stops.filter((_, index) => index !== stopIndex), warehouse);
+              const toNext = estimateStops([...toRoute.stops, stop], warehouse);
+              const projectedFrom = fromRoute.totalMinutes + fromNext.totalMinutes - fromCurrent.totalMinutes;
+              const projectedTo = toRoute.totalMinutes + toNext.totalMinutes - toCurrent.totalMinutes;
+              const nextOverrun = Math.max(0, projectedFrom - fromRoute.maxHours * 60) + Math.max(0, projectedTo - toRoute.maxHours * 60);
+              const nextConflicts = Number(projectedFrom > fromRoute.maxHours * 60) + Number(projectedTo > toRoute.maxHours * 60);
+              const totalGain = fromRoute.totalMinutes + toRoute.totalMinutes - projectedFrom - projectedTo;
+              const score = (currentOverrun - nextOverrun) * 20 + totalGain;
+              if (nextConflicts > currentConflicts || nextOverrun >= currentOverrun || (bestMove && score <= bestMove.score)) return;
+              bestMove = { fromRoute, toRoute, fromNext, toNext, score };
+            });
+          });
+        });
+        routes.forEach((fromRoute, fromIndex) => {
+          if (fromRoute.totalMinutes <= fromRoute.maxHours * 60) return;
+          const fromCurrent = estimateStops(fromRoute.stops, warehouse);
+          routes.forEach((toRoute, toIndex) => {
+            if (fromIndex === toIndex) return;
+            const toCurrent = estimateStops(toRoute.stops, warehouse);
+            fromRoute.stops.forEach((fromStop, fromStopIndex) => {
+              toRoute.stops.forEach((toStop, toStopIndex) => {
+                if (!compatible(fromRoute, toStop) || !compatible(toRoute, fromStop)) return;
+                const fromStops = fromRoute.stops.map((stop, index) => index === fromStopIndex ? toStop : stop);
+                const toStops = toRoute.stops.map((stop, index) => index === toStopIndex ? fromStop : stop);
+                const fromNext = estimateStops(fromStops, warehouse);
+                const toNext = estimateStops(toStops, warehouse);
+                const projectedFrom = fromRoute.totalMinutes + fromNext.totalMinutes - fromCurrent.totalMinutes;
+                const projectedTo = toRoute.totalMinutes + toNext.totalMinutes - toCurrent.totalMinutes;
+                const nextOverrun = Math.max(0, projectedFrom - fromRoute.maxHours * 60) + Math.max(0, projectedTo - toRoute.maxHours * 60);
+                const nextConflicts = Number(projectedFrom > fromRoute.maxHours * 60) + Number(projectedTo > toRoute.maxHours * 60);
+                const totalGain = fromRoute.totalMinutes + toRoute.totalMinutes - projectedFrom - projectedTo;
+                const score = (currentOverrun - nextOverrun) * 20 + totalGain;
+                if (nextConflicts > currentConflicts || nextOverrun >= currentOverrun || (bestMove && score <= bestMove.score)) return;
+                bestMove = { fromRoute, toRoute, fromNext, toNext, score };
+              });
+            });
+          });
+        });
+        if (!bestMove) break;
+        const fromSnapshot = { ...bestMove.fromRoute, stops: [...bestMove.fromRoute.stops] };
+        const toSnapshot = { ...bestMove.toRoute, stops: [...bestMove.toRoute.stops] };
+        applyEstimate(bestMove.fromRoute, bestMove.fromNext);
+        applyEstimate(bestMove.toRoute, bestMove.toNext);
+        await Promise.all([optimizeWithGoogle(bestMove.fromRoute, warehouse), optimizeWithGoogle(bestMove.toRoute, warehouse)]);
+        const nextOverrun = routes.reduce((sum, route) => sum + Math.max(0, route.totalMinutes - route.maxHours * 60), 0);
+        const nextConflicts = routes.filter((route) => route.totalMinutes > route.maxHours * 60).length;
+        if (nextConflicts > currentConflicts || nextOverrun >= currentOverrun) {
+          Object.assign(bestMove.fromRoute, fromSnapshot);
+          Object.assign(bestMove.toRoute, toSnapshot);
+          break;
+        }
+      }
+      routes.forEach((route) => { route.ownCount = route.stops.filter((stop) => String(stop.ownerId || '') === String(route.employee.id)).length; });
+    }
+
     async function calculateDispatch() {
       const crew = selectedCrew();
       if (!crew.length) throw new Error('Vyberte alespoň jednoho zaměstnance a vozidlo.');
@@ -408,38 +552,16 @@
       const minHistoricalKm = Math.min(...crew.map((item) => Number(state.km30.get(String(item.employee.id)) || 0)));
       const routes = crew.map((item) => ({ ...item, stops: [], distanceKm:0, driveMinutes:0, serviceMinutes:0, totalMinutes:PREPARATION_MINUTES, provider:'heuristic' }));
       const unassigned = [];
-      for (const candidate of state.candidates) {
-        const options = routes.filter((route) => compatible(route, candidate)).map((route) => ({ route, estimate: estimateStops([...route.stops, candidate], warehouse) }));
-        const fitting = options.filter((option) => option.estimate.totalMinutes <= option.route.maxHours * 60);
-        if (!fitting.length) { unassigned.push(candidate); continue; }
-        fitting.sort((a,b) => {
-          const score = (option) => {
-            const route = option.route;
-            const strategy = els.strategy.value;
-            const ownBonus = strategy === 'territory' ? -65 : strategy === 'distance' ? -8 : -30;
-            const foreignPenalty = strategy === 'territory' ? 22 : strategy === 'distance' ? 3 : 10;
-            const distanceWeight = strategy === 'territory' ? 0.9 : strategy === 'distance' ? 1.6 : 1.15;
-            const balanceDivisor = strategy === 'balanced' ? 18 : strategy === 'territory' ? 35 : 50;
-            const ownership = String(candidate.ownerId || '') === String(route.employee.id) ? ownBonus : candidate.ownerId ? foreignPenalty : 0;
-            const kmBalance = (Number(state.km30.get(String(route.employee.id)) || 0) - minHistoricalKm) / balanceDivisor;
-            const incrementalKm = Math.max(0, option.estimate.distanceKm - route.distanceKm);
-            const load = option.estimate.totalMinutes / Math.max(60, route.maxHours * 60) * 18;
-            return incrementalKm * distanceWeight + ownership + kmBalance + load;
-          };
-          return score(a) - score(b);
-        });
-        const selected = fitting[0];
-        selected.route.stops = selected.estimate.ordered;
-        selected.route.distanceKm = selected.estimate.distanceKm;
-        selected.route.driveMinutes = selected.estimate.driveMinutes;
-        selected.route.serviceMinutes = selected.estimate.serviceMinutes;
-        selected.route.totalMinutes = selected.estimate.totalMinutes;
-      }
+      assignmentOrder(state.candidates, warehouse).forEach((candidate) => {
+        if (!assignCandidate(candidate, routes, warehouse, minHistoricalKm)) unassigned.push(candidate);
+      });
       routes.forEach((route) => calculateMetrics(route, warehouse));
-      improveAssignments(routes, warehouse);
+      const remaining = retryUnassigned(unassigned, routes, warehouse, minHistoricalKm);
       els.status.textContent = 'Upřesňuji kilometry';
       await Promise.all(routes.map((route) => optimizeWithGoogle(route, warehouse)));
-      state.routes = routes; state.unassigned = unassigned; renderPlans(); els.approve.disabled = !routes.some((route) => route.stops.length);
+      els.status.textContent = 'Vyvažuji skutečné časy';
+      await rebalanceWithGoogle(routes, warehouse);
+      state.routes = routes; state.unassigned = remaining; renderPlans(); els.approve.disabled = !routes.some((route) => route.stops.length);
     }
 
     function renderPlans() {
