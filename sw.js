@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v84-payroll-email';
+const CACHE_NAME = 'olvend-v85-reports-cleanup';
 const APP_SHELL = [
   './',
   './index.html',
