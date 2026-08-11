@@ -436,90 +436,24 @@
 
   const navItems = navGroups.flatMap((group) => flattenNavItems(group.items));
 
-  function getStoredThemePreference() {
-    const stored = localStorage.getItem(APP_THEME_KEY);
-    if (stored === "light" || stored === "dark" || stored === "auto") return stored;
-    return "auto";
-  }
-
-  function resolveTheme(preference) {
-    if (preference === "light" || preference === "dark") return preference;
-    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-
-  function updateThemeMeta(theme) {
+  function updateThemeMeta() {
     const metaTheme = document.querySelector('meta[name="theme-color"]');
     if (metaTheme) {
-      metaTheme.setAttribute("content", theme === "light" ? "#f4f5f7" : "#0b0b0d");
-    }
-  }
-
-  function applyTheme(preference, options = {}) {
-    const nextPreference = preference === "light" || preference === "dark" || preference === "auto"
-      ? preference
-      : "auto";
-    const resolvedTheme = resolveTheme(nextPreference);
-
-    document.documentElement.dataset.olvendTheme = resolvedTheme;
-    document.documentElement.dataset.olvendThemePreference = nextPreference;
-    document.documentElement.style.colorScheme = resolvedTheme;
-    updateThemeMeta(resolvedTheme);
-
-    if (!options.skipPersist) {
-      localStorage.setItem(APP_THEME_KEY, nextPreference);
-    }
-
-    if (!options.skipEvent) {
-      document.dispatchEvent(new CustomEvent("olvend:themechange", {
-        detail: { preference: nextPreference, theme: resolvedTheme }
-      }));
-    }
-
-    return { preference: nextPreference, theme: resolvedTheme };
-  }
-
-  function syncAutoThemeFromSystem() {
-    if (getStoredThemePreference() === "auto") {
-      applyTheme("auto", { skipPersist: true });
+      metaTheme.setAttribute("content", "#f4f5f7");
     }
   }
 
   function initTheme() {
-    const preference = getStoredThemePreference();
-    applyTheme(preference, { skipPersist: true, skipEvent: true });
-
-    if (window.matchMedia) {
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      const handleMediaChange = () => {
-        if (getStoredThemePreference() === "auto") {
-          applyTheme("auto", { skipPersist: true });
-        }
-      };
-
-      if (typeof media.addEventListener === "function") {
-        media.addEventListener("change", handleMediaChange);
-      } else if (typeof media.addListener === "function") {
-        media.addListener(handleMediaChange);
-      }
-    }
-
-    window.addEventListener("pageshow", syncAutoThemeFromSystem);
-    window.addEventListener("focus", syncAutoThemeFromSystem);
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) syncAutoThemeFromSystem();
-    });
-    window.addEventListener("storage", (event) => {
-      if (event.key === APP_THEME_KEY) {
-        applyTheme(getStoredThemePreference(), { skipPersist: true });
-      }
-    });
+    localStorage.removeItem(APP_THEME_KEY);
+    document.documentElement.dataset.olvendTheme = "light";
+    document.documentElement.dataset.olvendThemePreference = "light";
+    document.documentElement.style.colorScheme = "light";
+    updateThemeMeta();
 
     window.OLVEND_THEME = {
-      getPreference: getStoredThemePreference,
-      getResolvedTheme: () => document.documentElement.dataset.olvendTheme || resolveTheme(getStoredThemePreference()),
-      setPreference(nextPreference) {
-        return applyTheme(nextPreference);
-      }
+      getPreference: () => "light",
+      getResolvedTheme: () => "light",
+      setPreference: () => ({ preference: "light", theme: "light" })
     };
   }
 
