@@ -98,9 +98,9 @@ function accountCredentials(account) {
 
 async function testConnections(config) {
   if (!config.password) throw new Error('Mailbox password is required.')
-  const imap = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false })
+  const imap = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 })
   await imap.connect(); await imap.logout()
-  const smtp = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password } })
+  const smtp = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 })
   await smtp.verify()
   return { imap: true, smtp: true }
 }
@@ -110,7 +110,7 @@ const folderName = value => String(value || 'INBOX').replace(/[\r\n]/g, '')
 
 async function imapClient(account) {
   const config = accountCredentials(account)
-  const client = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false })
+  const client = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 })
   await client.connect()
   return client
 }
@@ -171,13 +171,17 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/folders') {
     const client = await imapClient(account); try { const folders = await client.list(); return send(req, res, 200, { folders: folders.map(item => ({ path: item.path, name: item.name, special_use: item.specialUse || null })) }) } finally { await client.logout().catch(() => {}) }
   }
-  if (req.method === 'GET' && url.pathname === '/messages') return send(req, res, 200, { messages: await listMessages(account, folderName(url.searchParams.get('folder')), Number(url.searchParams.get('limit') || 50)) })
+  if (req.method === 'GET' && url.pathname === '/messages') {
+    const folder = folderName(url.searchParams.get('folder'))
+    const messages = folder.toUpperCase() === 'INBOX' ? await syncIndex(account, employee.id) : await listMessages(account, folder, Number(url.searchParams.get('limit') || 50))
+    return send(req, res, 200, { messages })
+  }
   if (req.method === 'GET' && url.pathname === '/message') {
     const client = await imapClient(account), folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid'))
-    try { const lock = await client.getMailboxLock(folder); try { const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true }); if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 }); const parsed = await simpleParser(item.source); await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }); return send(req, res, 200, { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }) } finally { lock.release() } } finally { await client.logout().catch(() => {}) }
+    try { const lock = await client.getMailboxLock(folder); try { const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true }); if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 }); const parsed = await simpleParser(item.source); await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }); await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid); return send(req, res, 200, { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }) } finally { lock.release() } } finally { await client.logout().catch(() => {}) }
   }
   if (req.method === 'POST' && url.pathname === '/send') {
-    const input = await body(req), config = accountCredentials(account), transport = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password } })
+    const input = await body(req), config = accountCredentials(account), transport = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 })
     const attachments = Array.isArray(input.attachments) ? input.attachments.map(a => ({ filename: String(a.filename || 'priloha'), content: Buffer.from(String(a.content || ''), 'base64'), contentType: a.content_type || undefined })) : []
     const result = await transport.sendMail({ from: { name: config.display_name || employee.name || '', address: config.email_address }, to: input.to, cc: input.cc || undefined, bcc: input.bcc || undefined, subject: String(input.subject || ''), text: String(input.text || ''), html: String(input.html || ''), attachments, inReplyTo: input.in_reply_to || undefined, references: input.references || undefined })
     return send(req, res, 200, { ok: true, message_id: result.messageId })

@@ -576,6 +576,7 @@
       const isActive = isItemActive(item);
       const activeClass = isActive ? "active" : "";
       const status = item.soon ? '<span class="nav-status">Brzy</span>' : "";
+      const unread = item.key === "mail" ? '<span class="nav-unread-badge" data-mail-unread hidden aria-label="0 nepřečtených e-mailů"></span>' : "";
       const hasChildren = Array.isArray(item.children) && item.children.length;
       const collapsed = hasChildren && !isActive;
       const expanded = hasChildren && !collapsed;
@@ -585,6 +586,7 @@
       const itemLabel = `
         ${getNavIcon(item)}
         <span>${item.label}</span>
+        ${unread}
         ${status}
       `;
       return `
@@ -814,6 +816,25 @@
         color: #979daa;
         border: 1px solid rgba(255,255,255,0.06);
       }
+
+      .nav-unread-badge {
+        margin-left: auto;
+        min-width: 20px;
+        height: 20px;
+        padding: 0 6px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: #d5101a;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 900;
+        line-height: 1;
+        box-shadow: 0 4px 10px rgba(213,16,26,.28);
+      }
+
+      .nav-unread-badge[hidden] { display: none; }
 
       .nav-chevron {
         width: 7px;
@@ -1866,6 +1887,35 @@
     });
   }
 
+  async function refreshMailUnreadBadge(refreshMailbox = true) {
+    const badges = document.querySelectorAll("[data-mail-unread]");
+    if (!badges.length) return;
+    try {
+      const { supabase } = await import("./supabase.js");
+      const renderCount = async () => {
+        const { count, error } = await supabase.from("mail_message_index").select("id", { count: "exact", head: true }).eq("folder_path", "INBOX").eq("is_read", false);
+        if (error) throw error;
+        const unread = Number(count || 0);
+        badges.forEach((badge) => {
+          badge.hidden = unread < 1;
+          badge.textContent = unread > 99 ? "99+" : String(unread);
+          badge.setAttribute("aria-label", `${unread} nepřečtených e-mailů`);
+        });
+      };
+      await renderCount();
+      const refreshKey = "olvendMailSidebarSyncAt";
+      const lastRefresh = Number(sessionStorage.getItem(refreshKey) || 0);
+      if (refreshMailbox && Date.now() - lastRefresh > 5 * 60 * 1000) {
+        sessionStorage.setItem(refreshKey, String(Date.now()));
+        try {
+          const { mailApi } = await import("./mail-api.js");
+          await mailApi("/sync", { method: "POST", body: "{}", timeoutMs: 75000 });
+          await renderCount();
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   initTheme();
   initializeCompactSidebar();
 
@@ -1875,7 +1925,10 @@
     sidebar.innerHTML = renderSidebar();
     setupSidebarCollapsing(sidebar);
     sidebar.querySelector("#openReleaseNotesButton")?.addEventListener("click", () => setupReleaseNotes(true));
+    refreshMailUnreadBadge();
   }
+
+  window.addEventListener("olvend-mail-unread-changed", () => refreshMailUnreadBadge(false));
 
   const mobileShell = document.querySelector(".mobile-nav-shell");
   if (mobileShell) {
