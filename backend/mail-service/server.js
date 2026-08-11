@@ -146,7 +146,9 @@ async function route(req, res) {
   const employee = await currentEmployee(req)
 
   if (req.method === 'GET' && url.pathname === '/account') {
-    const { data, error } = await admin.from('mail_accounts_safe').select('*').eq('employee_id', employee.id).eq('active', true).limit(1).maybeSingle()
+    const { data, error } = await admin.from('mail_accounts')
+      .select('id,employee_id,email_address,display_name,username,imap_host,imap_port,imap_secure,smtp_host,smtp_port,smtp_secure,sync_history_days,sync_folders,sync_deletions,download_attachments,last_sync_at,last_error,active,created_at,updated_at')
+      .eq('employee_id', employee.id).eq('active', true).order('updated_at', { ascending: false }).limit(1).maybeSingle()
     if (error) throw error
     return send(req, res, 200, { account: data })
   }
