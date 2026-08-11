@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v81-network-first-reports';
+const CACHE_NAME = 'olvend-v82-telemetry-last-month';
 const APP_SHELL = [
   './',
   './index.html',
