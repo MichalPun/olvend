@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v90-mail-reading-state';
+const CACHE_NAME = 'olvend-v91-mail-header-alignment';
 const APP_SHELL = [
   './',
   './index.html',
