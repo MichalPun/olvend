@@ -190,6 +190,14 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/folders') {
     const client = await imapClient(account); try { const folders = await client.list(); return send(req, res, 200, { folders: folders.map(item => ({ path: item.path, name: item.name, special_use: item.specialUse || null })) }) } finally { await client.logout().catch(() => {}) }
   }
+  if (req.method === 'GET' && url.pathname === '/messages/cached') {
+    const folder = folderName(url.searchParams.get('folder')), limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || 60)))
+    const { data, error } = await admin.from('mail_message_index')
+      .select('uid,subject,sender_name,sender_address,received_at,preview_text,is_read,is_answered,is_flagged,has_attachments,size_bytes')
+      .eq('account_id', account.id).eq('folder_path', folder).order('received_at', { ascending: false }).limit(limit)
+    if (error) throw error
+    return send(req, res, 200, { messages: data || [], cached: true })
+  }
   if (req.method === 'GET' && url.pathname === '/messages') {
     const folder = folderName(url.searchParams.get('folder'))
     const messages = folder.toUpperCase() === 'INBOX' ? await syncIndex(account, employee.id) : await listMessages(account, folder, Number(url.searchParams.get('limit') || 50))
