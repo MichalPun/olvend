@@ -96,13 +96,11 @@ function accountCredentials(account) {
   return { ...account, password: decrypt(account.password_ciphertext) }
 }
 
-async function testConnections(config) {
+async function testIncomingConnection(config) {
   if (!config.password) throw new Error('Mailbox password is required.')
   const imap = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 })
   await imap.connect(); await imap.logout()
-  const smtp = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 })
-  await smtp.verify()
-  return { imap: true, smtp: true }
+  return { imap: true, outgoing: 'resend' }
 }
 
 const addressList = addresses => (addresses || []).map(item => ({ name: item.name || '', address: item.address || '' }))
@@ -153,13 +151,13 @@ async function route(req, res) {
     return send(req, res, 200, { account: data })
   }
   if (req.method === 'POST' && url.pathname === '/account/test') {
-    const config = normalizeConfig(await body(req)); await testConnections(config)
-    return send(req, res, 200, { ok: true, imap: true, smtp: true })
+    const config = normalizeConfig(await body(req)); await testIncomingConnection(config)
+    return send(req, res, 200, { ok: true, imap: true, outgoing: 'resend' })
   }
   if (req.method === 'POST' && url.pathname === '/account') {
     const input = await body(req), config = normalizeConfig(input)
     if (!config.password) throw new Error('Mailbox password is required.')
-    await testConnections(config)
+    await testIncomingConnection(config)
     const row = { employee_id: employee.id, ...config, password_ciphertext: encrypt(config.password), password: undefined, sync_history_days: Number(input.sync_history_days || 90), sync_folders: input.sync_folders !== false, sync_deletions: input.sync_deletions !== false, download_attachments: Boolean(input.download_attachments), updated_at: new Date().toISOString() }
     delete row.password
     const { data, error } = await admin.from('mail_accounts').upsert(row, { onConflict: 'employee_id,email_address' }).select('id,email_address,display_name,last_sync_at').single()
@@ -181,10 +179,22 @@ async function route(req, res) {
     try { const lock = await client.getMailboxLock(folder); try { const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true }); if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 }); const parsed = await simpleParser(item.source); await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }); await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid); return send(req, res, 200, { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }) } finally { lock.release() } } finally { await client.logout().catch(() => {}) }
   }
   if (req.method === 'POST' && url.pathname === '/send') {
-    const input = await body(req), config = accountCredentials(account), transport = nodemailer.createTransport({ host: config.smtp_host, port: config.smtp_port, secure: config.smtp_secure, auth: { user: config.username, pass: config.password }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 })
+    const input = await body(req), authHeader = String(req.headers.authorization || '')
     const attachments = Array.isArray(input.attachments) ? input.attachments.map(a => ({ filename: String(a.filename || 'priloha'), content: Buffer.from(String(a.content || ''), 'base64'), contentType: a.content_type || undefined })) : []
-    const result = await transport.sendMail({ from: { name: config.display_name || employee.name || '', address: config.email_address }, to: input.to, cc: input.cc || undefined, bcc: input.bcc || undefined, subject: String(input.subject || ''), text: String(input.text || ''), html: String(input.html || ''), attachments, inReplyTo: input.in_reply_to || undefined, references: input.references || undefined })
-    return send(req, res, 200, { ok: true, message_id: result.messageId })
+    const edgeResponse = await fetch(`${SUPABASE_URL}/functions/v1/send-mail-client`, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify(input) })
+    const edgeResult = await edgeResponse.json().catch(() => ({}))
+    if (!edgeResponse.ok) throw Object.assign(new Error(edgeResult.error || edgeResult.detail?.message || 'Resend rejected the message.'), { status: edgeResponse.status })
+    let sentCopySaved = false
+    try {
+      const composer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' })
+      const raw = await composer.sendMail({ from: { name: account.display_name || employee.name || '', address: account.email_address }, to: input.to, cc: input.cc || undefined, bcc: input.bcc || undefined, subject: String(input.subject || ''), text: String(input.text || ''), html: String(input.html || ''), attachments, inReplyTo: input.in_reply_to || undefined, references: input.references || undefined })
+      const client = await imapClient(account)
+      try {
+        const folders = await client.list(), sentFolder = folders.find(item => item.specialUse === '\\Sent') || folders.find(item => /^(sent|sent messages|odeslan[ée])$/i.test(item.path || item.name || ''))
+        if (sentFolder) { await client.append(sentFolder.path, raw.message, ['\\Seen'], new Date()); sentCopySaved = true }
+      } finally { await client.logout().catch(() => {}) }
+    } catch (error) { console.warn('Message sent, but the IMAP Sent copy could not be saved:', error.message) }
+    return send(req, res, 200, { ok: true, message_id: edgeResult.provider_id, from: edgeResult.from, sent_copy_saved: sentCopySaved })
   }
   return send(req, res, 404, { error: 'Not found.' })
 }
