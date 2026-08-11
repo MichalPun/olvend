@@ -232,7 +232,7 @@
     },
     "mail-settings.html": {
       currentLabel: "Nastavení e-mailu",
-      activeKey: "mail",
+      activeKey: "mail-settings",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -438,7 +438,8 @@
           label: "Nastavení",
           children: [
             { key: "settings", href: "settings.html", label: "Nastavení systému" },
-            { key: "company", href: "company.html", label: "Firma" }
+            { key: "company", href: "company.html", label: "Firma" },
+            { key: "mail-settings", href: "mail-settings.html", label: "Nastavení e-mailu" }
           ]
         }
       ]
@@ -562,7 +563,7 @@
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',
     'report-attendance': 'calendar', 'report-shift-overview': 'clock', 'report-routes-daily': 'routes',
     'report-vehicles': 'vehicle', 'report-monthly-review': 'finance', 'report-invoice-comparison': 'invoice',
-    'report-telemetry': 'telemetry', 'management-admin': 'settings', settings: 'settings', company: 'settings'
+    'report-telemetry': 'telemetry', 'management-admin': 'settings', settings: 'settings', company: 'settings', 'mail-settings': 'mail'
   };
 
   function getNavIcon(item) {
