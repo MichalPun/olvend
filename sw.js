@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v83-telemetry-net-revenue-pdf';
+const CACHE_NAME = 'olvend-v84-payroll-email';
 const APP_SHELL = [
   './',
   './index.html',
@@ -14,6 +14,7 @@ const APP_SHELL = [
   './company.html',
   './budget.html',
   './reporty.html',
+  './payroll.html',
   './report-telemetry.html',
   './report-monthly-review.html',
   './report-invoice-comparison.html',

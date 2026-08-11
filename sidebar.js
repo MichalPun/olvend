@@ -209,6 +209,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "payroll.html": {
+      currentLabel: "Mzdy",
+      activeKey: "payroll",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "report-attendance.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
@@ -392,6 +399,7 @@
           label: "Reporty",
           children: [
             { key: "reporty", href: "reporty.html", label: "Přehled reportů" },
+            { key: "payroll", href: "payroll.html", label: "Mzdy" },
             { key: "report-attendance", href: "report-attendance.html", label: "Docházka" },
             { key: "report-shift-overview", href: "report-shift-overview.html", label: "Směny" },
             { key: "report-routes-daily", href: "report-routes-daily.html", label: "Denní trasy" },

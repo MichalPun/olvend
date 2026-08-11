@@ -154,6 +154,33 @@ const priorityLabel = (value: unknown) => ({
   low: "Nízká",
 }[String(value)] || "Běžná");
 
+function payrollReportEmailHtml(row: QueueRow) {
+  const metadata = valueRecord(row.metadata);
+  const period = String(metadata.period || "");
+  const month = period ? new Date(`${period}-01T12:00:00`).toLocaleDateString("cs-CZ", { month: "long", year: "numeric", timeZone: "Europe/Prague" }) : "zvolené období";
+  return `
+    <div style="margin:0;background:#f3f5f8;padding:28px 12px;font-family:Arial,Helvetica,sans-serif;color:#17212b">
+      <div style="max-width:680px;margin:0 auto;background:#fff;border-top:5px solid #d5101a;box-shadow:0 8px 28px rgba(23,33,43,.12)">
+        <div style="background:#17212b;padding:22px 28px;color:#fff">
+          <div style="font-size:20px;font-weight:800">OLVEND <span style="font-size:12px;font-weight:400;color:#cbd3dd">by OLMIKA</span></div>
+          <div style="margin-top:5px;color:#cbd3dd;font-size:12px">Interní provozní systém</div>
+        </div>
+        <div style="padding:30px 28px">
+          <div style="color:#d5101a;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em">Mzdové podklady</div>
+          <h1 style="margin:7px 0 16px;font-size:25px">Podklady za ${escapeHtml(month)}</h1>
+          <p style="margin:0 0 18px;line-height:1.65">Dobrý den,</p>
+          <p style="margin:0 0 20px;line-height:1.65">v příloze zasíláme mzdové podklady společnosti <strong>OLMIKA s.r.o.</strong> za ${escapeHtml(month)}.</p>
+          <div style="background:#f6f8fa;border:1px solid #e0e5eb;padding:16px 18px">
+            <div style="font-size:12px;color:#697586">Zahrnutí zaměstnanci</div><strong style="font-size:18px">${escapeHtml(metadata.employee_count || 0)}</strong>
+            <div style="margin-top:12px;font-size:12px;color:#697586">Fond prémií</div><strong>${escapeHtml(metadata.bonus_pool || "—")}</strong>
+          </div>
+          <p style="margin:22px 0 0;line-height:1.6">PDF obsahuje souhrn hodin a konkrétní dny dovolené, lékaře, nemoci a svátků. CSV je přiloženo pro další účetní zpracování.</p>
+        </div>
+        <div style="padding:18px 28px;border-top:1px solid #e0e5eb;color:#697586;font-size:12px">OLMIKA s.r.o. · Automaticky odesláno ze systému OLVEND</div>
+      </div>
+    </div>`;
+}
+
 function technicalJobEmailHtml(row: QueueRow, fullName: string, actionUrl: string | null) {
   const metadata = valueRecord(row.metadata);
   const jobType = String(metadata.job_type || "general");
@@ -452,7 +479,9 @@ Deno.serve(async (req) => {
 
     for (const row of rows) {
       const employee = previewQueueId ? currentEmployee : employeeById.get(String(row.employee_id));
-      if (!employee?.email) {
+      const metadata = valueRecord(row.metadata);
+      const recipientEmail = row.kind === "payroll_report" ? String(metadata.recipient_email || "").trim() : employee?.email;
+      if (!recipientEmail) {
         failed += 1;
         if (!previewQueueId) {
           await adminClient
@@ -463,13 +492,15 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const fullName = [employee.name, employee.surname].filter(Boolean).join(" ").trim() || employee.email;
+      const fullName = [employee?.name, employee?.surname].filter(Boolean).join(" ").trim() || recipientEmail;
       const actionUrl = row.action_url
         ? (/^https?:\/\//i.test(row.action_url) ? row.action_url : `${appUrl}/${row.action_url.replace(/^\//, "")}`)
         : null;
-      const html = ["technical_job_assignment", "technical_job_update"].includes(row.kind)
-        ? technicalJobEmailHtml(row, fullName, actionUrl)
-        : `
+      const html = row.kind === "payroll_report"
+        ? payrollReportEmailHtml(row)
+        : ["technical_job_assignment", "technical_job_update"].includes(row.kind)
+          ? technicalJobEmailHtml(row, fullName, actionUrl)
+          : `
         <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#111">
           <h2 style="margin:0 0 16px">OLVEND</h2>
           <p style="margin:0 0 12px">Dobrý den, ${escapeHtml(fullName)},</p>
@@ -479,6 +510,12 @@ Deno.serve(async (req) => {
         </div>
       `;
 
+      const attachments = row.kind === "payroll_report"
+        ? valueArray(metadata.attachments).map((attachment) => ({
+          filename: String(attachment.filename || "priloha"),
+          content: String(attachment.content || ""),
+        })).filter((attachment) => attachment.content)
+        : [];
       const resendResponse = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
@@ -487,9 +524,10 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           from: brandedEmailFrom,
-          to: [employee.email],
+          to: [recipientEmail],
           subject: previewQueueId ? `[NÁHLED] ${row.subject}` : row.subject,
           html,
+          ...(attachments.length ? { attachments } : {}),
         }),
       });
 
