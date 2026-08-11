@@ -1649,9 +1649,33 @@
       if (header === 'Kód' || header === 'SKU') return String(value);
       const number = typeof value === 'number' ? value : Number(value);
       if (Number.isFinite(number) && String(value).trim() !== '') {
-        return number.toLocaleString('cs-CZ', { maximumFractionDigits:2 });
+        const formatted = number.toLocaleString('cs-CZ', { maximumFractionDigits:2 });
+        if (/Tržba|Náklad|Zisk|Hotově|Kartou|Celkem/.test(header) && !/%/.test(header)) return `${formatted} Kč`;
+        if (/Marže|Podíl/.test(header)) return `${formatted} %`;
+        return formatted;
       }
       return String(value);
+    }
+    function pdfColumns(headers) {
+      const preferred = state.activeReport === 'sales-product'
+        ? ['Typ produktu','Kód','Název','Ks','Δ ks','Tržba s DPH','Δ tržba','Zisk bez DPH','Marže']
+        : state.activeReport === 'profit-loss'
+        ? ['Produkt','Ks','Δ ks','Tržba s DPH','Tržba bez DPH','Náklad bez DPH','Zisk bez DPH','Δ zisk','Marže','Poznámka']
+        : state.activeReport === 'transactions'
+        ? ['Čas','Automat','Lokalita','Volba','Produkt','Ks','Hotově','Kartou','Celkem']
+        : headers;
+      return preferred.filter((header) => headers.includes(header));
+    }
+    function pdfSummary() {
+      if (state.activeReport === 'filled-products') {
+        const total = fillTotals(state.filteredFillRows);
+        return [['Doplněno', `${qty(total.quantity)} ks`], ['Náklad', money(total.cost)], ['Pohyby', state.filteredFillRows.length.toLocaleString('cs-CZ')], ['Automaty', new Set(state.filteredFillRows.map((row) => String(row.machine_id))).size.toLocaleString('cs-CZ')]];
+      }
+      if (state.activeReport === 'stockout-risk') {
+        return [['Nízký stav', state.filteredOutlookRows.length.toLocaleString('cs-CZ')], ['Kritické teď', state.filteredOutlookRows.filter((row) => row.critical_now).length.toLocaleString('cs-CZ')], ['Riziko do zítřka', state.filteredOutlookRows.filter((row) => row.stockout_risk).length.toLocaleString('cs-CZ')], ['Pokryto trasou', state.filteredOutlookRows.filter((row) => row.covered).length.toLocaleString('cs-CZ')]];
+      }
+      const total = totals(state.filteredRows);
+      return [['Tržba s DPH', money(total.revenue)], ['Prodáno', `${qty(total.quantity)} ks`], ['Hotově', money(total.cash)], ['Kartou', money(total.cashless)]];
     }
     async function exportPdf() {
       if (!state.currentOutput.length) {
@@ -1666,7 +1690,7 @@
         const doc = new JsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
         await addPdfFonts(doc);
         const active = reports.find((report) => report.key === state.activeReport) || reports[0];
-        const headers = Object.keys(state.currentOutput[0]);
+        const headers = pdfColumns(Object.keys(state.currentOutput[0]));
         const body = state.currentOutput.map((row) => headers.map((header) => formatPdfCell(header, row[header])));
         doc.setFillColor(23, 33, 43);
         doc.rect(0, 0, 297, 14, 'F');
@@ -1681,11 +1705,34 @@
         doc.setFontSize(9);
         doc.setTextColor(95, 107, 124);
         doc.text(`${formatDate(els.from.value)} - ${formatDate(els.to.value)}${state.compareRange ? ` · srovnání ${formatRange(state.compareRange)}` : ''}`, 12, 32);
+        const summary = pdfSummary();
+        const cardWidth = 66;
+        summary.forEach(([label, value], index) => {
+          const x = 12 + index * (cardWidth + 4);
+          doc.setFillColor(246,248,250);
+          doc.setDrawColor(220,226,232);
+          doc.roundedRect(x, 37, cardWidth, 18, 2, 2, 'FD');
+          doc.setFont('AptosNarrow','normal');
+          doc.setFontSize(7);
+          doc.setTextColor(95,107,124);
+          doc.text(String(label).toUpperCase(), x + 4, 43);
+          doc.setFont('AptosNarrow','bold');
+          doc.setFontSize(12);
+          doc.setTextColor(23,33,43);
+          doc.text(String(value), x + 4, 51);
+        });
         doc.autoTable({
-          head:[headers], body, startY:38, theme:'grid', horizontalPageBreak:true, horizontalPageBreakRepeat:0,
-          styles:{ font:'AptosNarrow', fontSize:7, cellPadding:1.8, textColor:[38,49,61], lineColor:[220,226,232], lineWidth:.15, overflow:'linebreak' },
+          head:[headers], body, startY:61, theme:'grid', horizontalPageBreak:true, horizontalPageBreakRepeat:0,
+          styles:{ font:'AptosNarrow', fontSize:7.5, cellPadding:2, textColor:[38,49,61], lineColor:[220,226,232], lineWidth:.15, overflow:'linebreak', valign:'middle' },
           headStyles:{ font:'AptosNarrow', fontStyle:'bold', fillColor:[213,16,26], textColor:[255,255,255] },
-          alternateRowStyles:{ fillColor:[246,248,250] }, margin:{ left:10, right:10, top:12, bottom:12 },
+          alternateRowStyles:{ fillColor:[246,248,250] }, margin:{ left:10, right:10, top:16, bottom:12 },
+          didParseCell:(data) => {
+            const label = String(data.row.raw?.[2] || data.row.raw?.[0] || '');
+            if (/^(Mezisoučet:|Celkem$)/.test(label)) {
+              data.cell.styles.fontStyle = 'bold';
+              data.cell.styles.fillColor = label === 'Celkem' ? [255,235,237] : [238,246,255];
+            }
+          },
           didDrawPage:(data) => {
             doc.setFont('AptosNarrow', 'normal');
             doc.setFontSize(7);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v79-telemetry-export-pdf';
+const CACHE_NAME = 'olvend-v80-telemetry-readable-pdf';
 const APP_SHELL = [
   './',
   './index.html',
