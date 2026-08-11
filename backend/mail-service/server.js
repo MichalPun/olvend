@@ -11,6 +11,8 @@ const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const ENCRYPTION_KEY_HEX = process.env.MAIL_CREDENTIAL_ENCRYPTION_KEY || ''
 const ALLOWED_ORIGIN = process.env.MAIL_ALLOWED_ORIGIN || 'https://olvend.onrender.com'
 const BODY_LIMIT = 28 * 1024 * 1024
+const messageCache = new Map()
+const MESSAGE_CACHE_LIMIT = 12
 
 if (!SUPABASE_URL || !SERVICE_KEY || !/^[a-f0-9]{64}$/i.test(ENCRYPTION_KEY_HEX)) {
   console.warn('Mail service is missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or a 64-character MAIL_CREDENTIAL_ENCRYPTION_KEY.')
@@ -96,6 +98,21 @@ function accountCredentials(account) {
   return { ...account, password: decrypt(account.password_ciphertext) }
 }
 
+function cacheMessage(key, value) {
+  messageCache.delete(key)
+  messageCache.set(key, value)
+  while (messageCache.size > MESSAGE_CACHE_LIMIT) messageCache.delete(messageCache.keys().next().value)
+}
+
+async function markMessageRead(account, folder, uid) {
+  await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid)
+  const client = await imapClient(account)
+  try {
+    const lock = await client.getMailboxLock(folder)
+    try { await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }) } finally { lock.release() }
+  } finally { await client.logout().catch(() => {}) }
+}
+
 async function testIncomingConnection(config) {
   if (!config.password) throw new Error('Mailbox password is required.')
   const imap = new ImapFlow({ host: config.imap_host, port: config.imap_port, secure: config.imap_secure, auth: { user: config.username, pass: config.password }, logger: false, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000 })
@@ -121,7 +138,7 @@ async function listMessages(account, folder, limit = 50) {
       const exists = Number(client.mailbox?.exists || 0), start = Math.max(1, exists - Math.min(limit, 100) + 1)
       for await (const item of client.fetch(`${start}:*`, { uid: true, envelope: true, flags: true, size: true, bodyStructure: true })) {
         const from = addressList(item.envelope?.from)[0] || {}
-        messages.push({ uid: item.uid, subject: item.envelope?.subject || '(bez předmětu)', sender_name: from.name || from.address || '', sender_address: from.address || '', received_at: item.envelope?.date || null, is_read: item.flags?.has('\\Seen') || false, is_flagged: item.flags?.has('\\Flagged') || false, has_attachments: JSON.stringify(item.bodyStructure || '').toLowerCase().includes('attachment'), size_bytes: item.size || 0 })
+        messages.push({ uid: item.uid, subject: item.envelope?.subject || '(bez předmětu)', sender_name: from.name || from.address || '', sender_address: from.address || '', received_at: item.envelope?.date || null, is_read: item.flags?.has('\\Seen') || false, is_answered: item.flags?.has('\\Answered') || false, is_flagged: item.flags?.has('\\Flagged') || false, has_attachments: JSON.stringify(item.bodyStructure || '').toLowerCase().includes('attachment'), size_bytes: item.size || 0 })
       }
     } finally { lock.release() }
   } finally { await client.logout().catch(() => {}) }
@@ -177,8 +194,29 @@ async function route(req, res) {
     return send(req, res, 200, { messages })
   }
   if (req.method === 'GET' && url.pathname === '/message') {
-    const client = await imapClient(account), folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid'))
-    try { const lock = await client.getMailboxLock(folder); try { const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true }); if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 }); const parsed = await simpleParser(item.source); await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }); await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid); return send(req, res, 200, { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }) } finally { lock.release() } } finally { await client.logout().catch(() => {}) }
+    const folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid')), peek = url.searchParams.get('peek') === '1'
+    const cacheKey = `${account.id}:${folder}:${uid}`
+    const cached = messageCache.get(cacheKey)
+    if (cached) {
+      if (!peek) markMessageRead(account, folder, uid).catch(error => console.warn('Could not mark cached message as read:', error.message))
+      return send(req, res, 200, cached)
+    }
+    const client = await imapClient(account)
+    try {
+      const lock = await client.getMailboxLock(folder)
+      try {
+        const item = await client.fetchOne(uid, { source: true, flags: true }, { uid: true })
+        if (!item?.source) throw Object.assign(new Error('Message not found.'), { status: 404 })
+        const parsed = await simpleParser(item.source)
+        if (!peek) {
+          await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true })
+          await admin.from('mail_message_index').update({ is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid)
+        }
+        const result = { message: { uid, subject: parsed.subject || '(bez předmětu)', from: parsed.from?.value || [], to: parsed.to?.value || [], cc: parsed.cc?.value || [], date: parsed.date || null, html: parsed.html || '', text: parsed.text || '', attachments: parsed.attachments.map((a, index) => ({ index, filename: a.filename || `priloha-${index + 1}`, content_type: a.contentType, size: a.size, content: a.content.toString('base64') })) } }
+        if (item.source.length <= 4 * 1024 * 1024) cacheMessage(cacheKey, result)
+        return send(req, res, 200, result)
+      } finally { lock.release() }
+    } finally { await client.logout().catch(() => {}) }
   }
   if (req.method === 'DELETE' && url.pathname === '/message') {
     const client = await imapClient(account), folder = folderName(url.searchParams.get('folder')), uid = Number(url.searchParams.get('uid'))
@@ -190,6 +228,7 @@ async function route(req, res) {
       if (folder === trash.path) throw Object.assign(new Error('Message is already in Trash.'), { status: 409 })
       const lock = await client.getMailboxLock(folder)
       try { await client.messageMove(uid, trash.path, { uid: true }) } finally { lock.release() }
+      messageCache.delete(`${account.id}:${folder}:${uid}`)
       await admin.from('mail_message_index').delete().eq('account_id', account.id).eq('folder_path', folder).eq('uid', uid)
       return send(req, res, 200, { ok: true, moved_to: trash.path })
     } finally { await client.logout().catch(() => {}) }
@@ -208,6 +247,13 @@ async function route(req, res) {
       try {
         const folders = await client.list(), sentFolder = folders.find(item => item.specialUse === '\\Sent') || folders.find(item => /^(sent|sent messages|odeslan[ée])$/i.test(item.path || item.name || ''))
         if (sentFolder) { await client.append(sentFolder.path, raw.message, ['\\Seen'], new Date()); sentCopySaved = true }
+        const replyUid = Number(input.reply_uid || 0)
+        if (replyUid > 0) {
+          const replyFolder = folderName(input.reply_folder || 'INBOX')
+          const lock = await client.getMailboxLock(replyFolder)
+          try { await client.messageFlagsAdd(replyUid, ['\\Answered', '\\Seen'], { uid: true }) } finally { lock.release() }
+          await admin.from('mail_message_index').update({ is_answered: true, is_read: true, synced_at: new Date().toISOString() }).eq('account_id', account.id).eq('folder_path', replyFolder).eq('uid', replyUid)
+        }
       } finally { await client.logout().catch(() => {}) }
     } catch (error) { console.warn('Message sent, but the IMAP Sent copy could not be saved:', error.message) }
     return send(req, res, 200, { ok: true, message_id: edgeResult.provider_id, from: edgeResult.from, sent_copy_saved: sentCopySaved })
