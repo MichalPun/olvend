@@ -500,6 +500,29 @@
       white-space: nowrap;
     }
 
+    .stop-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .route-excel .btn.remove-stop {
+      background: #ffffff;
+      border: 1px solid #fda29b;
+      color: #b42318;
+    }
+
+    .route-excel .btn.remove-stop:hover {
+      background: #fff1f0;
+      border-color: #f04438;
+    }
+
+    .route-excel .btn.remove-stop:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+
     .stop-title-button {
       width: 100%;
       padding: 4px 0;
@@ -848,7 +871,12 @@
       routeVehicleLog: null,
       map: null,
       mapLayer: null,
+      removingStopId: null,
+      canManageRoutes: false,
     }
+
+    const ROAD_FACTOR = 1.23
+    const AVG_SPEED_KMH = 52
 
     function setStatus(message, tone = '') {
       statusLine.hidden = false
@@ -1285,6 +1313,108 @@
       return isStopDone(stop) || String(stop?.status || '') === 'skipped'
     }
 
+    function canRemoveStop(plan, stop) {
+      const routeStatus = getEffectiveExecutionStatus(plan)
+      const stopStatus = String(stop?.status || 'planned').toLowerCase()
+      const hasMobileVisit = state.mobileVisits.some((visit) => String(visit.route_plan_stop_id) === String(stop?.id))
+      return ['draft', 'assigned'].includes(routeStatus)
+        && state.canManageRoutes
+        && stopStatus === 'planned'
+        && !plan?.started_at
+        && !stop?.arrived_at
+        && !stop?.completed_at
+        && !stop?.skipped_at
+        && !hasMobileVisit
+    }
+
+    function haversineKm(a, b) {
+      const lat1 = Number(a?.latitude)
+      const lon1 = Number(a?.longitude)
+      const lat2 = Number(b?.latitude)
+      const lon2 = Number(b?.longitude)
+      if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) return 0
+      const toRad = (value) => value * Math.PI / 180
+      const dLat = toRad(lat2 - lat1)
+      const dLon = toRad(lon2 - lon1)
+      const value = Math.sin(dLat / 2) ** 2
+        + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
+      return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value))
+    }
+
+    function calculateFallbackRouteMetrics(plan, stops) {
+      const startPoint = {
+        latitude: Number(plan?.start_latitude),
+        longitude: Number(plan?.start_longitude),
+      }
+      let current = startPoint
+      let airDistanceKm = 0
+      stops.forEach((stop) => {
+        airDistanceKm += haversineKm(current, stop)
+        current = stop
+      })
+      if (plan?.return_to_start && stops.length) airDistanceKm += haversineKm(current, startPoint)
+      const distanceKm = airDistanceKm * ROAD_FACTOR
+      return {
+        distanceKm,
+        driveMinutes: Math.round((distanceKm / AVG_SPEED_KMH) * 60),
+        provider: 'heuristic',
+        providerStatus: 'fallback',
+      }
+    }
+
+    async function calculateUpdatedRouteMetrics(plan, stops) {
+      if (!stops.length) {
+        return { distanceKm: 0, driveMinutes: 0, provider: 'heuristic', providerStatus: 'ready' }
+      }
+
+      const origin = {
+        latitude: Number(plan?.start_latitude),
+        longitude: Number(plan?.start_longitude),
+        label: plan?.route_payload?.startPoint?.label || getWarehouseLabel(plan),
+      }
+      const hasAllCoordinates = [origin, ...stops].every((item) => (
+        item?.latitude != null && item?.latitude !== ''
+        && item?.longitude != null && item?.longitude !== ''
+        && Number.isFinite(Number(item.latitude))
+        && Number.isFinite(Number(item.longitude))
+      ))
+      if (!hasAllCoordinates) return calculateFallbackRouteMetrics(plan, stops)
+
+      const departure = String(plan?.planned_departure_time || plan?.route_payload?.planned_departure_time || '07:00').slice(0, 5)
+      let departureTime = new Date(`${plan.planning_date}T${departure}:00`)
+      if (Number.isNaN(departureTime.getTime()) || departureTime.getTime() <= Date.now()) {
+        departureTime = new Date(Date.now() + 5 * 60 * 1000)
+      }
+
+      try {
+        const { data, error } = await supabase.functions.invoke('google-route-plan', {
+          body: {
+            mode: 'ordered',
+            origin,
+            stops: stops.map((stop) => ({
+              id: stop.id,
+              name: stop.title || stop.name,
+              city: stop.city,
+              address: stop.address,
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              estimatedServiceMinutes: stop.estimatedServiceMinutes,
+            })),
+            returnToStart: Boolean(plan.return_to_start),
+            departureTime: departureTime.toISOString(),
+          },
+        })
+        if (error || data?.error) throw error || new Error(data.error)
+        const distanceKm = Number(data?.route?.distanceMeters || 0) / 1000
+        const driveMinutes = Math.round(Number(data?.route?.durationSeconds || 0) / 60)
+        if (!Number.isFinite(distanceKm) || !Number.isFinite(driveMinutes)) throw new Error('Neplatný výsledek přepočtu')
+        return { distanceKm, driveMinutes, provider: 'google_routes_matrix', providerStatus: 'ready' }
+      } catch (error) {
+        console.warn('Route recalculation after stop removal failed:', error)
+        return calculateFallbackRouteMetrics(plan, stops)
+      }
+    }
+
     function getEffectiveExecutionStatus(plan) {
       const status = String(plan?.execution_status || 'draft')
       if (['done', 'cancelled'].includes(status)) return status
@@ -1652,7 +1782,12 @@
                           <td>${escapeHtml(formatDateTime(getStopVisitTiming(stop).completedAt))}</td>
                           <td class="numeric">${escapeHtml(formatStopDuration(stop))}</td>
                           <td>${escapeHtml(stop.priority_snapshot || '—')}</td>
-                          <td><a class="btn secondary" href="${escapeHtml(buildMapSearchUrl(stop))}" target="_blank" rel="noopener noreferrer">Mapa</a></td>
+                          <td>
+                            <div class="stop-actions">
+                              <a class="btn secondary" href="${escapeHtml(buildMapSearchUrl(stop))}" target="_blank" rel="noopener noreferrer">Mapa</a>
+                              ${canRemoveStop(plan, stop) ? `<button class="btn remove-stop" type="button" data-remove-stop="${escapeHtml(stop.id)}" title="Odebrat zastávku z trasy" ${String(state.removingStopId) === String(stop.id) ? 'disabled' : ''}>${String(state.removingStopId) === String(stop.id) ? 'Odebírám…' : 'Odebrat'}</button>` : ''}
+                            </div>
+                          </td>
                         </tr>
                         <tr class="stop-detail-row" id="${escapeHtml(stopDetailId)}" hidden>
                           <td colspan="9">${renderStopVisitDetail(stop)}</td>
@@ -1713,13 +1848,17 @@
           button.setAttribute('aria-expanded', String(willOpen))
         })
       })
+      detailShell.querySelectorAll('[data-remove-stop]').forEach((button) => {
+        button.addEventListener('click', () => removeStopFromRoute(button.dataset.removeStop))
+      })
     }
 
     async function loadLookups() {
-      const [vehiclesResult, employeesResult, warehousesResult] = await Promise.all([
+      const [vehiclesResult, employeesResult, warehousesResult, sessionResult] = await Promise.all([
         supabase.from('vehicles').select('id, plate, brand, model, name, active').eq('active', true).order('plate', { ascending: true }),
         supabase.from('employees').select('id, name, surname, email, active').order('surname', { ascending: true }),
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
+        supabase.auth.getSession(),
       ])
 
       if (vehiclesResult.error) throw vehiclesResult.error
@@ -1732,6 +1871,17 @@
       }))
       state.employees = (employeesResult.data || []).filter((employee) => employee.active !== false)
       state.warehouses = warehousesResult.data || []
+      const authUserId = sessionResult?.data?.session?.user?.id
+      if (authUserId) {
+        const { data: currentEmployee, error: currentEmployeeError } = await supabase
+          .from('employees')
+          .select('role, active')
+          .eq('auth_user_id', authUserId)
+          .maybeSingle()
+        if (!currentEmployeeError && currentEmployee?.active !== false) {
+          state.canManageRoutes = /admin|manaž|manaz|manager|vedouc|majitel/i.test(String(currentEmployee?.role || ''))
+        }
+      }
     }
 
     async function loadCashReports(routePlanId) {
@@ -1908,7 +2058,7 @@
       if (Number.isFinite(numericId) && String(numericId) === String(routeId)) {
         const { data, error } = await supabase
           .from('route_plans')
-          .select('id, planning_date, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, route_payload, return_to_start, start_latitude, start_longitude, warehouse_id, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, route_payload, return_to_start, start_latitude, start_longitude, warehouse_id, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
           .eq('id', numericId)
           .maybeSingle()
 
@@ -1982,6 +2132,88 @@
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se uložit změnu trasy: ${error.message || error}`, 'error')
+      }
+    }
+
+    function stopMatchesPayloadStop(payloadStop, removedStop) {
+      if (payloadStop?.id != null && String(payloadStop.id) === String(removedStop.id)) return true
+      if (payloadStop?.machineId != null && removedStop.machine_id != null && String(payloadStop.machineId) === String(removedStop.machine_id)) return true
+      if (payloadStop?.machine_id != null && removedStop.machine_id != null && String(payloadStop.machine_id) === String(removedStop.machine_id)) return true
+      return payloadStop?.locationId != null
+        && removedStop.location_id != null
+        && String(payloadStop.locationId) === String(removedStop.location_id)
+        && removedStop.machine_id == null
+    }
+
+    function removeStopFromTelemetryPayload(payload, removedStop) {
+      const telemetry = payload?.telemetryRevenue
+      if (!telemetry || !Array.isArray(telemetry.machineBreakdown) || removedStop.machine_id == null) return
+      telemetry.machineBreakdown = telemetry.machineBreakdown.filter((item) => String(item.machineId) !== String(removedStop.machine_id))
+      telemetry.machineCount = telemetry.machineBreakdown.length
+      telemetry.revenue = telemetry.machineBreakdown.reduce((sum, item) => sum + Number(item.expectedTotalCzk || 0), 0)
+      telemetry.cashAmount = telemetry.machineBreakdown.reduce((sum, item) => sum + Number(item.expectedCashCzk || 0), 0)
+      telemetry.cashlessAmount = telemetry.machineBreakdown.reduce((sum, item) => sum + Number(item.expectedCardCzk || 0), 0)
+      telemetry.unknownAmount = telemetry.machineBreakdown.reduce((sum, item) => sum + Number(item.expectedUnknownCzk || 0), 0)
+    }
+
+    async function removeStopFromRoute(stopId) {
+      const plan = state.plan
+      const stop = plan?.orderedStops?.find((item) => String(item.id) === String(stopId))
+      if (!plan || !stop) return
+      if (!canRemoveStop(plan, stop)) {
+        setStatus('Tuto zastávku už nelze odebrat. Trasa nebo návštěva už začala.', 'warning')
+        return
+      }
+
+      const stopName = stop.title || stop.name || 'tuto zastávku'
+      if (!window.confirm(`Odebrat zastávku „${stopName}“ z trasy? Operátorce se už v plánu nezobrazí.`)) return
+
+      state.removingStopId = stop.id
+      renderDetail()
+      setStatus(`Odebírám zastávku ${stopName} a přepočítávám trasu…`)
+
+      try {
+        if (!Number.isFinite(Number(plan.id))) throw new Error('Tuto lokálně uloženou trasu uprav v plánovači.')
+
+        const remainingStops = plan.orderedStops.filter((item) => String(item.id) !== String(stop.id))
+        const metrics = await calculateUpdatedRouteMetrics(plan, remainingStops)
+        const serviceMinutes = remainingStops.reduce((sum, item) => sum + Number(item.estimatedServiceMinutes || 0), 0)
+        const payload = { ...(plan.route_payload || {}) }
+        if (Array.isArray(payload.orderedStops)) {
+          payload.orderedStops = payload.orderedStops.filter((item) => !stopMatchesPayloadStop(item, stop))
+        }
+        removeStopFromTelemetryPayload(payload, stop)
+        payload.provider = metrics.provider
+        payload.google = null
+        payload.last_stop_removed_at = new Date().toISOString()
+        payload.last_stop_removed_id = stop.id
+
+        const lastStop = remainingStops[remainingStops.length - 1] || null
+        const { data: result, error: removeError } = await supabase.rpc('remove_unstarted_route_stop', {
+          p_route_plan_id: Number(plan.id),
+          p_route_plan_stop_id: Number(stop.id),
+          p_estimated_distance_km: Number(metrics.distanceKm.toFixed(2)),
+          p_estimated_drive_minutes: metrics.driveMinutes,
+          p_estimated_service_minutes: serviceMinutes,
+          p_optimization_provider: metrics.provider,
+          p_provider_status: metrics.providerStatus,
+          p_route_payload: payload,
+          p_end_latitude: plan.return_to_start ? plan.start_latitude : lastStop?.latitude ?? null,
+          p_end_longitude: plan.return_to_start ? plan.start_longitude : lastStop?.longitude ?? null,
+        })
+        if (removeError) throw removeError
+        const remainingStopCount = Number(result?.[0]?.remaining_stop_count ?? remainingStops.length)
+
+        setStatus(`Zastávka ${stopName} byla odebrána. Trasa má nově ${remainingStopCount} zastávek, ${formatNumber(metrics.distanceKm, 1)} km a ${formatNumber(metrics.driveMinutes)} min jízdy.`, 'success')
+        await loadPlan()
+        renderDetail()
+      } catch (error) {
+        console.error(error)
+        setStatus(`Zastávku se nepodařilo odebrat: ${error.message || error}`, 'error')
+        await loadPlan().catch(() => {})
+        renderDetail()
+      } finally {
+        state.removingStopId = null
       }
     }
 
