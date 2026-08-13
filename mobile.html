@@ -2200,6 +2200,20 @@
     .my-shift-copy p { margin:0; color:#aeb6c2; font-size:12px; line-height:1.45; }
     .my-shift-route { display:inline-flex; margin-top:9px; padding:5px 8px; border-radius:6px; background:#102d22; color:#60db9b; font-size:11px; font-weight:900; }
     .my-shift-route.pending { background:#332915; color:#ffc866; }
+    .my-shift-action { width:100%; margin-top:11px; min-height:46px; border:1px solid #4a83bd; border-radius:8px; background:#14283c; color:#8fc8ff; font-weight:900; }
+    .shift-route-preview-head { padding:17px; border:1px solid #344151; border-radius:10px; background:#171d25; }
+    .shift-route-preview-head h2 { margin:0 0 7px; font-size:22px; line-height:1.2; }
+    .shift-route-preview-head p { margin:0; color:#aeb7c4; font-size:13px; line-height:1.45; }
+    .shift-route-preview-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:13px; }
+    .shift-route-preview-meta span { min-width:0; padding:10px; border:1px solid #303946; border-radius:8px; background:#11161d; color:#b9c2ce; font-size:12px; font-weight:800; line-height:1.35; }
+    .shift-route-preview-meta strong { display:block; margin-top:3px; color:#f4f6f9; font-size:14px; }
+    .shift-route-preview-list { display:grid; gap:9px; }
+    .shift-route-preview-stop { display:grid; grid-template-columns:42px minmax(0,1fr); gap:12px; padding:13px; border:1px solid #303946; border-radius:10px; background:#171c23; }
+    .shift-route-preview-order { display:grid; place-items:center; width:42px; height:42px; border-radius:8px; background:#173252; color:#91c8ff; font-size:17px; font-weight:900; }
+    .shift-route-preview-stop h3 { margin:0 0 4px; font-size:16px; line-height:1.25; }
+    .shift-route-preview-stop p { margin:0; color:#aeb7c4; font-size:12px; line-height:1.4; }
+    .shift-route-preview-machine { display:inline-flex; margin-top:7px; padding:4px 7px; border-radius:5px; background:#252c35; color:#d6dce5; font-size:11px; font-weight:900; }
+    .shift-route-preview-note { padding:12px 13px; border-left:4px solid #4c9fff; background:#122033; color:#c8dcf5; font-size:12px; font-weight:800; line-height:1.45; }
 
     .mobile-release-backdrop { position:fixed; inset:0; z-index:80; display:grid; align-items:end; background:rgba(0,0,0,.64); }
     .mobile-release-backdrop[hidden] { display:none; }
@@ -3465,7 +3479,7 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Mobilní režim 1.8 · build 2026.08.10.21</p>
+        <p class="eyebrow">Mobilní režim 1.8 · build 2026.08.13.1</p>
         <h1 id="screenTitle">Dnes</h1>
       </div>
       <span class="status-pill" id="shiftStatus">Načítám</span>
@@ -4078,6 +4092,13 @@
           <div class="my-shifts-list" id="myShiftsList"><div class="card">Načítám směny…</div></div>
         </div>
       </section>
+
+      <section class="screen" data-screen="shift-route-preview">
+        <div class="stack">
+          <button class="secondary-btn" id="backToMyShiftsButton" type="button">← Zpět na moje směny</button>
+          <div id="shiftRoutePreviewContent"></div>
+        </div>
+      </section>
     </main>
 
     <div class="navigation-sheet" id="navigationSheet" hidden>
@@ -4200,6 +4221,7 @@
       routePlans: [],
       publishedShifts: [],
       shiftRoutePlans: [],
+      activeShiftRoutePreviewId: null,
       routeMachineVisits: [],
       routePlanDiagnostics: null,
       freshRouteRecommendation: [],
@@ -4411,6 +4433,8 @@
       myShiftsHeroText: document.getElementById('myShiftsHeroText'),
       myShiftsCount: document.getElementById('myShiftsCount'),
       myShiftsList: document.getElementById('myShiftsList'),
+      shiftRoutePreviewContent: document.getElementById('shiftRoutePreviewContent'),
+      backToMyShiftsButton: document.getElementById('backToMyShiftsButton'),
       hrRequestPanel: document.getElementById('hrRequestPanel'),
       hrRequestType: document.getElementById('hrRequestType'),
       hrRequestDateFrom: document.getElementById('hrRequestDateFrom'),
@@ -4431,6 +4455,7 @@
       vehicle: 'Trasa',
       'route-machine': 'Automat',
       shifts: 'Moje směny',
+      'shift-route-preview': 'Plán trasy',
       more: 'Více'
     }
 
@@ -4873,7 +4898,7 @@
 
     function openScreen(screen) {
       const requestedScreen = screen
-      const preShiftAllowedScreens = ['today', 'shift', 'more', 'service', 'shifts']
+      const preShiftAllowedScreens = ['today', 'shift', 'more', 'service', 'shifts', 'shift-route-preview']
       if (!isShiftRunning() && !isShiftClosed() && !preShiftAllowedScreens.includes(screen)) {
         screen = 'shift'
         showMessage('Nejdřív zahaj směnu: potvrď pokyny dne, vyber auto a odsouhlas kilometry.', 'error')
@@ -4882,7 +4907,7 @@
         screen = 'today'
         showMessage('Směna už je ukončená. Další ukončení není potřeba.', 'error')
       }
-      if (!isShiftRunning() && !isShiftClosed() && !['shift', 'today', 'service'].includes(screen) && getMissingRequiredInstructions().length) {
+      if (!isShiftRunning() && !isShiftClosed() && !['shift', 'today', 'service', 'more', 'shifts', 'shift-route-preview'].includes(screen) && getMissingRequiredInstructions().length) {
         screen = 'shift'
         showMessage('Nejdřív potvrď povinné pokyny dne.', 'error')
       }
@@ -9126,9 +9151,96 @@
         const vehicle = state.vehicles.find((item) => String(item.id) === String(shift.vehicle_id || ''))
         const route = state.shiftRoutePlans.find((item) => String(item.planning_date) === String(shift.plan_date) && String(item.planned_employee_id) === String(state.employee?.id))
         const time = shift.planned_start && shift.planned_end ? `${String(shift.planned_start).slice(0,5)}–${String(shift.planned_end).slice(0,5)}` : 'Celý den'
-        const routeBadge = route ? `<span class="my-shift-route">Trasa připravena · ${Number(route.stop_count || 0)} zastávek</span>` : routeEligible ? '<span class="my-shift-route pending">Trasa se připravuje</span>' : ''
-        return `<article class="my-shift-card ${shift.plan_date === todayIso ? 'today' : ''}"><div class="my-shift-date"><strong>${date.getDate()}</strong><span>${date.toLocaleDateString('cs-CZ',{weekday:'short'}).replace('.','')}</span></div><div class="my-shift-copy"><h3>${escapeHtml(title)} · ${escapeHtml(time)}</h3><p>${escapeHtml([vehicle?.plate || vehicle?.name, shift.note].filter(Boolean).join(' · ') || 'Bez dalšího upřesnění')}</p>${routeBadge}</div></article>`
+        const routeStops = getShiftRouteStops(route)
+        const routeBadge = route ? `<span class="my-shift-route">Trasa připravena · ${Number(routeStops.length || route.stop_count || 0)} zastávek</span>` : routeEligible ? '<span class="my-shift-route pending">Trasa se připravuje</span>' : ''
+        const routeAction = route ? `<button class="my-shift-action" type="button" data-shift-route-preview="${escapeHtml(route.id)}">Zobrazit trasu</button>` : ''
+        return `<article class="my-shift-card ${shift.plan_date === todayIso ? 'today' : ''}"><div class="my-shift-date"><strong>${date.getDate()}</strong><span>${date.toLocaleDateString('cs-CZ',{weekday:'short'}).replace('.','')}</span></div><div class="my-shift-copy"><h3>${escapeHtml(title)} · ${escapeHtml(time)}</h3><p>${escapeHtml([vehicle?.plate || vehicle?.name, shift.note].filter(Boolean).join(' · ') || 'Bez dalšího upřesnění')}</p>${routeBadge}${routeAction}</div></article>`
       }).join('')
+    }
+
+    function getShiftRouteStops(route) {
+      if (!route) return []
+      const databaseStops = Array.isArray(route.route_plan_stops) ? route.route_plan_stops : []
+      const payloadStops = Array.isArray(route.route_payload?.orderedStops)
+        ? route.route_payload.orderedStops
+        : Array.isArray(route.route_payload?.ordered_stops) ? route.route_payload.ordered_stops : []
+      const stops = databaseStops.length ? databaseStops : payloadStops
+      return [...stops].sort((a, b) => Number(a.stop_order ?? a.stopOrder ?? 0) - Number(b.stop_order ?? b.stopOrder ?? 0))
+    }
+
+    function getShiftRouteSchedule(route) {
+      const stops = getShiftRouteStops(route)
+      const departureClock = String(route?.planned_departure_time || route?.route_payload?.planned_departure_time || '07:00').slice(0, 5)
+      const routeStart = new Date(`${route?.planning_date || todayIso}T${departureClock}:00`)
+      const preparationMinutes = Math.max(0, Number(route?.route_payload?.preparation_minutes || route?.route_payload?.route_time_budget?.preparation_minutes || 0))
+      const drivePerStop = stops.length ? Number(route?.estimated_drive_minutes || 0) / stops.length : 0
+      let serviceMinutes = preparationMinutes
+      const scheduledStops = stops.map((stop, index) => {
+        const payloadStop = (Array.isArray(route?.route_payload?.orderedStops) ? route.route_payload.orderedStops : [])
+          .find((item) => String(item.id || '') === String(stop.id || '') || Number(item.stopOrder || item.stop_order || 0) === Number(stop.stop_order || stop.stopOrder || 0))
+        const storedArrival = stop.estimated_arrival_at || stop.estimatedArrivalAt || payloadStop?.estimatedArrivalAt || payloadStop?.estimated_arrival_at
+        const service = Number(stop.estimated_service_minutes ?? stop.estimatedServiceMinutes ?? payloadStop?.estimatedServiceMinutes ?? 0)
+        const fallbackArrival = new Date(routeStart.getTime() + ((index + 1) * drivePerStop + serviceMinutes) * 60000)
+        const arrival = storedArrival ? new Date(storedArrival) : fallbackArrival
+        const storedDeparture = stop.estimated_departure_at || stop.estimatedDepartureAt || payloadStop?.estimatedDepartureAt || payloadStop?.estimated_departure_at
+        const departure = storedDeparture ? new Date(storedDeparture) : new Date(arrival.getTime() + service * 60000)
+        serviceMinutes += service
+        return { stop, arrival, departure, serviceMinutes: service }
+      })
+      const totalServiceMinutes = scheduledStops.reduce((sum, item) => sum + Number(item.serviceMinutes || 0), 0)
+      const routeEnd = new Date(routeStart.getTime() + (preparationMinutes + Number(route?.estimated_drive_minutes || 0) + totalServiceMinutes) * 60000)
+      return { departureClock, routeStart, routeEnd, preparationMinutes, scheduledStops }
+    }
+
+    function formatRoutePreviewClock(value) {
+      const date = value instanceof Date ? value : new Date(value)
+      return Number.isNaN(date.getTime()) ? 'čas neurčen' : date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+    }
+
+    function renderShiftRoutePreview() {
+      if (!els.shiftRoutePreviewContent) return
+      const route = state.shiftRoutePlans.find((item) => String(item.id) === String(state.activeShiftRoutePreviewId || ''))
+      if (!route) {
+        els.shiftRoutePreviewContent.innerHTML = '<div class="empty">Plán trasy už není dostupný. Vrať se do směn a načti jej znovu.</div>'
+        return
+      }
+      const schedule = getShiftRouteSchedule(route)
+      const vehicle = state.vehicles.find((item) => String(item.id) === String(route.vehicle_id || ''))
+      const routeDate = new Date(`${route.planning_date}T12:00:00`).toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' })
+      els.shiftRoutePreviewContent.innerHTML = `
+        <div class="stack">
+          <article class="shift-route-preview-head">
+            <h2>${escapeHtml(route.title || 'Naplánovaná trasa')}</h2>
+            <p>${escapeHtml(routeDate)} · náhled před převzetím</p>
+            <div class="shift-route-preview-meta">
+              <span>Plánovaný odjezd<strong>${escapeHtml(schedule.departureClock)}</strong></span>
+              <span>Předpokládaný návrat<strong>${escapeHtml(formatRoutePreviewClock(schedule.routeEnd))}</strong></span>
+              <span>Vozidlo<strong>${escapeHtml(vehicle ? [vehicle.name, vehicle.plate].filter(Boolean).join(' · ') : 'Zatím neurčeno')}</strong></span>
+              <span>Zastávky<strong>${escapeHtml(String(schedule.scheduledStops.length))}</strong></span>
+            </div>
+          </article>
+          <div class="shift-route-preview-note">Toto je pouze náhled plánu. Trasu převezmeš a práci zahájíš až v den výjezdu.</div>
+          <div class="section-title"><h3>Pořadí zastávek</h3><span>Orientační časy</span></div>
+          <div class="shift-route-preview-list">
+            ${schedule.scheduledStops.map(({ stop, arrival, departure, serviceMinutes }, index) => {
+              const machine = state.machines.find((item) => String(item.id) === String(stop.machine_id || stop.machineId || ''))
+              const location = state.locations.find((item) => String(item.id) === String(stop.location_id || stop.locationId || ''))
+              const title = location?.name || stop.title || stop.name || machine?.name || `Zastávka ${index + 1}`
+              const address = [stop.address_snapshot || stop.address, stop.city_snapshot || stop.city || location?.city].filter(Boolean).join(' · ') || 'Adresa není vyplněná'
+              const machineLabel = machine ? getMachineRouteLabel(machine) : (stop.machineName || 'Automat podle plánu')
+              const timing = serviceMinutes > 0
+                ? `Příjezd ${formatRoutePreviewClock(arrival)} · odjezd přibližně ${formatRoutePreviewClock(departure)}`
+                : `Příjezd přibližně ${formatRoutePreviewClock(arrival)}`
+              return `<article class="shift-route-preview-stop"><span class="shift-route-preview-order">${index + 1}</span><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(address)}</p><p>${escapeHtml(timing)}</p><span class="shift-route-preview-machine">${escapeHtml(machineLabel)}</span></div></article>`
+            }).join('') || '<div class="empty">Trasa zatím nemá vložené zastávky.</div>'}
+          </div>
+        </div>`
+    }
+
+    function openShiftRoutePreview(routeId) {
+      state.activeShiftRoutePreviewId = routeId
+      renderShiftRoutePreview()
+      openScreen('shift-route-preview')
     }
 
     async function loadPublishedShifts() {
@@ -9155,7 +9267,7 @@
         const { data, error } = await supabase.from('shift_plan_days').select('id,shift_plan_id,employee_id,plan_date,shift_type,planned_start,planned_end,planned_minutes,warehouse_id,vehicle_id,note,status').in('shift_plan_id',selectedPlanIds).eq('employee_id',state.employee.id).eq('status','published').gte('plan_date',from).lte('plan_date',to).order('plan_date')
         if (!error) state.publishedShifts = data || []; else console.warn(error)
       }
-      const { data: routes, error: routesError } = await supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,title,stop_count,execution_status').eq('planned_employee_id',state.employee.id).gte('planning_date',from).lte('planning_date',to).neq('execution_status','cancelled')
+      const { data: routes, error: routesError } = await supabase.from('route_plans').select('id,planning_date,planned_departure_time,planned_employee_id,vehicle_id,title,stop_count,estimated_drive_minutes,estimated_service_minutes,execution_status,route_payload,route_plan_stops(id,route_plan_id,location_id,machine_id,stop_order,title,address_snapshot,city_snapshot,estimated_service_minutes,note)').eq('planned_employee_id',state.employee.id).gte('planning_date',from).lte('planning_date',to).neq('execution_status','cancelled')
       if (!routesError) state.shiftRoutePlans = routes || []
       renderMyShifts()
     }
@@ -13028,6 +13140,15 @@
     function bindEvents() {
       document.querySelectorAll('[data-open-screen]').forEach((button) => {
         button.addEventListener('click', () => openScreen(button.dataset.openScreen))
+      })
+      els.myShiftsList?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-shift-route-preview]')
+        if (!button) return
+        openShiftRoutePreview(button.dataset.shiftRoutePreview)
+      })
+      els.backToMyShiftsButton?.addEventListener('click', () => {
+        renderMyShifts()
+        openScreen('shifts')
       })
       els.todayRouteSection?.addEventListener('click', (event) => {
         const button = event.target.closest('[data-open-screen]')
