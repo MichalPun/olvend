@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v100-daily-instructions-redesign';
+const CACHE_NAME = 'olvend-v101-route-navigation-acceptance';
 const APP_SHELL = [
   './',
   './index.html',
