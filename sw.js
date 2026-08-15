@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v106-light-instruction-sheet';
+const CACHE_NAME = 'olvend-v107-personal-greeting';
 const APP_SHELL = [
   './',
   './index.html',
