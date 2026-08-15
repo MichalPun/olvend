@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v104-mobile-home-inventory-guard';
+const CACHE_NAME = 'olvend-v105-mobile-home-contrast';
 const APP_SHELL = [
   './',
   './index.html',
