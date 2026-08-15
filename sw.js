@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v108-offline-sync-recovery';
+const CACHE_NAME = 'olvend-v109-build-footer';
 const APP_SHELL = [
   './',
   './index.html',
