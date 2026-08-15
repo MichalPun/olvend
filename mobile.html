@@ -2576,6 +2576,7 @@
     .route-next-card h3 { margin:13px 0 5px; font-size:22px; line-height:1.15; }
     .route-next-card p { margin:0 0 12px; color:#667085; font-size:13px; font-weight:800; line-height:1.4; }
     .route-next-reason { margin-bottom:12px; padding:11px; border-radius:13px; color:#175cd3; background:#eff8ff; font-size:11px; font-weight:850; line-height:1.4; }
+    .route-location-note { margin:0 0 12px; padding:11px 12px; border-radius:13px; color:#075f3a; background:#ecfdf3; font-size:12px; font-weight:800; line-height:1.45; }
     .route-skip-request-card { display:grid; gap:11px; padding:16px; border:2px solid #f79009; border-radius:20px; background:#fffaeb; }
     .route-skip-request-head { display:flex; justify-content:space-between; gap:10px; align-items:center; }
     .route-skip-request-head strong { color:#b54708; font-size:15px; }
@@ -3991,7 +3992,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.8</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.9</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4617,7 +4618,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-warehouse-return-v11" defer></script>
+  <script src="./pwa.js?v=20260815-location-picklists-v12" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -7531,6 +7532,31 @@
       return ['completed', 'skipped'].includes(getRouteStopStatus(stop))
     }
 
+    function getRouteStopLocationKey(stop) {
+      const machine = getRouteStopMachine(stop)
+      const locationId = stop?.location_id ?? machine?.location_id
+      return locationId != null && String(locationId) !== ''
+        ? `location:${locationId}`
+        : `stop:${stop?.id || ''}`
+    }
+
+    function formatRouteMachineCount(count) {
+      const value = Math.max(0, Number(count || 0))
+      return `${value} ${value === 1 ? 'automat' : value >= 2 && value <= 4 ? 'automaty' : 'automatů'}`
+    }
+
+    function getCurrentRouteLocationStops(plan) {
+      const stops = getRouteStops(plan)
+      const firstOpen = stops.find((stop) => !isRouteStopClosed(stop))
+      if (!firstOpen) return []
+      const locationKey = getRouteStopLocationKey(firstOpen)
+      return stops.filter((stop) => !isRouteStopClosed(stop) && getRouteStopLocationKey(stop) === locationKey)
+    }
+
+    function isCurrentRouteLocationStop(plan, stop) {
+      return getCurrentRouteLocationStops(plan).some((item) => String(item.id) === String(stop?.id))
+    }
+
     function getRouteSkipReasonLabel(reason) {
       const labels = {
         opening_hours: 'Nestihl/a otevírací dobu',
@@ -7669,10 +7695,31 @@
         ])
         if (baselineResult.error) throw baselineResult.error
         if (optimizedResult.error) throw optimizedResult.error
-        const optimized = optimizedResult.data || {}
+        let optimized = optimizedResult.data || {}
         const baseline = baselineResult.data || {}
+        const optimizedIds = (optimized.orderedStops || []).map((stop) => Number(stop.id)).filter(Boolean)
+        if (optimizedIds.length !== remaining.length) throw new Error('Přepočet nevrátil všechny zbývající zastávky.')
+        const remainingById = new Map(remaining.map((stop) => [String(stop.id), stop]))
+        const locationGroups = new Map()
+        const locationOrder = []
+        optimizedIds.forEach((id) => {
+          const locationKey = getRouteStopLocationKey(remainingById.get(String(id)))
+          if (!locationGroups.has(locationKey)) {
+            locationGroups.set(locationKey, [])
+            locationOrder.push(locationKey)
+          }
+          locationGroups.get(locationKey).push(id)
+        })
+        const groupedIds = locationOrder.flatMap((locationKey) => locationGroups.get(locationKey) || [])
+        const groupingChanged = groupedIds.some((id, index) => String(id) !== String(optimizedIds[index]))
+        if (groupingChanged) {
+          const groupedStops = groupedIds.map((id) => routeStops.find((routeStop) => String(routeStop.id) === String(id))).filter(Boolean)
+          const groupedResult = await supabase.functions.invoke('google-route-plan', { body: { ...common, stops: groupedStops, mode: 'ordered' } })
+          if (groupedResult.error) throw groupedResult.error
+          optimized = groupedResult.data || {}
+        }
         const orderedIds = (optimized.orderedStops || []).map((stop) => Number(stop.id)).filter(Boolean)
-        if (orderedIds.length !== remaining.length) throw new Error('Přepočet nevrátil všechny zbývající zastávky.')
+        if (orderedIds.length !== remaining.length) throw new Error('Přepočet nevrátil všechny automaty v lokalitách.')
         const first = remaining.find((stop) => String(stop.id) === String(orderedIds[0]))
         const firstSignal = first ? urgency.get(String(first.id)) : null
         const distanceSaved = Math.max(0, Number(baseline.route?.distanceMeters || 0) - Number(optimized.route?.distanceMeters || 0))
@@ -7734,8 +7781,15 @@
       const refreshedPlan = getAssignedRoutePlan()
       const request = state.routeSkipRequests.find((item) => String(item.id) === String(pendingBefore.id))
       if (request?.status === 'approved') {
-        await recalculateRemainingRoute(refreshedPlan)
-        showMessage('Nejetí bylo schváleno. Trasa je přepočítaná a další zastávka je odemčená.', 'success')
+        const decidedStop = getRouteStops(refreshedPlan).find((stop) => String(stop.id) === String(pendingBefore.route_plan_stop_id))
+        const decidedLocationKey = decidedStop ? getRouteStopLocationKey(decidedStop) : null
+        const openAtLocation = decidedLocationKey
+          ? getRouteStops(refreshedPlan).filter((stop) => !isRouteStopClosed(stop) && getRouteStopLocationKey(stop) === decidedLocationKey)
+          : []
+        if (!openAtLocation.length) await recalculateRemainingRoute(refreshedPlan)
+        showMessage(openAtLocation.length
+          ? `Nejetí bylo schváleno. Na této lokalitě zbývá ${formatRouteMachineCount(openAtLocation.length)}.`
+          : 'Nejetí bylo schváleno. Trasa je přepočítaná a další lokalita je odemčená.', 'success')
       } else if (request?.status === 'rejected') {
         showMessage('Žádost byla zamítnuta. Zastávka zůstává v trase.', 'error')
       }
@@ -9285,7 +9339,13 @@
       const allClosed = stops.length > 0 && stops.every(isRouteStopClosed)
       const activeSkipRequest = getActiveRouteSkipRequest(plan)
       const routeLocked = Boolean(activeSkipRequest)
-      const nextStop = stops.find((stop) => !isRouteStopClosed(stop)) || null
+      const currentLocationStops = getCurrentRouteLocationStops(plan)
+      const nextStop = currentLocationStops[0] || null
+      const currentLocationKey = nextStop ? getRouteStopLocationKey(nextStop) : null
+      const currentLocationAllStops = currentLocationKey
+        ? stops.filter((stop) => getRouteStopLocationKey(stop) === currentLocationKey)
+        : []
+      const multipleMachinesAtLocation = currentLocationAllStops.length > 1
       const recalculation = getRouteRecalculation(plan)
       const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       const normalizedRouteStatus = String(plan.execution_status || '')
@@ -9316,7 +9376,7 @@
         const arrived = status === 'arrived'
         const visit = getRouteVisitForStop(stop)
         const machineKind = getMachineKind(machine)
-        const isNext = String(nextStop?.id || '') === String(stop.id || '')
+        const isCurrentLocation = currentLocationStops.some((item) => String(item.id) === String(stop.id))
         const approvedRequest = getRouteSkipRequestForStop(stop, ['approved'])
         const primaryAction = done
           ? `<button class="secondary-btn" type="button" data-route-action="view-stop" data-stop-id="${escapeHtml(stop.id)}">Zobrazit</button>`
@@ -9324,7 +9384,7 @@
             ? ''
           : arrived
             ? `<button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked ? 'disabled' : ''}>Pokračovat</button>`
-            : `<button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || !isNext ? 'disabled' : ''}>${isNext ? 'Otevřít práci' : 'Čeká na pořadí'}</button>`
+            : `<button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || !isCurrentLocation ? 'disabled' : ''}>${isCurrentLocation ? 'Otevřít picklist' : 'Čeká na lokalitu'}</button>`
         return `
           <article class="route-stop-card ${done ? 'done' : skipped ? 'skipped' : ''}" id="routeStop-${escapeHtml(stop.id)}">
             <div class="route-stop-main">
@@ -9337,15 +9397,15 @@
                   <span>${escapeHtml(getMachineRouteLabel(machine))}</span>
                 </div>
               </div>
-              <span class="badge ${done ? 'green' : skipped || arrived ? 'yellow' : 'blue'}">${done ? 'Hotovo' : skipped ? 'Nejeto' : arrived ? 'Rozpracováno' : 'Čeká'}</span>
+              <span class="badge ${done || (isCurrentLocation && !arrived) ? 'green' : skipped || arrived ? 'yellow' : 'blue'}">${done ? 'Hotovo' : skipped ? 'Nejeto' : arrived ? 'Rozpracováno' : isCurrentLocation ? 'Odemčeno' : 'Čeká'}</span>
             </div>
             ${renderMobileStopTime(stop, plan)}
             ${skipped ? `<div class="route-stop-skip-reason">Důvod: ${escapeHtml(getRouteSkipReasonLabel(visit?.skip_reason))}${visit?.operator_note ? ` · ${escapeHtml(visit.operator_note)}` : ''}${approvedRequest ? ` · schválil/a ${escapeHtml(approvedRequest.approver_name || 'vedoucí')} ${escapeHtml(formatRouteClock(approvedRequest.decided_at))}` : ''}</div>` : ''}
             <div class="route-stop-actions">
-              ${skipped ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || (!isNext && !arrived) ? 'disabled' : ''}>Navigovat</button>`}
+              ${skipped ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || (!isCurrentLocation && !arrived) ? 'disabled' : ''}>Navigovat</button>`}
               ${primaryAction}
             </div>
-            ${['pending', 'arrived'].includes(status) && isNext ? `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked ? 'disabled' : ''}>Požádat o nejetí</button>` : ''}
+            ${['pending', 'arrived'].includes(status) && isCurrentLocation ? `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked ? 'disabled' : ''}>Požádat o nejetí</button>` : ''}
           </article>
         `
       }).join('')
@@ -9377,7 +9437,7 @@
           ` : ''}
           ${canAccept ? '<button class="primary-btn" type="button" data-route-action="accept-route">Převzít trasu</button>' : ''}
           ${canFinish && !routeSchedule.returnToStart ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
-          ${nextStop && !routeAlreadyDone ? `<article class="route-next-card ${routeLocked ? 'locked' : ''}"><div class="route-next-kicker"><span>${routeLocked ? 'Další zastávka uzamčena' : `Další zastávka · ${completedStops + skippedStops + 1} z ${stops.length}`}</span><span>${escapeHtml(getMachineRouteLabel(getRouteStopMachine(nextStop), 'Automat'))}</span></div><h3>${escapeHtml(getRouteStopTitle(nextStop))}</h3><p>${escapeHtml(getRouteStopAddress(nextStop))}</p>${renderMobileStopTime(nextStop, plan)}${recalculation?.reason ? `<div class="route-next-reason">Proč nyní: ${escapeHtml(recalculation.reason)}</div>` : ''}<div class="route-stop-actions"><button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>Otevřít navigaci</button><button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>${routeLocked ? 'Čeká na schválení' : getRouteStopStatus(nextStop) === 'arrived' ? 'Pokračovat v práci' : 'Otevřít zastávku'}</button></div>${routeLocked ? '' : `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(nextStop.id)}">Požádat o nejetí</button>`}</article>` : ''}
+          ${nextStop && !routeAlreadyDone ? `<article class="route-next-card ${routeLocked ? 'locked' : ''}"><div class="route-next-kicker"><span>${routeLocked ? 'Aktuální lokalita uzamčena' : multipleMachinesAtLocation ? 'Aktuální lokalita' : `Další zastávka · ${completedStops + skippedStops + 1} z ${stops.length}`}</span><span>${multipleMachinesAtLocation ? formatRouteMachineCount(currentLocationAllStops.length) : escapeHtml(getMachineRouteLabel(getRouteStopMachine(nextStop), 'Automat'))}</span></div><h3>${escapeHtml(getRouteStopTitle(nextStop))}</h3><p>${escapeHtml(getRouteStopAddress(nextStop))}</p>${multipleMachinesAtLocation ? `<div class="route-location-note">Na této lokalitě jsou ${formatRouteMachineCount(currentLocationAllStops.length)}. Picklist můžeš otevřít u všech odemčených automatů v seznamu níže.</div>` : ''}${renderMobileStopTime(nextStop, plan)}${recalculation?.reason ? `<div class="route-next-reason">Proč nyní: ${escapeHtml(recalculation.reason)}</div>` : ''}<div class="route-stop-actions"><button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>Otevřít navigaci</button><button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>${routeLocked ? 'Čeká na schválení' : getRouteStopStatus(nextStop) === 'arrived' ? 'Pokračovat v práci' : multipleMachinesAtLocation ? 'Otevřít první picklist' : 'Otevřít picklist'}</button></div>${routeLocked ? '' : `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(nextStop.id)}">Požádat o nejetí</button>`}</article>` : ''}
           ${stops.length ? `<div class="route-order-title"><h3>${recalculation?.order_changed ? 'Nové pořadí' : 'Pořadí zastávek'}</h3><span>${Math.max(0, stops.length - completedStops - skippedStops)} míst + návrat</span></div>` : ''}
           ${stopCards ? `<div class="route-stop-list">${stopCards}</div>` : '<div class="empty">Trasa nemá žádnou zastávku.</div>'}
         </section>
@@ -11083,6 +11143,10 @@
         showMessage('Tato zastávka je uzavřená jako nejetá.', 'error')
         return
       }
+      if (!isCurrentRouteLocationStop(plan, stop)) {
+        showMessage('Nejdřív dokonči všechny automaty na aktuální lokalitě.', 'error')
+        return
+      }
       state.routeMachineReadOnly = false
       if (!['in_progress', 'started'].includes(String(plan.execution_status || ''))) {
         await acceptAssignedRoute()
@@ -11204,8 +11268,14 @@
       const updatedPlan = getAssignedRoutePlan() || plan
       const stops = getRouteStops(updatedPlan)
       const allDone = stops.length > 0 && stops.every(isRouteStopClosed)
+      const completedLocationKey = getRouteStopLocationKey(stop)
+      const openStopsAtLocation = stops.filter((item) => (
+        !isRouteStopClosed(item)
+        && getRouteStopLocationKey(item) === completedLocationKey
+      ))
+      const locationStillOpen = openStopsAtLocation.length > 0
 
-      if (!allDone && !completionQueued) await recalculateRemainingRoute(updatedPlan)
+      if (!allDone && !locationStillOpen && !completionQueued) await recalculateRemainingRoute(updatedPlan)
 
       renderAssignedRoute()
       openScreen('vehicle')
@@ -11219,7 +11289,14 @@
         document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }, 80)
       const queuedSuffix = completionQueued ? ' Uloženo offline, odešle se automaticky po návratu signálu.' : ''
-      showMessage(`${allDone ? updatedPlan.return_to_start !== false ? 'Poslední automat je hotový. Teď se vrať na sklad a po příjezdu potvrď návrat.' : 'Poslední automat je hotový. Teď můžeš trasu uzavřít.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
+      const completionMessage = allDone
+        ? updatedPlan.return_to_start !== false
+          ? 'Poslední automat je hotový. Teď se vrať na sklad a po příjezdu potvrď návrat.'
+          : 'Poslední automat je hotový. Teď můžeš trasu uzavřít.'
+        : locationStillOpen
+          ? `Automat je hotový. Na této lokalitě zbývá dokončit ještě ${formatRouteMachineCount(openStopsAtLocation.length)}.`
+          : 'Lokalita je hotová. Pokračuj na další místo.'
+      showMessage(`${completionMessage}${queuedSuffix}`, 'success')
     }
 
     async function prepareOpenedStopForSkip(stop, visit) {
@@ -11257,6 +11334,7 @@
       const { plan, stop } = findRouteStop(stopId)
       if (!plan || !stop) throw new Error('Zastávku se nepodařilo najít v dnešní trase.')
       if (getActiveRouteSkipRequest(plan)) throw new Error('U této trasy už jedna žádost čeká na schválení.')
+      if (!isCurrentRouteLocationStop(plan, stop)) throw new Error('Nejdřív dokonči všechny automaty na aktuální lokalitě.')
       if (!['pending', 'arrived'].includes(getRouteStopStatus(stop))) throw new Error('Jen otevřenou nebo dosud nezahájenou zastávku lze označit jako nejetou.')
       if (!reason) throw new Error('Vyber důvod, proč jsi zastávku nejel/a.')
       const cleanNote = String(note || '').trim()
@@ -12982,6 +13060,8 @@
       if (action === 'finish-route') return finishAssignedRoute()
       if (action === 'navigate-warehouse') return openWarehouseNavigationChooser()
       if (action === 'navigate') {
+        const { stop } = findRouteStop(stopId)
+        if (!stop || !isCurrentRouteLocationStop(plan, stop)) throw new Error('Nejdřív dokonči všechny automaty na aktuální lokalitě.')
         if (plan && !['in_progress', 'started'].includes(String(plan.execution_status || ''))) {
           await acceptAssignedRoute()
         }

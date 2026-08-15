@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v114-warehouse-return';
+const CACHE_NAME = 'olvend-v115-location-picklists';
 const APP_SHELL = [
   './',
   './index.html',
