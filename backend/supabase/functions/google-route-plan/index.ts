@@ -91,6 +91,32 @@ function normalizeStop(stop: RouteStopPayload, index: number) {
   };
 }
 
+function businessPriorityRank(stop: RouteStopPayload) {
+  const priority = String(stop.effectivePriority || "normal").toLowerCase();
+  if (["critical", "sold_out", "fixed_window"].includes(priority)) return 0;
+  if (["high", "stockout_risk", "urgent"].includes(priority)) return 1;
+  return 2;
+}
+
+async function computeGoogleRoute(apiKey: string, request: Record<string, unknown>) {
+  const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": apiKey,
+      "X-Goog-FieldMask":
+        "routes.optimizedIntermediateWaypointIndex,routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,routes.legs.distanceMeters,routes.legs.duration",
+    },
+    body: JSON.stringify(request),
+  });
+  const responseText = await response.text();
+  const data = responseText ? JSON.parse(responseText) : {};
+  if (!response.ok) throw new Error(data?.error?.message || "Google Routes API request failed.");
+  const route = Array.isArray(data?.routes) ? data.routes[0] : null;
+  if (!route) throw new Error("Google Routes API returned no route.");
+  return route;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -174,18 +200,21 @@ Deno.serve(async (req) => {
       return json({ error: "At least one stop is required." }, 400);
     }
 
-    if (payload.returnToStart === false) {
-      return json({
-        error: "Google Routes pilot zatím podporuje jen okruh se startem a cílem ve stejném bodě. Pro jednosměrnou trasu zatím použij fallback v aplikaci.",
-      }, 400);
-    }
-
     const stops = rawStops.map(normalizeStop);
+
+    const destinationPoint = payload.destination && waypoint(payload.destination)
+      ? payload.destination
+      : payload.returnToStart !== false
+        ? origin
+        : null;
+    if (!destinationPoint || !waypoint(destinationPoint)) {
+      return json({ error: "Destination coordinates or address are required for a one-way route." }, 400);
+    }
 
     const preserveOrder = payload.mode === "ordered";
     const googleRequest = {
       origin: waypoint(origin),
-      destination: waypoint(origin),
+      destination: waypoint(destinationPoint),
       intermediates: stops.map((stop) => waypoint(stop)).filter(Boolean),
       travelMode: "DRIVE",
       routingPreference: "TRAFFIC_AWARE",
@@ -196,38 +225,18 @@ Deno.serve(async (req) => {
       departureTime: payload.departureTime || new Date().toISOString(),
     };
 
-    const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": googleMapsApiKey,
-        "X-Goog-FieldMask":
-          "routes.optimizedIntermediateWaypointIndex,routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,routes.legs.distanceMeters,routes.legs.duration",
-      },
-      body: JSON.stringify(googleRequest),
-    });
-
-    const responseText = await response.text();
-    const data = responseText ? JSON.parse(responseText) : {};
-
-    if (!response.ok) {
-      return json({
-        error: data?.error?.message || "Google Routes API request failed.",
-        google_status: response.status,
-      }, 400);
-    }
-
-    const route = Array.isArray(data?.routes) ? data.routes[0] : null;
-
-    if (!route) {
-      return json({ error: "Google Routes API returned no route." }, 400);
+    let route;
+    try {
+      route = await computeGoogleRoute(googleMapsApiKey, googleRequest);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Google Routes API request failed." }, 400);
     }
 
     const optimizedIndices = !preserveOrder && Array.isArray(route.optimizedIntermediateWaypointIndex)
       ? route.optimizedIntermediateWaypointIndex.map((value: unknown) => Number(value))
       : stops.map((_, index) => index);
 
-    const orderedStops = optimizedIndices.map((originalIndex, orderedIndex) => {
+    let orderedStops = optimizedIndices.map((originalIndex, orderedIndex) => {
       const stop = stops[originalIndex];
       const leg = Array.isArray(route.legs) ? route.legs[orderedIndex] : null;
 
@@ -239,12 +248,49 @@ Deno.serve(async (req) => {
       };
     });
 
+    let businessPriorityApplied = false;
+    if (!preserveOrder && orderedStops.some((stop) => businessPriorityRank(stop) < 2 || String(stop.serviceWindow || "").trim())) {
+      let prioritizedStops = orderedStops
+        .map((stop, index) => ({ stop, index }))
+        .sort((a, b) => businessPriorityRank(a.stop) - businessPriorityRank(b.stop) || a.index - b.index)
+        .map(({ stop }) => stop);
+      const fixedWindows = stops
+        .map((stop, index) => ({ stop, index }))
+        .filter(({ stop }) => String(stop.serviceWindow || "").trim());
+      if (fixedWindows.length) {
+        const fixedIds = new Set(fixedWindows.map(({ stop }) => String(stop.id)));
+        prioritizedStops = prioritizedStops.filter((stop) => !fixedIds.has(String(stop.id)));
+        fixedWindows.forEach(({ stop, index }) => prioritizedStops.splice(Math.min(index, prioritizedStops.length), 0, stop));
+      }
+      businessPriorityApplied = prioritizedStops.some((stop, index) => String(stop.id) !== String(orderedStops[index]?.id));
+      if (businessPriorityApplied) {
+        try {
+          route = await computeGoogleRoute(googleMapsApiKey, {
+            ...googleRequest,
+            intermediates: prioritizedStops.map((stop) => waypoint(stop)).filter(Boolean),
+            optimizeWaypointOrder: false,
+          });
+          orderedStops = prioritizedStops.map((stop, orderedIndex) => {
+            const leg = Array.isArray(route.legs) ? route.legs[orderedIndex] : null;
+            return {
+              ...stop,
+              googleLegDistanceMeters: Number(leg?.distanceMeters || 0),
+              googleLegDurationSeconds: parseDurationSeconds(leg?.duration),
+            };
+          });
+        } catch (error) {
+          return json({ error: error instanceof Error ? error.message : "Google Routes API priority recalculation failed." }, 400);
+        }
+      }
+    }
+
     return json({
       provider: "google_routes",
       mode: preserveOrder ? "ordered" : "optimize",
       routingPreference: "TRAFFIC_AWARE",
       orderedStops,
-      optimizedIntermediateWaypointIndex: optimizedIndices,
+      optimizedIntermediateWaypointIndex: orderedStops.map((stop) => Number(stop.originalIndex)),
+      businessPriorityApplied,
       route: {
         distanceMeters: Number(route.distanceMeters || 0),
         durationSeconds: parseDurationSeconds(route.duration),
@@ -254,7 +300,9 @@ Deno.serve(async (req) => {
       note:
         preserveOrder
           ? "Poradi zastavek bylo zachovano; Google prepocital vzdalenosti a cas jednotlivych useku."
-          : "Pouzity je Google Routes API Compute Routes s optimizeWaypointOrder=true a routingPreference=TRAFFIC_AWARE. Google docs uvadeji, ze optimizeWaypointOrder neni kompatibilni s TRAFFIC_AWARE_OPTIMAL.",
+          : businessPriorityApplied
+            ? "Google optimalizoval živou dopravu a kilometry; potvrzená vyprodanost, riziko vyprodání a pevná okna byla následně upřednostněna a finální pořadí bylo znovu přepočítáno."
+            : "Pouzity je Google Routes API Compute Routes s optimizeWaypointOrder=true a routingPreference=TRAFFIC_AWARE. Google docs uvadeji, ze optimizeWaypointOrder neni kompatibilni s TRAFFIC_AWARE_OPTIMAL.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown server error.";

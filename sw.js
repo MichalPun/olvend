@@ -1,8 +1,9 @@
-const CACHE_NAME = 'olvend-v109-build-footer';
+const CACHE_NAME = 'olvend-v110-route-approval';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './route-skip-approval.html',
   './supabase.js',
   './dashboard.html',
   './attendance.html',
