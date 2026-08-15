@@ -4089,6 +4089,13 @@
     .coffee-guide-primary:disabled { color:#fff; background:#b9c0ca; box-shadow:none; }
     .coffee-guide-hint { margin:6px 4px 0; color:#6e798b; font-size:9px; text-align:center; }
     .coffee-guide-more { width:100%; padding:12px; border:0; border-top:1px solid #edf0f4; color:#58667a; background:#fff; font-family:inherit; font-size:10px; font-weight:800; }
+    .coffee-guide-more.extra { color:#175cd3; background:#f6f9ff; }
+    .coffee-extra-list { margin-bottom:10px; overflow:hidden; border:1px solid #dfe4eb; border-radius:18px; background:#fff; }
+    .coffee-extra-list .coffee-guide-row.selected { background:#eef6ff; box-shadow:inset 3px 0 #2d7de0; }
+    .coffee-extra-actions { display:grid; grid-template-columns:1fr 1.5fr; gap:8px; margin-top:10px; }
+    .coffee-extra-cancel { min-height:48px; padding:11px; border:1px solid #d7dee7; border-radius:13px; color:#4d5a6e; background:#fff; font-family:inherit; font-size:11px; font-weight:850; }
+    .coffee-extra-confirm { min-height:48px; padding:11px; border:0; border-radius:13px; color:#fff; background:#e5091a; font-family:inherit; font-size:11px; font-weight:900; }
+    .coffee-extra-confirm:disabled { background:#b9c0ca; }
   </style>
 </head>
 <body class="today-active">
@@ -4136,7 +4143,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.17</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.18</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4763,7 +4770,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-coffee-guided-v47" defer></script>
+  <script src="./pwa.js?v=20260815-coffee-guided-v48" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -8432,6 +8439,7 @@
     function getCoffeeGuidedStage(stopId, detail, readOnly = false) {
       if (readOnly) return 'done'
       if (!detail?.machineOpen) return 'goods'
+      if (detail.draft?.extraContainerPickerOpen) return 'refill'
       const pendingContainer = (detail.containers || []).find((container) => {
         const draft = detail.draft?.containers?.[String(container.id)] || {}
         return !draft.accepted && (detail.manualCounterMode || getCoffeeActualPackages(stopId, container) > 0)
@@ -8484,8 +8492,46 @@
         <div class="coffee-guide-hint">U automatu začneme opačně – poslední věcí položenou navrch</div>`
     }
 
+    function getCoffeeExtraContainerMaxPackages(stopId, detail, container) {
+      if (!container) return 0
+      const before = Number(detail.draft?.extraContainerBeforeQuantity ?? container.current_quantity ?? 0)
+      const capacity = Number(container.capacity_quantity || 0)
+      const packageQuantity = getCoffeeRefillPackageQuantity(container)
+      const capacityMax = capacity && packageQuantity
+        ? Math.max(0, Math.floor((capacity - before) / packageQuantity))
+        : Number.POSITIVE_INFINITY
+      return Math.max(0, Math.min(capacityMax, getCoffeeVehicleAvailablePackages(stopId, container)))
+    }
+
+    function renderCoffeeExtraContainerPicker(stop, detail) {
+      const candidates = getCoffeeContainersInBagOrder(detail, true)
+        .filter((container) => getCoffeeActualPackages(stop.id, container) <= 0)
+      const selectedId = String(detail.draft?.extraContainerId || '')
+      const selected = candidates.find((container) => String(container.id) === selectedId) || null
+      const before = selected
+        ? Number(detail.draft?.extraContainerBeforeQuantity ?? selected.current_quantity ?? 0)
+        : 0
+      const packages = selected ? Math.max(0, Number(detail.draft?.extraContainerPackages || 0)) : 0
+      const maxPackages = selected ? getCoffeeExtraContainerMaxPackages(stop.id, detail, selected) : 0
+      return `
+        <div class="coffee-next-box"><small>Odchylka od pick listu</small><h4>Doplň další zásobník</h4><p>Vyber zásobník, který na místě potřebuje doplnit. Zboží ověříme a odečteme ze zásoby auta.</p></div>
+        <section class="coffee-extra-list">
+          <div class="coffee-guide-panel-head"><h4>Vyber zásobník</h4><span>${candidates.length} k dispozici</span></div>
+          ${candidates.length ? candidates.map((container) => {
+            const available = detail.vehiclePackages?.[String(container.product_id)]
+            const active = String(container.id) === selectedId
+            return `<button class="coffee-guide-row ${active ? 'selected' : ''}" type="button" data-coffee-action="guided-select-extra-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(container.id)}"><span class="coffee-guide-icon">${active ? '✓' : escapeHtml(container.container_code || '+')}</span><span class="coffee-guide-main"><strong>${escapeHtml(container.product_name || 'Surovina')}</strong><small>Zásobník ${escapeHtml(container.container_code || '—')} · v autě ${available == null ? 'ověříme při uložení' : `${formatNumber(available)} bal.`}</small></span><span class="coffee-guide-value">Vybrat</span></button>`
+          }).join('') : '<div class="coffee-rule-box" style="margin:0 14px 14px">Všechny zásobníky už jsou zařazené v tomto doplňování.</div>'}
+        </section>
+        ${selected ? `<section class="coffee-guide-panel focus"><div class="coffee-focus-top"><div><h4>${escapeHtml(selected.product_name || 'Surovina')}</h4><p>Zásobník ${escapeHtml(selected.container_code || '—')} · mimo původní pick list</p></div><span class="coffee-focus-number">${escapeHtml(selected.container_code || 'Z')}</span></div><div class="coffee-correction" style="margin-top:13px"><h5>Zadej skutečnost</h5><p>Podle skutečného stavu omezíme množství tak, aby se nepřekročila kapacita zásobníku.</p><div class="coffee-correction-row"><span><strong>Stav před doplněním</strong><small>${escapeHtml(getCoffeeEntryUnit(selected))}</small></span><input class="coffee-correction-input" type="number" inputmode="decimal" min="0" max="${escapeHtml(getCoffeeEntryQuantity(Number(selected.capacity_quantity || 0), selected))}" step="${getCoffeeEntryUnit(selected) === 'kg' ? '0.1' : '1'}" value="${escapeHtml(getCoffeeEntryQuantity(before, selected))}" data-coffee-extra-before-input data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(selected.id)}" aria-label="Skutečný stav zásobníku"></div><div class="coffee-correction-row"><span><strong>Vezmu z auta</strong><small>celá balení · nejvýše ${Number.isFinite(maxPackages) ? formatNumber(maxPackages) : 'dle zásoby'}</small></span><span class="coffee-inline-stepper"><button type="button" data-coffee-action="guided-extra-step" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(selected.id)}">−</button><span>${formatNumber(packages)}</span><button type="button" data-coffee-action="guided-extra-step" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(selected.id)}">+</button></span></div></div></section>` : ''}
+        <div class="coffee-extra-actions"><button class="coffee-extra-cancel" type="button" data-coffee-action="guided-cancel-extra-container" data-stop-id="${escapeHtml(stop.id)}">Zpět</button><button class="coffee-extra-confirm" type="button" data-coffee-action="guided-add-extra-container" data-stop-id="${escapeHtml(stop.id)}" ${!selected || packages <= 0 ? 'disabled' : ''}>Vzít z auta a doplnit</button></div>`
+    }
+
     function renderCoffeeGuidedRefill(stop, detail) {
+      if (detail.draft?.extraContainerPickerOpen) return renderCoffeeExtraContainerPicker(stop, detail)
       const containers = getCoffeeContainersInBagOrder(detail, true).filter((container) => detail.manualCounterMode || getCoffeeActualPackages(stop.id, container) > 0)
+      const priorityId = String(detail.draft?.priorityExtraContainerId || '')
+      if (priorityId) containers.sort((a, b) => String(a.id) === priorityId ? -1 : String(b.id) === priorityId ? 1 : 0)
       const pending = containers.find((container) => {
         const draft = detail.draft?.containers?.[String(container.id)] || {}
         return !draft.accepted && (detail.manualCounterMode || getCoffeeActualPackages(stop.id, container) > 0)
@@ -8512,18 +8558,18 @@
         </section>
         <button class="coffee-guide-primary" type="button" data-coffee-action="accept-container" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}">${packages > 0 ? `Doplnil/a jsem ${getCoffeePackageCountLabel(packages,pending)} – ${escapeHtml(pending.product_name || 'surovina')}` : `Potvrzuji bez doplnění – ${escapeHtml(pending.product_name || 'surovina')}`}</button>
         <div class="coffee-guide-hint">Po potvrzení se stav posune a otevře další zásobník</div>
-        <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Průběh doplnění</h4><span>${done.length} hotovo · ${remaining.length + 1} zbývá</span></div>${done.slice(-3).map((item) => `<div class="coffee-guide-row done"><span class="coffee-guide-icon">✓</span><span class="coffee-guide-main"><strong>${escapeHtml(item.product_name || 'Surovina')}</strong><small>Zásobník ${escapeHtml(item.container_code || '—')}</small></span><span class="coffee-guide-value">Hotovo</span></div>`).join('')}${remaining.slice(0,3).map((item) => `<div class="coffee-guide-row"><span class="coffee-guide-icon">${escapeHtml(item.container_code || '…')}</span><span class="coffee-guide-main"><strong>${escapeHtml(item.product_name || 'Surovina')}</strong><small>${getCoffeePackageCountLabel(getCoffeeActualPackages(stop.id,item),item)}</small></span><span class="coffee-guide-value">Čeká</span></div>`).join('')}<button class="coffee-guide-more" type="button" data-coffee-action="guided-more-work" data-stop-id="${escapeHtml(stop.id)}">+ Další práce: cena, tlačítka, káva zdarma</button></section>`
+        <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Průběh doplnění</h4><span>${done.length} hotovo · ${remaining.length + 1} zbývá</span></div>${done.slice(-3).map((item) => `<div class="coffee-guide-row done"><span class="coffee-guide-icon">✓</span><span class="coffee-guide-main"><strong>${escapeHtml(item.product_name || 'Surovina')}</strong><small>Zásobník ${escapeHtml(item.container_code || '—')}</small></span><span class="coffee-guide-value">Hotovo</span></div>`).join('')}${remaining.slice(0,3).map((item) => `<div class="coffee-guide-row"><span class="coffee-guide-icon">${escapeHtml(item.container_code || '…')}</span><span class="coffee-guide-main"><strong>${escapeHtml(item.product_name || 'Surovina')}</strong><small>${getCoffeePackageCountLabel(getCoffeeActualPackages(stop.id,item),item)}</small></span><span class="coffee-guide-value">Čeká</span></div>`).join('')}<button class="coffee-guide-more extra" type="button" data-coffee-action="guided-open-extra-container" data-stop-id="${escapeHtml(stop.id)}">+ Doplnit zásobník mimo pick list</button><button class="coffee-guide-more" type="button" data-coffee-action="guided-more-work" data-stop-id="${escapeHtml(stop.id)}">+ Další práce: cena, tlačítka, káva zdarma</button></section>`
     }
 
     function renderCoffeeGuidedCash(stop, detail) {
       const required = Boolean(detail.cash?.collection_required)
       const bag = detail.cash?.short_bag_code || detail.guidance?.suggested_bag_code || '----'
-      if (!required) return `<div class="coffee-next-box"><small>Hotovost</small><h4>Dnes nevybírej hotovost</h4><p>Pokračuj rovnou na kontrolu automatu.</p></div><button class="coffee-guide-primary" type="button" data-coffee-action="guided-auto-cash" data-stop-id="${escapeHtml(stop.id)}">Pokračovat na kontrolu</button>`
+      if (!required) return `<div class="coffee-next-box"><small>Hotovost</small><h4>Dnes nevybírej hotovost</h4><p>Pokračuj rovnou na kontrolu automatu.</p></div><button class="coffee-guide-primary" type="button" data-coffee-action="guided-auto-cash" data-stop-id="${escapeHtml(stop.id)}">Pokračovat na kontrolu</button><button class="coffee-guide-more extra" type="button" data-coffee-action="guided-open-extra-container" data-stop-id="${escapeHtml(stop.id)}">+ Ještě potřebuji doplnit jiný zásobník</button>`
       return `
         <div class="coffee-next-box"><small>Povinný krok</small><h4>Vyber hotovost</h4><p>Aplikace vyhodnotila povinný výběr. Částku není potřeba kontrolovat ani zadávat.</p></div>
         <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Hotovost v automatu</h4><span>Povinný výběr</span></div><div class="coffee-info-strip" style="margin:0 14px 13px"><span>!</span><span>Vyber veškerou hotovost a vlož ji do sáčku.</span></div><div class="coffee-auto-id"><span>ID</span><div><small>Napiš na sáček pouze</small><strong>${escapeHtml(bag)}</strong><em>Úplný identifikátor si aplikace uloží na pozadí.</em></div></div></section>
         <button class="coffee-guide-primary" type="button" data-coffee-action="guided-save-cash" data-stop-id="${escapeHtml(stop.id)}">Hotovost je v sáčku ${escapeHtml(bag)}</button>
-        <div class="coffee-guide-hint">Potvrzením spojíme sáček, automat i návštěvu</div>`
+        <div class="coffee-guide-hint">Potvrzením spojíme sáček, automat i návštěvu</div><button class="coffee-guide-more extra" type="button" data-coffee-action="guided-open-extra-container" data-stop-id="${escapeHtml(stop.id)}">+ Ještě potřebuji doplnit jiný zásobník</button>`
     }
 
     function renderCoffeeGuidedQuality(stop, detail) {
@@ -13134,6 +13180,84 @@
         return
       }
 
+      if (action === 'guided-open-extra-container') {
+        detail.draft.extraContainerPickerOpen = true
+        detail.draft.extraContainerId = ''
+        detail.draft.extraContainerPackages = 0
+        delete detail.draft.extraContainerBeforeQuantity
+        persistMobileSnapshot()
+        renderRouteMachineScreen()
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        return
+      }
+
+      if (action === 'guided-cancel-extra-container') {
+        detail.draft.extraContainerPickerOpen = false
+        detail.draft.extraContainerId = ''
+        detail.draft.extraContainerPackages = 0
+        delete detail.draft.extraContainerBeforeQuantity
+        persistMobileSnapshot()
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'guided-select-extra-container' && container) {
+        detail.draft.extraContainerId = String(container.id)
+        detail.draft.extraContainerBeforeQuantity = Number(container.current_quantity || 0)
+        const maxPackages = getCoffeeExtraContainerMaxPackages(stopId, detail, container)
+        detail.draft.extraContainerPackages = maxPackages > 0 ? 1 : 0
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'guided-extra-step' && container) {
+        const maxPackages = getCoffeeExtraContainerMaxPackages(stopId, detail, container)
+        detail.draft.extraContainerPackages = Math.max(0, Math.min(
+          maxPackages,
+          Number(detail.draft.extraContainerPackages || 0) + Number(target.dataset.delta || 0)
+        ))
+        renderRouteMachineScreen()
+        return
+      }
+
+      if (action === 'guided-add-extra-container') {
+        const selected = getCoffeeContainer(stopId, detail.draft?.extraContainerId)
+        if (!selected) throw new Error('Nejdřív vyber zásobník.')
+        const packages = Math.max(0, Number(detail.draft.extraContainerPackages || 0))
+        if (!packages) throw new Error('Zadej alespoň jedno balení.')
+        const actualBefore = Math.max(0, Number(detail.draft.extraContainerBeforeQuantity ?? selected.current_quantity ?? 0))
+        const capacity = Number(selected.capacity_quantity || 0)
+        if (capacity && actualBefore > capacity + 0.0001) throw new Error('Skutečný stav je vyšší než kapacita zásobníku.')
+        const maxPackages = getCoffeeExtraContainerMaxPackages(stopId, detail, selected)
+        if (packages > maxPackages) throw new Error(`Z auta lze vzít a do zásobníku vložit nejvýše ${getCoffeePackageCountLabel(maxPackages, selected)}.`)
+        const key = String(selected.id)
+        const previousDraft = { ...(detail.draft.containers[key] || {}) }
+        detail.draft.containers[key] = {
+          ...previousDraft,
+          actualBeforeQuantity: actualBefore,
+          packages,
+          picked: true,
+          accepted: false,
+          addedOutsidePicklist: true
+        }
+        try {
+          await syncCoffeePackagesWithVehicle(stopId, selected, packages)
+        } catch (error) {
+          detail.draft.containers[key] = previousDraft
+          throw error
+        }
+        detail.draft.extraContainerPickerOpen = false
+        detail.draft.extraContainerId = ''
+        detail.draft.extraContainerPackages = 0
+        delete detail.draft.extraContainerBeforeQuantity
+        detail.draft.priorityExtraContainerId = key
+        persistMobileSnapshot()
+        renderRouteMachineScreen()
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        showMessage(`${selected.product_name || 'Zásobník'} je přidaný mimo pick list a zboží je odečtené z auta.`, 'success', { scroll: false })
+        return
+      }
+
       if (action === 'guided-before-step' && container) {
         const capacity = Number(container.capacity_quantity || 0)
         const current = getCoffeeActualBeforeQuantity(stopId, container)
@@ -13374,12 +13498,16 @@
         const packages = getCoffeeActualPackages(stopId, container)
         await syncCoffeePackagesWithVehicle(stopId, container, packages)
         const adjusted = detail.draft?.adjustingContainerId && String(detail.draft.adjustingContainerId) === String(container.id)
-        await saveCoffeeContainerVisitItem(stopId, container, adjusted ? {
+        const addedOutsidePicklist = Boolean(detail.draft?.containers?.[String(container.id)]?.addedOutsidePicklist)
+        await saveCoffeeContainerVisitItem(stopId, container, adjusted || addedOutsidePicklist ? {
           actual_before_quantity: getCoffeeActualBeforeQuantity(stopId, container),
           issue_type: 'telemetry_mismatch',
-          operator_note: 'Operátor upravil skutečný stav nebo množství v řízeném doplnění.'
+          operator_note: addedOutsidePicklist
+            ? 'Operátor doplnil zásobník mimo původní pick list podle skutečného stavu na místě.'
+            : 'Operátor upravil skutečný stav nebo množství v řízeném doplnění.'
         } : {})
         detail.draft.adjustingContainerId = ''
+        if (String(detail.draft.priorityExtraContainerId || '') === String(container.id)) detail.draft.priorityExtraContainerId = ''
         showMessage(
           detail.manualCounterMode
             ? 'Skutečné doplnění zásobníku je zapsané a odečtené z vozidla.'
@@ -15347,7 +15475,7 @@
         if (coffeeButton.disabled || coffeeButton.classList.contains('is-busy')) return
         const coffeeAction = coffeeButton.dataset.coffeeAction
         const coffeeStopId = String(coffeeButton.dataset.stopId || '')
-        const instantActions = ['step-container', 'calibration-step', 'guided-expand-pick', 'guided-refill-edit', 'guided-refill-match', 'guided-before-step']
+        const instantActions = ['step-container', 'calibration-step', 'guided-expand-pick', 'guided-refill-edit', 'guided-refill-match', 'guided-before-step', 'guided-open-extra-container', 'guided-cancel-extra-container', 'guided-select-extra-container', 'guided-extra-step']
         const locksVisit = !instantActions.includes(coffeeAction)
         if (locksVisit && coffeeActionLocks.has(coffeeStopId)) {
           showMessage('Dokončuji předchozí akci. Chvíli počkej.', 'info')
@@ -15373,6 +15501,20 @@
           })
       })
       els.routeMachineContent?.addEventListener('input', (event) => {
+        const coffeeExtraBeforeInput = event.target.closest('[data-coffee-extra-before-input]')
+        if (coffeeExtraBeforeInput) {
+          const detail = getCoffeeDetail(coffeeExtraBeforeInput.dataset.stopId)
+          const container = getCoffeeContainer(coffeeExtraBeforeInput.dataset.stopId, coffeeExtraBeforeInput.dataset.containerId)
+          if (detail && container) {
+            const entryValue = Math.max(0, parseNumber(coffeeExtraBeforeInput.value) || 0)
+            const capacity = Number(container.capacity_quantity || 0)
+            const containerValue = getCoffeeContainerQuantity(entryValue, container)
+            detail.draft.extraContainerBeforeQuantity = capacity ? Math.min(capacity, containerValue) : containerValue
+            const maxPackages = getCoffeeExtraContainerMaxPackages(coffeeExtraBeforeInput.dataset.stopId, detail, container)
+            detail.draft.extraContainerPackages = Math.min(Number(detail.draft.extraContainerPackages || 0), maxPackages)
+          }
+          return
+        }
         const coffeeBeforeInput = event.target.closest('[data-coffee-before-input]')
         if (coffeeBeforeInput) {
           const detail = getCoffeeDetail(coffeeBeforeInput.dataset.stopId)
@@ -15508,6 +15650,11 @@
         window.addEventListener('pointercancel', handleUp, { once: true })
       })
       els.routeMachineContent?.addEventListener('change', (event) => {
+        const coffeeExtraBeforeInput = event.target.closest('[data-coffee-extra-before-input]')
+        if (coffeeExtraBeforeInput) {
+          renderRouteMachineScreen()
+          return
+        }
         const coffeeBeforeInput = event.target.closest('[data-coffee-before-input]')
         if (coffeeBeforeInput) {
           renderRouteMachineScreen()

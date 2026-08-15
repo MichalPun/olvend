@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v123-coffee-bag-order';
+const CACHE_NAME = 'olvend-v124-coffee-extra-container';
 const APP_SHELL = [
   './',
   './index.html',
