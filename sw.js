@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v107-personal-greeting';
+const CACHE_NAME = 'olvend-v108-offline-sync-recovery';
 const APP_SHELL = [
   './',
   './index.html',

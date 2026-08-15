@@ -78,9 +78,17 @@ export async function syncOfflineRequests() {
   if (!navigator.onLine) return { pending: readOfflineQueue().length, synced: 0 }
   const queue = readOfflineQueue()
   const remaining = []
+  let accessToken = null
+  try {
+    const { data } = await supabase.auth.getSession()
+    accessToken = data?.session?.access_token || null
+  } catch (_) {}
   for (const item of queue) {
     try {
-      const response = await fetch(item.url, { method: item.method, headers: item.headers, body: item.body })
+      const headers = new Headers(item.headers || {})
+      if (accessToken) headers.set('authorization', `Bearer ${accessToken}`)
+      headers.delete('content-length')
+      const response = await fetch(item.url, { method: item.method, headers, body: item.body })
       if (!response.ok) remaining.push(item)
     } catch (_) {
       remaining.push(item)

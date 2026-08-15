@@ -4487,9 +4487,9 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-personal-greeting-v4" defer></script>
+  <script src="./pwa.js?v=20260815-offline-sync-recovery-v5" defer></script>
   <script type="module">
-    import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260807-mobile-network-v3'
+    import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
     const state = {
       employee: null,
@@ -4545,6 +4545,7 @@
       routeWasteTableAvailable: true,
       stockRequestSubmitting: false,
       fuelReceiptUploading: false,
+      syncingOfflineChanges: false,
       endingShift: false,
       creatingServiceRequest: false,
       showWorkSummary: false,
@@ -4891,6 +4892,41 @@
         showMessage(`Offline režim: pokračuj v práci. ${pending ? `${pending} změn čeká na odeslání.` : 'Změny se odešlou po návratu signálu.'}`, 'info', { scroll: false })
       } else if (pending) {
         showMessage(`Připojení je zpět, odesílám ${pending} uložených změn…`, 'info', { scroll: false })
+      }
+    }
+
+    function clearConnectivityMessageLater(text, delay = 6000) {
+      window.setTimeout(() => {
+        if (String(els.messageArea.textContent || '').trim() === String(text || '').trim()) showMessage('')
+      }, delay)
+    }
+
+    async function syncPendingOfflineChanges(options = {}) {
+      if (!navigator.onLine || state.syncingOfflineChanges) return { pending: getCombinedOfflineRequestCount(), synced: 0 }
+      const before = getCombinedOfflineRequestCount()
+      if (!before) return { pending: 0, synced: 0 }
+      state.syncingOfflineChanges = true
+      if (options.announce !== false) showConnectivityState()
+      try {
+        const requestResult = await syncOfflineRequests().catch((error) => ({ error, pending: getOfflineRequestCount(), synced: 0 }))
+        const coffeeResult = await syncCoffeeOfflineStockQueue().catch((error) => ({ error, pending: readCoffeeOfflineStockQueue().length, synced: 0 }))
+        const pending = Number(requestResult.pending || 0) + Number(coffeeResult.pending || 0)
+        const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0)
+        if (!pending) {
+          Object.values(state.routeCoffeeDetails || {}).forEach((detail) => { detail.openedOffline = false })
+          const text = synced ? `${synced} uložených změn bylo synchronizováno.` : 'Připojení je zpět.'
+          showMessage(text, 'success', { scroll: false })
+          clearConnectivityMessageLater(text, 4500)
+          if (synced && options.reload !== false) await reloadData().catch(console.warn)
+          renderRouteMachineScreen()
+        } else {
+          const text = `${pending} změn se zatím nepodařilo odeslat. Aplikace to zkusí znovu automaticky.`
+          showMessage(text, 'error', { scroll: false })
+          clearConnectivityMessageLater(text, 8000)
+        }
+        return { pending, synced }
+      } finally {
+        state.syncingOfflineChanges = false
       }
     }
 
@@ -14793,36 +14829,27 @@
     async function init() {
       bindEvents()
       window.addEventListener('offline', showConnectivityState)
-      window.addEventListener('olvend-offline-queue', showConnectivityState)
-      window.addEventListener('online', async () => {
-        showConnectivityState()
-        const requestResult = await syncOfflineRequests()
-        const coffeeResult = await syncCoffeeOfflineStockQueue()
-        if (!requestResult.pending && !coffeeResult.pending) {
-          Object.values(state.routeCoffeeDetails || {}).forEach((detail) => { detail.openedOffline = false })
-          const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0)
-          showMessage(synced ? `${synced} offline změn bylo synchronizováno.` : 'Připojení je zpět.', 'success', { scroll: false })
-          await reloadData().catch(console.warn)
-          renderRouteMachineScreen()
-        }
+      window.addEventListener('olvend-offline-queue', () => {
+        if (!navigator.onLine) showConnectivityState()
       })
+      window.addEventListener('online', () => syncPendingOfflineChanges().catch(handleError))
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') scheduleRouteMachineLiveRefresh(0)
+        if (document.visibilityState === 'visible') {
+          scheduleRouteMachineLiveRefresh(0)
+          if (navigator.onLine && getCombinedOfflineRequestCount()) syncPendingOfflineChanges({ announce:false }).catch(console.warn)
+        }
       })
       try {
         const hasUser = await hydrateCurrentUser()
         if (!hasUser) return
         await reloadData()
-        if (navigator.onLine && getCombinedOfflineRequestCount()) {
-          const requestResult = await syncOfflineRequests().catch((error) => ({ error, synced: 0 }))
-          const coffeeResult = await syncCoffeeOfflineStockQueue().catch((error) => ({ error, synced: 0 }))
-          if (Number(requestResult?.synced || 0) + Number(coffeeResult?.synced || 0) > 0) await reloadData()
-        }
+        if (navigator.onLine && getCombinedOfflineRequestCount()) await syncPendingOfflineChanges({ announce:false, reload:false })
         openScreen(getStartupScreen())
         showStartupMessage()
-        if (!navigator.onLine || getCombinedOfflineRequestCount()) showConnectivityState()
+        if (!navigator.onLine) showConnectivityState()
         window.setInterval(() => {
           if (isShiftRunning()) renderShiftState()
+          if (navigator.onLine && getCombinedOfflineRequestCount()) syncPendingOfflineChanges({ announce:false }).catch(console.warn)
         }, 30000)
       } catch (error) {
         if (restoreMobileSnapshot()) {
