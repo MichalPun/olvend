@@ -2403,6 +2403,26 @@
     .route-stop-time span { display: block; color: #667085; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; }
     .route-stop-time strong { display: block; margin-top: 3px; color: #344054; font-size: 13px; line-height: 1.3; }
 
+    .route-return-card {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px;
+      border: 1px solid #e4e7ec;
+      border-radius: 18px;
+      color: #17212b;
+      background: #ffffff;
+    }
+    .route-return-card.active { border-color: #fda29b; background: #fff6f6; }
+    .route-return-card.done { border-color: #abefc6; background: #f6fef9; }
+    .route-return-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: #b42318; background: #fee4e2; font-size: 19px; font-weight: 950; }
+    .route-return-card.done .route-return-icon { color: #067647; background: #dcfae6; }
+    .route-return-copy strong { display: block; font-size: 16px; }
+    .route-return-copy span { display: block; margin-top: 4px; color: #667085; font-size: 12px; font-weight: 800; line-height: 1.35; }
+    .route-return-time { color: #344054; font-size: 13px; font-weight: 900; text-align: right; }
+    .route-return-time small { display: block; margin-top: 3px; color: #667085; font-size: 10px; }
+
     .route-active-time {
       display: grid;
       gap: 12px;
@@ -4802,7 +4822,7 @@
       if (action === 'save-free-coffee') return 'Ukládám...'
       if (action === 'complete-stop') return 'Dokončuji...'
       if (action === 'accept-route') return 'Přebírám...'
-      if (action === 'finish-route') return 'Ukončuji...'
+      if (action === 'finish-route') return 'Potvrzuji návrat...'
       if (action === 'skip-stop') return 'Ukládám...'
       return 'Pracuji...'
     }
@@ -5423,6 +5443,7 @@
       const skippedStops = stops.filter((stop) => getRouteStopStatus(stop) === 'skipped').length
       const closedStops = completedStops + skippedStops
       const nextStop = routeAlreadyDone ? null : stops.find((stop) => !isRouteStopClosed(stop))
+      const returningToWarehouse = !routeAlreadyDone && stops.length > 0 && stops.every(isRouteStopClosed)
       const routeVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       els.todayRouteSection.hidden = false
       els.todayRouteSection.innerHTML = `
@@ -5436,12 +5457,12 @@
               <h4>${escapeHtml(plan.title || 'Trasa z VendSoftu')}</h4>
               <div class="meta">
                 <span>${escapeHtml(routeVehicle?.name || 'Vozidlo z plánu')}${routeVehicle?.plate ? ` · ${escapeHtml(routeVehicle.plate)}` : ''}</span>
-                <span>${nextStop ? `Další: ${escapeHtml(getRouteStopTitle(nextStop))}` : `${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''}`}</span>
+                <span>${nextStop ? `Další: ${escapeHtml(getRouteStopTitle(nextStop))}` : returningToWarehouse ? 'Automaty hotové · návrat na sklad' : `${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''}`}</span>
               </div>
             </div>
-            <span class="badge ${nextStop ? 'yellow' : 'green'}">${nextStop ? 'Připraveno' : 'Hotovo'}</span>
+            <span class="badge ${routeAlreadyDone ? 'green' : 'yellow'}">${nextStop ? 'Připraveno' : returningToWarehouse ? 'Návrat' : 'Hotovo'}</span>
           </div>
-          <button class="primary-btn" type="button" data-open-screen="vehicle">${nextStop ? 'Otevřít trasu' : 'Zobrazit trasu'}</button>
+          <button class="primary-btn" type="button" data-open-screen="vehicle">${nextStop ? 'Otevřít trasu' : returningToWarehouse ? 'Pokračovat návratem' : 'Zobrazit trasu'}</button>
         </article>
       `
     }
@@ -7028,8 +7049,10 @@
       const actualMinutes = getRouteMinutesBetween(actualStartValue, actualEnd)
       const progressRow = [...rows].reverse().find((row) => row.actualArrival)
       const progressDiff = progressRow
-        ? getSignedRouteMinutesBetween(progressRow.arrival, progressRow.actualArrival)
-          + Math.max(0, Number(progressRow.actualMinutes || 0) - Number(progressRow.serviceMinutes || 0))
+        ? progressRow.completed
+          ? getSignedRouteMinutesBetween(progressRow.departure, progressRow.actualDeparture)
+          : getSignedRouteMinutesBetween(progressRow.arrival, progressRow.actualArrival)
+            + Math.max(0, Number(progressRow.actualMinutes || 0) - Number(progressRow.serviceMinutes || 0))
         : actualStartValue ? getSignedRouteMinutesBetween(schedule.routeStart, actualStartValue) : null
       const overallDiff = plan?.completed_at
         ? getSignedRouteMinutesBetween(schedule.routeEnd, actualEnd)
@@ -7109,7 +7132,7 @@
       const plan = getAssignedRoutePlan()
       if (!plan || ['done', 'completed', 'cancelled'].includes(String(plan.execution_status || ''))) return false
       const stops = getRouteStops(plan)
-      return stops.length > 0 && stops.some((stop) => !isRouteStopClosed(stop))
+      return stops.length > 0
     }
 
     function getStartupScreen() {
@@ -8610,9 +8633,21 @@
       const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
       const normalizedRouteStatus = String(plan.execution_status || '')
       const routeAlreadyDone = ['done', 'completed'].includes(normalizedRouteStatus)
-      const routeStatus = allClosed || routeAlreadyDone ? 'Uzavřeno' : (normalizedRouteStatus === 'in_progress' ? 'Převzato' : 'Čeká')
+      const returningToWarehouse = allClosed && !routeAlreadyDone
+      const routeStatus = routeAlreadyDone ? 'Uzavřeno' : returningToWarehouse ? 'Návrat na sklad' : (normalizedRouteStatus === 'in_progress' ? 'Převzato' : 'Čeká')
       const canAccept = !['in_progress', 'started', 'done', 'completed'].includes(normalizedRouteStatus)
       const canFinish = allClosed && !routeAlreadyDone
+      const routeSchedule = getShiftRouteSchedule(plan)
+      const returnStage = routeSchedule.returnToStart ? `
+        <article class="route-return-card ${routeAlreadyDone ? 'done' : returningToWarehouse ? 'active' : ''}">
+          <span class="route-return-icon">⌂</span>
+          <div class="route-return-copy">
+            <strong>Návrat na sklad</strong>
+            <span>${routeAlreadyDone ? 'Návrat potvrzený, trasa je uzavřená.' : returningToWarehouse ? 'Automaty jsou hotové. Probíhá závěrečná cesta.' : 'Následuje po dokončení posledního automatu.'}</span>
+          </div>
+          <div class="route-return-time">${escapeHtml(formatRouteClock(routeSchedule.routeEnd))}<small>${escapeHtml(formatRouteDurationWords(routeSchedule.returnDriveMinutes))} jízdy</small></div>
+        </article>
+      ` : ''
       const stopCards = stops.map((stop) => {
         const machine = getRouteStopMachine(stop)
         const status = getRouteStopStatus(stop)
@@ -8654,7 +8689,7 @@
       }).join('')
 
       els.assignedRoutePanel.innerHTML = `
-        <section class="route-panel ${allClosed ? 'done' : ''}">
+        <section class="route-panel ${routeAlreadyDone ? 'done' : ''}">
           <div class="task-head">
             <div>
               <h4>${escapeHtml(plan.title || 'Dnešní trasa')}</h4>
@@ -8663,19 +8698,26 @@
                 <span>${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''} · ${stops.length || 0} celkem</span>
               </div>
             </div>
-            <span class="badge ${allClosed || routeAlreadyDone ? 'green' : 'yellow'}">${routeStatus}</span>
+            <span class="badge ${routeAlreadyDone ? 'green' : 'yellow'}">${routeStatus}</span>
           </div>
           ${renderMobileRouteTimeSummary(plan)}
-          ${allClosed || routeAlreadyDone ? `
+          ${routeAlreadyDone ? `
             <div class="attention-box">
               <strong>Dnešní trasa je uzavřená.</strong>
               <span>${completedStops} zastávek dokončeno${skippedStops ? `, ${skippedStops} nejeto` : ''}.</span>
               <span>Zítřejší trasa se v mobilu otevře až v den plánování, aby se omylem nerozpracovala dopředu.</span>
             </div>
           ` : ''}
+          ${returningToWarehouse ? `
+            <div class="attention-box">
+              <strong>Všechny automaty jsou hotové. Trasa ještě nekončí.</strong>
+              <span>Vrať se na počáteční bod – ${escapeHtml(plan.route_payload?.startPoint?.label || 'sklad')} – a teprve po příjezdu potvrď návrat.</span>
+            </div>
+          ` : ''}
           ${canAccept ? '<button class="primary-btn" type="button" data-route-action="accept-route">Převzít trasu</button>' : ''}
           ${stopCards || '<div class="empty">Trasa nemá žádnou zastávku.</div>'}
-          ${canFinish ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
+          ${returnStage}
+          ${canFinish ? `<button class="primary-btn" type="button" data-route-action="finish-route">${routeSchedule.returnToStart ? 'Potvrdit návrat na sklad' : 'Ukončit trasu'}</button>` : ''}
         </section>
       `
     }
@@ -8725,6 +8767,8 @@
       const routeDoneCount = routeStops.filter((stop) => getRouteStopStatus(stop) === 'completed').length
       const routeSkippedCount = routeStops.filter((stop) => getRouteStopStatus(stop) === 'skipped').length
       const routeClosedCount = routeDoneCount + routeSkippedCount
+      const routePlanDone = routePlan && ['done', 'completed'].includes(String(routePlan.execution_status || ''))
+      const routeReturning = routePlan && !routePlanDone && routeStops.length > 0 && routeClosedCount === routeStops.length
       els.tripWorkSummary.innerHTML = `
         <article class="task-card">
           <div class="task-head">
@@ -8732,7 +8776,7 @@
               <h4>Trasa</h4>
               <div class="meta"><span>${routePlan ? `${escapeHtml(routePlan.title || 'Dnešní trasa')} · ${routeDoneCount} hotovo${routeSkippedCount ? ` · ${routeSkippedCount} nejeto` : ''}` : 'Trasa je případně vedena ve VendSoftu'}</span></div>
             </div>
-            <span class="badge ${routePlan && routeClosedCount === routeStops.length && routeStops.length ? 'green' : routePlan ? 'yellow' : 'blue'}">${routePlan ? (routeClosedCount === routeStops.length && routeStops.length ? 'Uzavřeno' : 'Jet') : 'Info'}</span>
+            <span class="badge ${routePlanDone ? 'green' : routePlan ? 'yellow' : 'blue'}">${routePlan ? routePlanDone ? 'Uzavřeno' : routeReturning ? 'Návrat' : 'Jet' : 'Info'}</span>
           </div>
         </article>
         <article class="task-card">
@@ -8925,7 +8969,7 @@
       let error = null
       const primaryRoutes = await supabase
         .from('route_plans')
-        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes, note)')
+        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, return_to_start, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes, note)')
         .gte('planning_date', fromDate)
         .lte('planning_date', toDate)
         .order('created_at', { ascending: false })
@@ -8936,7 +8980,7 @@
       if (error) {
         const fallbackRoutes = await supabase
           .from('route_plans')
-          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, route_payload, created_at')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, return_to_start, route_payload, created_at')
           .gte('planning_date', fromDate)
           .lte('planning_date', toDate)
           .order('created_at', { ascending: false })
@@ -9589,23 +9633,34 @@
       const departureClock = String(route?.planned_departure_time || route?.route_payload?.planned_departure_time || '07:00').slice(0, 5)
       const routeStart = new Date(`${route?.planning_date || todayIso}T${departureClock}:00`)
       const preparationMinutes = Math.max(0, Number(route?.route_payload?.preparation_minutes || route?.route_payload?.route_time_budget?.preparation_minutes || 0))
-      const drivePerStop = stops.length ? Number(route?.estimated_drive_minutes || 0) / stops.length : 0
-      let serviceMinutes = preparationMinutes
+      const totalDriveMinutes = Math.max(0, Number(route?.estimated_drive_minutes || 0))
+      const returnToStart = route?.return_to_start !== false
+      const fallbackLegCount = Math.max(1, stops.length + (returnToStart ? 1 : 0))
+      const fallbackDriveMinutes = totalDriveMinutes / fallbackLegCount
+      const googleStops = Array.isArray(route?.route_payload?.google?.orderedStops) ? route.route_payload.google.orderedStops : []
+      let cursor = new Date(routeStart.getTime() + preparationMinutes * 60000)
+      let usedDriveMinutes = 0
       const scheduledStops = stops.map((stop, index) => {
         const payloadStop = (Array.isArray(route?.route_payload?.orderedStops) ? route.route_payload.orderedStops : [])
           .find((item) => String(item.id || '') === String(stop.id || '') || Number(item.stopOrder || item.stop_order || 0) === Number(stop.stop_order || stop.stopOrder || 0))
+        const googleStop = googleStops[index] || {}
         const storedArrival = stop.estimated_arrival_at || stop.estimatedArrivalAt || payloadStop?.estimatedArrivalAt || payloadStop?.estimated_arrival_at
         const service = Number(stop.estimated_service_minutes ?? stop.estimatedServiceMinutes ?? payloadStop?.estimatedServiceMinutes ?? 0)
-        const fallbackArrival = new Date(routeStart.getTime() + ((index + 1) * drivePerStop + serviceMinutes) * 60000)
-        const arrival = storedArrival ? new Date(storedArrival) : fallbackArrival
+        const storedDrive = stop.drive_minutes_from_previous ?? stop.driveMinutesFromPrevious ?? payloadStop?.driveMinutesFromPrevious
+        const googleDrive = Number(googleStop.googleLegDurationSeconds || 0) / 60
+        const legDriveMinutes = Math.max(0, Number(storedDrive != null ? storedDrive : (googleDrive || fallbackDriveMinutes)))
+        usedDriveMinutes += legDriveMinutes
+        cursor = new Date(cursor.getTime() + legDriveMinutes * 60000)
+        const arrival = storedArrival ? new Date(storedArrival) : new Date(cursor)
         const storedDeparture = stop.estimated_departure_at || stop.estimatedDepartureAt || payloadStop?.estimatedDepartureAt || payloadStop?.estimated_departure_at
         const departure = storedDeparture ? new Date(storedDeparture) : new Date(arrival.getTime() + service * 60000)
-        serviceMinutes += service
-        return { stop, arrival, departure, serviceMinutes: service }
+        cursor = new Date(departure)
+        return { stop, arrival, departure, serviceMinutes: service, driveMinutes: legDriveMinutes }
       })
       const totalServiceMinutes = scheduledStops.reduce((sum, item) => sum + Number(item.serviceMinutes || 0), 0)
       const routeEnd = new Date(routeStart.getTime() + (preparationMinutes + Number(route?.estimated_drive_minutes || 0) + totalServiceMinutes) * 60000)
-      return { departureClock, routeStart, routeEnd, preparationMinutes, scheduledStops }
+      const returnDriveMinutes = returnToStart ? Math.max(0, totalDriveMinutes - usedDriveMinutes) : 0
+      return { departureClock, routeStart, routeEnd, preparationMinutes, scheduledStops, returnDriveMinutes, returnToStart }
     }
 
     function formatRoutePreviewClock(value) {
@@ -9683,7 +9738,7 @@
         const { data, error } = await supabase.from('shift_plan_days').select('id,shift_plan_id,employee_id,plan_date,shift_type,planned_start,planned_end,planned_minutes,warehouse_id,vehicle_id,note,status').in('shift_plan_id',selectedPlanIds).eq('employee_id',state.employee.id).eq('status','published').gte('plan_date',from).lte('plan_date',to).order('plan_date')
         if (!error) state.publishedShifts = data || []; else console.warn(error)
       }
-      const { data: routes, error: routesError } = await supabase.from('route_plans').select('id,planning_date,planned_departure_time,planned_employee_id,vehicle_id,title,stop_count,estimated_drive_minutes,estimated_service_minutes,execution_status,route_payload,route_plan_stops(id,route_plan_id,location_id,machine_id,stop_order,title,address_snapshot,city_snapshot,estimated_service_minutes,note)').eq('planned_employee_id',state.employee.id).gte('planning_date',from).lte('planning_date',to).neq('execution_status','cancelled')
+      const { data: routes, error: routesError } = await supabase.from('route_plans').select('id,planning_date,planned_departure_time,planned_employee_id,vehicle_id,title,stop_count,estimated_drive_minutes,estimated_service_minutes,execution_status,return_to_start,route_payload,route_plan_stops(id,route_plan_id,location_id,machine_id,stop_order,title,address_snapshot,city_snapshot,estimated_service_minutes,note)').eq('planned_employee_id',state.employee.id).gte('planning_date',from).lte('planning_date',to).neq('execution_status','cancelled')
       if (!routesError) state.shiftRoutePlans = routes || []
       renderMyShifts()
     }
@@ -10475,30 +10530,9 @@
       stop.completed_at = nowIso
 
       let completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
-      let routeInventoryMessage = ''
       const updatedPlan = getAssignedRoutePlan() || plan
       const stops = getRouteStops(updatedPlan)
       const allDone = stops.length > 0 && stops.every(isRouteStopClosed)
-      if (allDone && updatedPlan?.id) {
-        const { error: planError } = await supabase
-          .from('route_plans')
-          .update({ execution_status: 'done', completed_at: nowIso })
-          .eq('id', updatedPlan.id)
-        if (planError) throw planError
-        completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
-        updatedPlan.execution_status = 'done'
-        updatedPlan.completed_at = nowIso
-        if (!completionQueued) {
-          await loadVehicleInventories()
-          renderVehicleInventories()
-          renderImportant()
-          const routeAudit = state.inventoryAudits.find((audit) => String(audit.source_route_plan_id || '') === String(updatedPlan.id))
-          if (routeAudit) {
-            const itemCount = getVehicleInventoryItems(routeAudit.id).length
-            routeInventoryMessage = ` Cílená inventura #${routeAudit.id} je připravená v sekci Sklad (${itemCount} ${itemCount === 1 ? 'položka' : itemCount < 5 ? 'položky' : 'položek'}).`
-          }
-        }
-      }
 
       renderAssignedRoute()
       openScreen('vehicle')
@@ -10506,7 +10540,7 @@
       const targetId = nextStop?.id || stop.id
       setTimeout(() => document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
       const queuedSuffix = completionQueued ? ' Uloženo offline, odešle se automaticky po návratu signálu.' : ''
-      showMessage(`${allDone ? 'Automat je hotový a celá trasa je dokončená.' : 'Automat je hotový. Pokračuj další zastávkou.'}${routeInventoryMessage}${queuedSuffix}`, 'success')
+      showMessage(`${allDone ? updatedPlan.return_to_start !== false ? 'Poslední automat je hotový. Teď se vrať na sklad a po příjezdu potvrď návrat.' : 'Poslední automat je hotový. Teď můžeš trasu uzavřít.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
     }
 
     async function prepareOpenedStopForSkip(stop, visit) {
@@ -10624,15 +10658,6 @@
       delete state.routeFoodDetails[String(stop.id)]
 
       const allClosed = getRouteStops(plan).length > 0 && getRouteStops(plan).every(isRouteStopClosed)
-      if (allClosed) {
-        const { error: planError } = await supabase
-          .from('route_plans')
-          .update({ execution_status: 'done', completed_at: nowIso })
-          .eq('id', plan.id)
-        if (planError) throw planError
-        plan.execution_status = 'done'
-        plan.completed_at = nowIso
-      }
 
       closeSkipStopSheet()
       persistMobileSnapshot()
@@ -10643,7 +10668,7 @@
       const nextStop = getRouteStops(plan).find((item) => !isRouteStopClosed(item))
       setTimeout(() => document.getElementById(`routeStop-${nextStop?.id || stop.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
       showMessage(allClosed
-        ? 'Zastávka je označená jako nejetá a trasa je uzavřená.'
+        ? plan.return_to_start !== false ? 'Zastávka je označená jako nejetá. Všechny automaty jsou uzavřené; vrať se na sklad a potvrď návrat.' : 'Zastávka je označená jako nejetá. Teď můžeš trasu uzavřít.'
         : 'Zastávka je označená jako nejetá. Pokračuj další zastávkou.', 'success')
     }
 
@@ -10658,12 +10683,20 @@
       }
       const { error } = await supabase
         .from('route_plans')
-        .update({ execution_status: 'done', completed_at: plan.completed_at || new Date().toISOString() })
+        .update({ execution_status: 'done', completed_at: new Date().toISOString() })
         .eq('id', plan.id)
       if (error) throw error
       await loadAssignedRoutePlans()
+      await loadVehicleInventories().catch(console.warn)
+      renderVehicleInventories()
+      renderImportant()
       renderAssignedRoute()
-      showMessage('Trasa je uzavřená. Směnu ukončíš až běžným tlačítkem Ukončit směnu, kde se zapíšou konečné km.', 'success')
+      renderTodayRouteSummary()
+      renderTripWorkSummary()
+      persistMobileSnapshot()
+      showMessage(plan.return_to_start !== false
+        ? 'Návrat na sklad je potvrzený a trasa je uzavřená. Směnu ukončíš až běžným tlačítkem Ukončit směnu, kde se zapíšou konečné km.'
+        : 'Trasa je uzavřená. Směnu ukončíš až běžným tlačítkem Ukončit směnu, kde se zapíšou konečné km.', 'success')
     }
 
     function getCoffeeContainer(stopId, containerId) {

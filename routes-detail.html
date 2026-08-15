@@ -1057,11 +1057,13 @@
       const fallbackDrive = totalDriveMinutes / fallbackLegCount
       const googleStops = Array.isArray(plan?.route_payload?.google?.orderedStops) ? plan.route_payload.google.orderedStops : []
       let cursor = new Date(plannedStart.getTime() + preparationMinutes * 60000)
+      let usedDriveMinutes = 0
       const rows = stops.map((stop, index) => {
         const googleStop = googleStops[index] || {}
         const storedDrive = stop.driveMinutesFromPrevious ?? stop.drive_minutes_from_previous
         const googleDrive = Number(googleStop.googleLegDurationSeconds || 0) / 60
         const driveMinutes = Math.max(0, Number(storedDrive != null ? storedDrive : (googleDrive || fallbackDrive)))
+        usedDriveMinutes += driveMinutes
         cursor = new Date(cursor.getTime() + driveMinutes * 60000)
         const plannedArrival = new Date(cursor)
         const plannedServiceMinutes = Math.max(0, Number(stop.estimatedServiceMinutes || 0))
@@ -1084,6 +1086,7 @@
       })
       const plannedMinutes = preparationMinutes + totalDriveMinutes + totalServiceMinutes
       const plannedEnd = new Date(plannedStart.getTime() + plannedMinutes * 60000)
+      const returnDriveMinutes = plan?.return_to_start ? Math.max(0, totalDriveMinutes - usedDriveMinutes) : 0
       const actualStartValue = plan?.started_at || rows.find((row) => row.actualArrival)?.actualArrival || null
       const lastClosed = [...rows].reverse().find((row) => row.completed)?.actualDeparture || null
       const routeIsActive = Boolean(actualStartValue) && !plan?.completed_at && !['done', 'cancelled'].includes(String(plan?.execution_status || ''))
@@ -1092,13 +1095,15 @@
       const actualServiceTotal = rows.reduce((sum, row) => sum + Number(row.actualServiceMinutes || 0), 0)
       const progressRow = [...rows].reverse().find((row) => row.actualArrival)
       const progressDiff = progressRow
-        ? signedMinutesBetween(progressRow.plannedArrival, progressRow.actualArrival)
-          + Math.max(0, Number(progressRow.actualServiceMinutes || 0) - Number(progressRow.plannedServiceMinutes || 0))
+        ? progressRow.completed
+          ? signedMinutesBetween(progressRow.plannedDeparture, progressRow.actualDeparture)
+          : signedMinutesBetween(progressRow.plannedArrival, progressRow.actualArrival)
+            + Math.max(0, Number(progressRow.actualServiceMinutes || 0) - Number(progressRow.plannedServiceMinutes || 0))
         : actualStartValue ? signedMinutesBetween(plannedStart, actualStartValue) : null
       const overallDiff = plan?.completed_at
         ? signedMinutesBetween(plannedEnd, actualEnd)
         : progressDiff
-      return { departure, plannedStart, plannedEnd, plannedMinutes, totalServiceMinutes, actualStart: actualStartValue ? new Date(actualStartValue) : null, actualEnd, actualMinutes, actualServiceTotal, overallDiff, rows }
+      return { departure, plannedStart, plannedEnd, plannedMinutes, totalServiceMinutes, returnDriveMinutes, actualStart: actualStartValue ? new Date(actualStartValue) : null, actualEnd, actualMinutes, actualServiceTotal, overallDiff, rows }
     }
 
     function renderRouteTimePlan(plan) {
@@ -1123,6 +1128,7 @@
                 const meta = routeDeviationMeta(row.actualServiceMinutes == null ? null : row.actualServiceMinutes - row.plannedServiceMinutes, tolerance, row.actualServiceMinutes == null)
                 return `<tr><td><div class="route-time-place"><span class="route-time-order">${index + 1}</span><span>${escapeHtml(row.stop.title || row.stop.name || `Zastávka ${index + 1}`)}</span></div></td><td class="route-time-clock">${escapeHtml(formatClock(row.plannedArrival))}–${escapeHtml(formatClock(row.plannedDeparture))}<small>${escapeHtml(formatDurationWords(row.plannedServiceMinutes))}</small></td><td class="route-time-clock">${row.actualArrival ? `${escapeHtml(formatClock(row.actualArrival))}–${escapeHtml(formatClock(row.actualDeparture))}<small>${escapeHtml(formatDurationWords(row.actualServiceMinutes))}${row.completed ? '' : ' · probíhá'}</small>` : '—<small>čeká na návštěvu</small>'}</td><td><span class="route-time-result ${meta.cls}">${escapeHtml(meta.label)}</span></td></tr>`
               }).join('') || '<tr><td colspan="4">Trasa nemá žádné zastávky.</td></tr>'}
+              ${plan.return_to_start ? `<tr><td><div class="route-time-place"><span class="route-time-order">⌂</span><span>Návrat na sklad</span></div></td><td class="route-time-clock">${escapeHtml(formatClock(schedule.plannedEnd))}<small>${escapeHtml(formatDurationWords(schedule.returnDriveMinutes))} jízdy</small></td><td class="route-time-clock">${plan.completed_at ? escapeHtml(formatClock(plan.completed_at)) : '—'}<small>${plan.completed_at ? 'návrat potvrzen' : schedule.rows.length && schedule.rows.every((row) => row.completed) ? 'návrat probíhá' : 'čeká po posledním automatu'}</small></td><td><span class="route-time-result ${plan.completed_at ? overall.cls : 'neutral'}">${plan.completed_at ? escapeHtml(overall.label) : 'Čeká na návrat'}</span></td></tr>` : ''}
             </tbody></table>
           </div>
         </section>
@@ -1627,9 +1633,7 @@
     function getEffectiveExecutionStatus(plan) {
       const status = String(plan?.execution_status || 'draft')
       if (['done', 'cancelled'].includes(status)) return status
-      const stops = Array.isArray(plan?.orderedStops) ? plan.orderedStops : []
-      const allStopsDone = stops.length > 0 && stops.every(isStopClosed)
-      if (plan?.completed_at || allStopsDone) return 'done'
+      if (plan?.completed_at) return 'done'
       return status
     }
 
