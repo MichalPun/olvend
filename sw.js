@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v103-route-warehouse-return';
+const CACHE_NAME = 'olvend-v104-mobile-home-inventory-guard';
 const APP_SHELL = [
   './',
   './index.html',
