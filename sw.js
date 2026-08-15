@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v116-route-km';
+const CACHE_NAME = 'olvend-v117-coffee-guided';
 const APP_SHELL = [
   './',
   './index.html',
@@ -27,6 +27,8 @@ const APP_SHELL = [
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',
+  './assets/rheavendors-luce-x2.jpg',
+  './assets/rheavendors-luce-x2-interior.jpg',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
