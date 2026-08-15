@@ -3902,6 +3902,13 @@
     .today-focus-meta div:last-child { padding-left:14px; border-left:1px solid #eaecf0; }
     .today-focus-meta span { display:block; color:#7b8493; font-size:10px; font-weight:900; text-transform:uppercase; }
     .today-focus-meta strong { display:block; margin-top:4px; color:#171a21; font-size:17px; line-height:1.2; }
+    .today-km-comparison { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin-top:12px; overflow:hidden; border:1px solid #dfe3e8; border-radius:14px; background:#dfe3e8; }
+    .today-km-comparison[hidden] { display:none; }
+    .today-km-comparison div { padding:11px 10px; background:#f8fafc; }
+    .today-km-comparison span { display:block; color:#7b8493; font-size:9px; font-weight:900; text-transform:uppercase; }
+    .today-km-comparison strong { display:block; margin-top:4px; color:#171a21; font-size:15px; }
+    .today-km-comparison strong.good { color:#067647; }
+    .today-km-comparison strong.bad { color:#b42318; }
     .today-overview #shiftMainButton { width:100%; min-height:52px; margin-top:13px; border:0; border-radius:14px; color:#fff; background:#d5101a; font-size:16px; font-weight:900; box-shadow:0 9px 20px rgba(213,16,26,.18); }
     .today-lock-note { margin:10px 0 0; color:#b42318; font-size:11px; font-weight:850; text-align:center; }
 
@@ -3974,6 +3981,7 @@
           <h2 id="heroTitle">Připravuji směnu</h2>
           <p id="heroText">Načítám pokyny dne, vozidlo a dnešní trasu.</p>
           <div class="today-focus-meta"><div><span id="todayMetaOneLabel">Plánovaný start</span><strong id="todayMetaOne">–</strong></div><div><span id="todayMetaTwoLabel">Dnešní trasa</span><strong id="todayMetaTwo">–</strong></div></div>
+          <div class="today-km-comparison" id="todayKmComparison" hidden></div>
           <button class="primary-btn" id="shiftMainButton" type="button">Načítám</button>
           <p class="today-lock-note" id="todayLockNote" hidden>Směnu nelze ukončit, dokud nebude inventura hotová.</p>
           <div class="compact-actions" id="runningShiftActions" hidden>
@@ -3992,7 +4000,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.9</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.10</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4032,6 +4040,7 @@
         <div class="card">
           <div class="form">
             <div class="shift-instruction-notice" id="endShiftInventoryNotice" hidden></div>
+            <div class="today-km-comparison" id="endKmComparison" hidden></div>
             <label id="endKmLabel">
               Konečný stav km
               <input id="endOdometerInput" inputmode="numeric" autocomplete="off" />
@@ -4618,7 +4627,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-location-picklists-v12" defer></script>
+  <script src="./pwa.js?v=20260815-route-km-v13" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -4733,6 +4742,7 @@
       todayMetaTwo: document.getElementById('todayMetaTwo'),
       todayLockNote: document.getElementById('todayLockNote'),
       todayProgressLabel: document.getElementById('todayProgressLabel'),
+      todayKmComparison: document.getElementById('todayKmComparison'),
       todayDayline: document.getElementById('todayDayline'),
       todayStartTime: document.getElementById('todayStartTime'),
       todayMiddleLabel: document.getElementById('todayMiddleLabel'),
@@ -4779,6 +4789,7 @@
       shiftRouteNotice: document.getElementById('shiftRouteNotice'),
       endKmLabel: document.getElementById('endKmLabel'),
       endShiftInventoryNotice: document.getElementById('endShiftInventoryNotice'),
+      endKmComparison: document.getElementById('endKmComparison'),
       endOdometerInput: document.getElementById('endOdometerInput'),
       endShiftNoteInput: document.getElementById('endShiftNoteInput'),
       endShiftButton: document.getElementById('endShiftButton'),
@@ -5575,6 +5586,36 @@
       `).join('')
     }
 
+    function getRouteKmComparison(plan = getAssignedRoutePlan()) {
+      if (plan?.estimated_distance_km == null || state.vehicleLog?.start_odometer_km == null || state.vehicleLog?.end_odometer_km == null) return null
+      const plannedKm = Number(plan?.estimated_distance_km)
+      const startKm = Number(state.vehicleLog?.start_odometer_km)
+      const endKm = Number(state.vehicleLog?.end_odometer_km)
+      if (!Number.isFinite(plannedKm) || plannedKm <= 0 || !Number.isFinite(startKm) || !Number.isFinite(endKm) || endKm < startKm) return null
+      const actualKm = endKm - startKm
+      return { plannedKm, actualKm, differenceKm: actualKm - plannedKm }
+    }
+
+    function formatSignedRouteKm(value) {
+      const amount = Number(value || 0)
+      const formatted = Math.abs(amount).toLocaleString('cs-CZ', { maximumFractionDigits: 1 })
+      return `${amount > 0 ? '+' : amount < 0 ? '−' : ''}${formatted} km`
+    }
+
+    function renderRouteKmComparison(plan, routeDone) {
+      const comparison = routeDone ? getRouteKmComparison(plan) : null
+      const markup = comparison ? `
+        <div><span>Plán trasy</span><strong>${escapeHtml(comparison.plannedKm.toLocaleString('cs-CZ', { maximumFractionDigits: 1 }))} km</strong></div>
+        <div><span>Skutečnost</span><strong>${escapeHtml(comparison.actualKm.toLocaleString('cs-CZ'))} km</strong></div>
+        <div><span>Rozdíl</span><strong class="${Math.abs(comparison.differenceKm) <= 3 ? 'good' : comparison.differenceKm > 0 ? 'bad' : 'good'}">${escapeHtml(formatSignedRouteKm(comparison.differenceKm))}</strong></div>
+      ` : ''
+      ;[els.todayKmComparison, els.endKmComparison].forEach((element) => {
+        if (!element) return
+        element.hidden = !comparison
+        element.innerHTML = markup
+      })
+    }
+
     function renderShiftState() {
       const day = state.attendanceDay
       const isRunning = isShiftRunning()
@@ -5592,6 +5633,9 @@
       const workedMinutes = isRunning && day?.actual_start
         ? Math.max(0, Math.round((Date.now() - new Date(day.actual_start).getTime()) / 60000) - getComputedBreakMinutes())
         : getDayPayableMinutes(day)
+      const savedEndKm = state.vehicleLog?.end_odometer_km != null
+      const kmComparison = routeDone ? getRouteKmComparison(plan) : null
+      renderRouteKmComparison(plan, routeDone)
 
       state.todayPrimaryAction = isClosed ? 'none' : !isRunning ? 'start' : blockingInventory ? 'inventory' : blockingService ? 'service' : plan && !routeDone ? 'route' : 'end'
       els.shiftMainButton.disabled = false
@@ -5715,17 +5759,19 @@
         els.todayFocusEyebrow.textContent = completedInventory ? 'Další krok' : 'Trasa hotová'
         els.todayFocusBadge.textContent = completedInventory ? 'Inventura hotová' : 'Připraveno'
         els.heroTitle.textContent = 'Dokonči dnešní směnu'
-        els.heroText.textContent = completedInventory ? 'Trasa, návrat i kontrolní inventura jsou hotové. Zkontroluj údaje a ukonči směnu.' : 'Trasa i návrat na sklad jsou potvrzené. Zbývá zkontrolovat údaje a ukončit směnu.'
+        els.heroText.textContent = completedInventory
+          ? savedEndKm ? 'Trasa, návrat, kontrolní inventura i konečné kilometry jsou uložené. Zbývá ukončit směnu.' : 'Trasa, návrat i kontrolní inventura jsou hotové. Zkontroluj údaje a ukonči směnu.'
+          : savedEndKm ? 'Trasa, návrat na sklad i konečné kilometry jsou uložené. Zbývá ukončit směnu.' : 'Trasa i návrat na sklad jsou potvrzené. Zbývá zkontrolovat údaje a ukončit směnu.'
         els.todayMetaOneLabel.textContent = 'Návrat potvrzen'
         els.todayMetaOne.textContent = getTimeLabel(plan?.completed_at, 'hotovo')
-        els.todayMetaTwoLabel.textContent = completedInventory ? `Inventura č. ${completedInventory.id}` : 'Trasa'
-        els.todayMetaTwo.textContent = completedInventory ? 'hotovo' : 'dokončena'
+        els.todayMetaTwoLabel.textContent = completedInventory ? `Inventura č. ${completedInventory.id}` : savedEndKm ? 'Konečný stav' : 'Trasa'
+        els.todayMetaTwo.textContent = completedInventory ? 'hotovo' : savedEndKm ? `${formatNumber(state.vehicleLog.end_odometer_km)} km` : 'dokončena'
         els.shiftMainButton.textContent = 'Pokračovat k ukončení směny'
         els.todayProgressLabel.textContent = 'připraveno k ukončení'
         renderTodayTasks([
           { state:'finished', icon:'✓', title:'Trasa dokončena', copy:`Návrat na sklad ${getTimeLabel(plan?.completed_at, 'potvrzen')}`, action:'route' },
           ...(completedInventory ? [{ state:'finished', icon:'✓', title:`Kontrolní inventura č. ${completedInventory.id}`, copy:'Odeslána ke kontrole', action:'inventory-history' }] : []),
-          { state:'current', icon:'1', title:'Ukončit směnu', copy:'Všechny povinné kroky jsou hotové', action:'end' }
+          { state:'current', icon:'1', title:'Ukončit směnu', copy:kmComparison ? `Kilometry: ${formatSignedRouteKm(kmComparison.differenceKm)} proti plánu` : savedEndKm ? 'Konečné kilometry jsou uložené' : 'Všechny povinné kroky jsou hotové', action:'end' }
         ], 'Dokončení dne')
       }
 
@@ -9695,7 +9741,7 @@
       let error = null
       const primaryRoutes = await supabase
         .from('route_plans')
-        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, return_to_start, start_latitude, start_longitude, end_latitude, end_longitude, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, start_latitude, start_longitude, end_latitude, end_longitude, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
         .gte('planning_date', fromDate)
         .lte('planning_date', toDate)
         .order('created_at', { ascending: false })
@@ -9706,7 +9752,7 @@
       if (error) {
         const fallbackRoutes = await supabase
           .from('route_plans')
-          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_drive_minutes, return_to_start, route_payload, created_at')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, route_payload, created_at')
           .gte('planning_date', fromDate)
           .lte('planning_date', toDate)
           .order('created_at', { ascending: false })
@@ -11480,9 +11526,14 @@
       renderTodayRouteSummary()
       renderTripWorkSummary()
       persistMobileSnapshot()
-      showMessage(plan.return_to_start !== false
-        ? 'Návrat na sklad je potvrzený a trasa je uzavřená. Směnu ukončíš až běžným tlačítkem Ukončit směnu, kde se zapíšou konečné km.'
-        : 'Trasa je uzavřená. Směnu ukončíš až běžným tlačítkem Ukončit směnu, kde se zapíšou konečné km.', 'success')
+      const savedEndKm = state.vehicleLog?.end_odometer_km != null
+      const comparison = getRouteKmComparison(getAssignedRoutePlan() || plan)
+      const kmMessage = savedEndKm
+        ? ` Konečný stav ${formatNumber(state.vehicleLog.end_odometer_km)} km je už uložený${comparison ? `; proti plánu je rozdíl ${formatSignedRouteKm(comparison.differenceKm)}` : ''}.`
+        : ' Konečné kilometry doplníš při ukončení směny.'
+      showMessage(`${plan.return_to_start !== false
+        ? 'Návrat na sklad je potvrzený a trasa je uzavřená.'
+        : 'Trasa je uzavřená.'}${kmMessage} Směnu ukončíš běžným tlačítkem Ukončit směnu.`, 'success')
     }
 
     function getCoffeeContainer(stopId, containerId) {

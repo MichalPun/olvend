@@ -265,6 +265,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "report-route-kilometers.html": {
+      currentLabel: "Reporty",
+      activeKey: "reporty",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "report-monthly-review.html": {
       currentLabel: "Reporty",
       activeKey: "reporty",
@@ -426,6 +433,7 @@
             { key: "report-attendance", href: "report-attendance.html", label: "Docházka" },
             { key: "report-shift-overview", href: "report-shift-overview.html", label: "Směny" },
             { key: "report-routes-daily", href: "report-routes-daily.html", label: "Denní trasy" },
+            { key: "report-route-kilometers", href: "report-route-kilometers.html", label: "Kilometry tras" },
             { key: "report-vehicles", href: "report-vehicles.html", label: "Vozidla" },
             { key: "report-monthly-review", href: "report-monthly-review.html", label: "Měsíční uzávěrka" },
             { key: "report-invoice-comparison", href: "report-invoice-comparison.html", label: "Srovnání fakturace" },
