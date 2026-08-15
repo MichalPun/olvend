@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v112-route-contrast';
+const CACHE_NAME = 'olvend-v113-route-status';
 const APP_SHELL = [
   './',
   './index.html',

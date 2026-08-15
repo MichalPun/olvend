@@ -2,13 +2,13 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     (async () => {
       try {
-        const PWA_BOOTSTRAP_VERSION = '20260815-route-contrast-v9';
+        const PWA_BOOTSTRAP_VERSION = '20260815-route-status-v10';
         const PWA_BOOTSTRAP_KEY = 'olvendPwaBootstrapVersion';
         if (localStorage.getItem(PWA_BOOTSTRAP_KEY) !== PWA_BOOTSTRAP_VERSION) {
           localStorage.setItem(PWA_BOOTSTRAP_KEY, PWA_BOOTSTRAP_VERSION);
         }
 
-        await navigator.serviceWorker.register('./sw.js?v=20260815-route-contrast-v9');
+        await navigator.serviceWorker.register('./sw.js?v=20260815-route-status-v10');
       } catch (error) {
         console.error('PWA registrace service workeru selhala:', error);
       }
