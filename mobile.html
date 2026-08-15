@@ -2425,6 +2425,25 @@
     .route-return-time { color: #344054; font-size: 13px; font-weight: 900; text-align: right; }
     .route-return-time small { display: block; margin-top: 3px; color: #667085; font-size: 10px; }
 
+    .route-return-hero {
+      display: grid;
+      gap: 12px;
+      padding: 17px;
+      border: 2px solid #d71825;
+      border-radius: 20px;
+      color: #17212b;
+      background: #ffffff;
+      box-shadow: 0 8px 22px rgba(16,24,40,.07);
+    }
+    .route-return-hero-head { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#667085; font-size:10px; font-weight:950; text-transform:uppercase; }
+    .route-return-hero-head span:last-child { padding:6px 8px; border-radius:999px; color:#067647; background:#dcfae6; text-transform:none; }
+    .route-return-hero h3 { margin:0; font-size:22px; line-height:1.15; }
+    .route-return-hero p { margin:0; color:#667085; font-size:13px; font-weight:800; line-height:1.4; }
+    .route-return-hero-meta { padding:10px 11px; border-radius:13px; color:#344054; background:#f2f4f7; font-size:12px; font-weight:850; }
+    .route-return-hero-actions { display:grid; gap:8px; }
+    .route-return-hero-actions .primary-btn,
+    .route-return-hero-actions .secondary-btn { min-height:50px; padding:13px; border-radius:14px; font-size:15px; }
+
     .route-active-time {
       display: grid;
       gap: 12px;
@@ -3972,7 +3991,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.7</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.8</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4598,7 +4617,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-route-status-v10" defer></script>
+  <script src="./pwa.js?v=20260815-warehouse-return-v11" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -4684,6 +4703,7 @@
     let foodMachineRenderAnchor = null
     let coffeeMachineRenderAnchor = null
     let activeNavigationStopId = null
+    let activeNavigationTarget = null
     let routeMachineLiveRefreshTimer = null
     let routeMachineLiveRefreshBusy = false
     const coffeeActionLocks = new Set()
@@ -7853,13 +7873,32 @@
       const { stop } = findRouteStop(stopId)
       if (!stop || !els.navigationSheet) return showMessage('Zastávku se nepodařilo najít v dnešní trase.', 'error')
       activeNavigationStopId = String(stopId)
+      activeNavigationTarget = stop
       els.navigationSheetDestination.textContent = `${getRouteStopTitle(stop)} · ${getRouteStopAddress(stop)}`
+      els.navigationSheet.hidden = false
+      els.navigationSheet.querySelector('[data-navigation-app="system"]')?.focus({ preventScroll: true })
+    }
+
+    function openWarehouseNavigationChooser() {
+      const plan = getAssignedRoutePlan()
+      const start = getRouteStartPoint(plan)
+      if (!plan || !els.navigationSheet) return showMessage('Počáteční bod trasy se nepodařilo najít.', 'error')
+      if (!start.valid && !start.address) return showMessage('Sklad nemá v trase uložené souřadnice ani adresu.', 'error')
+      activeNavigationStopId = null
+      activeNavigationTarget = {
+        title: start.label || 'Sklad',
+        address_snapshot: start.address || '',
+        latitude: start.valid ? start.latitude : null,
+        longitude: start.valid ? start.longitude : null
+      }
+      els.navigationSheetDestination.textContent = [start.label || 'Sklad', start.address].filter(Boolean).join(' · ')
       els.navigationSheet.hidden = false
       els.navigationSheet.querySelector('[data-navigation-app="system"]')?.focus({ preventScroll: true })
     }
 
     function closeNavigationChooser() {
       activeNavigationStopId = null
+      activeNavigationTarget = null
       if (els.navigationSheet) els.navigationSheet.hidden = true
     }
 
@@ -7881,9 +7920,8 @@
     }
 
     function launchNavigationApp(app) {
-      const { stop } = findRouteStop(activeNavigationStopId)
-      if (!stop) return closeNavigationChooser()
-      const target = buildNavigationTargets(stop)[app]
+      if (!activeNavigationTarget) return closeNavigationChooser()
+      const target = buildNavigationTargets(activeNavigationTarget)[app]
       if (!target) return
       closeNavigationChooser()
       window.location.href = target
@@ -9257,14 +9295,17 @@
       const canAccept = !routeLocked && !['in_progress', 'started', 'done', 'completed'].includes(normalizedRouteStatus)
       const canFinish = !routeLocked && allClosed && !routeAlreadyDone
       const routeSchedule = getShiftRouteSchedule(plan)
-      const returnStage = routeSchedule.returnToStart ? `
-        <article class="route-return-card ${routeAlreadyDone ? 'done' : returningToWarehouse ? 'active' : ''}">
-          <span class="route-return-icon">⌂</span>
-          <div class="route-return-copy">
-            <strong>Návrat na sklad</strong>
-            <span>${routeAlreadyDone ? 'Návrat potvrzený, trasa je uzavřená.' : returningToWarehouse ? 'Automaty jsou hotové. Probíhá závěrečná cesta.' : 'Následuje po dokončení posledního automatu.'}</span>
+      const warehousePoint = getRouteStartPoint(plan)
+      const returnStage = routeSchedule.returnToStart && returningToWarehouse ? `
+        <article class="route-return-hero">
+          <div class="route-return-hero-head"><span>Návrat na sklad</span><span>Automaty hotové</span></div>
+          <h3>${escapeHtml(warehousePoint.label || 'Sklad')}</h3>
+          <p>Poslední automat je uzavřený. Teď se vrať na počáteční bod trasy.</p>
+          <div class="route-return-hero-meta">Plánovaný návrat ${escapeHtml(formatRouteClock(routeSchedule.routeEnd))} · ${escapeHtml(formatRouteDurationWords(routeSchedule.returnDriveMinutes))} jízdy</div>
+          <div class="route-return-hero-actions">
+            <button class="primary-btn" type="button" data-route-action="navigate-warehouse">Navigovat na sklad</button>
+            <button class="secondary-btn" type="button" data-route-action="finish-route">Jsem na skladě</button>
           </div>
-          <div class="route-return-time">${escapeHtml(formatRouteClock(routeSchedule.routeEnd))}<small>${escapeHtml(formatRouteDurationWords(routeSchedule.returnDriveMinutes))} jízdy</small></div>
         </article>
       ` : ''
       const stopCards = stops.map((stop) => {
@@ -9326,6 +9367,7 @@
             return `<article class="route-skip-request-card"><div class="route-skip-request-head"><strong>Čeká na schválení</strong><span>Trasa uzamčena</span></div><h3>${escapeHtml(getRouteStopTitle(requestedStop || {}))}</h3><p>E-mail byl odeslán ${escapeHtml(activeSkipRequest.approver_name || 'schvalovateli')} ${escapeHtml(formatRouteClock(activeSkipRequest.email_sent_at || activeSkipRequest.requested_at))}. Do rozhodnutí nelze otevřít další místo.</p><div class="route-skip-request-facts"><div><span>Důvod</span><strong>${escapeHtml(getRouteSkipReasonLabel(activeSkipRequest.reason))}</strong></div><div><span>Žádost odeslal/a</span><strong>${escapeHtml(getEmployeeName())}</strong></div></div><button class="secondary-btn" type="button" data-route-action="refresh-skip-request">Zkontrolovat schválení</button><button class="secondary-btn" type="button" data-route-action="cancel-skip-request" data-request-id="${escapeHtml(activeSkipRequest.id)}">Zrušit žádost</button></article>`
           })() : recalculation ? `<article class="route-recalculation-card"><div class="route-recalculation-head"><strong>Trasa přepočítána</strong><span>Aktualizováno ${escapeHtml(formatRouteClock(recalculation.updated_at))}</span></div><p>${escapeHtml(recalculation.reason || 'Pořadí odpovídá aktuální dopravě a prioritám.')}</p><div class="route-recalculation-facts"><div><span>Úspora</span><strong>${escapeHtml(formatRouteDistanceMeters(recalculation.saved_distance_meters))}</strong></div><div><span>Čas jízdy</span><strong>${Number(recalculation.saved_duration_seconds || 0) > 0 ? `−${escapeHtml(formatRouteDurationWords(Math.round(Number(recalculation.saved_duration_seconds) / 60)))}` : 'beze změny'}</strong></div><div><span>Návrat</span><strong>${escapeHtml(formatRouteClock(recalculation.estimated_return_at))}</strong></div></div></article>` : ''}
           ${renderMobileRouteTimeSummary(plan)}
+          ${returnStage}
           ${routeAlreadyDone ? `
             <div class="attention-box">
               <strong>Dnešní trasa je uzavřená.</strong>
@@ -9333,18 +9375,11 @@
               <span>Zítřejší trasa se v mobilu otevře až v den plánování, aby se omylem nerozpracovala dopředu.</span>
             </div>
           ` : ''}
-          ${returningToWarehouse ? `
-            <div class="attention-box">
-              <strong>Všechny automaty jsou hotové. Trasa ještě nekončí.</strong>
-              <span>Vrať se na počáteční bod – ${escapeHtml(plan.route_payload?.startPoint?.label || 'sklad')} – a teprve po příjezdu potvrď návrat.</span>
-            </div>
-          ` : ''}
           ${canAccept ? '<button class="primary-btn" type="button" data-route-action="accept-route">Převzít trasu</button>' : ''}
+          ${canFinish && !routeSchedule.returnToStart ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
           ${nextStop && !routeAlreadyDone ? `<article class="route-next-card ${routeLocked ? 'locked' : ''}"><div class="route-next-kicker"><span>${routeLocked ? 'Další zastávka uzamčena' : `Další zastávka · ${completedStops + skippedStops + 1} z ${stops.length}`}</span><span>${escapeHtml(getMachineRouteLabel(getRouteStopMachine(nextStop), 'Automat'))}</span></div><h3>${escapeHtml(getRouteStopTitle(nextStop))}</h3><p>${escapeHtml(getRouteStopAddress(nextStop))}</p>${renderMobileStopTime(nextStop, plan)}${recalculation?.reason ? `<div class="route-next-reason">Proč nyní: ${escapeHtml(recalculation.reason)}</div>` : ''}<div class="route-stop-actions"><button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>Otevřít navigaci</button><button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>${routeLocked ? 'Čeká na schválení' : getRouteStopStatus(nextStop) === 'arrived' ? 'Pokračovat v práci' : 'Otevřít zastávku'}</button></div>${routeLocked ? '' : `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(nextStop.id)}">Požádat o nejetí</button>`}</article>` : ''}
           ${stops.length ? `<div class="route-order-title"><h3>${recalculation?.order_changed ? 'Nové pořadí' : 'Pořadí zastávek'}</h3><span>${Math.max(0, stops.length - completedStops - skippedStops)} míst + návrat</span></div>` : ''}
           ${stopCards ? `<div class="route-stop-list">${stopCards}</div>` : '<div class="empty">Trasa nemá žádnou zastávku.</div>'}
-          ${returnStage}
-          ${canFinish ? `<button class="primary-btn" type="button" data-route-action="finish-route">${routeSchedule.returnToStart ? 'Potvrdit návrat na sklad' : 'Ukončit trasu'}</button>` : ''}
         </section>
       `
       syncRouteSkipApprovalPolling(plan)
@@ -11176,7 +11211,13 @@
       openScreen('vehicle')
       const nextStop = getRouteStops(getAssignedRoutePlan()).find((item) => !isRouteStopClosed(item))
       const targetId = nextStop?.id || stop.id
-      setTimeout(() => document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
+      setTimeout(() => {
+        if (allDone && updatedPlan.return_to_start !== false) {
+          document.querySelector('.route-return-hero')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          return
+        }
+        document.getElementById(`routeStop-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 80)
       const queuedSuffix = completionQueued ? ' Uloženo offline, odešle se automaticky po návratu signálu.' : ''
       showMessage(`${allDone ? updatedPlan.return_to_start !== false ? 'Poslední automat je hotový. Teď se vrať na sklad a po příjezdu potvrď návrat.' : 'Poslední automat je hotový. Teď můžeš trasu uzavřít.' : 'Automat je hotový. Pokračuj další zastávkou.'}${queuedSuffix}`, 'success')
     }
@@ -12939,6 +12980,7 @@
       if (pendingRequest && !['view-stop'].includes(action)) throw new Error('Trasa čeká na schválení nejeté zastávky. Další místo se odemkne až po rozhodnutí.')
       if (action === 'accept-route') return acceptAssignedRoute()
       if (action === 'finish-route') return finishAssignedRoute()
+      if (action === 'navigate-warehouse') return openWarehouseNavigationChooser()
       if (action === 'navigate') {
         if (plan && !['in_progress', 'started'].includes(String(plan.execution_status || ''))) {
           await acceptAssignedRoute()
