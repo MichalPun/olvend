@@ -3881,6 +3881,18 @@
     body.route-active .route-stop-list .route-stop-card:last-child { border-bottom:0; }
     body.route-active .route-stop-list .route-stop-card.done,
     body.route-active .route-stop-list .route-stop-card.skipped { background:#fff; }
+    .route-closed-group { margin-top:16px; overflow:hidden; border:1px solid #cdebd9; border-radius:18px; background:#f6fef9; }
+    .route-closed-group > summary { padding:13px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; color:#067647; cursor:pointer; font-size:14px; font-weight:900; list-style:none; }
+    .route-closed-group > summary::-webkit-details-marker { display:none; }
+    .route-closed-group > summary span:last-child { color:#667085; font-size:11px; font-weight:800; }
+    .route-closed-group[open] > summary { border-bottom:1px solid #d9efe2; }
+    body.route-active .route-closed-group .route-stop-list { border:0; border-radius:0; }
+    body.route-active .route-closed-group .route-stop-card { padding:12px 13px; border-left:4px solid #32b778; }
+    body.route-active .route-closed-group .route-stop-card.skipped { border-left-color:#f5a623; }
+    .route-closed-group .route-stop-card .meta { display:none; }
+    .route-closed-group .route-stop-card .route-stop-actions { grid-template-columns:1fr; }
+    .route-closed-group .route-stop-card .route-stop-title { font-size:15px; }
+    .route-closed-group .route-stop-card .route-stop-address { font-size:11px; }
     body.route-active .mobile-panel,
     body.route-active .trip-metric,
     body.route-active .tile { color:#171a21; border-color:#e0e4ea; background:#fff; }
@@ -4124,7 +4136,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.15</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.15.16</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4751,7 +4763,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260815-coffee-guided-v45" defer></script>
+  <script src="./pwa.js?v=20260815-coffee-guided-v46" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -9702,7 +9714,7 @@
           </div>
         </article>
       ` : ''
-      const stopCards = stops.map((stop) => {
+      const renderRouteStopCard = (stop) => {
         const machine = getRouteStopMachine(stop)
         const status = getRouteStopStatus(stop)
         const done = status === 'completed'
@@ -9722,7 +9734,7 @@
         return `
           <article class="route-stop-card ${done ? 'done' : skipped ? 'skipped' : ''}" id="routeStop-${escapeHtml(stop.id)}">
             <div class="route-stop-main">
-              <span class="route-stop-order">${escapeHtml(stop.stop_order || '')}</span>
+              <span class="route-stop-order">${done ? '✓' : skipped ? '–' : escapeHtml(stop.stop_order || '')}</span>
               <div>
                 <span class="route-stop-title">${escapeHtml(getRouteStopTitle(stop))}</span>
                 <span class="route-stop-address">${escapeHtml(getRouteStopAddress(stop))}</span>
@@ -9736,13 +9748,15 @@
             ${renderMobileStopTime(stop, plan)}
             ${skipped ? `<div class="route-stop-skip-reason">Důvod: ${escapeHtml(getRouteSkipReasonLabel(visit?.skip_reason))}${visit?.operator_note ? ` · ${escapeHtml(visit.operator_note)}` : ''}${approvedRequest ? ` · schválil/a ${escapeHtml(approvedRequest.approver_name || 'vedoucí')} ${escapeHtml(formatRouteClock(approvedRequest.decided_at))}` : ''}</div>` : ''}
             <div class="route-stop-actions">
-              ${skipped ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || (!isCurrentLocation && !arrived) ? 'disabled' : ''}>Navigovat</button>`}
+              ${skipped || done ? '' : `<button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked || (!isCurrentLocation && !arrived) ? 'disabled' : ''}>Navigovat</button>`}
               ${primaryAction}
             </div>
             ${['pending', 'arrived'].includes(status) && isCurrentLocation ? `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}" ${routeLocked ? 'disabled' : ''}>Požádat o nejetí</button>` : ''}
           </article>
         `
-      }).join('')
+      }
+      const openStopCards = stops.filter((stop) => !isRouteStopClosed(stop)).map(renderRouteStopCard).join('')
+      const closedStopCards = stops.filter(isRouteStopClosed).map(renderRouteStopCard).join('')
 
       els.assignedRoutePanel.innerHTML = `
         <section class="route-panel ${routeAlreadyDone ? 'done' : ''} ${routeLocked ? 'route-locked' : ''}">
@@ -9772,8 +9786,9 @@
           ${canAccept ? '<button class="primary-btn" type="button" data-route-action="accept-route">Převzít trasu</button>' : ''}
           ${canFinish && !routeSchedule.returnToStart ? '<button class="primary-btn" type="button" data-route-action="finish-route">Ukončit trasu</button>' : ''}
           ${nextStop && !routeAlreadyDone ? `<article class="route-next-card ${routeLocked ? 'locked' : ''}"><div class="route-next-kicker"><span>${routeLocked ? 'Aktuální lokalita uzamčena' : multipleMachinesAtLocation ? 'Aktuální lokalita' : `Další zastávka · ${completedStops + skippedStops + 1} z ${stops.length}`}</span><span>${multipleMachinesAtLocation ? formatRouteMachineCount(currentLocationAllStops.length) : escapeHtml(getMachineRouteLabel(getRouteStopMachine(nextStop), 'Automat'))}</span></div><h3>${escapeHtml(getRouteStopTitle(nextStop))}</h3><p>${escapeHtml(getRouteStopAddress(nextStop))}</p>${multipleMachinesAtLocation ? `<div class="route-location-note">Na této lokalitě jsou ${formatRouteMachineCount(currentLocationAllStops.length)}. Picklist můžeš otevřít u všech odemčených automatů v seznamu níže.</div>` : ''}${renderMobileStopTime(nextStop, plan)}${recalculation?.reason ? `<div class="route-next-reason">Proč nyní: ${escapeHtml(recalculation.reason)}</div>` : ''}<div class="route-stop-actions"><button class="secondary-btn" type="button" data-route-action="navigate" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>Otevřít navigaci</button><button class="primary-btn" type="button" data-route-action="open-stop" data-stop-id="${escapeHtml(nextStop.id)}" ${routeLocked ? 'disabled' : ''}>${routeLocked ? 'Čeká na schválení' : getRouteStopStatus(nextStop) === 'arrived' ? 'Pokračovat v práci' : multipleMachinesAtLocation ? 'Otevřít první picklist' : 'Otevřít picklist'}</button></div>${routeLocked ? '' : `<button class="route-skip-link" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(nextStop.id)}">Požádat o nejetí</button>`}</article>` : ''}
-          ${stops.length ? `<div class="route-order-title"><h3>${recalculation?.order_changed ? 'Nové pořadí' : 'Pořadí zastávek'}</h3><span>${Math.max(0, stops.length - completedStops - skippedStops)} míst + návrat</span></div>` : ''}
-          ${stopCards ? `<div class="route-stop-list">${stopCards}</div>` : '<div class="empty">Trasa nemá žádnou zastávku.</div>'}
+          ${openStopCards ? `<div class="route-order-title"><h3>${recalculation?.order_changed ? 'Nové pořadí' : 'Pořadí zastávek'}</h3><span>${Math.max(0, stops.length - completedStops - skippedStops)} míst + návrat</span></div><div class="route-stop-list">${openStopCards}</div>` : ''}
+          ${closedStopCards ? `<details class="route-closed-group"><summary><span>✓ Hotové zastávky</span><span>${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''} · zobrazit</span></summary><div class="route-stop-list">${closedStopCards}</div></details>` : ''}
+          ${!openStopCards && !closedStopCards ? '<div class="empty">Trasa nemá žádnou zastávku.</div>' : ''}
         </section>
       `
       syncRouteSkipApprovalPolling(plan)
