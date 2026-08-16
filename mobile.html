@@ -4147,7 +4147,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.19</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.20</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4774,7 +4774,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260816-food-guided-v49" defer></script>
+  <script src="./pwa.js?v=20260816-food-guided-v50" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -9277,7 +9277,7 @@
         fillItems,
         pickedQuantity,
         preparedQuantity: Number(draft.preparedQuantity ?? pickedQuantity),
-        picked: Boolean(draft.picked || desired <= 0),
+        picked: Boolean(draft.picked && pickedQuantity > 0),
         skipped: draft.skipped != null ? Boolean(draft.skipped) : desired > 0,
         skipReason: draft.skipReason || (!hasDraftDecision && current > 0 ? 'not_needed' : ''),
         notInsertedReason: draft.notInsertedReason || '',
@@ -9341,41 +9341,69 @@
     }
 
     function renderFoodGuidedPicklist(stop, detail) {
-      const needed = (detail.slots || []).filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
+      const recommended = (detail.slots || []).filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
+      const optional = (detail.slots || []).filter((slot) => {
+        if (getFoodRequiredFillQuantity(slot, detail) > 0) return false
+        return getFoodSlotProductOptions(slot).some((product) => getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, product.id) > 0)
+      })
       const expandedId = String(detail.draft?.expandedFoodPickSlotId || '')
       const transferNotes = String(stop.note || '').split(' · ').filter((part) => part.startsWith('[PŘESUN:'))
-      const unresolved = needed.filter((slot) => {
+      const unresolved = recommended.filter((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
         return !draft.picked && !(draft.skipped && (Number(slot.current_units || 0) > 0 || draft.skipReason))
       })
-      const total = needed.reduce((sum, slot) => sum + getFoodSlotDraft(stop.id, slot).pickedQuantity, 0)
+      const total = (detail.slots || []).reduce((sum, slot) => sum + getFoodSlotDraft(stop.id, slot).pickedQuantity, 0)
+      const renderPickRows = (rows, optionalMode = false) => rows.map((slot) => {
+        const draft = getFoodSlotDraft(stop.id, slot)
+        const desired = getFoodRequiredFillQuantity(slot, detail)
+        const options = getFoodSlotProductOptions(slot)
+        const product = state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
+        const selectedProductId = product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
+        const availableInVehicle = selectedProductId ? getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, selectedProductId) : 0
+        const shortage = optionalMode ? 0 : Math.max(0, desired - availableInVehicle)
+        const open = String(slot.id) === expandedId
+        const emptySkipNeedsReason = !optionalMode
+          && Number(slot.current_units || 0) <= 0
+          && draft.skipped
+          && !draft.picked
+          && !draft.skipReason
+        const skipReasonControl = emptySkipNeedsReason || (draft.skipped && Number(slot.current_units || 0) <= 0)
+          ? `<label class="food-skip-reason"><strong>Důvod je povinný</strong><span>Proč prázdnou pozici nedoplňuješ?</span><select data-food-field="skip-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber důvod</option><option value="not_in_vehicle" ${draft.skipReason === 'not_in_vehicle' ? 'selected' : ''}>Zboží není v autě</option><option value="not_refilling_today" ${draft.skipReason === 'not_refilling_today' ? 'selected' : ''}>Dnes nedoplňuji</option><option value="other" ${draft.skipReason === 'other' ? 'selected' : ''}>Jiný důvod</option></select></label>`
+          : ''
+        const rowStatus = emptySkipNeedsReason
+          ? 'Vyber důvod'
+          : draft.picked && draft.pickedQuantity > 0
+            ? `Beru ${escapeHtml(draft.pickedQuantity)}`
+            : optionalMode
+              ? 'Lze přibrat'
+              : shortage
+                ? `Chybí ${escapeHtml(shortage)}`
+                : `Auto ${escapeHtml(availableInVehicle)}`
+        return `
+          <button class="coffee-guide-row ${draft.picked && draft.pickedQuantity > 0 ? 'done' : emptySkipNeedsReason ? 'selected' : ''}" type="button" data-food-action="guided-food-expand-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">
+            <span class="coffee-guide-icon">${open ? '−' : draft.picked && draft.pickedQuantity > 0 ? '✓' : optionalMode ? '+' : emptySkipNeedsReason ? '!' : '+'}</span>
+            <span class="coffee-guide-main"><strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(product?.name || slot.product_name || 'Produkt')}</strong><small>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0} ks`)} · ${optionalMode ? 'návrh 0 ks' : `návrh ${desired} ks`} · v autě ${escapeHtml(availableInVehicle)} ks</small></span>
+            <span class="coffee-guide-value">${rowStatus}</span>
+          </button>
+          ${open ? `<div class="coffee-pick-edit">
+            ${options.length > 1 ? `<label class="coffee-correction-row"><span><strong>Produkt nebo schválená záměna</strong><small>Dostupnost je přímo ze zásoby vozidla</small></span><select class="coffee-correction-input" style="width:190px" data-food-fill-field="productId" data-fill-index="0" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${options.map((option) => { const optionAvailable=getFoodAvailableVehicleQuantity(detail,stop.id,slot.id,option.id); return `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId) ? 'selected' : ''}>${escapeHtml(option.name)} · v autě ${escapeHtml(optionAvailable)} ks</option>` }).join('')}</select></label>` : ''}
+            ${shortage ? `<div class="coffee-rule-box"><strong>V autě chybí ${escapeHtml(shortage)} ks</strong>Pro tuto pozici lze připravit nejvýše ${escapeHtml(availableInVehicle)} ks vybraného produktu.${options.length > 1 ? ' Zkontroluj dostupnou schválenou záměnu výše.' : ''}</div>` : ''}
+            ${optionalMode ? '<div class="coffee-info-strip"><span>+</span><span><b>Systém tuto položku nenavrhuje.</b> Pokud ji chceš dobrat z auta, nastav počet níže. U automatu ještě potvrdíš, kolik se skutečně vešlo.</span></div>' : ''}
+            <div class="coffee-pick-edit-line"><span><strong>${optionalMode ? 'Chci přibrat z auta' : 'Beru k automatu'}</strong></span><span class="coffee-inline-stepper"><button type="button" data-food-action="step-pick" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">−</button><span>${escapeHtml(draft.pickedQuantity)}</span><button type="button" data-food-action="step-pick" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">+</button></span></div>
+            <button class="coffee-guide-more extra" type="button" data-food-action="toggle-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.picked && draft.pickedQuantity > 0 ? 'Pro tuto pozici nic neberu' : optionalMode ? 'Přibrat 1 kus z auta' : 'Vzít navržené množství z auta'}</button>
+            ${skipReasonControl}
+          </div>` : emptySkipNeedsReason ? `<div class="coffee-pick-edit">${skipReasonControl}</div>` : ''}`
+      }).join('')
       return `
         ${transferNotes.map((transferNote) => `<div class="coffee-info-strip"><span>→</span><span><b>V autě je zboží přesunuté kvůli doprodání.</b> ${escapeHtml(transferNote.replace(/^\[PŘESUN:[^\]]+\]\s*/, ''))}</span></div>`).join('')}
         <div class="coffee-next-box"><small>Nejdřív pick list</small><h4>Vezmi z auta vše pro automat</h4><p>Každou položku můžeš rozkliknout, změnit množství nebo zvolit schválenou záměnu.</p></div>
         <section class="coffee-guide-panel">
-          <div class="coffee-guide-panel-head"><h4>Pick list k automatu</h4><span>${needed.length} pozic · ${total} ks</span></div>
-          ${needed.length ? needed.map((slot) => {
-            const draft = getFoodSlotDraft(stop.id, slot)
-            const desired = getFoodRequiredFillQuantity(slot, detail)
-            const options = getFoodSlotProductOptions(slot)
-            const product = state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
-            const open = String(slot.id) === expandedId
-            return `
-              <button class="coffee-guide-row ${draft.picked || draft.skipped ? 'done' : ''}" type="button" data-food-action="guided-food-expand-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">
-                <span class="coffee-guide-icon">${open ? '−' : draft.picked || draft.skipped ? '✓' : '+'}</span>
-                <span class="coffee-guide-main"><strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(product?.name || slot.product_name || 'Produkt')}</strong><small>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0} ks`)} · návrh ${escapeHtml(desired)} ks</small></span>
-                <span class="coffee-guide-value">${draft.picked ? `${escapeHtml(draft.pickedQuantity)} ks` : 'Nic'}</span>
-              </button>
-              ${open ? `<div class="coffee-pick-edit">
-                ${options.length > 1 ? `<label class="coffee-correction-row"><span><strong>Produkt nebo schválená záměna</strong></span><select class="coffee-correction-input" style="width:150px" data-food-fill-field="productId" data-fill-index="0" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${options.map((option) => `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId) ? 'selected' : ''}>${escapeHtml(option.name)}</option>`).join('')}</select></label>` : ''}
-                <div class="coffee-pick-edit-line"><span><strong>Beru k automatu</strong></span><span class="coffee-inline-stepper"><button type="button" data-food-action="step-pick" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">−</button><span>${escapeHtml(draft.pickedQuantity)}</span><button type="button" data-food-action="step-pick" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">+</button></span></div>
-                <button class="coffee-guide-more extra" type="button" data-food-action="toggle-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.picked ? 'Pro tuto pozici nic neberu' : 'Vzít navržené množství z auta'}</button>
-                ${draft.skipped && Number(slot.current_units || 0) <= 0 ? `<label class="food-skip-reason">Proč prázdnou pozici nedoplňuješ?<select data-food-field="skip-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber důvod</option><option value="not_in_vehicle" ${draft.skipReason === 'not_in_vehicle' ? 'selected' : ''}>Zboží není v autě</option><option value="not_refilling_today" ${draft.skipReason === 'not_refilling_today' ? 'selected' : ''}>Dnes nedoplňuji</option><option value="other" ${draft.skipReason === 'other' ? 'selected' : ''}>Jiný důvod</option></select></label>` : ''}
-              </div>` : ''}`
-          }).join('') : '<div class="coffee-rule-box" style="margin:0 14px 14px">Dnes není potřeba nic připravovat. U automatu přesto ověříš skutečný stav.</div>'}
+          <div class="coffee-guide-panel-head"><h4>Vzít k automatu</h4><span>${recommended.length} pozic</span></div>
+          ${recommended.length ? renderPickRows(recommended) : '<div class="coffee-rule-box" style="margin:0 14px 14px">Dnes není žádná povinně připravovaná položka.</div>'}
         </section>
-        <button class="coffee-guide-primary" type="button" data-food-action="${needed.length && !total ? 'pick-all' : 'open-machine'}" data-stop-id="${escapeHtml(stop.id)}" ${total > 0 && unresolved.length ? 'disabled' : ''}>${total > 0 && unresolved.length ? `Rozhodni pozice ${escapeHtml(unresolved.map((slot) => slot.slot_code).join(', '))}` : needed.length && !total ? 'Vzít vše navržené' : total ? `Mám vše · ${total} ks · otevřít automat` : 'Nic neberu · otevřít automat'}</button>
-        ${needed.length && !total ? '<div class="coffee-guide-hint">Po přípravě se tlačítko změní na otevření automatu</div>' : '<div class="coffee-guide-hint">Z vozidla se odečte až skutečně potvrzené doplnění</div>'}
+        ${optional.length ? `<section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Není nutné brát</h4><span>${optional.length} ${optional.length === 1 ? 'pozice' : 'pozic'}</span></div>${renderPickRows(optional,true)}</section>` : ''}
+        <button class="coffee-guide-primary" type="button" data-food-action="${recommended.length && !total && unresolved.length ? 'pick-all' : 'open-machine'}" data-stop-id="${escapeHtml(stop.id)}" ${total > 0 && unresolved.length ? 'disabled' : ''}>${total > 0 && unresolved.length ? `Rozhodni pozice ${escapeHtml(unresolved.map((slot) => slot.slot_code).join(', '))}` : recommended.length && !total && unresolved.length ? 'Vzít vše navržené' : total ? `Mám vše · ${total} ks · otevřít automat` : 'Nic neberu · otevřít automat'}</button>
+        ${recommended.length && !total && unresolved.length ? '<div class="coffee-guide-hint">Po přípravě se tlačítko změní na otevření automatu</div>' : '<div class="coffee-guide-hint">Z vozidla se odečte až skutečně potvrzené doplnění</div>'}
         <button class="coffee-guide-more" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Požádat o nejetí této zastávky</button>`
     }
 
@@ -13407,9 +13435,10 @@
         await refreshFoodVehicleBalances(detail)
         const draft = getFoodSlotDraft(stopId, slot)
         const desired = getFoodRequiredFillQuantity(slot, detail)
+        const pickLimit = desired > 0 ? desired : Math.max(1, Number(slot.capacity_units || 0))
         const productId = draft.fillItems[0]?.productId || draft.selectedProductId
         const available = getFoodAvailableVehicleQuantity(detail, stopId, slot.id, productId)
-        const nextQuantity = Math.max(0, Math.min(desired, available, draft.pickedQuantity + Number(target.dataset.delta || 0)))
+        const nextQuantity = Math.max(0, Math.min(pickLimit, available, draft.pickedQuantity + Number(target.dataset.delta || 0)))
         const fillItems = allocateFoodFillForSlot(detail, stopId, slot.id, productId, nextQuantity)
         updateFoodSlotDraft(stopId, slot.id, {
           fillItems,
@@ -13433,9 +13462,10 @@
         if (!draft.picked) {
           await refreshFoodVehicleBalances(detail)
           const desired = getFoodRequiredFillQuantity(slot, detail)
+          const suggestedPick = desired > 0 ? desired : 1
           const productId = draft.fillItems[0]?.productId || draft.selectedProductId
           const available = getFoodAvailableVehicleQuantity(detail, stopId, slot.id, productId)
-          const pickedQuantity = Math.min(desired, available)
+          const pickedQuantity = Math.min(suggestedPick, available)
           if (pickedQuantity <= 0) throw new Error(`Pro pozici ${slot.slot_code} už v evidenci auta není žádný volný kus.`)
           const fillItems = allocateFoodFillForSlot(detail, stopId, slot.id, productId, pickedQuantity)
           updateFoodSlotDraft(stopId, slot.id, {
@@ -13462,6 +13492,9 @@
             skipReason: Number(slot.current_units || 0) > 0 ? 'not_needed' : '',
             accepted: false
           })
+          if (Number(slot.current_units || 0) <= 0 && getFoodRequiredFillQuantity(slot, detail) > 0) {
+            detail.draft.expandedFoodPickSlotId = String(slot.id)
+          }
         }
         renderRouteMachineScreen()
         scheduleFoodWorkProgressSave(stopId)
@@ -13546,6 +13579,7 @@
         return
       }
       if (action === 'skip-all') {
+        let firstMissingReasonSlot = null
         for (const item of detail.slots || []) {
           if (getFoodRequiredFillQuantity(item, detail) <= 0) continue
           updateFoodSlotDraft(stopId, item.id, {
@@ -13557,7 +13591,9 @@
             skipReason: Number(item.current_units || 0) > 0 ? 'not_needed' : '',
             actualAdd: 0
           })
+          if (!firstMissingReasonSlot && Number(item.current_units || 0) <= 0) firstMissingReasonSlot = item
         }
+        if (firstMissingReasonSlot) detail.draft.expandedFoodPickSlotId = String(firstMissingReasonSlot.id)
         renderRouteMachineScreen()
         scheduleFoodWorkProgressSave(stopId)
         return

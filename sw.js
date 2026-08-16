@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v125-food-guided-route-live';
+const CACHE_NAME = 'olvend-v126-food-vehicle-stock';
 const APP_SHELL = [
   './',
   './index.html',
