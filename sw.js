@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v134-food-mismatch-audit';
+const CACHE_NAME = 'olvend-v135-food-explicit-extra';
 const APP_SHELL = [
   './',
   './index.html',
