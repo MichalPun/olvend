@@ -4157,7 +4157,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.24</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.25</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4784,7 +4784,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260816-food-guided-v54" defer></script>
+  <script src="./pwa.js?v=20260816-food-guided-v55" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -9391,6 +9391,28 @@
       return [...rows].sort((a,b) => Number(a.assigned_payload?.order || 999) - Number(b.assigned_payload?.order || 999))
     }
 
+    function getFoodCartLoadGroup(slot) {
+      const product = state.products.find((item) => String(item.sku || '') === String(slot?.product_sku || ''))
+      const category = normalizeText(product?.product_category || '')
+      const label = normalizeText([
+        product?.name,
+        slot?.product_name,
+        slot?.product_family,
+        slot?.product_variant
+      ].filter(Boolean).join(' '))
+      if (category === 'beverage_ready' || /voda|napoj|cola|pepsi|nestea|drwitt|dzus|energy|limonad/.test(label)) return 10
+      if (category === 'food_ready' || /baget|sendvic|sandwich|tortill|wrap|panini|hot.?dog|strips/.test(label)) return 30
+      return 20
+    }
+
+    function compareFoodCartLoadOrder(a, b) {
+      const groupDifference = getFoodCartLoadGroup(a) - getFoodCartLoadGroup(b)
+      if (groupDifference) return groupDifference
+      const sortDifference = Number(a?.sort_order || 0) - Number(b?.sort_order || 0)
+      if (sortDifference) return sortDifference
+      return String(a?.slot_code || '').localeCompare(String(b?.slot_code || ''), 'cs', { numeric: true })
+    }
+
     function getFoodGuidedWorkSlots(stopId, detail) {
       return (detail?.slots || []).filter((slot) => {
         const draft = getFoodSlotDraft(stopId, slot)
@@ -9404,7 +9426,7 @@
           || draft.wasteItems.length > 0
           || getFoodPlanogramChange(slot)
           || shortExpiry
-      })
+      }).sort((a, b) => compareFoodCartLoadOrder(b, a))
     }
 
     function getFoodGuidedStage(stopId, detail, readOnly = false) {
@@ -9422,8 +9444,9 @@
     }
 
     function renderFoodGuidedPicklist(stop, detail) {
-      const recommended = (detail.slots || []).filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
-      const optional = (detail.slots || []).filter((slot) => {
+      const cartOrderedSlots = [...(detail.slots || [])].sort(compareFoodCartLoadOrder)
+      const recommended = cartOrderedSlots.filter((slot) => getFoodRequiredFillQuantity(slot, detail) > 0)
+      const optional = cartOrderedSlots.filter((slot) => {
         if (getFoodRequiredFillQuantity(slot, detail) > 0) return false
         return getFoodSlotProductOptions(slot).some((product) => getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, product.id) > 0)
       })
@@ -9501,7 +9524,7 @@
       }).join('')
       return `
         ${transferNotes.map((transferNote) => `<div class="coffee-info-strip"><span>→</span><span><b>V autě je zboží přesunuté kvůli doprodání.</b> ${escapeHtml(transferNote.replace(/^\[PŘESUN:[^\]]+\]\s*/, ''))}</span></div>`).join('')}
-        <div class="coffee-next-box"><small>Nejdřív pick list</small><h4>Vezmi z auta vše pro automat</h4><p>U každé položky stačí potvrdit počet. „Upravit“ použij jen při odchylce nebo změně záměny.</p></div>
+        <div class="coffee-next-box"><small>Nejdřív pick list</small><h4>Vezmi z auta vše pro automat</h4><p>Řazeno pro vozík: nejdřív nápoje dolů, potom cukrovinky a nakonec čerstvé zboží navrch. U každé položky stačí potvrdit počet.</p></div>
         <section class="coffee-guide-panel">
           <div class="coffee-guide-panel-head"><h4>Vzít k automatu</h4><span>${recommended.length} ${recommended.length === 1 ? 'produkt' : 'produkty'} · ${recommendedTotal} ks</span></div>
           ${recommended.length ? renderPickRows(recommended) : '<div class="coffee-rule-box" style="margin:0 14px 14px">Dnes není žádná povinně připravovaná položka.</div>'}
@@ -9527,7 +9550,7 @@
       const shortExpiry = Boolean(verifiedExpiry && verifiedExpiry <= tomorrow.toLocaleDateString('sv-SE'))
       const batchLabels = draft.fillItems.filter((fill) => Number(fill.quantity || 0) > 0).map((fill) => `${fill.quantity} ks · ${fill.expiryDate ? formatFoodExpiryDateInput(fill.expiryDate) : 'expirace z FEFO při uložení'}`)
       return `
-        <div class="coffee-next-box"><small>Teď udělej · pozice ${escapeHtml(slot.slot_code)}</small><h4>${recordedExpired ? 'Nejdřív vyndej prošlé kusy' : `Doplň ${escapeHtml(product?.name || slot.product_name || 'produkt')}`}</h4><p>Potvrď skutečný stav. Pokud evidence nesedí, oprav množství, produkt nebo odpis.</p></div>
+        <div class="coffee-next-box"><small>Teď udělej · pozice ${escapeHtml(slot.slot_code)}</small><h4>${recordedExpired ? 'Nejdřív vyndej prošlé kusy' : `Doplň ${escapeHtml(product?.name || slot.product_name || 'produkt')}`}</h4><p>Postupujeme přesně opačně než při skládání vozíku: čerstvé zboží, cukrovinky, nápoje. Potvrď skutečný stav pozice.</p></div>
         <section class="coffee-guide-panel focus" data-food-machine-card data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">
           <div class="coffee-focus-top"><div><h4>${escapeHtml(product?.name || slot.product_name || 'Produkt')}</h4><p>Evidence ${escapeHtml(slot.current_units || 0)} / ${escapeHtml(capacity)} ks · připraveno ${escapeHtml(draft.preparedQuantity)} ks</p></div><span class="coffee-focus-number">${escapeHtml(slot.slot_code)}</span></div>
           ${recordedExpired ? `<div class="food-expired-warning"><strong>Evidence hlásí prošlou expiraci</strong><span>Fyzicky ověř počet i datum. Prošlé kusy přidej do odpisu; evidenci můžeš opravit.</span></div>` : ''}
@@ -13775,7 +13798,7 @@
         await openRouteMachineWithLiveState(stopId, detail, 'food')
         foodMachineRenderAnchor = null
         renderRouteMachineScreen()
-        scrollToFirstMachinePosition('food')
+        window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
         return
       }
       if (action === 'back-picklist') {
@@ -13847,6 +13870,7 @@
         detail.draft.activeFoodSlotId = ''
         persistMobileSnapshot()
         renderRouteMachineScreen()
+        window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
       }
     }
 
