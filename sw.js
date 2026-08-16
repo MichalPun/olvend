@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v127-food-pick-expiry';
+const CACHE_NAME = 'olvend-v128-food-pick-expiry';
 const APP_SHELL = [
   './',
   './index.html',
