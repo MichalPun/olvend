@@ -155,7 +155,7 @@ Deno.serve(async (req) => {
         routingPreference: "TRAFFIC_AWARE_OPTIMAL",
         languageCode: "cs",
         units: "METRIC",
-        departureTime: payload.departureTime || new Date().toISOString(),
+        departureTime: payload.departureTime || new Date(Date.now() + 120000).toISOString(),
       };
 
       const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
@@ -222,7 +222,7 @@ Deno.serve(async (req) => {
       languageCode: "cs",
       units: "METRIC",
       polylineQuality: "OVERVIEW",
-      departureTime: payload.departureTime || new Date().toISOString(),
+      departureTime: payload.departureTime || new Date(Date.now() + 120000).toISOString(),
     };
 
     let route;
