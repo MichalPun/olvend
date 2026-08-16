@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v131-food-cart-order';
+const CACHE_NAME = 'olvend-v132-food-auto-waste';
 const APP_SHELL = [
   './',
   './index.html',
