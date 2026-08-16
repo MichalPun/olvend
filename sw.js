@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v129-food-pick-confirm';
+const CACHE_NAME = 'olvend-v130-food-pick-focus';
 const APP_SHELL = [
   './',
   './index.html',
