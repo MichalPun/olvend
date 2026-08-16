@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v135-food-explicit-extra';
+const CACHE_NAME = 'olvend-v136-food-primary-instruction';
 const APP_SHELL = [
   './',
   './index.html',
