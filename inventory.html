@@ -1064,7 +1064,7 @@
           <div class="panel-header">
             <div>
               <h2>Vychystávání tras</h2>
-              <p>Výpočet z aktuální telemetrie: co v automatech chybí nyní plus očekávaný prodej do příjezdu operátorky na každou zastávku.</p>
+              <p>Výpočet z aktuální telemetrie: co je nutné doplnit do plna a co bezpečně vydrží až do další plánované návštěvy.</p>
             </div>
             <div class="action-row">
               <button class="btn secondary" type="button" id="autoLoadRefreshBtn">Obnovit data</button>
@@ -1073,7 +1073,7 @@
           <div class="panel-body">
             <div class="picking-workflow" id="autoLoadWorkflow">
               <div class="picking-step active"><strong>1 · Trasa</strong><span>Vybereme trasu ve chvíli, kdy jdeme vychystávat.</span></div>
-              <div class="picking-step"><strong>2 · Telemetrie</strong><span>Stav nyní + odhad prodeje do příjezdu na zastávku.</span></div>
+              <div class="picking-step"><strong>2 · Telemetrie</strong><span>Stav při příjezdu + odhad spotřeby do další návštěvy.</span></div>
               <div class="picking-step"><strong>3 · Vychystání</strong><span>Sklad připraví vypočtené množství pro danou trasu.</span></div>
               <div class="picking-step"><strong>4 · Převzetí</strong><span>Operátorka ráno potvrdí skutečně naložené množství.</span></div>
             </div>
@@ -1136,7 +1136,7 @@
                   <tr>
                     <th>Produkt</th>
                     <th>Auto teď</th>
-                    <th>Potřeba při příjezdu</th>
+                    <th>Doplnit na trase</th>
                     <th>Balení</th>
                     <th>Návrh</th>
                     <th>K vychystání</th>
@@ -5237,7 +5237,7 @@
         ['Vybraná trasa', route.title || `Trasa #${route.id}`],
         ['Zastávky', `${stops.length} · automaty ${machineStops.length}`],
         ['Přiřazení', route.vehicle_id && route.planned_employee_id ? 'auto i operátorka' : 'není kompletní'],
-        ['Zdroj potřeby', 'telemetrie + odhad dojezdu']
+        ['Zdroj potřeby', 'telemetrie + výdrž do další návštěvy']
       ].map(([label, value]) => `<div><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join('')
       autoLoadRouteReadiness.classList.toggle('ready', ready)
     }
@@ -5281,16 +5281,18 @@
       if (!machineIds.length) throw new Error('Trasa neobsahuje žádný automat. Vychystání by nemělo z čeho počítat potřebu.')
       const salesFrom = new Date()
       salesFrom.setDate(salesFrom.getDate() - 28)
-      const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }] = await Promise.all([
+      const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }, { data: serviceRules, error: serviceRulesError }] = await Promise.all([
         supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, target_units, pending_change_mode, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_new_units, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('machine_coffee_containers').select('machine_id, product_sku, product_name, capacity_quantity, current_quantity, unit, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString()),
-        supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true)
+        supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true),
+        supabase.from('machine_service_rules').select('machine_id, stock_critical_percent, max_visit_interval_days').in('machine_id', machineIds)
       ])
       if (slotsError && !/product_sku|capacity_units|current_units|schema cache/i.test(String(slotsError.message || ''))) throw slotsError
       if (containersError && !/machine_coffee_containers|schema cache/i.test(String(containersError.message || ''))) throw containersError
       if (salesError && !/telemetry_sales_events|schema cache/i.test(String(salesError.message || ''))) throw salesError
       if (machineRecipeError && !/machine_coffee_recipe_items|schema cache/i.test(String(machineRecipeError.message || ''))) throw machineRecipeError
+      if (serviceRulesError && !/machine_service_rules|schema cache/i.test(String(serviceRulesError.message || ''))) throw serviceRulesError
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
       const routeStart = new Date(`${route.planning_date}T${String(route.planned_departure_time || '07:00').slice(0, 5)}:00`)
@@ -5305,6 +5307,7 @@
       })
       const salesByMachineProduct = new Map()
       const coverageStartByMachine = new Map()
+      const serviceRulesByMachine = new Map((serviceRules || []).map((rule) => [String(rule.machine_id), rule]))
       const addConfirmedSale = (machineId, productId, eventAt, quantity) => {
         const at = new Date(eventAt || '')
         const confirmedQuantity = Number(quantity || 0)
@@ -5361,12 +5364,33 @@
         }
         return count
       }
-      const estimateConfirmedSalesUntilArrival = (machineId, productId, arrival) => {
+      const salesModelByMachineProduct = new Map()
+      const observedPeriodsByMachine = new Map()
+      const getObservedPeriods = (machineId, coverageStart, coverageEnd) => {
+        const key = String(machineId || '')
+        if (observedPeriodsByMachine.has(key)) return observedPeriodsByMachine.get(key)
+        const hours = new Map()
+        const weekdayHours = new Map()
+        for (let hour = 0; hour < 24; hour += 1) {
+          hours.set(hour, countObservedHours(coverageStart, coverageEnd, hour))
+          for (let weekday = 0; weekday < 7; weekday += 1) {
+            weekdayHours.set(`${weekday}::${hour}`, countObservedHours(coverageStart, coverageEnd, hour, weekday))
+          }
+        }
+        const periods = { hours, weekdayHours }
+        observedPeriodsByMachine.set(key, periods)
+        return periods
+      }
+      const getSalesModel = (machineId, productId) => {
         const now = new Date()
-        if (!(arrival instanceof Date) || Number.isNaN(arrival.getTime()) || arrival <= now) return { quantity: 0, sampleDays: 0 }
+        const key = `${machineId}::${productId}`
+        if (salesModelByMachineProduct.has(key)) return salesModelByMachineProduct.get(key)
         const coverageStart = coverageStartByMachine.get(String(machineId || ''))
-        const historyRows = salesByMachineProduct.get(`${machineId}::${productId}`) || []
-        if (!coverageStart || now.getTime() - coverageStart.getTime() < 24 * 3600000 || !historyRows.length) return { quantity: 0, sampleDays: 0 }
+        const historyRows = salesByMachineProduct.get(key) || []
+        if (!coverageStart || now.getTime() - coverageStart.getTime() < 24 * 3600000 || !historyRows.length) {
+          salesModelByMachineProduct.set(key, null)
+          return null
+        }
         const historyByHour = new Map()
         const historyByWeekdayHour = new Map()
         historyRows.forEach((row) => {
@@ -5375,32 +5399,53 @@
           historyByHour.set(hour, Number(((historyByHour.get(hour) || 0) + row.quantity).toFixed(3)))
           historyByWeekdayHour.set(weekdayHour, Number(((historyByWeekdayHour.get(weekdayHour) || 0) + row.quantity).toFixed(3)))
         })
+        const observedPeriods = getObservedPeriods(machineId, coverageStart, now)
+        const hourRates = new Map()
+        const weekdayHourRates = new Map()
+        for (let hour = 0; hour < 24; hour += 1) {
+          const hourOccurrences = Number(observedPeriods.hours.get(hour) || 0)
+          const allDaysRate = hourOccurrences > 0 ? Number(historyByHour.get(hour) || 0) / hourOccurrences : 0
+          hourRates.set(hour, allDaysRate)
+          for (let weekday = 0; weekday < 7; weekday += 1) {
+            const weekdayOccurrences = Number(observedPeriods.weekdayHours.get(`${weekday}::${hour}`) || 0)
+            const sameWeekdayQuantity = Number(historyByWeekdayHour.get(`${weekday}::${hour}`) || 0)
+            weekdayHourRates.set(`${weekday}::${hour}`, weekdayOccurrences > 0
+              ? (sameWeekdayQuantity + allDaysRate * 2) / (weekdayOccurrences + 2)
+              : allDaysRate)
+          }
+        }
+        const model = {
+          hourRates,
+          weekdayHourRates,
+          sampleDays: Math.max(1, Math.floor((now.getTime() - coverageStart.getTime()) / 86400000))
+        }
+        salesModelByMachineProduct.set(key, model)
+        return model
+      }
+      const estimateConfirmedSalesBetween = (machineId, productId, from, to) => {
+        if (!(from instanceof Date) || !(to instanceof Date) || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to <= from) return { quantity: 0, sampleDays: 0 }
+        const model = getSalesModel(machineId, productId)
+        if (!model) return { quantity: 0, sampleDays: 0 }
         let expected = 0
-        let cursor = new Date(now)
-        while (cursor < arrival) {
+        let cursor = new Date(from)
+        while (cursor < to) {
           const bucketEnd = new Date(cursor)
           bucketEnd.setMinutes(0, 0, 0)
           bucketEnd.setHours(bucketEnd.getHours() + 1)
-          const segmentEnd = bucketEnd < arrival ? bucketEnd : arrival
+          const segmentEnd = bucketEnd < to ? bucketEnd : to
           const segmentHours = Math.max(0, (segmentEnd.getTime() - cursor.getTime()) / 3600000)
           const hour = cursor.getHours()
           const weekday = cursor.getDay()
-          const hourOccurrences = countObservedHours(coverageStart, now, hour)
-          const allDaysRate = hourOccurrences > 0 ? Number(historyByHour.get(hour) || 0) / hourOccurrences : 0
-          const weekdayOccurrences = countObservedHours(coverageStart, now, hour, weekday)
-          const sameWeekdayQuantity = Number(historyByWeekdayHour.get(`${weekday}::${hour}`) || 0)
-          const hourlyRate = weekdayOccurrences > 0
-            ? (sameWeekdayQuantity + allDaysRate * 2) / (weekdayOccurrences + 2)
-            : allDaysRate
+          const hourlyRate = Number(model.weekdayHourRates.get(`${weekday}::${hour}`) ?? model.hourRates.get(hour) ?? 0)
           expected += hourlyRate * segmentHours
           cursor = segmentEnd
         }
         return {
           quantity: Math.max(0, Number(expected.toFixed(3))),
-          sampleDays: Math.max(1, Math.floor((now.getTime() - coverageStart.getTime()) / 86400000))
+          sampleDays: model.sampleDays
         }
       }
-      const forecastPoolsByMachineProduct = new Map()
+      const planogramPoolsByMachineProduct = new Map()
       ;[...(slots || []), ...(containers || [])].forEach((item) => {
         const pendingSku = String(item.pending_product_sku || item.planned_product_sku || '')
         const fullSwap = item.pending_change_mode === 'full_swap'
@@ -5424,34 +5469,54 @@
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
-        const missingNow = Math.max(0, Number((capacity - current).toFixed(3)))
-        const arrival = arrivalByMachine.get(String(item.machine_id)) || routeStart
-        const forecastPoolKey = `${item.machine_id}::${product.id}`
-        let forecastPool = forecastPoolsByMachineProduct.get(forecastPoolKey)
-        if (!forecastPool) {
-          const forecastResult = estimateConfirmedSalesUntilArrival(item.machine_id, product.id, arrival)
-          forecastPool = {
-            remaining: forecastResult.quantity,
-            sampleDays: forecastResult.sampleDays,
-            sampleCounted: false
-          }
-          forecastPoolsByMachineProduct.set(forecastPoolKey, forecastPool)
+        if (capacity <= 0) return
+        const poolKey = `${item.machine_id}::${product.id}`
+        const pool = planogramPoolsByMachineProduct.get(poolKey) || {
+          machineId: item.machine_id,
+          product,
+          capacity: 0,
+          current: 0,
+          fullSwap: false
         }
-        const forecastSales = Math.max(0, Math.min(current, Number(forecastPool.remaining || 0)))
-        forecastPool.remaining = Math.max(0, Number((Number(forecastPool.remaining || 0) - forecastSales).toFixed(3)))
-        const forecastSampleDays = forecastPool.sampleCounted ? 0 : forecastPool.sampleDays
-        forecastPool.sampleCounted = true
-        const needAtArrival = Math.min(capacity, Number((missingNow + forecastSales).toFixed(3)))
+        pool.capacity = Number((pool.capacity + capacity).toFixed(3))
+        pool.current = Number((pool.current + current).toFixed(3))
+        pool.fullSwap = pool.fullSwap || fullSwap
+        planogramPoolsByMachineProduct.set(poolKey, pool)
+      })
+      const now = new Date()
+      planogramPoolsByMachineProduct.forEach((pool) => {
+        const { machineId, product, capacity, current, fullSwap } = pool
+        const arrival = arrivalByMachine.get(String(machineId)) || routeStart
+        const arrivalForecast = estimateConfirmedSalesBetween(machineId, product.id, now, arrival)
+        const forecastSales = Math.max(0, Math.min(current, arrivalForecast.quantity))
         const projectedAtArrival = Math.max(0, Number((current - forecastSales).toFixed(3)))
+        const rule = serviceRulesByMachine.get(String(machineId)) || {}
+        const visitIntervalDays = Math.max(1, Number(rule.max_visit_interval_days || 10))
+        const criticalPercent = Math.min(100, Math.max(0, Number(rule.stock_critical_percent ?? 20)))
+        const nextVisit = new Date(arrival.getTime() + visitIntervalDays * 86400000)
+        const nextVisitForecast = estimateConfirmedSalesBetween(machineId, product.id, arrival, nextVisit)
+        const reliableForecast = nextVisitForecast.sampleDays >= 7
+        const coverageNeed = Number((nextVisitForecast.quantity * (1 + AUTO_LOAD_DEFAULT_RESERVE_RATIO)).toFixed(3))
+        const criticalQuantity = Number((capacity * criticalPercent / 100).toFixed(3))
+        const refillNow = fullSwap
+          || projectedAtArrival <= criticalQuantity + 0.0001
+          || (reliableForecast && projectedAtArrival + 0.0001 < coverageNeed)
+        const missingNow = Math.max(0, Number((capacity - current).toFixed(3)))
+        const needAtArrival = refillNow ? Math.max(0, Number((capacity - projectedAtArrival).toFixed(3))) : 0
         const stockoutRisk = capacity > 0 && projectedAtArrival <= 0.0001
-        if (needAtArrival <= 0) return
         const productKey = String(product.id)
-        autoLoadRouteNeeds.set(productKey, Number(((autoLoadRouteNeeds.get(productKey) || 0) + needAtArrival).toFixed(3)))
-        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, sampleDays: 0 }
-        detail.missingNow = Number((detail.missingNow + missingNow).toFixed(3))
+        if (needAtArrival > 0.0001) {
+          autoLoadRouteNeeds.set(productKey, Number(((autoLoadRouteNeeds.get(productKey) || 0) + needAtArrival).toFixed(3)))
+        }
+        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, skippedMachines: 0, maxVisitDays: 0, sampleDays: 0 }
+        if (refillNow) detail.missingNow = Number((detail.missingNow + missingNow).toFixed(3))
         detail.forecastSales = Number((detail.forecastSales + forecastSales).toFixed(3))
+        detail.nextVisitSales = Number((detail.nextVisitSales + nextVisitForecast.quantity).toFixed(3))
         detail.needAtArrival = Number((detail.needAtArrival + needAtArrival).toFixed(3))
-        detail.sampleDays += forecastSampleDays
+        detail.sampleDays += Math.max(arrivalForecast.sampleDays, nextVisitForecast.sampleDays)
+        detail.maxVisitDays = Math.max(detail.maxVisitDays, visitIntervalDays)
+        if (refillNow) detail.refillMachines += 1
+        else detail.skippedMachines += 1
         if (stockoutRisk) {
           detail.stockoutNeed = Number((detail.stockoutNeed + needAtArrival).toFixed(3))
           detail.stockoutMachines += 1
@@ -5552,12 +5617,16 @@
         const detail = autoLoadRouteForecasts.get(String(member.id)) || {}
         summary.missingNow = Number((summary.missingNow + Number(detail.missingNow || 0)).toFixed(3))
         summary.forecastSales = Number((summary.forecastSales + Number(detail.forecastSales || 0)).toFixed(3))
+        summary.nextVisitSales = Number((summary.nextVisitSales + Number(detail.nextVisitSales || 0)).toFixed(3))
         summary.needAtArrival = Number((summary.needAtArrival + Number(detail.needAtArrival || 0)).toFixed(3))
         summary.stockoutNeed = Number((summary.stockoutNeed + Number(detail.stockoutNeed || 0)).toFixed(3))
         summary.stockoutMachines += Number(detail.stockoutMachines || 0)
+        summary.refillMachines += Number(detail.refillMachines || 0)
+        summary.skippedMachines += Number(detail.skippedMachines || 0)
+        summary.maxVisitDays = Math.max(summary.maxVisitDays, Number(detail.maxVisitDays || 0))
         summary.sampleDays += Number(detail.sampleDays || 0)
         return summary
-      }, { missingNow: 0, forecastSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, sampleDays: 0 })
+      }, { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, skippedMachines: 0, maxVisitDays: 0, sampleDays: 0 })
     }
     function getPendingAutoLoadQuantity(vehicleId, targetDate, productId) {
       const requestIds = new Set(mobileStockRequests
@@ -5690,6 +5759,18 @@
         blockedQty: addRemainderPackage || remainder <= 0.0001 ? 0 : pack,
         blockedUsageRatio: addRemainderPackage || remainder <= 0.0001 ? 0 : remainderRatio
       }
+    }
+    function getAutoLoadOperationalStep(product) {
+      const unit = normalizeText(product?.base_unit || 'ks')
+      if (unit === 'ks') return 1
+      if (unit === 'kg' || unit === 'l') return 0.1
+      return 0.001
+    }
+    function normalizeAutoLoadSuggestedQuantity(product, value) {
+      const quantity = Math.max(0, Number(value || 0))
+      if (!Number.isFinite(quantity) || quantity <= 0) return 0
+      const step = getAutoLoadOperationalStep(product)
+      return Number((Math.ceil((quantity / step) - 0.000001) * step).toFixed(3))
     }
     async function upsertAutoLoadDeferredNeed(row, vehicleId, targetDate) {
       const existing = getAutoLoadDeferredNeed(vehicleId, row.product.id)
@@ -5854,7 +5935,7 @@
           const estimate = {
             expected: routeNeed,
             samples: Number(routeForecast.sampleDays || 0),
-            source: routeNeed > 0 ? 'telemetrie + prodej do příjezdu' : 'bez telemetrické potřeby'
+            source: routeNeed > 0 ? 'telemetrie + výdrž do další návštěvy' : 'bez potřeby doplnění'
           }
           const pendingBeforeTarget = { expected: 0, actual: 0, pending: 0, coveredDates: 0, estimatedDates: 0, skippedDates: 0 }
           const plannedVehicleQty = Number((currentVehicleQty + pendingLoadQty).toFixed(3))
@@ -5866,15 +5947,14 @@
           const sameTargetDeferredQty = 0
           const tripDemandQty = Number(estimate.expected.toFixed(3))
           const fixedSafetyQty = Math.max(0, Number(profile.safety_stock_quantity || 0))
-          const rawDynamicSafetyQty = Math.max(0, tripDemandQty * AUTO_LOAD_DEFAULT_RESERVE_RATIO)
-          const dynamicSafetyQty = normalizeText(product.base_unit || '') === 'ks'
-            ? Math.ceil(rawDynamicSafetyQty - 0.0001)
-            : Number(rawDynamicSafetyQty.toFixed(3))
+          // Potřeba trasy už vzniká po posouzení zásoby až do příští návštěvy.
+          // Další obecná rezerva by znovu nafoukla množství nad stav „doplnit do plna“.
+          const dynamicSafetyQty = 0
           const safetyQty = Math.max(fixedSafetyQty, dynamicSafetyQty)
           const stockoutBonusQty = 0
           const targetNeedQty = Number((tripDemandQty + safetyQty).toFixed(3))
           const calculatedRequiredFromNew = Math.max(0, Number((targetNeedQty - projectedVehicleBeforeTarget).toFixed(3)))
-          const requiredFromNew = Math.max(calculatedRequiredFromNew, sameTargetDeferredQty)
+          const requiredFromNew = normalizeAutoLoadSuggestedQuantity(product, Math.max(calculatedRequiredFromNew, sameTargetDeferredQty))
           const canCarryDeferredNeed = pendingBeforeTarget.pending > 0.0001 || projectedVehicleBeforeTarget <= 0.0001
           const minRatio = 0.75
           const expectedUseFromNew = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
@@ -5883,13 +5963,14 @@
           let routeCoverageOverride = false
           if (routeForecast.stockoutMachines > 0 && requiredFromNew > 0.0001 && Number(packagePlan.deferredAfterLoadQty || 0) > 0.0001) {
             stockoutOverride = true
+            const stockoutLoadQty = normalizeAutoLoadSuggestedQuantity(product, requiredFromNew)
             packagePlan = {
               ...packagePlan,
               packageCount: 0,
-              suggestedQty: requiredFromNew,
+              suggestedQty: stockoutLoadQty,
               approvedPackageCount: 0,
-              approvedQty: requiredFromNew,
-              usageRatio: packageQty > 0 ? Math.min(1, Number((requiredFromNew / packageQty).toFixed(3))) : 1,
+              approvedQty: stockoutLoadQty,
+              usageRatio: packageQty > 0 ? Math.min(1, Number((stockoutLoadQty / packageQty).toFixed(3))) : 1,
               deferredAfterLoadQty: 0,
               blockedPackageCount: 0,
               blockedQty: 0,
@@ -5897,7 +5978,7 @@
               looseStockoutLoad: true
             }
           }
-          const minimumRouteLoadQty = Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3)))
+          const minimumRouteLoadQty = normalizeAutoLoadSuggestedQuantity(product, Math.max(0, Number((tripDemandQty - projectedVehicleBeforeTarget).toFixed(3))))
           if (!stockoutOverride && Number(packagePlan.approvedQty || 0) + 0.0001 < minimumRouteLoadQty) {
             routeCoverageOverride = true
             packagePlan = {
@@ -5969,9 +6050,11 @@
             reasons.push(`rezerva ${formatQuantityValue(safetyQty, product.base_unit || 'ks')}`)
           }
           if (routeNeed > 0.0001) {
-            reasons.push(`chybí nyní ${formatQuantityValue(routeForecast.missingNow, product.base_unit || 'ks')}`)
+            reasons.push(`doplnit do plna u ${routeForecast.refillMachines} automatů`)
             if (routeForecast.forecastSales > 0.0001) reasons.push(`do příjezdu se může prodat ${formatForecastQuantityValue(routeForecast.forecastSales, product.base_unit || 'ks')}`)
+            if (routeForecast.nextVisitSales > 0.0001) reasons.push(`odhad do další návštěvy ${formatForecastQuantityValue(routeForecast.nextVisitSales, product.base_unit || 'ks')}`)
           }
+          if (routeForecast.skippedMachines > 0) reasons.push(`u ${routeForecast.skippedMachines} automatů nyní nedoplňovat — zásoba vyjde do další návštěvy`)
           if (stockoutOverride) {
             reasons.push(`hrozí nulový stav u ${routeForecast.stockoutMachines} automatů — naložit potřebné množství i rozbalené`)
           }
@@ -6242,10 +6325,10 @@
           <tr>
             <td data-label="Produkt"><strong>${escapeHtml(row.groupLabel || row.product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml([row.groupLabel ? row.product.name : '', row.product.sku ? `SKU ${row.product.sku}` : '', row.estimateSource, row.samples > 0 ? `${row.samples} strojodnů dat` : 'bez historie'].filter(Boolean).join(' · '))}</span></td>
             <td data-label="Auto teď"><strong>${escapeHtml(formatQuantityValue(row.currentVehicleQty, unit))}</strong><span class="subtext">${escapeHtml([row.pendingLoadQty > 0 ? `nachystáno ${formatQuantityValue(row.pendingLoadQty, unit)}` : '', row.pendingBeforeTarget?.pending > 0 ? `po čekajících jízdách cca ${formatQuantityValue(row.projectedVehicleBeforeTarget, unit)}` : 'bez čekajícího odhadu'].filter(Boolean).join(' · '))}</span></td>
-            <td data-label="Potřeba při příjezdu"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([`chybí nyní ${formatQuantityValue(row.routeForecast?.missingNow || 0, unit)}`, `prodej do příjezdu ${formatForecastQuantityValue(row.routeForecast?.forecastSales || 0, unit)}`, `donaložit ${formatQuantityValue(row.requiredFromNew, unit)}`].join(' · '))}</span></td>
+            <td data-label="Doplnit na trase"><strong>${escapeHtml(formatQuantityValue(row.expectedDemand, unit))}</strong><span class="subtext">${escapeHtml([`${row.routeForecast?.refillMachines || 0} automatů doplnit`, `${row.routeForecast?.skippedMachines || 0} nyní vynechat`, `naložit ${formatQuantityValue(row.requiredFromNew, unit)}`].join(' · '))}</span></td>
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
-            <td data-label="K vychystání"><label class="auto-load-approved-control"><input type="number" min="0" step="${normalizeText(unit) === 'ks' ? '1' : '0.001'}" value="${escapeHtml(Number(row.approvedQty || 0))}" data-auto-load-approved data-product-id="${escapeHtml(row.product.id)}" aria-label="Množství k vychystání ${escapeHtml(row.product.name || '')}" /><span>${escapeHtml(unit)}</span></label><span class="subtext">${row.manualOverride ? 'ručně upraveno' : 'lze změnit před odesláním'}</span></td>
+            <td data-label="K vychystání"><label class="auto-load-approved-control"><input type="number" min="0" step="${escapeHtml(getAutoLoadOperationalStep(row.product))}" value="${escapeHtml(Number(row.approvedQty || 0))}" data-auto-load-approved data-product-id="${escapeHtml(row.product.id)}" aria-label="Množství k vychystání ${escapeHtml(row.product.name || '')}" /><span>${escapeHtml(unit)}</span></label><span class="subtext">${row.manualOverride ? 'ručně upraveno' : 'lze změnit před odesláním'}</span></td>
             <td data-label="Využití nového"><strong>${escapeHtml(row.status === 'blocked' ? `${(row.packagePlanBlockedUsageRatio * 100).toFixed(0)} %` : row.suggestedQty > 0 ? `${(row.usageRatio * 100).toFixed(0)} %` : '-')}</strong><span class="subtext">${row.stockoutOverride ? 'výjimka: hrozí nula' : `minimum ${(row.minRatio * 100).toFixed(0)} %`}</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
@@ -6289,7 +6372,7 @@
       renderAutoLoadRows()
       renderAutoLoadWeeklyAuditPreview()
       autoLoadStatus.className = 'status-line success'
-      autoLoadStatus.textContent = `Vychystání spočítáno z aktuální telemetrie trasy #${routeContext.route.id} pro ${routeContext.machineCount} automatů, včetně očekávaného prodeje do příjezdu.`
+      autoLoadStatus.textContent = `Vychystání spočítáno z aktuální telemetrie trasy #${routeContext.route.id} pro ${routeContext.machineCount} automatů, včetně očekávané spotřeby do další návštěvy.`
     }
     async function createAutoLoadMobileRequest() {
       const route = getSelectedAutoLoadRoute()
@@ -7657,15 +7740,15 @@
       const updates = []
       let totals = { book: 0, counted: 0, diff: 0, value: 0 }
       for (const item of items) {
-        const currentBook = stockBalancesV13
-          .filter((balance) => String(balance.stock_location_id) === String(auditLocationId) && String(balance.product_id) === String(item.product_id))
-          .reduce((sum, balance) => Number((sum + Number(balance.quantity_on_hand || 0)).toFixed(3)), 0)
+        // Inventura je bodový snímek. Pozdější nakládky, vratky nebo přesuny
+        // nesmí při manažerském vyhodnocení změnit původní účetní stav.
+        const reportedBook = Number(item.reported_book_quantity ?? item.book_quantity ?? 0)
         const counted = Number(item.counted_quantity || 0)
-        const diff = Number((counted - currentBook).toFixed(3))
+        const diff = Number((counted - reportedBook).toFixed(3))
         const product = productsV13.find((row) => String(row.id) === String(item.product_id))
         const unitCost = Number(item.unit_cost ?? getStockUnitCost(product) ?? 0)
         const diffValue = Number((diff * unitCost).toFixed(2))
-        totals.book += currentBook
+        totals.book += reportedBook
         totals.counted += counted
         totals.diff += diff
         totals.value += diffValue
@@ -7673,7 +7756,7 @@
           reported_book_quantity: item.reported_book_quantity ?? item.book_quantity,
           reported_difference_quantity: item.reported_difference_quantity ?? item.difference_quantity,
           reported_difference_value: item.reported_difference_value ?? item.difference_value,
-          book_quantity: currentBook,
+          book_quantity: reportedBook,
           difference_quantity: diff,
           unit_cost: unitCost || null,
           difference_value: diffValue
@@ -7698,6 +7781,17 @@
     async function closeVehicleInventoryAudit(auditId) {
       const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
       if (!audit || audit.status !== 'evaluated') throw new Error('Nejdřív inventuru vyhodnoť.')
+      // Nulová inventura nesmí po čase přepsat aktuální zásobu starým fyzickým
+      // počtem. Není co dorovnávat, stačí bezpečně uzavřít její protokol.
+      if (Math.abs(Number(audit.difference_quantity_total || 0)) <= 0.0001) {
+        const { error } = await supabase.from('inventory_audits').update({
+          status: 'closed',
+          closed_at: new Date().toISOString()
+        }).eq('id', Number(auditId)).eq('status', 'evaluated')
+        if (error) throw error
+        await loadInventoryV13Overview()
+        return
+      }
       const { error } = await supabase.rpc('close_inventory_audit_atomic', { p_audit_id: Number(auditId) })
       if (error) throw error
       await loadInventoryV13Overview()
