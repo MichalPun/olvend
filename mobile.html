@@ -4032,6 +4032,9 @@
     .coffee-guide-main strong,.coffee-guide-main small { display:block; }
     .coffee-guide-main strong { color:#121923; font-size:12px; }
     .coffee-guide-main small { margin-top:2px; color:#778295; font-size:10px; }
+    .coffee-guide-main small.food-expiry-line { margin-top:5px; padding:5px 7px; border-radius:8px; color:#087746; background:#e8faf0; font-weight:850; line-height:1.35; }
+    .coffee-guide-main small.food-expiry-line.warning { color:#9a5b05; background:#fff4d8; }
+    .coffee-guide-main small.food-expiry-line.danger { color:#b42318; background:#fff0f0; }
     .coffee-guide-value { color:#17202b; font-size:11px; font-weight:900; white-space:nowrap; }
     .coffee-pick-edit { padding:4px 14px 14px 56px; border-top:1px solid #edf0f4; background:#f8fafb; }
     .coffee-pick-edit p { margin:7px 0 10px; color:#6f7a8c; font-size:10px; }
@@ -4147,7 +4150,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.20</p>
+        <p class="today-build-info">Mobilní režim 1.8 · build 2026.08.16.21</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -4774,7 +4777,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20260816-food-guided-v50" defer></script>
+  <script src="./pwa.js?v=20260816-food-guided-v51" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -9291,9 +9294,76 @@
         expiryVerified: Boolean(draft.expiryVerified),
         transferQuantity: Math.max(0, Math.round(Number(draft.transferQuantity || 0))),
         transferRecommendation: draft.transferRecommendation || null,
+        manualProductChoice: Boolean(draft.manualProductChoice),
         note: draft.note || '',
         accepted: Boolean(draft.accepted)
       }
+    }
+
+    function getFoodPickSuggestion(detail, stopId, slot) {
+      const desired = getFoodRequiredFillQuantity(slot, detail)
+      const draft = getFoodSlotDraft(stopId, slot)
+      const options = getFoodSlotProductOptions(slot)
+      const primary = options.find((product) => String(product.sku || '') === String(slot.product_sku || '')) || options[0] || null
+      const selected = options.find((product) => String(product.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId || '')) || primary
+      const selectedExplicitly = Boolean(draft.manualProductChoice || draft.pickedQuantity > 0)
+      const availability = (product) => product ? getFoodAvailableVehicleQuantity(detail, stopId, slot.id, product.id) : 0
+      let product = selectedExplicitly ? selected : primary
+      if (!selectedExplicitly && desired > 0 && availability(product) < desired) {
+        const alternative = options
+          .filter((candidate) => String(candidate.id) !== String(primary?.id || ''))
+          .map((candidate) => ({ product: candidate, available: availability(candidate) }))
+          .filter((candidate) => candidate.available > 0)
+          .sort((a,b) => Number(b.available >= desired) - Number(a.available >= desired) || b.available - a.available)[0]
+        if (alternative && alternative.available > availability(product)) product = alternative.product
+      }
+      const availableInVehicle = availability(product)
+      return {
+        product,
+        primary,
+        desired,
+        availableInVehicle,
+        quantity: Math.max(0, Math.min(desired, availableInVehicle)),
+        isSubstitute: Boolean(product?.id && primary?.id && String(product.id) !== String(primary.id))
+      }
+    }
+
+    function prefillFoodRecommendedPicks(stopId, detail) {
+      if (!detail || (detail.draft?.phase || 'picklist') !== 'picklist') return false
+      detail.draft = detail.draft || { phase: 'picklist', slots: {} }
+      detail.draft.slots = detail.draft.slots || {}
+      let changed = false
+      for (const slot of detail.slots || []) {
+        if (getFoodRequiredFillQuantity(slot, detail) <= 0) continue
+        const stored = detail.draft.slots[String(slot.id)]
+        const hasOperatorDecision = Boolean(stored && (
+          stored.picked === true
+          || (stored.skipped === true && (Number(slot.current_units || 0) > 0 || stored.skipReason))
+          || Number(stored.pickedQuantity || stored.preparedQuantity || 0) > 0
+          || stored.manualProductChoice
+        ))
+        if (hasOperatorDecision) continue
+        const suggestion = getFoodPickSuggestion(detail, stopId, slot)
+        if (!suggestion.product?.id || suggestion.quantity <= 0) continue
+        const fillItems = allocateFoodFillForSlot(detail, stopId, slot.id, suggestion.product.id, suggestion.quantity)
+        detail.draft.slots[String(slot.id)] = {
+          ...getFoodSlotDraft(stopId, slot),
+          selectedProductId: suggestion.product.id,
+          fillItems,
+          pickedQuantity: suggestion.quantity,
+          preparedQuantity: suggestion.quantity,
+          actualAdd: suggestion.quantity,
+          picked: true,
+          skipped: false,
+          skipReason: '',
+          manualProductChoice: false,
+          autoPrepared: true,
+          accepted: false
+        }
+        changed = true
+      }
+      if (changed) persistMobileSnapshot()
+      return changed
     }
 
     function getFoodGuidedCheckRows(detail) {
@@ -9353,11 +9423,13 @@
         return !draft.picked && !(draft.skipped && (Number(slot.current_units || 0) > 0 || draft.skipReason))
       })
       const total = (detail.slots || []).reduce((sum, slot) => sum + getFoodSlotDraft(stop.id, slot).pickedQuantity, 0)
+      const recommendedTotal = recommended.reduce((sum, slot) => sum + getFoodPickSuggestion(detail, stop.id, slot).quantity, 0)
       const renderPickRows = (rows, optionalMode = false) => rows.map((slot) => {
         const draft = getFoodSlotDraft(stop.id, slot)
         const desired = getFoodRequiredFillQuantity(slot, detail)
         const options = getFoodSlotProductOptions(slot)
-        const product = state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
+        const suggestion = optionalMode ? null : getFoodPickSuggestion(detail, stop.id, slot)
+        const product = suggestion?.product || state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
         const selectedProductId = product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
         const availableInVehicle = selectedProductId ? getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, selectedProductId) : 0
         const shortage = optionalMode ? 0 : Math.max(0, desired - availableInVehicle)
@@ -9373,20 +9445,43 @@
         const rowStatus = emptySkipNeedsReason
           ? 'Vyber důvod'
           : draft.picked && draft.pickedQuantity > 0
-            ? `Beru ${escapeHtml(draft.pickedQuantity)}`
+            ? `Vzít ${escapeHtml(draft.pickedQuantity)} ks`
             : optionalMode
-              ? 'Lze přibrat'
-              : shortage
-                ? `Chybí ${escapeHtml(shortage)}`
-                : `Auto ${escapeHtml(availableInVehicle)}`
+              ? 'Nemusíš brát'
+              : suggestion?.quantity > 0
+                ? suggestion.isSubstitute ? `Náhrada ${escapeHtml(suggestion.quantity)} ks` : `Vzít ${escapeHtml(suggestion.quantity)} ks`
+                : 'Není v autě'
+        const rowDetail = optionalMode
+          ? `V automatu ${slot.current_units || 0}/${slot.capacity_units || 0} ks · v autě ${availableInVehicle} ks`
+          : suggestion?.isSubstitute
+            ? `V automatu ${slot.current_units || 0}/${slot.capacity_units || 0} ks · vezmi náhradu ${suggestion.product?.name || ''} · v autě ${availableInVehicle} ks`
+            : `V automatu ${slot.current_units || 0}/${slot.capacity_units || 0} ks · vezmi ${suggestion?.quantity || 0} ks · v autě ${availableInVehicle} ks`
+        const prospectiveFills = draft.pickedQuantity > 0
+          ? draft.fillItems.filter((fill) => Number(fill.quantity || 0) > 0)
+          : suggestion?.product?.id && suggestion.quantity > 0
+            ? allocateFoodFillForSlot(detail, stop.id, slot.id, suggestion.product.id, suggestion.quantity)
+            : []
+        const vehicleExpiryParts = isFoodExpiryTracked(product)
+          ? prospectiveFills.map((fill) => fill.expiryDate
+            ? `${fill.quantity} ks · exp. ${formatFoodExpiryDateInput(fill.expiryDate)}`
+            : `${fill.quantity} ks · expirace v evidenci chybí`)
+          : []
+        const vehicleExpiryMissing = vehicleExpiryParts.some((part) => part.includes('chybí'))
+        const machineExpiryExpired = Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date)
+        const machineExpiryShort = Number(slot.current_units || 0) > 0
+          && normalizeFoodExpiryDate(slot.expiry_date)
+          && normalizeFoodExpiryDate(slot.expiry_date) <= new Date(Date.now() + 86400000).toLocaleDateString('sv-SE')
+        const machineExpiry = Number(slot.current_units || 0) > 0 && slot.expiry_date
+          ? `V automatu: ${slot.current_units} ks · exp. ${formatFoodExpiryDateInput(slot.expiry_date)}${machineExpiryExpired ? ' · PROŠLÉ, povinně ověřit' : machineExpiryShort ? ' · krátká, povinně ověřit' : ''}`
+          : ''
         return `
           <button class="coffee-guide-row ${draft.picked && draft.pickedQuantity > 0 ? 'done' : emptySkipNeedsReason ? 'selected' : ''}" type="button" data-food-action="guided-food-expand-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">
             <span class="coffee-guide-icon">${open ? '−' : draft.picked && draft.pickedQuantity > 0 ? '✓' : optionalMode ? '+' : emptySkipNeedsReason ? '!' : '+'}</span>
-            <span class="coffee-guide-main"><strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(product?.name || slot.product_name || 'Produkt')}</strong><small>${escapeHtml(`${slot.current_units || 0}/${slot.capacity_units || 0} ks`)} · ${optionalMode ? 'návrh 0 ks' : `návrh ${desired} ks`} · v autě ${escapeHtml(availableInVehicle)} ks</small></span>
+            <span class="coffee-guide-main"><strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(slot.product_name || product?.name || 'Produkt')}</strong><small>${escapeHtml(rowDetail)}</small>${vehicleExpiryParts.length ? `<small class="food-expiry-line ${vehicleExpiryMissing ? 'warning' : ''}">Z auta FEFO: ${escapeHtml(vehicleExpiryParts.join(' · '))}</small>` : ''}${machineExpiry ? `<small class="food-expiry-line ${machineExpiryExpired ? 'danger' : machineExpiryShort ? 'warning' : ''}">${escapeHtml(machineExpiry)}</small>` : ''}</span>
             <span class="coffee-guide-value">${rowStatus}</span>
           </button>
           ${open ? `<div class="coffee-pick-edit">
-            ${options.length > 1 ? `<label class="coffee-correction-row"><span><strong>Produkt nebo schválená záměna</strong><small>Dostupnost je přímo ze zásoby vozidla</small></span><select class="coffee-correction-input" style="width:190px" data-food-fill-field="productId" data-fill-index="0" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${options.map((option) => { const optionAvailable=getFoodAvailableVehicleQuantity(detail,stop.id,slot.id,option.id); return `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId) ? 'selected' : ''}>${escapeHtml(option.name)} · v autě ${escapeHtml(optionAvailable)} ks</option>` }).join('')}</select></label>` : ''}
+            ${options.length > 1 ? `<label class="coffee-correction-row"><span><strong>Produkt nebo schválená záměna</strong><small>Dostupnost je přímo ze zásoby vozidla</small></span><select class="coffee-correction-input" style="width:190px" data-food-fill-field="productId" data-fill-index="0" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${options.map((option) => { const optionAvailable=getFoodAvailableVehicleQuantity(detail,stop.id,slot.id,option.id); return `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(selectedProductId) ? 'selected' : ''}>${escapeHtml(option.name)} · v autě ${escapeHtml(optionAvailable)} ks</option>` }).join('')}</select></label>` : ''}
             ${shortage ? `<div class="coffee-rule-box"><strong>V autě chybí ${escapeHtml(shortage)} ks</strong>Pro tuto pozici lze připravit nejvýše ${escapeHtml(availableInVehicle)} ks vybraného produktu.${options.length > 1 ? ' Zkontroluj dostupnou schválenou záměnu výše.' : ''}</div>` : ''}
             ${optionalMode ? '<div class="coffee-info-strip"><span>+</span><span><b>Systém tuto položku nenavrhuje.</b> Pokud ji chceš dobrat z auta, nastav počet níže. U automatu ještě potvrdíš, kolik se skutečně vešlo.</span></div>' : ''}
             <div class="coffee-pick-edit-line"><span><strong>${optionalMode ? 'Chci přibrat z auta' : 'Beru k automatu'}</strong></span><span class="coffee-inline-stepper"><button type="button" data-food-action="step-pick" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">−</button><span>${escapeHtml(draft.pickedQuantity)}</span><button type="button" data-food-action="step-pick" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">+</button></span></div>
@@ -9398,11 +9493,11 @@
         ${transferNotes.map((transferNote) => `<div class="coffee-info-strip"><span>→</span><span><b>V autě je zboží přesunuté kvůli doprodání.</b> ${escapeHtml(transferNote.replace(/^\[PŘESUN:[^\]]+\]\s*/, ''))}</span></div>`).join('')}
         <div class="coffee-next-box"><small>Nejdřív pick list</small><h4>Vezmi z auta vše pro automat</h4><p>Každou položku můžeš rozkliknout, změnit množství nebo zvolit schválenou záměnu.</p></div>
         <section class="coffee-guide-panel">
-          <div class="coffee-guide-panel-head"><h4>Vzít k automatu</h4><span>${recommended.length} pozic</span></div>
+          <div class="coffee-guide-panel-head"><h4>Vzít k automatu</h4><span>${recommended.length} ${recommended.length === 1 ? 'produkt' : 'produkty'} · ${recommendedTotal} ks</span></div>
           ${recommended.length ? renderPickRows(recommended) : '<div class="coffee-rule-box" style="margin:0 14px 14px">Dnes není žádná povinně připravovaná položka.</div>'}
         </section>
         ${optional.length ? `<section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Není nutné brát</h4><span>${optional.length} ${optional.length === 1 ? 'pozice' : 'pozic'}</span></div>${renderPickRows(optional,true)}</section>` : ''}
-        <button class="coffee-guide-primary" type="button" data-food-action="${recommended.length && !total && unresolved.length ? 'pick-all' : 'open-machine'}" data-stop-id="${escapeHtml(stop.id)}" ${total > 0 && unresolved.length ? 'disabled' : ''}>${total > 0 && unresolved.length ? `Rozhodni pozice ${escapeHtml(unresolved.map((slot) => slot.slot_code).join(', '))}` : recommended.length && !total && unresolved.length ? 'Vzít vše navržené' : total ? `Mám vše · ${total} ks · otevřít automat` : 'Nic neberu · otevřít automat'}</button>
+        <button class="coffee-guide-primary" type="button" data-food-action="${recommended.length && !total && unresolved.length ? 'pick-all' : 'open-machine'}" data-stop-id="${escapeHtml(stop.id)}" ${total > 0 && unresolved.length ? 'disabled' : ''}>${total > 0 && unresolved.length ? `Rozhodni pozice ${escapeHtml(unresolved.map((slot) => slot.slot_code).join(', '))}` : recommended.length && !total && unresolved.length ? `Vzít vše navržené · ${escapeHtml(recommendedTotal)} ks` : total ? `Mám připraveno · ${total} ks · otevřít automat` : 'Nic neberu · otevřít automat'}</button>
         ${recommended.length && !total && unresolved.length ? '<div class="coffee-guide-hint">Po přípravě se tlačítko změní na otevření automatu</div>' : '<div class="coffee-guide-hint">Z vozidla se odečte až skutečně potvrzené doplnění</div>'}
         <button class="coffee-guide-more" type="button" data-route-action="skip-stop" data-stop-id="${escapeHtml(stop.id)}">Požádat o nejetí této zastávky</button>`
     }
@@ -11571,6 +11666,7 @@
               expiryVerified: Boolean(prepared.expiryVerified),
               transferQuantity: Math.max(0, Number(prepared.transferQuantity || 0)),
               transferRecommendation: prepared.transferRecommendation || null,
+              manualProductChoice: Boolean(prepared.manualProductChoice),
               note: prepared.note || '',
               accepted: false,
               ...liveDraft,
@@ -11654,6 +11750,9 @@
             phase: existingItems.length || visit?.work_phase === 'machine' ? 'machine' : (previousDraft.phase || 'picklist'),
             slots: draftSlots
           }
+        }
+        if (prefillFoodRecommendedPicks(stop.id, state.routeFoodDetails[key])) {
+          scheduleFoodWorkProgressSave(stop.id)
         }
       } catch (error) {
         state.routeFoodDetails[key] = {
@@ -12592,6 +12691,7 @@
           expiryVerified: Boolean(draft.expiryVerified),
           transferQuantity: Math.max(0, Number(draft.transferQuantity || 0)),
           transferRecommendation: draft.transferRecommendation || null,
+          manualProductChoice: Boolean(draft.manualProductChoice),
           note: draft.note || ''
         }]
       }))
@@ -13436,7 +13536,8 @@
         const draft = getFoodSlotDraft(stopId, slot)
         const desired = getFoodRequiredFillQuantity(slot, detail)
         const pickLimit = desired > 0 ? desired : Math.max(1, Number(slot.capacity_units || 0))
-        const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+        const suggestion = desired > 0 ? getFoodPickSuggestion(detail, stopId, slot) : null
+        const productId = suggestion?.product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
         const available = getFoodAvailableVehicleQuantity(detail, stopId, slot.id, productId)
         const nextQuantity = Math.max(0, Math.min(pickLimit, available, draft.pickedQuantity + Number(target.dataset.delta || 0)))
         const fillItems = allocateFoodFillForSlot(detail, stopId, slot.id, productId, nextQuantity)
@@ -13463,7 +13564,8 @@
           await refreshFoodVehicleBalances(detail)
           const desired = getFoodRequiredFillQuantity(slot, detail)
           const suggestedPick = desired > 0 ? desired : 1
-          const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+          const suggestion = desired > 0 ? getFoodPickSuggestion(detail, stopId, slot) : null
+          const productId = suggestion?.product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
           const available = getFoodAvailableVehicleQuantity(detail, stopId, slot.id, productId)
           const pickedQuantity = Math.min(suggestedPick, available)
           if (pickedQuantity <= 0) throw new Error(`Pro pozici ${slot.slot_code} už v evidenci auta není žádný volný kus.`)
@@ -13476,6 +13578,8 @@
             picked: true,
             skipped: false,
             skipReason: '',
+            selectedProductId: productId,
+            manualProductChoice: Boolean(draft.manualProductChoice),
             accepted: false
           })
           if (pickedQuantity < desired) {
@@ -13559,7 +13663,8 @@
           if (getFoodRequiredFillQuantity(item, detail) <= 0) continue
           const draft = getFoodSlotDraft(stopId, item)
           const desired = getFoodRequiredFillQuantity(item, detail)
-          const productId = draft.fillItems[0]?.productId || draft.selectedProductId
+          const suggestion = getFoodPickSuggestion(detail, stopId, item)
+          const productId = suggestion.product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
           const available = getFoodAvailableVehicleQuantity(detail, stopId, item.id, productId)
           const pickedQuantity = Math.min(desired, available)
           const fillItems = allocateFoodFillForSlot(detail, stopId, item.id, productId, pickedQuantity)
@@ -13571,6 +13676,8 @@
             picked: pickedQuantity > 0,
             skipped: pickedQuantity <= 0,
             skipReason: pickedQuantity <= 0 && Number(item.current_units || 0) > 0 ? 'not_needed' : '',
+            selectedProductId: productId,
+            manualProductChoice: false,
             accepted: false
           })
         }
@@ -16153,7 +16260,12 @@
                   ...(foodFillField.dataset.foodFillField === 'productId' ? { batchId: null, expiryDate: '' } : {})
                 }
               : item)
-            updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
+            updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, {
+              fillItems,
+              picked: false,
+              accepted: false,
+              ...(foodFillField.dataset.foodFillField === 'productId' ? { manualProductChoice: true, selectedProductId: fillValue } : {})
+            })
             if (foodFillField.dataset.foodFillField === 'productId') renderRouteMachineScreen()
             else refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
             scheduleFoodWorkProgressSave(foodFillField.dataset.stopId)
@@ -16288,7 +16400,12 @@
             const fillItems = draft.fillItems.map((item, index) => index === Number(foodFillField.dataset.fillIndex)
               ? { ...item, [foodFillField.dataset.foodFillField]: foodFillField.dataset.foodFillField === 'quantity' ? Math.max(0, Math.round(parseNumber(foodFillField.value) || 0)) : foodFillField.value }
               : item)
-            updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, { fillItems, picked: false, accepted: false })
+            updateFoodSlotDraft(foodFillField.dataset.stopId, foodFillField.dataset.slotId, {
+              fillItems,
+              picked: false,
+              accepted: false,
+              ...(foodFillField.dataset.foodFillField === 'productId' ? { manualProductChoice: true, selectedProductId: foodFillField.value } : {})
+            })
           }
           if (foodFillField.dataset.foodFillField === 'productId' || foodFillField.dataset.foodFillField === 'quantity') renderRouteMachineScreen()
           else if (slot) refreshFoodMachineTotals(foodFillField.dataset.stopId, slot)
