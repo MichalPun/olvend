@@ -4660,6 +4660,7 @@
     let serviceDashboardCache = null;
     let serviceDashboardCacheAt = 0;
     let telemetryRefreshTimer = null;
+    let serviceDashboardRefreshTimer = null;
     let telemetryRefreshInFlight = false;
     let telemetryRefreshQueued = false;
     let telemetryRefreshQueuedForce = false;
@@ -4670,6 +4671,7 @@
     const TELEMETRY_REFRESH_INTERVAL_MS = 60 * 1000;
     const TELEMETRY_BACKGROUND_MIN_AGE_MS = 20 * 1000;
     const SERVICE_DASHBOARD_CACHE_TTL_MS = 60 * 1000;
+    const SERVICE_DASHBOARD_REFRESH_INTERVAL_MS = 60 * 1000;
     const DASHBOARD_SNAPSHOT_VERSION = 1;
     const DASHBOARD_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
     let managerAttendanceDayMap = new Map();
@@ -8538,7 +8540,7 @@
     async function fetchDashboardRoutePlans(today) {
       const primary = await supabase
         .from("route_plans")
-        .select("id, title, planning_date, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, completed_at")
+        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, started_at, completed_at, return_to_start, route_payload, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, estimated_service_minutes)")
         .eq("planning_date", today)
         .order("created_at", { ascending: false });
 
@@ -8549,7 +8551,7 @@
 
       const fallback = await supabase
         .from("route_plans")
-        .select("id, title, planning_date, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes")
+        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, started_at, completed_at, route_payload, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, estimated_service_minutes)")
         .eq("planning_date", today)
         .order("created_at", { ascending: false });
 
@@ -8561,6 +8563,77 @@
       }
 
       return fallback;
+    }
+
+    function routeStopIsClosed(stop) {
+      return ["done", "completed", "skipped"].includes(String(stop?.status || "").toLowerCase())
+        || Boolean(stop?.completed_at || stop?.skipped_at);
+    }
+
+    function routeLegMinutes(plan, index, stopCount) {
+      const payload = plan?.route_payload || {};
+      const payloadStops = Array.isArray(payload.orderedStops) ? payload.orderedStops : [];
+      const googleStops = Array.isArray(payload?.google?.orderedStops) ? payload.google.orderedStops : [];
+      const source = payloadStops[index] || {};
+      const google = googleStops[index] || {};
+      const stored = source.driveMinutesFromPrevious ?? source.drive_minutes_from_previous;
+      const googleMinutes = Number(google.googleLegDurationSeconds || 0) / 60;
+      if (stored != null && Number.isFinite(Number(stored))) return Math.max(0, Number(stored));
+      if (googleMinutes > 0) return googleMinutes;
+      return Math.max(0, Number(plan?.estimated_drive_minutes || 0)) / Math.max(1, stopCount + (plan?.return_to_start ? 1 : 0));
+    }
+
+    function getLiveRouteSummary(plan) {
+      const stops = (Array.isArray(plan?.route_plan_stops) ? plan.route_plan_stops : [])
+        .slice()
+        .sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0));
+      const total = stops.length || Number(plan?.stop_count || 0);
+      const done = stops.filter(routeStopIsClosed).length;
+      const active = stops.find((stop) => stop.arrived_at && !routeStopIsClosed(stop));
+      const next = stops.find((stop) => !routeStopIsClosed(stop) && !stop.arrived_at);
+      const latest = [...stops].reverse().find(routeStopIsClosed);
+      const placeLabel = (stop) => [stop?.title, stop?.city_snapshot].filter(Boolean).join(" · ") || "zastávka";
+      const where = active
+        ? `Na místě: ${placeLabel(active)}`
+        : next && plan?.started_at
+          ? `Na cestě do: ${placeLabel(next)}`
+          : next
+            ? `Čeká na výjezd · první ${placeLabel(next)}`
+            : latest
+              ? `Všechny zastávky hotové · ${placeLabel(latest)}`
+              : "Bez zastávek";
+
+      const departure = String(plan?.planned_departure_time || plan?.route_payload?.planned_departure_time || "07:00").slice(0, 5);
+      const plannedStart = new Date(`${plan.planning_date}T${departure}:00`);
+      const preparation = Math.max(0, Number(plan?.route_payload?.preparation_minutes || plan?.route_payload?.route_time_budget?.preparation_minutes || 0));
+      const totalService = stops.reduce((sum, stop) => sum + Math.max(0, Number(stop.estimated_service_minutes || 0)), 0);
+      const plannedEnd = new Date(plannedStart.getTime() + (preparation + Number(plan?.estimated_drive_minutes || 0) + totalService) * 60000);
+      let cursor = plan?.started_at ? new Date(plan.started_at) : new Date(plannedStart.getTime() + preparation * 60000);
+      stops.forEach((stop, index) => {
+        const driveMinutes = routeLegMinutes(plan, index, stops.length);
+        const serviceMinutes = Math.max(0, Number(stop.estimated_service_minutes || 0));
+        if (stop.completed_at || stop.skipped_at) {
+          cursor = new Date(stop.completed_at || stop.skipped_at);
+        } else if (stop.arrived_at) {
+          cursor = new Date(Math.max(Date.now(), new Date(stop.arrived_at).getTime() + serviceMinutes * 60000));
+        } else {
+          cursor = new Date(cursor.getTime() + (driveMinutes + serviceMinutes) * 60000);
+        }
+      });
+      const returnMinutes = plan?.return_to_start ? routeLegMinutes(plan, stops.length, stops.length) : 0;
+      const forecastEnd = plan?.completed_at ? new Date(plan.completed_at) : new Date(cursor.getTime() + returnMinutes * 60000);
+      const diffMinutes = plan?.started_at && !Number.isNaN(plannedEnd.getTime()) && !Number.isNaN(forecastEnd.getTime())
+        ? Math.round((forecastEnd.getTime() - plannedEnd.getTime()) / 60000)
+        : null;
+      const tolerance = 10;
+      const timing = diffMinutes == null
+        ? { label: "Čeká", cls: "blue" }
+        : Math.abs(diffMinutes) <= tolerance
+          ? { label: "Podle plánu", cls: "green" }
+          : diffMinutes > 0
+            ? { label: `+${diffMinutes} min`, cls: "red" }
+            : { label: `${diffMinutes} min`, cls: "orange" };
+      return { total, done, where, forecastEnd, timing };
     }
 
     async function loadServiceDashboardData({ forceReload = false } = {}) {
@@ -8823,46 +8896,35 @@
         }))
       ];
 
+      const employeesWithRoute = new Set(routePlans.map((plan) => String(plan.planned_employee_id || "")));
       const todayItems = [
-        ...activeShifts.slice(0, 4).map((day) => {
-          const employee = employeeMap.get(String(day.employee_id));
-          const latestLocation = latestLocationByEmployee.get(String(day.employee_id));
-          return {
-            title: `${getEmployeeLabel(employee)} · ${formatClock(day.actual_start)}`,
-            subtitle: `${formatWorkLocation(day, warehouseMap)} · ${formatVehicleLabel(day, vehicleMap)}`,
-            badgeClass: "green",
-            badge: "Směna",
-            meta: [latestLocation?.event_at ? `Poloha ${formatRelativeMinutes(latestLocation.event_at)}` : "Bez polohy"],
-            href: "mobile.html",
-            ctaLabel: "Otevřít směny"
-          };
-        }),
-        ...routePlansOpen.slice(0, 3).map((plan) => {
+        ...routePlansOpen.map((plan) => {
           const employee = employeeMap.get(String(plan.planned_employee_id));
           const vehicleLabel = vehicleMap.get(String(plan.vehicle_id)) || "Bez vozidla";
+          const live = getLiveRouteSummary(plan);
           return {
-            title: plan.title || "Dnešní trasa",
-            subtitle: `${employee ? getEmployeeLabel(employee) : "Bez přiřazení"} · ${vehicleLabel}`,
-            badgeClass: String(plan.execution_status) === "in_progress" ? "orange" : "blue",
-            badge: String(plan.execution_status) === "in_progress" ? "V běhu" : "Trasa",
-            meta: [plan.stop_count ? `${plan.stop_count} zastávek` : "Bez zastávek"],
-            href: "routes.html",
-            ctaLabel: "Otevřít trasy"
+            title: employee ? getEmployeeLabel(employee) : "Bez přiřazení",
+            subtitle: `${live.where} · ${vehicleLabel}`,
+            badgeClass: live.timing.cls,
+            badge: live.timing.label,
+            meta: [`${live.done}/${live.total} hotovo`, plan.started_at ? `odhad konce ${formatClock(live.forecastEnd)}` : "trasa ještě nezačala"],
+            href: `routes-detail.html?id=${encodeURIComponent(plan.id)}`,
+            ctaLabel: "Detail"
           };
         }),
-        ...openServices
-          .filter((item) => item.status === "in_progress")
-          .slice(0, 2)
-          .map((item) => {
-            const location = locationMap.get(String(item.location_id));
+        ...activeShifts
+          .filter((day) => !employeesWithRoute.has(String(day.employee_id || "")))
+          .map((day) => {
+            const employee = employeeMap.get(String(day.employee_id));
+            const latestLocation = latestLocationByEmployee.get(String(day.employee_id));
             return {
-              title: `${item.title || "Servis"} · ${[location?.name, location?.city].filter(Boolean).join(" · ") || "Bez lokality"}`,
-              subtitle: "Rozpracovaný servis",
-              badgeClass: "orange",
-              badge: "Servis",
-              meta: [item.assigned_employee_id ? "Přiřazeno" : "Bez přiřazení"],
-              href: "technical-jobs.html?tab=service",
-              ctaLabel: "Otevřít zásahy"
+              title: getEmployeeLabel(employee),
+              subtitle: `${formatWorkLocation(day, warehouseMap)} · bez dnešní trasy`,
+              badgeClass: "blue",
+              badge: "Jen směna",
+              meta: [latestLocation?.event_at ? `Poloha ${formatRelativeMinutes(latestLocation.event_at)}` : "Bez polohy"],
+              href: "hr.html",
+              ctaLabel: "Směna"
             };
           })
       ];
@@ -8977,6 +9039,20 @@
       renderList("priorityList", liveData.priority || fallbackData.priority, { mobileLimit: 3, moreHref: "technical-jobs.html?tab=service" });
       renderList("completedList", liveData.completed || fallbackData.completed, { mobileLimit: 3, moreHref: "hr.html" });
       setText("operationsNote", liveData.operationsNote || fallbackData.todayNote);
+    }
+
+    function startServiceDashboardAutoRefresh() {
+      if (serviceDashboardRefreshTimer) window.clearInterval(serviceDashboardRefreshTimer);
+      serviceDashboardRefreshTimer = window.setInterval(async () => {
+        if (document.hidden || !dashboardInitialLoadComplete) return;
+        try {
+          const liveData = await loadServiceDashboardData({ forceReload: true });
+          renderServiceDashboardPayload(liveData, DASHBOARD_DATA.service);
+          writeDashboardSnapshot("service", liveData);
+        } catch (error) {
+          console.warn("Živý přehled tras se nepodařilo obnovit:", error);
+        }
+      }, SERVICE_DASHBOARD_REFRESH_INTERVAL_MS);
     }
 
     function getFinanceDashboardFallback(error = null) {
@@ -9441,6 +9517,7 @@
       setEditMode(false);
       updateBackButton();
       startTelemetryAutoRefresh();
+      startServiceDashboardAutoRefresh();
       window.addEventListener("resize", refreshResponsiveState);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden && dashboardInitialLoadComplete) renderTelemetrySalesDashboard({ reason: "visibility" });
