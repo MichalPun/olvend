@@ -249,7 +249,10 @@ Deno.serve(async (req) => {
     });
 
     let businessPriorityApplied = false;
-    if (!preserveOrder && orderedStops.some((stop) => businessPriorityRank(stop) < 2 || String(stop.serviceWindow || "").trim())) {
+    // Priority decides which stops belong in a route. It must not globally sort an
+    // already optimized route and create cross-region zigzags. Keep the legacy
+    // behavior available only for explicit callers that really need it.
+    if (!preserveOrder && payload.applyBusinessPriority === true && orderedStops.some((stop) => businessPriorityRank(stop) < 2 || String(stop.serviceWindow || "").trim())) {
       let prioritizedStops = orderedStops
         .map((stop, index) => ({ stop, index }))
         .sort((a, b) => businessPriorityRank(a.stop) - businessPriorityRank(b.stop) || a.index - b.index)
