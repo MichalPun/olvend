@@ -9436,7 +9436,8 @@
         rawFillItems = allocateFoodFillFromVehicleBatches(detail, changeProductId, desired)
       }
       const rawPickedQuantity = rawFillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
-      const inferredBasePreparedQuantity = Math.max(0, Number(draft.basePreparedQuantity ?? (desired > 0 ? Math.min(desired, rawPickedQuantity) : rawPickedQuantity)))
+      const preparedQuantity = Math.max(rawPickedQuantity, Number(draft.preparedQuantity ?? draft.pickedQuantity ?? rawPickedQuantity))
+      const inferredBasePreparedQuantity = Math.max(0, Number(draft.basePreparedQuantity ?? (desired > 0 ? Math.min(desired, preparedQuantity) : preparedQuantity)))
       const hasExplicitExtraVehicleQuantity = draft.extraVehicleQuantity != null
       if (!hasExplicitExtraVehicleQuantity && desired > 0 && rawPickedQuantity > inferredBasePreparedQuantity) {
         let remainingBaseQuantity = inferredBasePreparedQuantity
@@ -9448,7 +9449,8 @@
         })
       }
       const fillItems = hydrateFoodFillBatches(detail, rawFillItems)
-      const pickedQuantity = fillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
+      const actualFillQuantity = fillItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
+      const pickedQuantity = Math.max(preparedQuantity, actualFillQuantity)
       const basePreparedQuantity = Math.min(pickedQuantity, inferredBasePreparedQuantity)
       const extraVehicleQuantity = hasExplicitExtraVehicleQuantity
         ? Math.max(0, Math.min(pickedQuantity - basePreparedQuantity, Number(draft.extraVehicleQuantity || 0)))
@@ -9465,7 +9467,7 @@
         skipReason: draft.skipReason || (!hasDraftDecision && current > 0 ? 'not_needed' : ''),
         notInsertedReason: draft.notInsertedReason || '',
         actualBefore: Math.max(0, Number(draft.actualBefore ?? current)),
-        actualAdd: Math.max(0, Number(draft.actualAdd ?? (hasDraftDecision ? Math.min(desired, Math.max(0, Number(slot?.capacity_units || 0) - current)) : 0))),
+        actualAdd: Math.max(0, Number(draft.actualAdd ?? actualFillQuantity)),
         wasteItems: Array.isArray(draft.wasteItems) ? draft.wasteItems : [],
         expiryDate: draft.expiryDate || '',
         existingExpiryDate: draft.existingExpiryDate ?? slot?.expiry_date ?? '',
@@ -9815,9 +9817,19 @@
       const product = state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
       const capacity = Math.max(0, Number(slot.capacity_units || 0))
       const wasteTotal = draft.wasteItems.reduce((sum,item) => sum + Math.max(0,Number(item.quantity || 0)),0)
+      const planogramChange = getFoodPlanogramChange(slot)
+      const retainedReplacementUnits = planogramChange?.fullSwap
+        ? Math.max(0, Math.min(draft.actualBefore, Number(slot.changeover_new_units || 0)))
+        : 0
       const transferQuantity = Math.max(0, Math.min(draft.actualBefore - wasteTotal, Number(draft.transferQuantity || 0)))
       const actualAdd = draft.fillItems.reduce((sum,item) => sum + Math.max(0,Number(item.quantity || 0)),0)
-      const finalQty = Math.max(0, Math.min(capacity, draft.actualBefore - wasteTotal - transferQuantity + actualAdd))
+      const finalQty = Math.max(0, (planogramChange?.fullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal - transferQuantity) + actualAdd)
+      const maxActualAdd = Math.max(0, Math.min(draft.preparedQuantity, planogramChange?.fullSwap
+        ? capacity - retainedReplacementUnits
+        : capacity - draft.actualBefore + wasteTotal + transferQuantity))
+      const invalidActualAdd = actualAdd > maxActualAdd
+      const returnedPreparedQuantity = Math.max(0, Number(draft.preparedQuantity || 0) - actualAdd)
+      const missingNotInsertedReason = returnedPreparedQuantity > 0 && !draft.notInsertedReason
       const systemCurrent = Math.max(0, Number(slot.current_units || 0))
       const stockDifference = Math.round(Number(draft.actualBefore || 0) - systemCurrent)
       const missingQuantity = Math.max(0, -stockDifference)
@@ -9834,7 +9846,9 @@
           <div class="coffee-focus-top"><div><h4>${escapeHtml(product?.name || slot.product_name || 'Produkt')}</h4><p>Evidence ${escapeHtml(slot.current_units || 0)} / ${escapeHtml(capacity)} ks · z pick-listu ${escapeHtml(draft.basePreparedQuantity)} ks${extraVehicleQuantity ? ` · navíc z auta ${escapeHtml(extraVehicleQuantity)} ks` : ''}</p></div><span class="coffee-focus-number">${escapeHtml(slot.slot_code)}</span></div>
           ${renderFoodPositionGuide(stop, detail, slot)}
           ${recordedExpired ? `<div class="food-expired-warning"><strong>Evidence hlásí prošlou expiraci</strong><span>Odpis všech evidovaných kusů je předvyplněný. Fyzicky ověř počet a datum; pokud evidence nesedí, návrh uprav.</span></div>` : ''}
-          <div class="coffee-correction"><h5>Skutečný stav před doplněním</h5><p>Výchozí hodnota je z evidence. Každou odchylku uložím k návštěvě i do pohybů zásoby.</p><div class="coffee-correction-row"><span><strong>Kolik kusů je uvnitř?</strong><small>evidence ${escapeHtml(systemCurrent)} ks · kapacita ${escapeHtml(capacity)} ks</small></span><span class="food-actual-stepper"><button type="button" data-food-action="adjust-actual-before" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Ubrat jeden kus">−</button><input class="coffee-correction-input" type="number" inputmode="numeric" min="0" max="${escapeHtml(capacity)}" step="1" value="${escapeHtml(draft.actualBefore)}" data-food-field="actual-before" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Skutečný počet kusů uvnitř"><button type="button" data-food-action="adjust-actual-before" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Přidat jeden kus">+</button></span></div>${isFoodExpiryTracked(product) ? `<div class="coffee-correction-row"><span><strong>Nejbližší expirace uvnitř</strong><small>uprav jen když evidence nesedí</small></span><input class="coffee-correction-input" type="text" inputmode="numeric" maxlength="10" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(draft.existingExpiryDate || ''))}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"></div>` : ''}</div>
+          <div class="coffee-correction"><h5>Skutečné doplnění</h5><p>Stav začíná podle evidence a vložené množství podle potvrzeného picklistu. Uprav jen podle fyzické skutečnosti.</p><div class="coffee-correction-row"><span><strong>Stav před doplněním</strong><small>evidence ${escapeHtml(systemCurrent)} ks · kapacita ${escapeHtml(capacity)} ks</small></span><span class="food-actual-stepper"><button type="button" data-food-action="adjust-actual-before" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Ubrat jeden kus ze stavu před doplněním">−</button><input class="coffee-correction-input" type="number" inputmode="numeric" min="0" max="${escapeHtml(capacity)}" step="1" value="${escapeHtml(draft.actualBefore)}" data-food-field="actual-before" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Skutečný stav před doplněním"><button type="button" data-food-action="adjust-actual-before" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Přidat jeden kus ke stavu před doplněním">+</button></span></div><div class="coffee-correction-row"><span><strong>Skutečně vloženo</strong><small>výchozí hodnota z picklistu ${escapeHtml(draft.preparedQuantity)} ks</small></span><span class="food-actual-stepper"><button type="button" data-food-action="adjust-actual-add" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Ubrat jeden skutečně vložený kus">−</button><input class="coffee-correction-input" type="number" inputmode="numeric" min="0" max="${escapeHtml(draft.preparedQuantity)}" step="1" value="${escapeHtml(actualAdd)}" data-food-field="actual-add" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Skutečně vložené množství"><button type="button" data-food-action="adjust-actual-add" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" aria-label="Přidat jeden skutečně vložený kus">+</button></span></div>${isFoodExpiryTracked(product) ? `<div class="coffee-correction-row"><span><strong>Nejbližší expirace uvnitř</strong><small>uprav jen když evidence nesedí</small></span><input class="coffee-correction-input" type="text" inputmode="numeric" maxlength="10" placeholder="DD.MM.RRRR" value="${escapeHtml(formatFoodExpiryDateInput(draft.existingExpiryDate || ''))}" data-food-field="existing-expiry" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"></div>` : ''}</div>
+          ${invalidActualAdd ? `<div class="food-expired-warning"><strong>Množství se do pozice nevejde</strong><span>Výsledný stav by byl ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Uprav stav před doplněním nebo skutečně vložené množství.</span></div>` : ''}
+          ${returnedPreparedQuantity > 0 ? `<div class="attention-box"><strong>${escapeHtml(returnedPreparedQuantity)} ks zůstane evidovaných ve vozidle</strong><span>Z vozidla se odečte jen skutečně vložené množství.</span><label>Proč připravené zboží nevkládáš?<select data-food-field="not-inserted-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber důvod</option><option value="not_needed" ${draft.notInsertedReason === 'not_needed' ? 'selected' : ''}>Po kontrole se nevejde / není potřeba</option><option value="cooling_failure" ${draft.notInsertedReason === 'cooling_failure' ? 'selected' : ''}>Automat nechladí</option><option value="product_unavailable" ${draft.notInsertedReason === 'product_unavailable' ? 'selected' : ''}>Zboží není k dispozici</option><option value="other" ${draft.notInsertedReason === 'other' ? 'selected' : ''}>Jiný důvod</option></select></label></div>` : ''}
           <div class="food-stock-mismatch" data-food-stock-mismatch ${stockDifference ? '' : 'hidden'}><strong data-food-stock-mismatch-title>${stockDifference < 0 ? `Evidence nesedí: uvnitř chybí ${escapeHtml(Math.abs(stockDifference))} ks` : `Evidence nesedí: uvnitř je navíc ${escapeHtml(stockDifference)} ks`}</strong><span data-food-stock-mismatch-copy>Změna skutečného stavu sama nezvyšuje doplnění. Při potvrzení se pouze uloží evidence ${escapeHtml(systemCurrent)} ks → skutečnost ${escapeHtml(draft.actualBefore)} ks, operátorka, čas a inventurní pohyb.</span></div>
           <div class="coffee-instruction"><strong>${actualAdd > 0 ? `Vlož nyní ${escapeHtml(actualAdd)} ks` : 'Bez plánovaného doplnění'}</strong><span>${batchLabels.length ? `${escapeHtml(batchLabels.join(' · '))} · po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks` : `Po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Případné další kusy systém odebere FEFO ze zásoby auta.`}</span></div>
           ${missingQuantity || extraVehicleQuantity ? `<div class="food-extra-decision ${extraVehicleQuantity ? 'confirmed' : ''}"><strong>${extraVehicleQuantity ? `✓ Navíc z auta přidáno ${escapeHtml(extraVehicleQuantity)} ks` : 'Doplnit pozici do plna?'}</strong><span>${extraVehicleQuantity ? `Celkem vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.` : `Bez této volby vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.`}</span><button type="button" data-food-action="machine-take-from-vehicle" data-food-extra-stock data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${extraVehicleQuantity ? `Zrušit dodatečných ${escapeHtml(extraVehicleQuantity)} ks` : `+ Přidat ${escapeHtml(pendingExtraQuantity)} ks z auta`}</button></div>` : ''}
@@ -9845,7 +9859,7 @@
           <details class="food-machine-optional" ${draft.assortmentMismatch ? 'open' : ''}><summary>Nesedí produkt v pozici?</summary><div class="food-machine-optional-body"><label>Skutečnost<select data-food-field="assortment-mismatch" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Produkt sedí s plánem</option><option value="yes" ${draft.assortmentMismatch ? 'selected' : ''}>Je tam jiný prodejný produkt</option></select></label>${draft.assortmentMismatch ? `<label>Co je uvnitř?<select data-food-field="existing-product" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber skutečný produkt</option>${getFoodSlotProductOptions(slot).map((option) => `<option value="${escapeHtml(option.id)}" ${String(option.id) === String(draft.existingProductId || '') ? 'selected' : ''}>${escapeHtml(option.name)}</option>`).join('')}</select></label><div class="attention-box"><strong>Zůstane jako řízený doprodej</strong><span>Plánovaný produkt se aktivuje po doprodání původních kusů.</span></div>` : ''}</div></details>
           <div class="food-machine-stats"><div class="food-machine-stat"><span>Před</span><strong>${escapeHtml(draft.actualBefore)} ks</strong></div><div class="food-machine-stat"><span>${transferQuantity ? 'Přesun / doplnění' : 'Doplním'}</span><strong>${transferQuantity ? `−${escapeHtml(transferQuantity)} / +${escapeHtml(actualAdd)}` : `${escapeHtml(actualAdd)} ks`}</strong></div><div class="food-machine-stat"><span>Po</span><strong>${escapeHtml(finalQty)} ks</strong></div></div>
         </section>
-        <button class="coffee-guide-primary" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Potvrdit doplnění pozice ${escapeHtml(slot.slot_code)}</button>
+        <button class="coffee-guide-primary" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${invalidActualAdd || missingNotInsertedReason ? 'disabled' : ''}>${invalidActualAdd ? 'Nejdřív oprav množství' : missingNotInsertedReason ? 'Vyber důvod nevyužitých kusů' : `Potvrdit doplnění pozice ${escapeHtml(slot.slot_code)}`}</button>
         <div class="coffee-guide-hint">Potom se automaticky otevře další pozice</div>
         <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Všechny pozice</h4><span>Otevři a případně uprav</span></div>${(detail.slots || []).map((item) => { const itemDraft=getFoodSlotDraft(stop.id,item); const work=workSlots.some((workSlot)=>String(workSlot.id)===String(item.id)); return `<button class="coffee-guide-row ${itemDraft.accepted ? 'done' : String(item.id) === String(slot.id) ? 'selected' : ''}" type="button" data-food-action="guided-food-open-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(item.id)}"><span class="coffee-guide-icon">${itemDraft.accepted ? '✓' : escapeHtml(item.slot_code)}</span><span class="coffee-guide-main"><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><small>${escapeHtml(`${item.current_units || 0}/${item.capacity_units || 0} ks`)}</small></span><span class="coffee-guide-value">${itemDraft.accepted ? 'Hotovo' : work ? 'Upravit' : 'Otevřít'}</span></button>` }).join('')}</section>`
     }
@@ -11976,7 +11990,7 @@
               picked: Boolean(prepared.picked),
               skipped: Boolean(prepared.skipped),
               skipReason: prepared.skipReason || '',
-              actualAdd: Number(prepared.preparedQuantity || 0),
+              actualAdd: Number(prepared.actualAdd ?? prepared.preparedQuantity ?? 0),
               wasteItems: Array.isArray(prepared.wasteItems) ? prepared.wasteItems : [],
               existingExpiryDate: prepared.existingExpiryDate || '',
               assortmentMismatch: Boolean(prepared.assortmentMismatch),
@@ -12990,6 +13004,37 @@
       persistMobileSnapshot()
     }
 
+    function setFoodActualAddQuantity(stopId, slot, rawQuantity) {
+      const detail = getFoodDetail(stopId)
+      if (!detail || !slot) return
+      const draft = getFoodSlotDraft(stopId, slot)
+      const preparedQuantity = Math.max(0, Math.round(Number(draft.preparedQuantity || draft.pickedQuantity || 0)))
+      const targetQuantity = Math.max(0, Math.min(preparedQuantity, Math.round(Number(rawQuantity) || 0)))
+      const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
+      const planogramChange = getFoodPlanogramChange(slot)
+      const retainedReplacementUnits = planogramChange?.fullSwap
+        ? Math.max(0, Math.min(Number(draft.actualBefore || 0), Number(slot.changeover_new_units || 0)))
+        : 0
+      const capacityLimit = Math.max(0, planogramChange?.fullSwap
+        ? Number(slot.capacity_units || 0) - retainedReplacementUnits
+        : Number(slot.capacity_units || 0) - Number(draft.actualBefore || 0) + wasteTotal + Math.max(0, Number(draft.transferQuantity || 0)))
+      const productId = draft.fillItems.find((fill) => fill.productId)?.productId || draft.selectedProductId
+      const fillItems = targetQuantity > 0 && productId
+        ? allocateFoodFillForSlot(detail, stopId, slot.id, productId, targetQuantity)
+        : [{ productId: productId || null, quantity: 0, batchId: null, expiryDate: '' }]
+      updateFoodSlotDraft(stopId, slot.id, {
+        fillItems,
+        actualAdd: targetQuantity,
+        preparedQuantity,
+        pickedQuantity: preparedQuantity,
+        pickConfirmed: draft.pickConfirmed,
+        notInsertedReason: targetQuantity < preparedQuantity
+          ? (draft.notInsertedReason || (targetQuantity === capacityLimit ? 'not_needed' : ''))
+          : '',
+        accepted: false
+      })
+    }
+
     function serializeFoodPreparation(stopId, detail) {
       return Object.fromEntries((detail?.slots || []).map((slot) => {
         const draft = getFoodSlotDraft(stopId, slot)
@@ -13009,6 +13054,7 @@
           skipReason: draft.skipReason || '',
           notInsertedReason: draft.notInsertedReason || '',
           actualBefore: Math.max(0, Number(draft.actualBefore || 0)),
+          actualAdd: draft.skipped ? 0 : Math.max(0, Number(draft.fillItems.reduce((sum, fill) => sum + Number(fill.quantity || 0), 0))),
           wasteItems: draft.wasteItems.map((item) => ({
             quantity: Math.max(0, Number(item.quantity || 0)),
             reason: item.reason || '',
@@ -13907,6 +13953,16 @@
         input.value = String(nextQuantity)
         input.dispatchEvent(new Event('input', { bubbles: true }))
         renderRouteMachineScreen()
+        return
+      }
+      if (action === 'adjust-actual-add' && slot) {
+        const input = target.closest('[data-food-machine-card]')?.querySelector('[data-food-field="actual-add"]')
+        if (!input) return
+        const draft = getFoodSlotDraft(stopId, slot)
+        const currentQuantity = draft.fillItems.reduce((sum, fill) => sum + Math.max(0, Number(fill.quantity || 0)), 0)
+        setFoodActualAddQuantity(stopId, slot, currentQuantity + Number(target.dataset.delta || 0))
+        renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
         return
       }
       if (action === 'machine-take-from-vehicle' && slot) {
@@ -16640,7 +16696,7 @@
         const foodButton = event.target.closest('[data-food-action]')
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
-          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before']
+          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before', 'adjust-actual-add']
           if (foodButton.dataset.foodAction !== 'adjust-actual-before') {
             rememberFoodMachineRenderAnchor(foodButton, {
               open: foodButton.dataset.foodAction === 'confirm-slot' ? false : undefined
@@ -16794,6 +16850,15 @@
                 : key === 'existingExpiryDate'
                   ? formatFoodExpiryTyping(foodField.value)
                   : foodField.value
+            if (key === 'actualAdd') {
+              const slot = getFoodSlot(foodField.dataset.stopId, foodField.dataset.slotId)
+              if (slot) {
+                setFoodActualAddQuantity(foodField.dataset.stopId, slot, fieldValue)
+                renderRouteMachineScreen()
+                scheduleFoodWorkProgressSave(foodField.dataset.stopId)
+              }
+              return
+            }
             if (key === 'existingExpiryDate') foodField.value = fieldValue
             const slot = getFoodSlot(foodField.dataset.stopId, foodField.dataset.slotId)
             const draft = slot ? getFoodSlotDraft(foodField.dataset.stopId, slot) : null
@@ -16983,6 +17048,8 @@
               accepted: false
             })
             scheduleFoodWorkProgressSave(foodField.dataset.stopId)
+            renderRouteMachineScreen()
+          } else if (['actual-before', 'actual-add'].includes(foodField.dataset.foodField)) {
             renderRouteMachineScreen()
           }
           return
