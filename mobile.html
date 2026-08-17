@@ -8804,7 +8804,13 @@
     function renderCoffeeGuidedCash(stop, detail) {
       const required = Boolean(detail.cash?.collection_required)
       const bag = detail.cash?.short_bag_code || detail.guidance?.suggested_bag_code || '----'
-      if (!required) return `<div class="coffee-next-box"><small>Hotovost</small><h4>Dnes nevybírej hotovost</h4><p>Pokračuj rovnou na kontrolu automatu.</p></div><button class="coffee-guide-primary" type="button" data-coffee-action="guided-auto-cash" data-stop-id="${escapeHtml(stop.id)}">Pokračovat na kontrolu</button><button class="coffee-guide-more extra" type="button" data-coffee-action="guided-open-extra-container" data-stop-id="${escapeHtml(stop.id)}">+ Ještě potřebuji doplnit jiný zásobník</button>`
+      if (!required) {
+        const manualCashCopy = detail.manualCounterMode
+          ? '<h4>Potvrď hotovost ručně</h4><p>Automat nemá telemetrii. Pokud jsi hotovost nevybrala, potvrď, že zůstala v automatu.</p>'
+          : '<h4>Dnes nevybírej hotovost</h4><p>Pokračuj rovnou na kontrolu automatu.</p>'
+        const manualCashButton = detail.manualCounterMode ? 'Hotovost zůstala v automatu' : 'Pokračovat na kontrolu'
+        return `<div class="coffee-next-box"><small>Hotovost</small>${manualCashCopy}</div><button class="coffee-guide-primary" type="button" data-coffee-action="guided-auto-cash" data-stop-id="${escapeHtml(stop.id)}">${manualCashButton}</button><button class="coffee-guide-more extra" type="button" data-coffee-action="guided-open-extra-container" data-stop-id="${escapeHtml(stop.id)}">+ Ještě potřebuji doplnit jiný zásobník</button>`
+      }
       return `
         <div class="coffee-next-box"><small>Povinný krok</small><h4>Vyber hotovost</h4><p>Aplikace vyhodnotila povinný výběr. Částku není potřeba kontrolovat ani zadávat.</p></div>
         <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Hotovost v automatu</h4><span>Povinný výběr</span></div><div class="coffee-info-strip" style="margin:0 14px 13px"><span>!</span><span>Vyber veškerou hotovost a vlož ji do sáčku.</span></div><div class="coffee-auto-id"><span>ID</span><div><small>Napiš na sáček pouze</small><strong>${escapeHtml(bag)}</strong><em>Úplný identifikátor si aplikace uloží na pozadí.</em></div></div></section>
@@ -11699,6 +11705,25 @@
         const manualCounterMode = machine.sales_tracking_mode === 'manual_counters'
           || (telemetryLinkLookupAvailable && !hasTelemetry)
           || ['41', '44'].includes(String(machine.evidence_number || ''))
+        if (manualCounterMode && !cashResult.data) {
+          const manualCashResult = await supabase
+            .from('route_machine_cash_reports')
+            .upsert([{
+              visit_id: visitId,
+              machine_id: machine.id,
+              expected_cash_czk: null,
+              expected_card_czk: null,
+              expected_total_czk: null,
+              collection_required: false,
+              collection_threshold_czk: 200,
+              retained_for_next_visit: false,
+              note: 'Automat bez telemetrie: operátor musí potvrdit, že hotovost zůstala v automatu.'
+            }], { onConflict: 'visit_id' })
+            .select('*')
+            .single()
+          if (manualCashResult.error) throw manualCashResult.error
+          cashResult.data = manualCashResult.data
+        }
         let guidedChecks = checksResult.data || []
         let guidance = state.routeCoffeeDetails[key]?.guidance || null
         const hasGuidedChecks = guidedChecks.some((check) => ['inside','outside','test','photo'].includes(String(check.assigned_payload?.section || '')))
