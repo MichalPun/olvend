@@ -301,6 +301,7 @@
                 <thead>
                   <tr>
                     <th data-ledger-sort="status">Stav</th>
+                    <th data-ledger-sort="expiry">Expirace</th>
                     <th data-ledger-sort="document">Doklad</th>
                     <th data-ledger-sort="supplier">Dodavatel</th>
                     <th data-ledger-sort="date">Datum</th>
@@ -3862,6 +3863,44 @@
       const scopeValue = String(row.order_scope || row.pilot_scope || '').replace('_pilot', '')
       return scopeValue === 'bagette' ? 'Zásobování vozidel' : 'Skladový doklad'
     }
+    function receiptExpiryMeta(row) {
+      const status = row.receipt_expiry_status || (row.status === 'received' ? 'not_required' : 'unavailable')
+      if (status === 'pending') return { label: 'Doplnit', badge: 'warn', icon: '◷', title: 'Doklad obsahuje zboží se sledovanou expirací. Expirace ještě nejsou zadané.' }
+      if (status === 'partial') return { label: 'Rozpracováno', badge: 'info', icon: '◐', title: 'Část expirací je rozpracovaná nebo už zařazená.' }
+      if (status === 'done') return { label: 'Hotovo', badge: 'good', icon: '✓', title: 'Všechny sledované položky jsou zařazené do šarží s expirací.' }
+      if (status === 'not_required') return { label: 'Není potřeba', badge: '', icon: '—', title: 'Doklad neobsahuje žádnou přijatou položku se sledovanou expirací.' }
+      return { label: 'Až po příjmu', badge: '', icon: '—', title: 'Expirace se řeší až po přijetí zboží na sklad.' }
+    }
+    function receiptExpiryCell(row) {
+      const meta = receiptExpiryMeta(row)
+      const badge = `<span class="badge ${meta.badge}" title="${escapeHtml(meta.title)}">${meta.icon} ${escapeHtml(meta.label)}</span>`
+      if (row.status !== 'received' || row.receipt_expiry_status === 'not_required') return badge
+      return `<a href="purchase-receipt-expiry.html?id=${row.id}" title="${escapeHtml(meta.title)}" style="text-decoration:none">${badge}</a>`
+    }
+    async function loadReceiptExpiryStates(orderRows) {
+      const received = orderRows.filter((row) => row.status === 'received')
+      received.forEach((row) => {
+        const tracked = (row.items || []).filter((item) => item.expiry_tracking_mode !== 'none' && Number(item.received_quantity || 0) > 0)
+        row.receipt_expiry_status = tracked.length ? 'pending' : 'not_required'
+      })
+      const trackedOrders = received.filter((row) => row.receipt_expiry_status === 'pending')
+      for (let start = 0; start < trackedOrders.length; start += 100) {
+        const chunk = trackedOrders.slice(start, start + 100)
+        const { data: movements, error } = await supabase
+          .from('stock_movements_v13')
+          .select('reference_id,product_id,batch_id')
+          .eq('reference_type', 'purchase_order')
+          .eq('movement_type', 'receipt')
+          .in('reference_id', chunk.map((row) => String(row.id)))
+        if (error) throw error
+        chunk.forEach((row) => {
+          const trackedIds = new Set((row.items || []).filter((item) => item.expiry_tracking_mode !== 'none' && Number(item.received_quantity || 0) > 0).map((item) => String(item.product_id)))
+          const assignedIds = new Set((movements || []).filter((movement) => String(movement.reference_id) === String(row.id) && movement.batch_id && trackedIds.has(String(movement.product_id))).map((movement) => String(movement.product_id)))
+          const hasDraft = Boolean(localStorage.getItem(`olvend-receipt-expiry-${row.id}`))
+          row.receipt_expiry_status = assignedIds.size === trackedIds.size ? 'done' : assignedIds.size > 0 || hasDraft ? 'partial' : 'pending'
+        })
+      }
+    }
     function ledgerActions(row) {
       if (row.status === 'draft') {
         return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="order" data-id="${row.id}">Schválit</button><button class="btn secondary small" type="button" data-action="cancel-draft" data-id="${row.id}">Zrušit</button>`)
@@ -3870,7 +3909,8 @@
         return actionMenu('Akce pro doklad', `<button class="btn secondary small" type="button" data-action="receive" data-id="${row.id}">Přijmout</button><button class="btn secondary small" type="button" data-action="edit-pending" data-id="${row.id}">Upravit</button><button class="btn secondary small" type="button" data-action="cancel-receipt" data-id="${row.id}">Zrušit</button>`)
       }
       if (row.status === 'received') {
-        return actionMenu('Akce pro doklad', `<a class="btn secondary small" href="purchase-receipt-expiry.html?id=${row.id}">Doplnit expirace</a><button class="btn secondary small" type="button" data-action="view-receipt" data-id="${row.id}">Detail</button><button class="btn secondary small" type="button" data-action="edit-receipt" data-id="${row.id}">Upravit</button>`)
+        const expiryAction = row.receipt_expiry_status === 'not_required' ? '' : `<a class="btn secondary small" href="purchase-receipt-expiry.html?id=${row.id}">${row.receipt_expiry_status === 'done' ? 'Zkontrolovat expirace' : 'Doplnit expirace'}</a>`
+        return actionMenu('Akce pro doklad', `${expiryAction}<button class="btn secondary small" type="button" data-action="view-receipt" data-id="${row.id}">Detail</button><button class="btn secondary small" type="button" data-action="edit-receipt" data-id="${row.id}">Upravit</button>`)
       }
       return '<span class="subtext">Bez akce</span>'
     }
@@ -3881,6 +3921,7 @@
       if (key === 'date') return new Date(orderDateForLedger(row) || 0).getTime()
       if (key === 'items') return (row.items || []).length
       if (key === 'warehouse') return row.received_stock_location_id ? 1 : row.status === 'ordered' ? 0 : -1
+      if (key === 'expiry') return receiptExpiryMeta(row).label
       if (key === 'total') return orderTotalGross(row)
       return ''
     }
@@ -3925,6 +3966,7 @@
         return `
           <tr data-row-id="${escapeHtml(String(row.id))}" data-row-status="${escapeHtml(String(row.status || ''))}">
             <td data-label="Stav"><span class="badge ${statusMeta.badge}">${escapeHtml(statusMeta.label)}</span></td>
+            <td data-label="Expirace">${receiptExpiryCell(row)}</td>
             <td data-label="Doklad"><div class="doc-number">${escapeHtml(internalNumber)}</div><div class="doc-kind">${escapeHtml(documentMeta.label)} · externí ${escapeHtml(externalNumber)}</div></td>
             <td data-label="Dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">${escapeHtml(cleanDocumentNote(row) || 'Bez poznámky')}</span></td>
             <td data-label="Datum"><strong>${escapeHtml(formatDate(orderDateForLedger(row)))}</strong><span class="subtext">Obj. ${escapeHtml(formatDate(row.order_date))} · Splat. ${escapeHtml(formatDate(dueDate))}</span></td>
@@ -4302,6 +4344,7 @@
           supplier_name: supplierMap.get(String(order.supplier_id))?.name || 'Dodavatel',
           items: orderItemMap.get(order.id) || []
         }))
+        await loadReceiptExpiryStates(orders)
         if (allowAutoCreate) {
           const createdDrafts = await generateTodayDrafts({ silent: true })
           const createdReceipts = await generateTodayReceipts({ silent: true })
