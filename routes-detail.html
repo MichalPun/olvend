@@ -946,6 +946,7 @@
       locations: [],
       cashReports: [],
       mobileVisits: [],
+      lowStockVisitContext: {},
       routeVehicleLog: null,
       map: null,
       mapLayer: null,
@@ -1351,6 +1352,29 @@
       return `${formatNumber(number, Number.isInteger(number) ? 0 : 1)} ${unit || 'ks'}`
     }
 
+    function getVisitItemDecision(visit, item) {
+      const preparation = visit?.food_preparation
+      if (!preparation || typeof preparation !== 'object' || !item?.planogram_slot_id) return {}
+      const decision = preparation[String(item.planogram_slot_id)]
+      return decision && typeof decision === 'object' ? decision : {}
+    }
+
+    function getNoFillDecisionLabel(visit, item) {
+      const decision = getVisitItemDecision(visit, item)
+      const reason = decision.skipReason || decision.notInsertedReason || ''
+      const labels = {
+        not_in_vehicle: 'Operátorka: zboží není v autě',
+        not_refilling_today: 'Operátorka: dnes nedoplňuji',
+        not_needed: 'Operátorka: po kontrole není potřeba',
+        cooling_failure: 'Operátorka: automat nechladí',
+        product_unavailable: 'Operátorka: zboží není k dispozici',
+        other: 'Operátorka: jiný důvod',
+      }
+      if (reason) return labels[reason] || `Operátorka: ${reason}`
+      if (Number(item.suggested_add_quantity || 0) <= 0) return 'Aplikace doporučila 0 ks · bez důvodu operátorky'
+      return item.operator_note || 'Bez uloženého důvodu'
+    }
+
     function renderVisitDetail(visit) {
       const items = nestedRows(visit?.route_machine_visit_items)
       const fills = nestedRows(visit?.route_machine_visit_food_fills)
@@ -1358,6 +1382,14 @@
       const cashReport = getVisitCashReport(visit)
       const filledItemRows = items.filter((item) => Number(item.actual_add_quantity || 0) > 0 && (item.item_kind !== 'food_slot' || !fills.length))
       const removedRows = items.filter((item) => Number(item.removed_quantity || 0) > 0)
+      const noFillRows = items.filter((item) => {
+        if (item.item_kind !== 'food_slot' || Number(item.actual_add_quantity || 0) > 0) return false
+        const context = state.lowStockVisitContext[`food_slot:${item.planogram_slot_id}`]
+        const decision = getVisitItemDecision(visit, item)
+        return Number(context?.vehicle_quantity_at_visit || 0) > 0
+          || Boolean(decision.skipReason || decision.notInsertedReason)
+          || item.issue_type === 'missing_stock'
+      })
       const completedChecks = checks.filter((check) => ['done', 'not_applicable'].includes(String(check.status || ''))).length
       const productRows = [
         ...fills.map((fill) => {
@@ -1436,6 +1468,29 @@
                       <td>${escapeHtml(item.operator_note || item.substitution_reason || '—')}</td>
                     </tr>
                   `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : ''}
+          ${noFillRows.length ? `
+            <div>
+              <strong>Nevyplněné pozice a rozhodnutí</strong>
+              <div style="height: 7px;"></div>
+              <table class="visit-product-table">
+                <thead><tr><th>Produkt</th><th>Pozice</th><th>Stav</th><th>V autě při návštěvě</th><th>Rozhodnutí</th></tr></thead>
+                <tbody>
+                  ${noFillRows.map((item) => {
+                    const context = state.lowStockVisitContext[`food_slot:${item.planogram_slot_id}`]
+                    return `
+                      <tr>
+                        <td><strong>${escapeHtml(item.planned_product_name || item.actual_product_name || 'Položka')}</strong>${item.planned_product_sku ? `<span class="subtext">SKU ${escapeHtml(item.planned_product_sku)}</span>` : ''}</td>
+                        <td>${escapeHtml(item.physical_position_label || item.telemetry_key || '—')}</td>
+                        <td>${escapeHtml(formatVisitQuantity(item.actual_before_quantity, item.unit))} → ${escapeHtml(formatVisitQuantity(item.final_quantity, item.unit))}</td>
+                        <td><strong>${context?.vehicle_stock_known ? escapeHtml(formatVisitQuantity(context.vehicle_quantity_at_visit, item.unit)) : 'Neověřeno'}</strong></td>
+                        <td>${escapeHtml(getNoFillDecisionLabel(visit, item))}</td>
+                      </tr>
+                    `
+                  }).join('')}
                 </tbody>
               </table>
             </div>
@@ -2178,11 +2233,12 @@
 
     async function loadMobileRouteExecution(routePlanId) {
       state.mobileVisits = []
+      state.lowStockVisitContext = {}
       if (!Number.isFinite(Number(routePlanId))) return
 
       const { data, error } = await supabase
         .from('route_machine_visits')
-        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, status, arrived_at, completed_at, skipped_at, skip_reason, operator_note, synced_at, machines(id, name, evidence_number, machine_type), route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, supervisor_counted_cash_czk, difference_cash_czk, note), route_machine_visit_items(id, item_kind, planogram_slot_id, physical_position_label, telemetry_key, planned_product_sku, planned_product_name, actual_product_sku, actual_product_name, system_current_quantity, actual_before_quantity, suggested_add_quantity, actual_add_quantity, removed_quantity, final_quantity, capacity_quantity, unit, issue_type, substitution_reason, operator_note), route_machine_visit_checks(id, check_key, label, required, status, completed_at, operator_note), route_machine_visit_food_fills(id, visit_item_id, planogram_slot_id, product_sku, product_name, quantity, expiry_date, sale_price_czk, load_order)')
+        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, status, arrived_at, completed_at, skipped_at, skip_reason, operator_note, synced_at, food_preparation, machines(id, name, evidence_number, machine_type), route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, supervisor_counted_cash_czk, difference_cash_czk, note), route_machine_visit_items(id, item_kind, planogram_slot_id, physical_position_label, telemetry_key, planned_product_sku, planned_product_name, actual_product_sku, actual_product_name, system_current_quantity, actual_before_quantity, suggested_add_quantity, actual_add_quantity, removed_quantity, final_quantity, capacity_quantity, unit, issue_type, substitution_reason, operator_note), route_machine_visit_checks(id, check_key, label, required, status, completed_at, operator_note), route_machine_visit_food_fills(id, visit_item_id, planogram_slot_id, product_sku, product_name, quantity, expiry_date, sale_price_czk, load_order)')
         .eq('route_plan_id', Number(routePlanId))
         .order('created_at', { ascending: false })
 
@@ -2192,6 +2248,21 @@
       }
 
       state.mobileVisits = data || []
+      const foodSlotIds = [...new Set(state.mobileVisits.flatMap((visit) => nestedRows(visit.route_machine_visit_items))
+        .filter((item) => item.item_kind === 'food_slot' && item.planogram_slot_id)
+        .map((item) => Number(item.planogram_slot_id))
+        .filter(Number.isFinite))]
+      if (foodSlotIds.length) {
+        const { data: contextRows, error: contextError } = await supabase.rpc('get_low_stock_depletion_context_v25', {
+          p_food_slot_ids: foodSlotIds,
+          p_coffee_container_ids: [],
+        })
+        if (!contextError) {
+          state.lowStockVisitContext = Object.fromEntries((contextRows || []).map((row) => [`${row.item_kind}:${row.item_id}`, row]))
+        } else if (!/get_low_stock_depletion_context_v25/i.test(String(contextError.message || ''))) {
+          console.warn('Route low-stock context lookup failed:', contextError)
+        }
+      }
     }
 
     async function loadRouteVehicleLog(plan) {
