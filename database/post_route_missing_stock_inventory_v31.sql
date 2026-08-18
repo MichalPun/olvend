@@ -29,9 +29,6 @@ begin
     return jsonb_build_object('created', false, 'reason', 'already_exists', 'audit_id', v_existing_audit_id);
   end if;
 
-  if v_plan.execution_status <> 'done' then
-    return jsonb_build_object('created', false, 'reason', 'route_not_completed');
-  end if;
   if v_plan.vehicle_id is null or v_plan.planned_employee_id is null then
     return jsonb_build_object('created', false, 'reason', 'missing_vehicle_or_employee');
   end if;
@@ -182,6 +179,28 @@ after update of execution_status, completed_at on public.route_plans
 for each row
 when (new.execution_status = 'done' and old.execution_status is distinct from new.execution_status)
 execute function public.create_post_route_exception_inventory_v31();
+
+create or replace function public.create_post_route_exception_inventory_on_last_stop_v31()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.status in ('done', 'skipped')
+     and old.status is distinct from new.status then
+    perform public.ensure_post_route_exception_inventory_v31(new.route_plan_id);
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists trg_post_route_exception_inventory_last_stop_v31 on public.route_plan_stops;
+create trigger trg_post_route_exception_inventory_last_stop_v31
+after update of status on public.route_plan_stops
+for each row
+when (new.status in ('done', 'skipped') and old.status is distinct from new.status)
+execute function public.create_post_route_exception_inventory_on_last_stop_v31();
 
 grant execute on function public.ensure_post_route_exception_inventory_v31(bigint) to anon, authenticated;
 
