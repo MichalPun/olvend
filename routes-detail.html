@@ -947,6 +947,7 @@
       cashReports: [],
       mobileVisits: [],
       lowStockVisitContext: {},
+      depletedRouteSlots: [],
       routeVehicleLog: null,
       map: null,
       mapLayer: null,
@@ -1360,6 +1361,7 @@
     }
 
     function getNoFillDecisionLabel(visit, item) {
+      if (item?._missingVisitItem) return 'Aplikace doporučila 0 ks · bez důvodu operátorky'
       const decision = getVisitItemDecision(visit, item)
       const reason = decision.skipReason || decision.notInsertedReason || ''
       const labels = {
@@ -1382,14 +1384,34 @@
       const cashReport = getVisitCashReport(visit)
       const filledItemRows = items.filter((item) => Number(item.actual_add_quantity || 0) > 0 && (item.item_kind !== 'food_slot' || !fills.length))
       const removedRows = items.filter((item) => Number(item.removed_quantity || 0) > 0)
-      const noFillRows = items.filter((item) => {
+      const itemSlotIds = new Set(items.map((item) => String(item.planogram_slot_id || '')).filter(Boolean))
+      const visitCompletedAt = new Date(visit.completed_at || 0).getTime()
+      const missingSlotRows = state.depletedRouteSlots.filter((slot) => {
+        if (String(slot.machine_id) !== String(visit.machine_id) || itemSlotIds.has(String(slot.id))) return false
+        const context = state.lowStockVisitContext[`food_slot:${slot.id}`]
+        const contextVisitAt = new Date(context?.last_visit_at || 0).getTime()
+        return Number.isFinite(visitCompletedAt)
+          && Number.isFinite(contextVisitAt)
+          && Math.abs(contextVisitAt - visitCompletedAt) <= 5 * 60 * 1000
+      }).map((slot) => ({
+        ...slot,
+        planogram_slot_id: slot.id,
+        planned_product_name: slot.product_name,
+        planned_product_sku: slot.product_sku,
+        physical_position_label: slot.slot_code,
+        actual_before_quantity: slot.current_units,
+        final_quantity: slot.current_units,
+        unit: 'ks',
+        _missingVisitItem: true,
+      }))
+      const noFillRows = [...items.filter((item) => {
         if (item.item_kind !== 'food_slot' || Number(item.actual_add_quantity || 0) > 0) return false
         const context = state.lowStockVisitContext[`food_slot:${item.planogram_slot_id}`]
         const decision = getVisitItemDecision(visit, item)
         return Number(context?.vehicle_quantity_at_visit || 0) > 0
           || Boolean(decision.skipReason || decision.notInsertedReason)
           || item.issue_type === 'missing_stock'
-      })
+      }), ...missingSlotRows]
       const completedChecks = checks.filter((check) => ['done', 'not_applicable'].includes(String(check.status || ''))).length
       const productRows = [
         ...fills.map((fill) => {
@@ -2234,6 +2256,7 @@
     async function loadMobileRouteExecution(routePlanId) {
       state.mobileVisits = []
       state.lowStockVisitContext = {}
+      state.depletedRouteSlots = []
       if (!Number.isFinite(Number(routePlanId))) return
 
       const { data, error } = await supabase
@@ -2248,10 +2271,24 @@
       }
 
       state.mobileVisits = data || []
-      const foodSlotIds = [...new Set(state.mobileVisits.flatMap((visit) => nestedRows(visit.route_machine_visit_items))
+      const machineIds = [...new Set(state.mobileVisits.map((visit) => Number(visit.machine_id)).filter(Number.isFinite))]
+      if (machineIds.length) {
+        const { data: depletedSlots, error: depletedSlotsError } = await supabase
+          .from('machine_planogram_slots')
+          .select('id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units')
+          .in('machine_id', machineIds)
+          .eq('active', true)
+          .lte('current_units', 0)
+        if (!depletedSlotsError) state.depletedRouteSlots = depletedSlots || []
+        else console.warn('Route depleted slots lookup failed:', depletedSlotsError)
+      }
+      const foodSlotIds = [...new Set([
+        ...state.mobileVisits.flatMap((visit) => nestedRows(visit.route_machine_visit_items))
         .filter((item) => item.item_kind === 'food_slot' && item.planogram_slot_id)
         .map((item) => Number(item.planogram_slot_id))
-        .filter(Number.isFinite))]
+        .filter(Number.isFinite),
+        ...state.depletedRouteSlots.map((slot) => Number(slot.id)).filter(Number.isFinite),
+      ])]
       if (foodSlotIds.length) {
         const { data: contextRows, error: contextError } = await supabase.rpc('get_low_stock_depletion_context_v25', {
           p_food_slot_ids: foodSlotIds,
