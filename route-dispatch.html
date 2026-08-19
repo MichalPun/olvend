@@ -346,6 +346,37 @@
     function buildCandidates(data) {
       const locationMap = new Map(data.locations.map((row) => [String(row.id), row]));
       const ruleMap = new Map(data.rules.map((row) => [String(row.machine_id), row]));
+      const productMap = new Map((data.products || []).map((row) => [String(row.sku || '').trim().toLowerCase(), row]));
+      const metricsByMachine = new Map(data.metrics.map((row) => [String(row.machine_id), row]));
+      const isReadyFood = (row) => {
+        const product = productMap.get(String(row.product_sku || '').trim().toLowerCase());
+        return product?.product_category === 'food_ready'
+          || /baget|labuž|labuz|trhan|strips|teriyaki/.test(norm(row.product_name));
+      };
+      const readyFoodSlotsByMachine = new Map();
+      data.slots.filter(isReadyFood).forEach((row) => {
+        const key = String(row.machine_id);
+        readyFoodSlotsByMachine.set(key, Number(readyFoodSlotsByMachine.get(key) || 0) + 1);
+      });
+      const currentDate = new Date();
+      const currentDateKey = dateKey(currentDate);
+      const expiryProjection = (row, currentUnits, expiryDate) => {
+        if (expiryDate < currentDateKey) return { dailyRate: 0, forecastUnits: 0, remainingUnits: currentUnits, hardExpired: true };
+        const metrics = metricsByMachine.get(String(row.machine_id)) || {};
+        const foodSlotCount = Math.max(1, Number(readyFoodSlotsByMachine.get(String(row.machine_id)) || 0));
+        const dailyRate = Math.max(0, Number(metrics.units_30_days || 0) / 30 / foodSlotCount);
+        if (!dailyRate) return { dailyRate: 0, forecastUnits: 0, remainingUnits: currentUnits, hardExpired: false };
+        const expiryCutoff = new Date(`${expiryDate}T18:00:00`);
+        const horizonDays = Math.max(0, (expiryCutoff.getTime() - currentDate.getTime()) / 86400000);
+        const forecastUnits = dailyRate * horizonDays;
+        const likelySoldThrough = forecastUnits >= currentUnits * 1.15;
+        return {
+          dailyRate,
+          forecastUnits,
+          remainingUnits: likelySoldThrough ? 0 : Math.max(1, Math.ceil(currentUnits - forecastUnits)),
+          hardExpired: false
+        };
+      };
       const lowByMachine = new Map();
       const addLow = (row, current, capacity, name) => {
         if (capacity <= 0 || /vick|víčk/.test(norm(name))) return;
@@ -357,7 +388,27 @@
       };
       data.containers.forEach((row) => addLow(row, Number(row.current_quantity || 0), Number(row.capacity_quantity || 0), row.product_name));
       data.slots.forEach((row) => addLow(row, Number(row.current_units || 0), Number(row.capacity_units || 0), row.product_name));
-      const metricsByMachine = new Map(data.metrics.map((row) => [String(row.machine_id), row]));
+      const expiredFoodByMachine = new Map();
+      data.slots.forEach((row) => {
+        const currentUnits = Number(row.current_units || 0);
+        const expiryDate = String(row.expiry_date || '').slice(0, 10);
+        const product = productMap.get(String(row.product_sku || '').trim().toLowerCase());
+        if (!isReadyFood(row) || currentUnits <= 0 || !expiryDate || expiryDate > els.date.value) return;
+        const projection = expiryProjection(row, currentUnits, expiryDate);
+        if (projection.remainingUnits <= 0) return;
+        const key = String(row.machine_id);
+        const existing = expiredFoodByMachine.get(key) || [];
+        existing.push({
+          slotCode: row.slot_code || '',
+          productName: row.product_name || product?.name || 'Potravina',
+          currentUnits,
+          expiryDate,
+          projectedRemainingUnits: projection.remainingUnits,
+          projectedSalesUnits: projection.forecastUnits,
+          hardExpired: projection.hardExpired
+        });
+        expiredFoodByMachine.set(key, existing);
+      });
       const lastVisit = new Map();
       data.visits.forEach((visit) => { const key = String(visit.machine_id || ''); const stamp = visit.completed_at || visit.arrived_at || visit.synced_at || visit.created_at || visit.visit_date; if (!key || !stamp || (lastVisit.has(key) && new Date(lastVisit.get(key)) >= new Date(stamp))) return; lastVisit.set(key, stamp); });
       const scheduled = new Set(data.scheduled.flatMap((plan) => plan.route_plan_stops || []).map((stop) => String(stop.machine_id || '')).filter(Boolean));
@@ -370,31 +421,39 @@
         if (!location) { state.unlocatedMachineCount += 1; return null; }
         if (scheduled.has(String(machine.id))) return null;
         const lows = lowByMachine.get(String(machine.id)) || [];
+        const expiredFood = expiredFoodByMachine.get(String(machine.id)) || [];
         const last = lastVisit.get(String(machine.id)); const days = last ? Math.floor((today - new Date(last)) / 86400000) : 999;
         const rule = ruleMap.get(String(machine.id));
         const maxDays = Math.max(1, Number(rule?.max_visit_interval_days || 10));
         const periodicVisitDue = days >= maxDays;
-        if (!lows.length && !periodicVisitDue) return null;
-        if (isMachinePlanningExcluded(rule, today)) { state.planningExcludedMachineCount += 1; return null; }
-        if (location?.service_suspended_until && new Date(location.service_suspended_until) >= today) return null;
+        if (!lows.length && !periodicVisitDue && !expiredFood.length) return null;
+        if (isMachinePlanningExcluded(rule, today) && !expiredFood.length) { state.planningExcludedMachineCount += 1; return null; }
+        if (location?.service_suspended_until && new Date(location.service_suspended_until) >= today && !expiredFood.length) return null;
         if (location.latitude == null || location.longitude == null) {
           state.omittedCandidates.push({ machine, location, reason: 'chybí souřadnice' });
           return null;
         }
         const snack = /snack|food|potrav/.test(norm(`${machine.machine_type || ''} ${machine.name || ''}`));
         const reasons = [];
+        if (expiredFood.length) {
+          const expiredUnits = expiredFood.reduce((sum, item) => sum + item.projectedRemainingUnits, 0);
+          const earliestExpiry = expiredFood.map((item) => item.expiryDate).sort()[0];
+          const hardExpired = expiredFood.some((item) => item.hardExpired);
+          reasons.push(`${hardExpired ? 'prošlá expirace' : 'riziko expirace'}: ${expiredFood.length} ${expiredFood.length === 1 ? 'pozice' : expiredFood.length < 5 ? 'pozice' : 'pozic'} / očekáváno zbýt ${expiredUnits} ks · nejstarší ${new Date(`${earliestExpiry}T12:00:00`).toLocaleDateString('cs-CZ')}`);
+        }
         if (lows.some((item) => item.empty)) reasons.push('vyprodaná pozice'); else if (lows.length) reasons.push(`${lows.length} nízkých zásob (limit ${Math.round((lows[0]?.stockLimit ?? 0.2) * 100)} %)`);
         if (periodicVisitDue) reasons.push(last ? `${days} dní bez návštěvy (limit ${maxDays})` : `bez evidované návštěvy (limit ${maxDays} dní)`);
         const metrics = metricsByMachine.get(String(machine.id)) || {};
-        return { id: machine.id, machineId: machine.id, locationId: location.id, requestId: null, name: machine.name || `Automat ${machine.id}`, evidence: machine.evidence_number, machineType: machine.machine_type, snack, latitude: Number(location.latitude), longitude: Number(location.longitude), city: location.city || '', address: location.address || '', locationName: location.name || '', serviceMinutes: snack ? FOOD_SERVICE_MINUTES : COFFEE_SERVICE_MINUTES, priority: lows.some((item) => item.empty) ? 3 : lows.length ? 2 : 1, reasons, hasLowStock: lows.length > 0, hasService: false, lowCount: lows.length, emptyCount: lows.filter((item) => item.empty).length, periodicVisitDue, daysSinceVisit: last ? days : null, maxVisitDays: maxDays, revenue30: Number(metrics.revenue_30_days || 0), units30: Number(metrics.units_30_days || 0), ownerId: state.ownership.get(String(machine.id)) || null };
+        return { id: machine.id, machineId: machine.id, locationId: location.id, requestId: null, name: machine.name || `Automat ${machine.id}`, evidence: machine.evidence_number, machineType: machine.machine_type, snack, latitude: Number(location.latitude), longitude: Number(location.longitude), city: location.city || '', address: location.address || '', locationName: location.name || '', serviceMinutes: snack ? FOOD_SERVICE_MINUTES : COFFEE_SERVICE_MINUTES, priority: expiredFood.length ? 4 : lows.some((item) => item.empty) ? 3 : lows.length ? 2 : 1, reasons, hasExpiredFood: expiredFood.length > 0, expiredFood, expiredFoodPositions: expiredFood.length, expiredFoodUnits: expiredFood.reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hardExpiredFoodPositions: expiredFood.filter((item) => item.hardExpired).length, hardExpiredFoodUnits: expiredFood.filter((item) => item.hardExpired).reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hasLowStock: lows.length > 0, hasService: false, lowCount: lows.length, emptyCount: lows.filter((item) => item.empty).length, periodicVisitDue, daysSinceVisit: last ? days : null, maxVisitDays: maxDays, revenue30: Number(metrics.revenue_30_days || 0), units30: Number(metrics.units_30_days || 0), ownerId: state.ownership.get(String(machine.id)) || null };
       }).filter(Boolean).sort((a,b) => b.priority - a.priority);
+      const expiryCount = state.candidates.filter((item) => item.hasExpiredFood).length;
       const lowCount = state.candidates.filter((item) => item.hasLowStock).length;
       const intervalCount = state.candidates.filter((item) => item.periodicVisitDue).length;
       const locationCount = new Set(state.candidates.map((item) => String(item.locationId))).size;
       const omittedText = state.omittedCandidates.length ? ` Pozor: ${state.omittedCandidates.length} umístěných automatů nelze naplánovat, protože jejich lokalita nemá souřadnice.` : '';
       const unlocatedText = state.unlocatedMachineCount ? ' Stroje bez umístění (sklad / rezerva) se do návštěv správně nepočítají.' : '';
       const exceptionText = state.planningExcludedMachineCount ? ` Podle pravidel automatů vynecháno: ${state.planningExcludedMachineCount}.` : '';
-      els.candidateSummary.textContent = `${state.candidates.length} provozních kandidátů v ${locationCount} lokalitách: zásoby ${lowCount} · interval návštěvy ${intervalCount}. Servisní požadavky se operátorkám nepřidělují. Jedna lokalita vždy patří jednomu člověku.${exceptionText}${omittedText}${unlocatedText}`;
+      els.candidateSummary.textContent = `${state.candidates.length} provozních kandidátů v ${locationCount} lokalitách: expirace ${expiryCount} · zásoby ${lowCount} · interval návštěvy ${intervalCount}. Servisní požadavky se operátorkám nepřidělují. Jedna lokalita vždy patří jednomu člověku.${exceptionText}${omittedText}${unlocatedText}`;
       renderCandidateSelection();
     }
 
@@ -427,9 +486,9 @@
         const first = unit.stops[0];
         const reasons = [...new Set(unit.stops.flatMap((stop) => stop.reasons))].join(' · ');
         const deferred = excluded || automaticDeferral;
-        const status = excluded ? 'Odloženo ručně' : automaticDeferral ? 'Odloženo ekonomikou' : 'Plánovat dnes';
+        const status = excluded ? 'Odloženo ručně' : automaticDeferral ? 'Odloženo plánem' : 'Plánovat dnes';
         const explanation = automaticDeferral?.deferralReason || reasons;
-        return `<tr data-location-key="${esc(unit.key)}" class="${deferred ? 'deferred' : ''}"><td><input class="check candidate-check" type="checkbox" ${excluded ? '' : 'checked'} aria-label="Plánovat lokalitu dnes"></td><td><div class="person">${esc(first.locationName || first.name)}</div><div class="sub">${esc(first.address || '')}</div></td><td>${esc(first.city || 'Bez města')}</td><td><b>${unit.stops.length}</b></td><td><div class="candidate-action"><span class="badge ${deferred ? 'amber' : 'green'}">${status}</span><span class="sub">${esc(explanation)}</span></div></td></tr>`;
+        return `<tr data-location-key="${esc(unit.key)}" class="${deferred ? 'deferred' : ''}"><td><input class="check candidate-check" type="checkbox" ${deferred ? '' : 'checked'} aria-label="Plánovat lokalitu dnes"></td><td><div class="person">${esc(first.locationName || first.name)}</div><div class="sub">${esc(first.address || '')}</div></td><td>${esc(first.city || 'Bez města')}</td><td><b>${unit.stops.length}</b></td><td><div class="candidate-action"><span class="badge ${deferred ? 'amber' : 'green'}">${status}</span><span class="sub">${esc(explanation)}</span></div></td></tr>`;
       }).join('') || '<tr><td colspan="5">Pro tento den nejsou potřeba žádné návštěvy.</td></tr>';
       const activeUnits = units.filter((unit) => !state.excludedLocationKeys.has(unit.key) && !automaticDeferrals.has(unit.key)).length;
       els.plannedLocationBadge.textContent = `${activeUnits} dnes · ${units.length - activeUnits} odloženo`;
@@ -440,11 +499,15 @@
       const grouped = new Map();
       stops.forEach((stop) => {
         const key = String(stop.locationId || `machine-${stop.id}`);
-        if (!grouped.has(key)) grouped.set(key, { key, locationId: stop.locationId, latitude: stop.latitude, longitude: stop.longitude, city: stop.city, snack: false, priority: 0, lowCount: 0, emptyCount: 0, revenue30: 0, units30: 0, maxOverdueDays: 0, stops: [] });
+        if (!grouped.has(key)) grouped.set(key, { key, locationId: stop.locationId, latitude: stop.latitude, longitude: stop.longitude, city: stop.city, snack: false, priority: 0, expiredFoodPositions: 0, expiredFoodUnits: 0, hardExpiredFoodPositions: 0, hardExpiredFoodUnits: 0, lowCount: 0, emptyCount: 0, revenue30: 0, units30: 0, maxOverdueDays: 0, stops: [] });
         const unit = grouped.get(key);
         unit.stops.push(stop);
         unit.snack ||= stop.snack;
         unit.priority = Math.max(unit.priority, Number(stop.priority || 0));
+        unit.expiredFoodPositions += Number(stop.expiredFoodPositions || 0);
+        unit.expiredFoodUnits += Number(stop.expiredFoodUnits || 0);
+        unit.hardExpiredFoodPositions += Number(stop.hardExpiredFoodPositions || 0);
+        unit.hardExpiredFoodUnits += Number(stop.hardExpiredFoodUnits || 0);
         unit.lowCount += Number(stop.lowCount || 0);
         unit.emptyCount += Number(stop.emptyCount || 0);
         unit.revenue30 += Number(stop.revenue30 || 0);
@@ -459,11 +522,16 @@
       const estimatedSalesValue = Math.max(Number(unit.revenue30 || 0), Number(unit.units30 || 0) * 15);
       const dailySales = estimatedSalesValue / 30;
       return dailySales * 0.35
-        + Number(unit.emptyCount || 0) * 40
-        + Number(unit.lowCount || 0) * 10
+        + Number(unit.expiredFoodPositions || 0) * 70
+        + Number(unit.expiredFoodUnits || 0) * 35
+        + Number(unit.hardExpiredFoodPositions || 0) * 90
+        + Number(unit.hardExpiredFoodUnits || 0) * 20
+        + Number(unit.emptyCount || 0) * 50
+        + Number(unit.lowCount || 0) * 12
         + Number(unit.maxOverdueDays || 0) * 10;
     }
     function economicDeferralReason(unit, allUnits, warehouse) {
+      if (unit.expiredFoodPositions > 0) return '';
       const distanceFromBase = haversine(warehouse, unit);
       if (distanceFromBase < 90 || unit.emptyCount >= 3) return '';
       const nearbyDistance = Math.min(...allUnits.filter((other) => other.key !== unit.key).map((other) => haversine(unit, other)), Number.POSITIVE_INFINITY);
@@ -478,6 +546,7 @@
         for (let pass = 0; pass < 12 && route.stops.length > 1; pass += 1) {
           const current = estimateStops(route.stops, warehouse);
           const options = locationUnits(route.stops).map((unit) => {
+            if (unit.expiredFoodPositions > 0) return null;
             if (!unit.lowCount || unit.emptyCount >= 3 || haversine(warehouse, unit) < 90) return null;
             const remainingStops = route.stops.filter((stop) => String(stop.locationId || `machine-${stop.id}`) !== unit.key);
             const without = estimateStops(remainingStops, warehouse);
@@ -610,7 +679,7 @@
             const spreadKm = seededUnits.length
               ? Math.min(...seededUnits.map((seed) => haversine(seed, unit)))
               : haversine(warehouse, unit);
-            const score = ownCount * -60 - spreadKm * 3 - Number(unit.priority || 0) * 80 - Math.min(240, unitPlanningValue(unit) / 8);
+            const score = ownCount * -60 + spreadKm * 3 - Number(unit.priority || 0) * 30 - unitPlanningValue(unit) + estimate.distanceKm * 8 + estimate.totalMinutes * 2;
             return { unit, index, score, estimate };
           })
           .filter(Boolean)
@@ -630,6 +699,37 @@
         || unitPlanningValue(b) - unitPlanningValue(a)
         || haversine(warehouse, b) - haversine(warehouse, a)
       );
+    }
+
+    function assignCapacityAware(units, routes, warehouse, minHistoricalKm) {
+      let remaining = seedRoutes(assignmentOrder(units, warehouse), routes, warehouse);
+      while (remaining.length) {
+        let best = null;
+        remaining.forEach((unit, unitIndex) => {
+          routes.filter((route) => compatibleUnit(route, unit)).forEach((route) => {
+            const estimate = estimateStops([...route.stops, ...unit.stops], warehouse);
+            if (estimate.totalMinutes > route.maxHours * 60) return;
+            const incrementalKm = Math.max(0, estimate.distanceKm - route.distanceKm);
+            const incrementalMinutes = Math.max(0, estimate.totalMinutes - route.totalMinutes);
+            const ownCount = unit.stops.filter((stop) => String(stop.ownerId || '') === String(route.employee.id)).length;
+            const existingBearing = routeBearing(route, warehouse);
+            const corridorPenalty = existingBearing == null ? 0 : bearingDifference(existingBearing, bearing(warehouse, unit)) * 1.8;
+            const historicalPenalty = (Number(state.km30.get(String(route.employee.id)) || 0) - minHistoricalKm) / 30;
+            const utility = unitPlanningValue(unit)
+              + Number(unit.priority || 0) * 25
+              + ownCount * 45
+              - incrementalKm * 8
+              - incrementalMinutes * 2
+              - corridorPenalty
+              - historicalPenalty;
+            if (!best || utility > best.utility) best = { unitIndex, route, estimate, utility };
+          });
+        });
+        if (!best) break;
+        applyEstimate(best.route, best.estimate);
+        remaining.splice(best.unitIndex, 1);
+      }
+      return remaining;
     }
 
     function retryUnassigned(candidates, routes, warehouse, minHistoricalKm) {
@@ -792,6 +892,30 @@
       });
     }
 
+    async function trimRoadOverloads(routes, warehouse) {
+      const removed = [];
+      for (const route of routes) {
+        for (let pass = 0; pass < 20 && route.totalMinutes > route.maxHours * 60 && route.stops.length; pass += 1) {
+          const options = locationUnits(route.stops).map((unit) => {
+            const remainingStops = route.stops.filter((stop) => String(stop.locationId || `machine-${stop.id}`) !== unit.key);
+            const estimate = estimateStops(remainingStops, warehouse);
+            const projectedMinutes = calibratedMinutes(route, estimate, warehouse);
+            const savedMinutes = Math.max(1, route.totalMinutes - projectedMinutes);
+            return { unit, estimate, savedMinutes, lossPerMinute: unitPlanningValue(unit) / savedMinutes };
+          }).sort((left, right) => left.lossPerMinute - right.lossPerMinute || right.savedMinutes - left.savedMinutes);
+          if (!options.length) break;
+          const selected = options[0];
+          removed.push({
+            ...selected.unit,
+            deferralReason: `odloženo kapacitou směny: po silničním přepočtu šetří přibližně ${Math.round(selected.savedMinutes)} min`
+          });
+          applyEstimate(route, selected.estimate);
+          await optimizeWithGoogle(route, warehouse);
+        }
+      }
+      return removed;
+    }
+
     function permutations(items) {
       if (items.length < 2) return [items];
       return items.flatMap((item, index) => permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [item, ...rest]));
@@ -871,10 +995,7 @@
       let remaining = [];
       if (!corridorAssigned) {
         const minHistoricalKm = Math.min(...crew.map((item) => Number(state.km30.get(String(item.employee.id)) || 0)));
-        const remainingAfterSeeds = seedRoutes(assignmentOrder(globallyOrderedUnits, warehouse), routes, warehouse);
-        assignmentOrder(remainingAfterSeeds, warehouse).forEach((unit) => {
-          if (!assignCandidate(unit, routes, warehouse, minHistoricalKm)) unassigned.push(unit);
-        });
+        unassigned.push(...assignCapacityAware(globallyOrderedUnits, routes, warehouse, minHistoricalKm));
         routes.forEach((route) => calculateMetrics(route, warehouse));
         remaining = retryUnassigned(unassigned, routes, warehouse, minHistoricalKm);
       } else {
@@ -886,8 +1007,16 @@
       await Promise.all(routes.map((route) => optimizeWithGoogle(route, warehouse)));
       els.status.textContent = 'Vyvažuji skutečné jízdní časy';
       await rebalanceAfterRoadCalculation(routes, warehouse);
+      const roadCapacityDeferrals = await trimRoadOverloads(routes, warehouse);
+      remaining.push(...roadCapacityDeferrals);
+      const incompatible = remaining.filter((unit) => !routes.some((route) => compatibleUnit(route, unit)));
+      const capacityDeferred = remaining.filter((unit) => routes.some((route) => compatibleUnit(route, unit))).map((unit) => ({
+        ...unit,
+        deferralReason: unit.deferralReason || 'odloženo kapacitou směny: vyšší priority se vešly do souvislého okruhu dříve'
+      }));
+      state.autoDeferredUnits.push(...capacityDeferred);
       state.routes = routes;
-      state.unassigned = flattenUnits(remaining);
+      state.unassigned = flattenUnits(incompatible);
       renderCandidateSelection();
       renderPlans();
       els.approve.disabled = !routes.some((route) => route.stops.length)
@@ -905,10 +1034,10 @@
       if (conflictMetric) conflictMetric.className = `metric ${conflictCount ? 'warn' : 'good'}`;
       els.plans.innerHTML = routes.map((route,index) => { const coffee = route.stops.filter((stop)=>!stop.snack).length; const food=route.stops.length-coffee; const locations=new Set(route.stops.map((stop)=>String(stop.locationId))).size; const percent=Math.round(route.totalMinutes/(route.maxHours*60)*100); const tone=percent>100?'amber':'green'; const cities=[...new Set(route.stops.map((stop)=>stop.city).filter(Boolean))]; return `<tr data-route-index="${index}" class="${index===0?'selected':''}"><td><div class="person">${esc(fullName(route.employee))}</div><div class="sub">${esc(vehicleName(route.vehicle))} · ${route.vehicle.service_scope==='coffee_only'?'pouze káva':'smíšený'}</div></td><td>${esc(cities.slice(0,3).join(' → ')||'Bez zastávek')}</td><td><b>${route.stops.length}</b><div class="sub">${locations} lokalit · ${coffee} káva${food?` · ${food} potraviny`:''}</div></td><td><b>${Math.round(route.distanceKm)} km</b></td><td>${minutesLabel(route.driveMinutes)}</td><td>${minutesLabel(route.serviceMinutes)}</td><td><b>${minutesLabel(route.totalMinutes)}</b><div class="bar ${percent>90?'warn':''}"><span style="width:${Math.min(100,percent)}%"></span></div></td><td>${route.ownCount} z ${route.stops.length} · ${route.stops.length?Math.round(route.ownCount/route.stops.length*100):0} %</td><td><span class="badge ${tone}">${percent>100?`Přesah ${minutesLabel(route.totalMinutes-route.maxHours*60)}`:percent>90?'Těsné':'V pořádku'}</span></td></tr>`; }).join('');
       const deferredCount = state.excludedLocationKeys.size;
-      const economicNames = (state.autoDeferredUnits || []).slice(0, 3).map((unit) => `${unit.stops[0]?.locationName || unit.city}: ${unit.deferralReason}`).join('; ');
+      const deferredNames = (state.autoDeferredUnits || []).slice(0, 3).map((unit) => `${unit.stops[0]?.locationName || unit.city}: ${unit.deferralReason}`).join('; ');
       els.note.textContent = conflictCount
         ? `${state.unassigned?.length || 0} zastávek se nevešlo. Pod tabulkou je jejich úplný seznam a možnosti úpravy. Přes limit po silničním přepočtu: ${overruns}.`
-        : `Připraveno ${routes.filter((route) => route.stops.length).length} tras${deferredCount ? `, ručně odloženo ${deferredCount} lokalit` : ''}${state.autoDeferredUnits.length ? `, ekonomicky odloženo ${state.autoDeferredUnits.length} lokalit${economicNames ? ` (${economicNames})` : ''}` : ''}. Kliknutím na řádek zobrazíte pořadí a důvody.`;
+        : `Připraveno ${routes.filter((route) => route.stops.length).length} tras${deferredCount ? `, ručně odloženo ${deferredCount} lokalit` : ''}${state.autoDeferredUnits.length ? `, plánem odloženo ${state.autoDeferredUnits.length} lokalit${deferredNames ? ` (${deferredNames})` : ''}` : ''}. Kliknutím na řádek zobrazíte pořadí a důvody.`;
       els.status.textContent = conflictCount ? 'Návrh má konflikty' : 'Návrh připraven';
       [...els.plans.querySelectorAll('tr[data-route-index]')].forEach((row) => row.addEventListener('click', () => { [...els.plans.querySelectorAll('tr')].forEach((item)=>item.classList.remove('selected')); row.classList.add('selected'); renderDetail(routes[Number(row.dataset.routeIndex)]); }));
       if (routes[0]) renderDetail(routes[0]);
@@ -1015,14 +1144,15 @@
       await loadPublishedShiftTeam(els.date.value);
       const historyStart=daysAgo(90); const kmStart=daysAgo(30);
       const metricsFrom = new Date(Date.now() - 30 * 86400000).toISOString();
-      const [employees,vehicles,warehouses,machines,locations,containerRows,slotRows,visits,rules,history,logs,metrics,scheduled] = await Promise.all([
+      const [employees,vehicles,warehouses,machines,locations,products,containerRows,slotRows,visits,rules,history,logs,metrics,scheduled] = await Promise.all([
         supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname'),
         supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate'),
         supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name'),
         supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active').eq('active',true),
         supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true),
+        supabase.from('products').select('sku,name,product_category').eq('active',true),
         fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true)),
-        fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('machine_id,product_name,current_units,capacity_units,active').eq('active',true)),
+        fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,expiry_date,active').eq('active',true)),
         supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500),
         supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note'),
         supabase.from('route_plans').select('planned_employee_id,planning_date,execution_status,route_plan_stops(machine_id,location_id,status)').gte('planning_date',historyStart).neq('execution_status','cancelled'),
@@ -1030,7 +1160,7 @@
         supabase.rpc('get_route_dispatch_machine_metrics_v29', { p_from: metricsFrom, p_to: new Date().toISOString() }),
         supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled')
       ]);
-      const results=[employees,vehicles,warehouses,machines,locations,visits,rules,history,logs,metrics,scheduled]; const failed=results.find((result)=>result.error); if(failed) throw failed.error;
+      const results=[employees,vehicles,warehouses,machines,locations,products,visits,rules,history,logs,metrics,scheduled]; const failed=results.find((result)=>result.error); if(failed) throw failed.error;
       state.ownership.clear(); state.km30.clear(); state.scheduledEmployees.clear(); state.scheduledVehicles.clear();
       state.employees=employees.data||[]; state.vehicles=vehicles.data||[]; state.warehouses=(warehouses.data||[]).map((row)=>({...row,latitude:Number(row.latitude),longitude:Number(row.longitude)})); state.machines=machines.data||[]; state.locations=locations.data||[];
       (scheduled.data||[]).forEach((plan)=>{ if(plan.planned_employee_id) state.scheduledEmployees.add(String(plan.planned_employee_id)); if(plan.vehicle_id) state.scheduledVehicles.add(String(plan.vehicle_id)); });
@@ -1039,7 +1169,7 @@
       state.machines.forEach((machine)=>{ const options=state.employees.map((employee)=>({id:employee.id,count:Number(ownerCounts.get(`${machine.id}:${employee.id}`)||0)})).sort((a,b)=>b.count-a.count); if(options[0]?.count) state.ownership.set(String(machine.id),options[0].id); });
       state.employees.forEach((employee)=>{ const owned=state.machines.filter((machine)=>String(state.ownership.get(String(machine.id))||'')===String(employee.id)); const cities=owned.map((machine)=>state.locations.find((location)=>String(location.id)===String(machine.location_id))?.city).filter(Boolean); const counts=new Map(); cities.forEach((city)=>counts.set(city,(counts.get(city)||0)+1)); const area=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([city])=>city).join(' / '); if(area) state.ownership.set(`employee:${employee.id}:area`,area); });
       els.warehouse.innerHTML=state.warehouses.map((row)=>`<option value="${esc(row.id)}">${esc([row.name,row.city].filter(Boolean).join(' · '))}</option>`).join(''); const preferred=state.warehouses.find((row)=>norm(row.name).includes('blucina')); if(preferred) els.warehouse.value=String(preferred.id);
-      buildCandidates({ machines:state.machines, locations:state.locations, containers:containerRows, slots:slotRows, visits:visits.data||[], rules:rules.data||[], metrics:metrics.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu'; document.querySelector('.metric strong').textContent=state.candidates.length;
+      buildCandidates({ machines:state.machines, locations:state.locations, products:products.data||[], containers:containerRows, slots:slotRows, visits:visits.data||[], rules:rules.data||[], metrics:metrics.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu'; document.querySelector('.metric strong').textContent=state.candidates.length;
     }
 
     els.crew.addEventListener('change',syncCrew);
