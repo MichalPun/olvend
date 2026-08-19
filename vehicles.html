@@ -3052,7 +3052,7 @@
 
     function buildDkvPeriodMetrics(vehicleLogs, vehicleExpenses, startDate, endDate) {
       if (!startDate || !endDate) {
-        return { distanceKm: 0, appDistanceKm: 0, dkvOdometerDistanceKm: 0, distanceSource: 'app_logs', distanceRows: 0, fuelAmount: 0, otherAmount: 0, totalAmount: 0, fuelLiters: 0, costPerKm: null, fuelCostPerKm: null, litersPer100Km: null, rows: 0 }
+        return { distanceKm: 0, appDistanceKm: 0, dkvOdometerDistanceKm: 0, distanceSource: 'app_logs', distanceRows: 0, fuelAmount: 0, otherAmount: 0, totalAmount: 0, fuelLiters: 0, consumptionDistanceKm: 0, costPerKm: null, fuelCostPerKm: null, litersPer100Km: null, rows: 0 }
       }
       const periodLogs = vehicleLogs.filter((log) => isWithinDateRange(log.log_date, startDate, endDate))
       const dkvFuelLogs = periodLogs.filter((log) => hasDkvCostMarker(log.fuel_note) && Number(log.fuel_cost || 0) > 0)
@@ -3065,7 +3065,21 @@
       const distanceKm = Math.max(appDistanceKm, dkvOdometerDistanceKm)
       const distanceSource = dkvOdometerDistanceKm > appDistanceKm ? 'dkv_odometer' : 'app_logs'
       const fuelAmount = dkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
-      const fuelLiters = dkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
+      const sortedFuelLogs = [...dkvFuelLogs]
+        .filter((log) => Number.isFinite(Number(log.fuel_odometer_km)) && Number(log.fuel_odometer_km) > 0)
+        .sort((a, b) => Number(a.fuel_odometer_km) - Number(b.fuel_odometer_km) || String(a.log_date).localeCompare(String(b.log_date)))
+      const consumptionSegments = []
+      for (let index = 1; index < sortedFuelLogs.length; index += 1) {
+        const previousKm = Number(sortedFuelLogs[index - 1].fuel_odometer_km)
+        const currentKm = Number(sortedFuelLogs[index].fuel_odometer_km)
+        const liters = Number(sortedFuelLogs[index].fuel_liters || 0)
+        const segmentKm = currentKm - previousKm
+        const segmentConsumption = segmentKm > 0 ? (liters / segmentKm) * 100 : 0
+        if (segmentKm < 20 || segmentConsumption < 3 || segmentConsumption > 25) continue
+        consumptionSegments.push({ distanceKm: segmentKm, fuelLiters: liters })
+      }
+      const fuelLiters = consumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0)
+      const consumptionDistanceKm = consumptionSegments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0)
       const otherAmount = dkvExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
       const totalAmount = fuelAmount + otherAmount
       return {
@@ -3078,9 +3092,10 @@
         otherAmount,
         totalAmount,
         fuelLiters,
+        consumptionDistanceKm,
         costPerKm: distanceKm > 0 && totalAmount > 0 ? totalAmount / distanceKm : null,
         fuelCostPerKm: distanceKm > 0 && fuelAmount > 0 ? fuelAmount / distanceKm : null,
-        litersPer100Km: distanceKm > 0 && fuelLiters > 0 ? (fuelLiters / distanceKm) * 100 : null,
+        litersPer100Km: consumptionDistanceKm > 0 && fuelLiters > 0 ? (fuelLiters / consumptionDistanceKm) * 100 : null,
         rows: dkvFuelLogs.length + dkvExpenses.length
       }
     }
@@ -3133,6 +3148,7 @@
         otherAmount: selectedMetrics.otherAmount,
         totalAmount: selectedMetrics.totalAmount,
         fuelLiters: selectedMetrics.fuelLiters,
+        consumptionDistanceKm: selectedMetrics.consumptionDistanceKm,
         costPerKm: selectedMetrics.costPerKm,
         fuelCostPerKm: selectedMetrics.fuelCostPerKm,
         litersPer100Km: selectedMetrics.litersPer100Km,
@@ -3175,8 +3191,9 @@
       const fleetDistanceKm = insights.reduce((sum, item) => sum + Number(item.insight.distanceKm || 0), 0)
       const fleetDkvAmount = insights.reduce((sum, item) => sum + Number(item.insight.totalAmount || 0), 0)
       const fleetFuelLiters = insights.reduce((sum, item) => sum + Number(item.insight.fuelLiters || 0), 0)
+      const fleetConsumptionDistanceKm = insights.reduce((sum, item) => sum + Number(item.insight.consumptionDistanceKm || 0), 0)
       const fleetCostPerKm = fleetDistanceKm > 0 && fleetDkvAmount > 0 ? fleetDkvAmount / fleetDistanceKm : null
-      const fleetConsumption = fleetDistanceKm > 0 && fleetFuelLiters > 0 ? (fleetFuelLiters / fleetDistanceKm) * 100 : null
+      const fleetConsumption = fleetConsumptionDistanceKm > 0 && fleetFuelLiters > 0 ? (fleetFuelLiters / fleetConsumptionDistanceKm) * 100 : null
 
       return `
         <section class="detail-section">
