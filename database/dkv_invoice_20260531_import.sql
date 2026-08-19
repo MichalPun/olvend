@@ -123,16 +123,16 @@ where id = 79;
 insert into public.vehicle_operation_logs
   (vehicle_id, employee_id, log_date, fuel_liters, fuel_cost, fuel_note, status)
 select
-  4,
+  5,
   'ba6be55d-1b4c-4c59-a995-274157d61306',
   '2026-05-27',
   44.59,
   1705.01,
-  'DKV 26/652265207/001 SERVIS 2 Lukáš Urbánek Opel Movano 2BN7419 ONO Brno-Venkov tx 494471',
+  'DKV 26/652265207/001 SERVIS 2 Lukáš Urbánek Opel Combo 7Z71808 ONO Brno-Venkov tx 494471',
   'review'
 where not exists (
   select 1 from public.vehicle_operation_logs
-  where vehicle_id = 4
+  where vehicle_id = 5
     and employee_id = 'ba6be55d-1b4c-4c59-a995-274157d61306'
     and log_date = '2026-05-27'
     and abs(coalesce(fuel_cost, 0) - 1705.01) < 0.01

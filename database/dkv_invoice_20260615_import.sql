@@ -96,17 +96,17 @@ where id = 101;
 insert into public.vehicle_operation_logs
   (vehicle_id, employee_id, log_date, fuel_liters, fuel_cost, fuel_odometer_km, fuel_note, status)
 select
-  4,
+  5,
   'ba6be55d-1b4c-4c59-a995-274157d61306',
   '2026-06-01',
   51.01,
   2040.16,
   88850,
-  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Movano 2BN7419 EuroOil Vojkovice tx 86537',
+  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Combo 7Z71808 EuroOil Vojkovice tx 86537',
   'review'
 where not exists (
   select 1 from public.vehicle_operation_logs
-  where vehicle_id = 4
+  where vehicle_id = 5
     and employee_id = 'ba6be55d-1b4c-4c59-a995-274157d61306'
     and log_date = '2026-06-01'
     and fuel_odometer_km = 88850
@@ -116,17 +116,17 @@ where not exists (
 insert into public.vehicle_operation_logs
   (vehicle_id, employee_id, log_date, fuel_liters, fuel_cost, fuel_odometer_km, fuel_note, status)
 select
-  4,
+  5,
   'ba6be55d-1b4c-4c59-a995-274157d61306',
   '2026-06-08',
   49.00,
   1813.39,
   89666,
-  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Movano 2BN7419 EuroOil Vojkovice tx 90698',
+  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Combo 7Z71808 EuroOil Vojkovice tx 90698',
   'review'
 where not exists (
   select 1 from public.vehicle_operation_logs
-  where vehicle_id = 4
+  where vehicle_id = 5
     and employee_id = 'ba6be55d-1b4c-4c59-a995-274157d61306'
     and log_date = '2026-06-08'
     and fuel_odometer_km = 89666
@@ -136,15 +136,15 @@ where not exists (
 insert into public.vehicle_expenses
   (vehicle_id, expense_date, category, amount, vendor, note)
 select
-  4,
+  5,
   '2026-06-08',
   'other',
   125.49,
   'DKV / EuroOil Vojkovice',
-  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Movano 2BN7419 příslušenství tx 90698'
+  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Combo 7Z71808 příslušenství tx 90698'
 where not exists (
   select 1 from public.vehicle_expenses
-  where vehicle_id = 4
+  where vehicle_id = 5
     and expense_date = '2026-06-08'
     and category = 'other'
     and abs(amount - 125.49) < 0.01
@@ -154,15 +154,15 @@ where not exists (
 insert into public.vehicle_expenses
   (vehicle_id, expense_date, category, amount, vendor, note)
 select
-  4,
+  5,
   '2026-06-08',
   'fuel_card',
   188.14,
   'DKV / ONO Brno-Venkov',
-  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Movano 2BN7419 AdBlue 15.05 l tx 521405'
+  'DKV 26/652641267/002 SERVIS 2 Lukáš Urbánek Opel Combo 7Z71808 AdBlue 15.05 l tx 521405'
 where not exists (
   select 1 from public.vehicle_expenses
-  where vehicle_id = 4
+  where vehicle_id = 5
     and expense_date = '2026-06-08'
     and category = 'fuel_card'
     and abs(amount - 188.14) < 0.01

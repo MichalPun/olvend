@@ -897,6 +897,86 @@
       margin-bottom: 14px;
     }
 
+    .cost-dashboard-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .cost-dashboard-head h4 { margin-bottom: 4px; }
+
+    .cost-dashboard-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .cost-period-switch {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .cost-period-btn {
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 850;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .cost-period-btn.active {
+      color: #fff;
+      background: rgba(213,16,26,0.9);
+      box-shadow: 0 5px 16px rgba(213,16,26,0.2);
+    }
+
+    .cost-fleet-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .cost-fleet-stat {
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.07);
+      background: rgba(255,255,255,0.025);
+    }
+
+    .cost-fleet-label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .cost-fleet-value {
+      margin-top: 5px;
+      font-size: 19px;
+      font-weight: 900;
+    }
+
+    @media (max-width: 760px) {
+      .cost-dashboard-head { align-items: stretch; flex-direction: column; }
+      .cost-period-switch { width: 100%; }
+      .cost-period-btn { flex: 1; }
+      .cost-fleet-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
     .cost-control-card {
       padding: 12px 14px;
       border-radius: 14px;
@@ -2435,6 +2515,11 @@
     let vehicleReviewCards = []
     let vehicleReviewActionMap = new Map()
     let vehicleCostPerKmMap = new Map()
+    let firstDkvDataDate = null
+    let latestDkvDataDate = null
+    let costPerKmPeriod = ['30d', '90d', 'all'].includes(localStorage.getItem('vehicle-cost-km-period-v2'))
+      ? localStorage.getItem('vehicle-cost-km-period-v2')
+      : '90d'
     let recentExpenses = []
     let currentUser = null
     let isEditMode = false
@@ -2933,10 +3018,6 @@
       4: { target: 4.00, limit: 4.50, label: 'Servisní auto limit' }
     }
 
-    const COST_PER_KM_INVOICE_MARKER = 'DKV 26/653689759/001'
-    const COST_PER_KM_START_DATE = '2026-07-16'
-    const COST_PER_KM_END_DATE = '2026-07-31'
-
     function getCostPerKmLimit(vehicle) {
       return COST_PER_KM_LIMITS[Number(vehicle?.id)] || { target: 3.00, limit: 3.50, label: 'Provozní limit' }
     }
@@ -2946,12 +3027,62 @@
       return String(dateValue) >= startDate && String(dateValue) <= endDate
     }
 
-    function hasDkvInvoiceMarker(value) {
-      return String(value || '').includes(COST_PER_KM_INVOICE_MARKER)
-    }
-
     function hasDkvCostMarker(value) {
       return String(value || '').includes('DKV ')
+    }
+
+    function shiftIsoDate(dateValue, days) {
+      if (!dateValue) return null
+      const date = new Date(`${dateValue}T00:00:00Z`)
+      date.setUTCDate(date.getUTCDate() + days)
+      return date.toISOString().slice(0, 10)
+    }
+
+    function getCostPerKmPeriodDefinition(periodKey = costPerKmPeriod) {
+      const endDate = latestDkvDataDate
+      if (!endDate) return { key: periodKey, label: 'Bez DKV dat', shortLabel: 'DKV', startDate: null, endDate: null, days: null }
+      if (periodKey === '30d') {
+        return { key: periodKey, label: 'Posledních 30 dní', shortLabel: '30 dní', startDate: shiftIsoDate(endDate, -29), endDate, days: 30 }
+      }
+      if (periodKey === '90d') {
+        return { key: periodKey, label: 'Posledních 90 dní', shortLabel: '90 dní', startDate: shiftIsoDate(endDate, -89), endDate, days: 90 }
+      }
+      return { key: 'all', label: 'Celé DKV období', shortLabel: 'Celkem', startDate: firstDkvDataDate, endDate, days: null }
+    }
+
+    function buildDkvPeriodMetrics(vehicleLogs, vehicleExpenses, startDate, endDate) {
+      if (!startDate || !endDate) {
+        return { distanceKm: 0, appDistanceKm: 0, dkvOdometerDistanceKm: 0, distanceSource: 'app_logs', distanceRows: 0, fuelAmount: 0, otherAmount: 0, totalAmount: 0, fuelLiters: 0, costPerKm: null, fuelCostPerKm: null, litersPer100Km: null, rows: 0 }
+      }
+      const periodLogs = vehicleLogs.filter((log) => isWithinDateRange(log.log_date, startDate, endDate))
+      const dkvFuelLogs = periodLogs.filter((log) => hasDkvCostMarker(log.fuel_note) && Number(log.fuel_cost || 0) > 0)
+      const dkvExpenses = vehicleExpenses.filter((expense) =>
+        isWithinDateRange(expense.expense_date, startDate, endDate) && hasDkvCostMarker(expense.note) && Number(expense.amount || 0) > 0
+      )
+      const appDistanceKm = periodLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
+      const dkvOdometers = dkvFuelLogs.map((log) => Number(log.fuel_odometer_km)).filter((value) => Number.isFinite(value) && value > 0)
+      const dkvOdometerDistanceKm = dkvOdometers.length >= 2 ? Math.max(...dkvOdometers) - Math.min(...dkvOdometers) : 0
+      const distanceKm = Math.max(appDistanceKm, dkvOdometerDistanceKm)
+      const distanceSource = dkvOdometerDistanceKm > appDistanceKm ? 'dkv_odometer' : 'app_logs'
+      const fuelAmount = dkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
+      const fuelLiters = dkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
+      const otherAmount = dkvExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
+      const totalAmount = fuelAmount + otherAmount
+      return {
+        distanceKm,
+        appDistanceKm,
+        dkvOdometerDistanceKm,
+        distanceSource,
+        distanceRows: periodLogs.filter((log) => Number(log.distance_km || 0) > 0).length,
+        fuelAmount,
+        otherAmount,
+        totalAmount,
+        fuelLiters,
+        costPerKm: distanceKm > 0 && totalAmount > 0 ? totalAmount / distanceKm : null,
+        fuelCostPerKm: distanceKm > 0 && fuelAmount > 0 ? fuelAmount / distanceKm : null,
+        litersPer100Km: distanceKm > 0 && fuelLiters > 0 ? (fuelLiters / distanceKm) * 100 : null,
+        rows: dkvFuelLogs.length + dkvExpenses.length
+      }
     }
 
     function getCostPerKmTone(costPerKm, target, limit) {
@@ -2970,20 +3101,6 @@
 
     function buildVehicleCostPerKmInsight(vehicle, vehicleLogs, vehicleExpenses) {
       const limits = getCostPerKmLimit(vehicle)
-      const periodLogs = vehicleLogs.filter((log) => isWithinDateRange(log.log_date, COST_PER_KM_START_DATE, COST_PER_KM_END_DATE))
-      const invoiceFuelLogs = periodLogs.filter((log) => hasDkvInvoiceMarker(log.fuel_note))
-      const invoiceExpenses = vehicleExpenses.filter((expense) =>
-        isWithinDateRange(expense.expense_date, COST_PER_KM_START_DATE, COST_PER_KM_END_DATE) && hasDkvInvoiceMarker(expense.note)
-      )
-      const distanceKm = periodLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
-      const fuelAmount = invoiceFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
-      const fuelLiters = invoiceFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
-      const otherAmount = invoiceExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
-      const totalAmount = fuelAmount + otherAmount
-      const costPerKm = distanceKm > 0 && totalAmount > 0 ? totalAmount / distanceKm : null
-      const fuelCostPerKm = distanceKm > 0 && fuelAmount > 0 ? fuelAmount / distanceKm : null
-      const litersPer100Km = distanceKm > 0 && fuelLiters > 0 ? (fuelLiters / distanceKm) * 100 : null
-      const tone = getCostPerKmTone(costPerKm, limits.target, limits.limit)
       const allDkvFuelLogs = vehicleLogs.filter((log) => hasDkvCostMarker(log.fuel_note) && Number(log.fuel_cost || 0) > 0)
       const allDkvExpenses = vehicleExpenses.filter((expense) => hasDkvCostMarker(expense.note) && Number(expense.amount || 0) > 0)
       const firstDkvDate = [...allDkvFuelLogs.map((log) => log.log_date), ...allDkvExpenses.map((expense) => expense.expense_date)]
@@ -2993,46 +3110,53 @@
         .filter(Boolean)
         .sort()
         .at(-1) || null
-      const trackedLogs = firstDkvDate && lastDkvDate
-        ? vehicleLogs.filter((log) => String(log.log_date) >= firstDkvDate && String(log.log_date) <= lastDkvDate)
-        : []
-      const cumulativeDistanceKm = trackedLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
-      const cumulativeFuelAmount = allDkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
-      const cumulativeFuelLiters = allDkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_liters || 0), 0)
-      const cumulativeOtherAmount = allDkvExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
-      const cumulativeTotalAmount = cumulativeFuelAmount + cumulativeOtherAmount
-      const cumulativeCostPerKm = cumulativeDistanceKm > 0 && cumulativeTotalAmount > 0 ? cumulativeTotalAmount / cumulativeDistanceKm : null
-      const cumulativeLitersPer100Km = cumulativeDistanceKm > 0 && cumulativeFuelLiters > 0 ? (cumulativeFuelLiters / cumulativeDistanceKm) * 100 : null
-      const cumulativeTone = getCostPerKmTone(cumulativeCostPerKm, limits.target, limits.limit)
+      const selectedPeriod = getCostPerKmPeriodDefinition()
+      const selectedStartDate = selectedPeriod.key === 'all' ? firstDkvDate : selectedPeriod.startDate
+      const selectedMetrics = buildDkvPeriodMetrics(vehicleLogs, vehicleExpenses, selectedStartDate, selectedPeriod.endDate)
+      const historyMetrics = buildDkvPeriodMetrics(vehicleLogs, vehicleExpenses, firstDkvDate, latestDkvDataDate)
+      const recentPeriod = getCostPerKmPeriodDefinition('30d')
+      const recentMetrics = buildDkvPeriodMetrics(vehicleLogs, vehicleExpenses, recentPeriod.startDate, recentPeriod.endDate)
+      const tone = getCostPerKmTone(selectedMetrics.costPerKm, limits.target, limits.limit)
+      const cumulativeTone = getCostPerKmTone(historyMetrics.costPerKm, limits.target, limits.limit)
+      const recent30Tone = getCostPerKmTone(recentMetrics.costPerKm, limits.target, limits.limit)
 
       return {
-        periodLabel: '16.–31. 7. 2026',
-        distanceKm,
-        distanceRows: periodLogs.filter((log) => Number(log.distance_km || 0) > 0).length,
-        fuelAmount,
-        otherAmount,
-        totalAmount,
-        fuelLiters,
-        costPerKm,
-        fuelCostPerKm,
-        litersPer100Km,
+        periodLabel: selectedPeriod.label,
+        periodShortLabel: selectedPeriod.shortLabel,
+        periodDateLabel: selectedStartDate && selectedPeriod.endDate ? `${formatDateLabel(selectedStartDate)} – ${formatDateLabel(selectedPeriod.endDate)}` : 'Bez DKV dat',
+        distanceKm: selectedMetrics.distanceKm,
+        distanceSource: selectedMetrics.distanceSource,
+        appDistanceKm: selectedMetrics.appDistanceKm,
+        dkvOdometerDistanceKm: selectedMetrics.dkvOdometerDistanceKm,
+        distanceRows: selectedMetrics.distanceRows,
+        fuelAmount: selectedMetrics.fuelAmount,
+        otherAmount: selectedMetrics.otherAmount,
+        totalAmount: selectedMetrics.totalAmount,
+        fuelLiters: selectedMetrics.fuelLiters,
+        costPerKm: selectedMetrics.costPerKm,
+        fuelCostPerKm: selectedMetrics.fuelCostPerKm,
+        litersPer100Km: selectedMetrics.litersPer100Km,
         targetCostPerKm: limits.target,
         limitCostPerKm: limits.limit,
         limitLabel: limits.label,
         tone,
         statusLabel: getCostPerKmStatusLabel(tone),
-        invoiceRows: invoiceFuelLogs.length + invoiceExpenses.length,
+        invoiceRows: historyMetrics.rows,
+        selectedRows: selectedMetrics.rows,
         firstDkvDate,
         lastDkvDate,
-        cumulativeDistanceKm,
-        cumulativeFuelAmount,
-        cumulativeOtherAmount,
-        cumulativeTotalAmount,
-        cumulativeCostPerKm,
-        cumulativeLitersPer100Km,
+        cumulativeDistanceKm: historyMetrics.distanceKm,
+        cumulativeFuelAmount: historyMetrics.fuelAmount,
+        cumulativeOtherAmount: historyMetrics.otherAmount,
+        cumulativeTotalAmount: historyMetrics.totalAmount,
+        cumulativeCostPerKm: historyMetrics.costPerKm,
+        cumulativeLitersPer100Km: historyMetrics.litersPer100Km,
         cumulativeTone,
         cumulativeStatusLabel: getCostPerKmStatusLabel(cumulativeTone),
-        cumulativeRows: allDkvFuelLogs.length + allDkvExpenses.length
+        cumulativeRows: historyMetrics.rows,
+        recent30CostPerKm: recentMetrics.costPerKm,
+        recent30Tone,
+        recent30StatusLabel: getCostPerKmStatusLabel(recent30Tone)
       }
     }
 
@@ -3047,9 +3171,34 @@
 
       if (!insights.length) return ''
 
+      const period = getCostPerKmPeriodDefinition()
+      const fleetDistanceKm = insights.reduce((sum, item) => sum + Number(item.insight.distanceKm || 0), 0)
+      const fleetDkvAmount = insights.reduce((sum, item) => sum + Number(item.insight.totalAmount || 0), 0)
+      const fleetFuelLiters = insights.reduce((sum, item) => sum + Number(item.insight.fuelLiters || 0), 0)
+      const fleetCostPerKm = fleetDistanceKm > 0 && fleetDkvAmount > 0 ? fleetDkvAmount / fleetDistanceKm : null
+      const fleetConsumption = fleetDistanceKm > 0 && fleetFuelLiters > 0 ? (fleetFuelLiters / fleetDistanceKm) * 100 : null
+
       return `
         <section class="detail-section">
-          <h4>Náklad na km podle DKV faktury</h4>
+          <div class="cost-dashboard-head">
+            <div>
+              <h4>Náklad na kilometr z DKV</h4>
+              <div class="cost-dashboard-subtitle">Náklady se počítají ze všech naimportovaných DKV transakcí v období. Kilometry po ${escapeHtml(latestDkvDataDate ? formatDateLabel(latestDkvDataDate) : 'posledním importu')} se nezapočítávají; při neúplných jízdách se použije doložený rozsah tachometrů DKV.</div>
+            </div>
+            <div class="cost-period-switch" role="group" aria-label="Období nákladů na kilometr">
+              ${[
+                ['30d', '30 dní'],
+                ['90d', '90 dní'],
+                ['all', 'Celé období']
+              ].map(([key, label]) => `<button class="cost-period-btn ${costPerKmPeriod === key ? 'active' : ''}" type="button" data-cost-km-period="${key}">${label}</button>`).join('')}
+            </div>
+          </div>
+          <div class="cost-fleet-summary">
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">Flotila Kč/km</div><div class="cost-fleet-value">${escapeHtml(fleetCostPerKm != null ? `${formatDecimal(fleetCostPerKm, 2)} Kč` : 'Bez km')}</div></div>
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">Ujeté km</div><div class="cost-fleet-value">${escapeHtml(formatQuantity(fleetDistanceKm, 'km'))}</div></div>
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">DKV náklad</div><div class="cost-fleet-value">${escapeHtml(formatMoney(fleetDkvAmount))}</div></div>
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">Spotřeba</div><div class="cost-fleet-value">${escapeHtml(fleetConsumption != null ? `${formatConsumption(fleetConsumption)} / 100 km` : 'Bez výpočtu')}</div></div>
+          </div>
           <div class="cost-control-grid">
             ${insights.map(({ vehicle, insight }) => `
               <article class="cost-control-card ${escapeHtml(insight.tone)}">
@@ -3059,7 +3208,7 @@
                 </div>
                 <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
                 <div class="cost-control-note">
-                  ${escapeHtml(`${insight.periodLabel} · ${formatQuantity(insight.distanceKm, 'km')} · náklad ${formatMoney(insight.totalAmount)} · průměr od startu ${insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}
+                  ${escapeHtml(`${period.label} (${insight.periodDateLabel}) · ${formatQuantity(insight.distanceKm, 'km')} ${insight.distanceSource === 'dkv_odometer' ? 'z tachometrů DKV' : 'z jízd'} · DKV ${formatMoney(insight.totalAmount)} · dlouhodobě ${insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'}`)}
                 </div>
               </article>
             `).join('')}
@@ -3073,27 +3222,27 @@
 
       return `
         <section class="detail-section">
-          <h4>Náklad na km podle poslední DKV faktury</h4>
+          <h4>Náklad na kilometr z DKV</h4>
           <div class="cost-control-grid">
             <article class="cost-control-card ${escapeHtml(insight.tone)}">
               <div class="cost-control-top">
-                <div class="cost-control-title">${escapeHtml(insight.periodLabel)}</div>
+                <div class="cost-control-title">${escapeHtml(`${insight.periodLabel} · ${insight.periodDateLabel}`)}</div>
                 <span class="cost-control-status">${escapeHtml(insight.statusLabel)}</span>
               </div>
               <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
-              <div class="cost-control-note">${escapeHtml(`Limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km · cíl ${formatDecimal(insight.targetCostPerKm, 2)} Kč/km`)}</div>
+              <div class="cost-control-note">${escapeHtml(`${formatQuantity(insight.distanceKm, 'km')} ${insight.distanceSource === 'dkv_odometer' ? 'z tachometrů DKV' : 'z jízd'} · DKV ${formatMoney(insight.totalAmount)} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}</div>
             </article>
             <article class="cost-control-card ${escapeHtml(insight.cumulativeTone)}">
               <div class="cost-control-top">
-                <div class="cost-control-title">Průměr od začátku sledování</div>
+                <div class="cost-control-title">Celé DKV období</div>
                 <span class="cost-control-status">${escapeHtml(insight.cumulativeStatusLabel)}</span>
               </div>
               <div class="cost-control-value">${escapeHtml(insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'Bez km')}</div>
-              <div class="cost-control-note">${escapeHtml(`${insight.firstDkvDate ? `Od ${formatDateLabel(insight.firstDkvDate)}${insight.lastDkvDate ? ` do ${formatDateLabel(insight.lastDkvDate)}` : ''} · ` : ''}${formatQuantity(insight.cumulativeDistanceKm, 'km')} · DKV náklad ${formatMoney(insight.cumulativeTotalAmount)}${insight.cumulativeLitersPer100Km != null ? ` · ${formatConsumption(insight.cumulativeLitersPer100Km)} / 100 km` : ''}`)}</div>
+              <div class="cost-control-note">${escapeHtml(`${insight.firstDkvDate ? `Od ${formatDateLabel(insight.firstDkvDate)} do ${latestDkvDataDate ? formatDateLabel(latestDkvDataDate) : formatDateLabel(insight.lastDkvDate)} · ` : ''}${formatQuantity(insight.cumulativeDistanceKm, 'km')} · DKV ${formatMoney(insight.cumulativeTotalAmount)}${insight.cumulativeLitersPer100Km != null ? ` · ${formatConsumption(insight.cumulativeLitersPer100Km)} / 100 km` : ''}`)}</div>
             </article>
             <article class="cost-control-card">
               <div class="cost-control-top">
-                <div class="cost-control-title">Fakturační náklad</div>
+                <div class="cost-control-title">DKV náklad v období</div>
               </div>
               <div class="cost-control-value">${escapeHtml(formatMoney(insight.totalAmount))}</div>
               <div class="cost-control-note">${escapeHtml(`PHM ${formatMoney(insight.fuelAmount)}${insight.otherAmount ? ` · ostatní ${formatMoney(insight.otherAmount)}` : ''}`)}</div>
@@ -3103,7 +3252,7 @@
                 <div class="cost-control-title">Km z aplikace</div>
               </div>
               <div class="cost-control-value">${escapeHtml(formatQuantity(insight.distanceKm, 'km'))}</div>
-              <div class="cost-control-note">${escapeHtml(`${insight.distanceRows} jízd s km · ${insight.litersPer100Km != null ? `${formatConsumption(insight.litersPer100Km)} / 100 km` : 'bez výpočtu spotřeby'}`)}</div>
+              <div class="cost-control-note">${escapeHtml(`${insight.distanceSource === 'dkv_odometer' ? `Použit rozsah DKV ${formatQuantity(insight.dkvOdometerDistanceKm, 'km')}; jízdy mají jen ${formatQuantity(insight.appDistanceKm, 'km')}` : `${insight.distanceRows} jízd s km`} · ${insight.litersPer100Km != null ? `${formatConsumption(insight.litersPer100Km)} / 100 km` : 'bez výpočtu spotřeby'}`)}</div>
             </article>
           </div>
         </section>
@@ -3196,6 +3345,18 @@
       if (operatingCostsValue) operatingCostsValue.textContent = formatMoney(totalOperatingCosts)
       if (costPerKmPanel) costPerKmPanel.innerHTML = renderCostPerKmCards()
       renderReviewPanel()
+    }
+
+    function rebuildCostPerKmInsights() {
+      vehicleCostPerKmMap = new Map()
+      vehiclesData.forEach((vehicle) => {
+        const key = String(vehicle.id)
+        vehicleCostPerKmMap.set(key, buildVehicleCostPerKmInsight(
+          vehicle,
+          vehicleLogsMap.get(key) || [],
+          vehicleExpensesListMap.get(key) || []
+        ))
+      })
     }
 
     function renderReviewPanel() {
@@ -3707,12 +3868,12 @@
               </div>
               ${costPerKmInsight?.invoiceRows ? `
                 <div class="vehicle-metric-row">
-                  <span class="vehicle-metric-label">DKV Kč/km</span>
-                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.tone)}">${escapeHtml(costPerKmInsight.costPerKm != null ? `${formatDecimal(costPerKmInsight.costPerKm, 2)} · ${costPerKmInsight.statusLabel}` : 'Bez km')}</span>
+                  <span class="vehicle-metric-label">DKV celkem</span>
+                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.cumulativeTone)}">${escapeHtml(costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'Bez km')}</span>
                 </div>
                 <div class="vehicle-metric-row">
-                  <span class="vehicle-metric-label">Průměr DKV</span>
-                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.cumulativeTone)}">${escapeHtml(costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} · ${costPerKmInsight.cumulativeStatusLabel}` : 'Bez km')}</span>
+                  <span class="vehicle-metric-label">DKV 30 dní</span>
+                  <span class="cost-km-badge ${escapeHtml(costPerKmInsight.recent30Tone)}">${escapeHtml(costPerKmInsight.recent30CostPerKm != null ? `${formatDecimal(costPerKmInsight.recent30CostPerKm, 2)} Kč/km` : 'Bez dat')}</span>
                 </div>
               ` : ''}
               <div class="fleet-control-cell">
@@ -4009,6 +4170,12 @@
 
       const logs = logsResult.data ?? []
       const expenses = expensesResult.data ?? []
+      const dkvDataDates = [
+        ...logs.filter((log) => hasDkvCostMarker(log.fuel_note) && Number(log.fuel_cost || 0) > 0).map((log) => log.log_date),
+        ...expenses.filter((expense) => hasDkvCostMarker(expense.note) && Number(expense.amount || 0) > 0).map((expense) => expense.expense_date)
+      ].filter(Boolean).sort()
+      firstDkvDataDate = dkvDataDates[0] || null
+      latestDkvDataDate = dkvDataDates.at(-1) || null
       vehicleLogsMap = new Map()
       vehicleExpensesListMap = new Map()
       recentExpenses = expenses.map((expense) => {
@@ -4063,15 +4230,15 @@
         const fuelLogsForControl = vehicleLogs.filter((log) => Number(log.fuel_liters || 0) > 0 || Number(log.fuel_cost || 0) > 0 || log.fuel_receipt_url)
         const costPerKmInsight = buildVehicleCostPerKmInsight(vehicle, vehicleLogs, vehicleExpenses)
         vehicleCostPerKmMap.set(key, costPerKmInsight)
-        if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'danger') {
+        if (costPerKmInsight.invoiceRows && costPerKmInsight.cumulativeTone === 'danger') {
           reviewItems.push({
             short: 'překročené Kč/km',
-            full: `Náklad podle poslední DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, dlouhodobý průměr je ${costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} a limit je ${formatDecimal(costPerKmInsight.limitCostPerKm, 2)} Kč/km. Tohle je moc a je potřeba to řešit s řidičem.`
+            full: `Dlouhodobý náklad ze všech importovaných DKV dat je ${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km a limit je ${formatDecimal(costPerKmInsight.limitCostPerKm, 2)} Kč/km. Tohle je moc a je potřeba to řešit s řidičem.`
           })
-        } else if (costPerKmInsight.invoiceRows && costPerKmInsight.tone === 'warning') {
+        } else if (costPerKmInsight.invoiceRows && costPerKmInsight.cumulativeTone === 'warning') {
           reviewItems.push({
             short: 'vyšší Kč/km',
-            full: `Náklad podle poslední DKV faktury je ${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km, dlouhodobý průměr je ${costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'} a cíl je ${formatDecimal(costPerKmInsight.targetCostPerKm, 2)} Kč/km. Je to nad cílem, hlídat další období.`
+            full: `Dlouhodobý náklad ze všech importovaných DKV dat je ${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km a cíl je ${formatDecimal(costPerKmInsight.targetCostPerKm, 2)} Kč/km. Je to nad cílem, hlídat další období.`
           })
         }
 
@@ -4691,6 +4858,17 @@
     expenseVehicleFilter.addEventListener('change', renderRecentExpenses)
     expenseCategoryFilter.addEventListener('change', renderRecentExpenses)
     expensePeriodFilter.addEventListener('change', renderRecentExpenses)
+    costPerKmPanel?.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-cost-km-period]')
+      if (!button) return
+      const nextPeriod = button.dataset.costKmPeriod
+      if (!['30d', '90d', 'all'].includes(nextPeriod) || nextPeriod === costPerKmPeriod) return
+      costPerKmPeriod = nextPeriod
+      localStorage.setItem('vehicle-cost-km-period-v2', costPerKmPeriod)
+      rebuildCostPerKmInsights()
+      applyFilters()
+      renderSummary()
+    })
 
     refreshBtn.addEventListener('click', async () => {
       await loadWarehouses()

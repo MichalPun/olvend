@@ -118,12 +118,12 @@ where not exists (
 insert into public.vehicle_operation_logs
   (vehicle_id, log_date, fuel_liters, fuel_cost, fuel_odometer_km, fuel_note, status)
 select
-  4, '2026-07-01', 50.70, 1679.59, null,
-  'DKV 26/653205665/001 SERVIS 2 Opel Movano 2BN7419 ONO Brno-Venkov tx 574476',
+  5, '2026-07-01', 50.70, 1679.59, null,
+  'DKV 26/653205665/001 SERVIS 2 Opel Combo 7Z71808 ONO Brno-Venkov tx 574476',
   'review'
 where not exists (
   select 1 from public.vehicle_operation_logs
-  where vehicle_id = 4
+  where vehicle_id = 5
     and log_date = '2026-07-01'
     and coalesce(fuel_note, '') ilike '%DKV 26/653205665/001%SERVIS 2%'
 );
