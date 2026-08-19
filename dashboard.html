@@ -1692,6 +1692,16 @@
       letter-spacing: -0.02em;
     }
 
+    .telemetry-trend-metric.forecast strong {
+      color: #fbbf24;
+    }
+
+    .telemetry-trend-metric small {
+      color: var(--soft);
+      font-size: 9px;
+      font-weight: 750;
+    }
+
     .telemetry-trend-change {
       display: inline-flex;
       align-items: center;
@@ -1808,6 +1818,22 @@
       stroke-width: 2.8;
     }
 
+    .telemetry-forecast-path {
+      fill: none;
+      stroke: #f59e0b;
+      stroke-width: 3;
+      stroke-dasharray: 8 6;
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .telemetry-forecast-dot {
+      fill: #111827;
+      stroke: #fbbf24;
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+    }
+
     .telemetry-chart-dates {
       margin-top: 5px;
       padding: 0 2px;
@@ -1848,6 +1874,14 @@
       border-radius: 999px;
       background: #22c55e;
       box-shadow: 0 0 0 2px rgba(34,197,94,0.12);
+    }
+
+    .telemetry-chart-legend .forecast {
+      width: 16px;
+      height: 0;
+      border-top: 3px dashed #f59e0b;
+      border-radius: 0;
+      background: transparent;
     }
 
     .telemetry-trend-day {
@@ -3099,6 +3133,15 @@
     :root[data-olvend-theme="light"] .telemetry-trend-dot.today {
       fill: #22c55e;
       stroke: #ffffff;
+    }
+
+    :root[data-olvend-theme="light"] .telemetry-forecast-dot {
+      fill: #ffffff;
+      stroke: #d97706;
+    }
+
+    :root[data-olvend-theme="light"] .telemetry-trend-metric.forecast strong {
+      color: #b45309;
     }
 
     :root[data-olvend-theme="light"] .telemetry-trend-change.positive { color: #15803d; }
@@ -5667,8 +5710,31 @@
       }, "");
     }
 
+    function buildTelemetryTodayForecast(dayRows, now = new Date()) {
+      if (!dayRows.length) return null;
+      const todayRow = dayRows[dayRows.length - 1];
+      if (String(todayRow?.date || "") !== getDateKey(now)) return null;
+      const actualRevenue = Number(todayRow.revenue || 0);
+      const currentHour = now.getHours() + now.getMinutes() / 60;
+      const salesDayStart = 6;
+      const salesDayEnd = 22;
+      if (actualRevenue <= 0 || currentHour <= salesDayStart || currentHour >= salesDayEnd) return null;
+
+      const elapsedShare = Math.max(0.08, Math.min(1, (currentHour - salesDayStart) / (salesDayEnd - salesDayStart)));
+      const historyRows = dayRows.slice(0, -1).slice(-7);
+      const historyAverage = historyRows.length
+        ? historyRows.reduce((sum, row) => sum + Number(row.revenue || 0), 0) / historyRows.length
+        : actualRevenue;
+      const paceForecast = actualRevenue / elapsedShare;
+      const paceWeight = Math.min(0.9, 0.35 + elapsedShare * 0.65);
+      const blendedForecast = paceForecast * paceWeight + historyAverage * (1 - paceWeight);
+      const revenue = Math.max(actualRevenue, Math.round(blendedForecast / 10) * 10);
+      return { revenue, actualRevenue, elapsedShare };
+    }
+
     function renderTelemetryTrendBars(dayRows) {
-      const rawMax = Math.max(1, ...dayRows.map((row) => row.revenue));
+      const forecast = buildTelemetryTodayForecast(dayRows);
+      const rawMax = Math.max(1, ...dayRows.map((row) => row.revenue), Number(forecast?.revenue || 0));
       const roughStep = rawMax / 4;
       const magnitude = 10 ** Math.floor(Math.log10(Math.max(roughStep, 1)));
       const normalizedStep = roughStep / magnitude;
@@ -5685,23 +5751,37 @@
         y: Number((plotTop + usableHeight * (1 - Math.min(1, row.revenue / chartMax))).toFixed(1))
       }));
       const linePath = buildSmoothTelemetryPath(linePoints);
+      const forecastPoint = forecast && linePoints.length
+        ? {
+            x: linePoints[linePoints.length - 1].x,
+            y: Number((plotTop + usableHeight * (1 - Math.min(1, forecast.revenue / chartMax))).toFixed(1))
+          }
+        : null;
+      const forecastPath = forecastPoint && linePoints.length > 1
+        ? `M ${linePoints[linePoints.length - 2].x} ${linePoints[linePoints.length - 2].y} L ${forecastPoint.x} ${forecastPoint.y}`
+        : "";
       const areaPath = linePoints.length
         ? `${linePath} L ${linePoints[linePoints.length - 1].x} ${chartHeight} L ${linePoints[0].x} ${chartHeight} Z`
         : "";
       const totalRevenue = dayRows.reduce((sum, row) => sum + row.revenue, 0);
       const averageRevenue = dayRows.length ? totalRevenue / dayRows.length : 0;
       const previousSeven = dayRows.slice(0, 7).reduce((sum, row) => sum + row.revenue, 0);
-      const lastSeven = dayRows.slice(-7).reduce((sum, row) => sum + row.revenue, 0);
+      const lastSevenRows = dayRows.slice(-7);
+      const lastSeven = lastSevenRows.reduce((sum, row, index) => {
+        const isToday = forecast && index === lastSevenRows.length - 1;
+        return sum + (isToday ? forecast.revenue : row.revenue);
+      }, 0);
       const trendPercent = previousSeven > 0 ? Math.round(((lastSeven - previousSeven) / previousSeven) * 100) : null;
       const trendClass = trendPercent == null ? "" : trendPercent >= 0 ? "positive" : "negative";
       const trendArrow = trendPercent == null ? "•" : trendPercent >= 0 ? "↗" : "↘";
-      const trendLabel = trendPercent == null ? "zatím bez srovnání" : `${trendPercent >= 0 ? "+" : ""}${trendPercent} % za posledních 7 dní`;
+      const trendLabel = trendPercent == null ? "zatím bez srovnání" : `${trendPercent >= 0 ? "+" : ""}${trendPercent} % za posledních 7 dní${forecast ? " · vč. odhadu" : ""}`;
       return `
         <div class="telemetry-trend-shell">
           <div class="telemetry-chart-scroll">
             <div class="telemetry-trend-summary">
               <div class="telemetry-trend-metric"><span>Tržba za 14 dní</span><strong>${escapeHtml(formatMoney(totalRevenue))}</strong></div>
               <div class="telemetry-trend-metric"><span>Denní průměr</span><strong>${escapeHtml(formatMoney(averageRevenue))}</strong></div>
+              ${forecast ? `<div class="telemetry-trend-metric forecast"><span>Predikce dneška</span><strong>${escapeHtml(formatMoney(forecast.revenue))}</strong><small>aktuálně ${escapeHtml(formatMoney(forecast.actualRevenue))}</small></div>` : ""}
               <span class="telemetry-trend-change ${trendClass}">${trendArrow} ${escapeHtml(trendLabel)}</span>
             </div>
             <div class="telemetry-trend-chart" role="img" aria-label="Trend tržeb za posledních 14 dní">
@@ -5716,7 +5796,8 @@
                     const cashPct = row.revenue > 0 ? Math.round((row.cash / row.revenue) * 100) : 0;
                     const cashlessPct = row.revenue > 0 ? Math.round((row.cashless / row.revenue) * 100) : 0;
                     const unknownPct = Math.max(0, 100 - cashPct - cashlessPct);
-                    const tooltip = `${formatFinanceDayLabel(row.date)} · celkem ${formatMoney(row.revenue)} · hotově ${formatMoney(row.cash)} · kartou ${formatMoney(row.cashless)} · ${Number(row.quantity || 0).toLocaleString("cs-CZ")} ks`;
+                    const forecastTooltip = forecast && index === dayRows.length - 1 ? ` · predikce dne ${formatMoney(forecast.revenue)}` : "";
+                    const tooltip = `${formatFinanceDayLabel(row.date)} · celkem ${formatMoney(row.revenue)}${forecastTooltip} · hotově ${formatMoney(row.cash)} · kartou ${formatMoney(row.cashless)} · ${Number(row.quantity || 0).toLocaleString("cs-CZ")} ks`;
                     return `
                       <div class="telemetry-trend-day${index === dayRows.length - 1 ? " is-today" : ""}" title="${escapeHtml(tooltip)}">
                         <div class="telemetry-stack" style="height:${barHeight}px">
@@ -5737,7 +5818,9 @@
                   </defs>
                   <path class="telemetry-trend-area" d="${areaPath}" fill="url(#telemetryTrendArea)"></path>
                   <path class="telemetry-trend-path" d="${linePath}"></path>
+                  ${forecastPath ? `<path class="telemetry-forecast-path" d="${forecastPath}"></path>` : ""}
                   ${linePoints.map((point, index) => `<circle class="telemetry-trend-dot${index === linePoints.length - 1 ? " today" : ""}" cx="${point.x}" cy="${point.y}" r="${index === linePoints.length - 1 ? 5 : 3.3}"></circle>`).join("")}
+                  ${forecastPoint ? `<circle class="telemetry-forecast-dot" cx="${forecastPoint.x}" cy="${forecastPoint.y}" r="5.5"></circle>` : ""}
                 </svg>
               </div>
               <div aria-hidden="true"></div>
@@ -5752,6 +5835,7 @@
           <span><i class="cashless"></i>Kartou</span>
           <span><i class="unknown"></i>Neurčeno</span>
           <span><i class="trend"></i>Trend tržby</span>
+          ${forecast ? `<span><i class="forecast"></i>Predikce dneška</span>` : ""}
         </div>
       `;
     }
