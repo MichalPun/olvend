@@ -547,7 +547,7 @@
     }
 
     .sheet-table td {
-      padding: 8px 10px;
+      padding: 6px 9px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
       border-right: 1px solid rgba(255,255,255,0.05);
       vertical-align: middle;
@@ -560,6 +560,15 @@
 
     .sheet-table tr.selected td {
       background: rgba(213,16,26,0.11);
+    }
+
+    .candidate-row {
+      cursor: pointer;
+    }
+
+    .candidate-row:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }
 
     .sheet-table .col-check {
@@ -581,6 +590,11 @@
       min-width: 150px;
     }
 
+    .stock-detail-panel > .machine-time-list {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-bottom: 12px;
+    }
+
     .machine-time-row {
       display: flex;
       align-items: center;
@@ -600,7 +614,7 @@
     .sheet-main-cell {
       display: grid;
       gap: 2px;
-      min-width: 220px;
+      min-width: 160px;
     }
 
     .sheet-title {
@@ -622,8 +636,8 @@
     }
 
     .stock-detail-trigger {
-      margin-top: 7px;
-      padding: 6px 9px;
+      margin-top: 3px;
+      padding: 4px 7px;
       border-radius: 6px;
       border: 1px solid rgba(255,91,102,0.28);
       background: rgba(255,91,102,0.1);
@@ -750,6 +764,54 @@
       color: #fff;
       font-weight: 800;
       text-decoration: none;
+    }
+
+    .planning-cell-stack {
+      display: grid;
+      gap: 3px;
+      line-height: 1.2;
+    }
+
+    .planning-cell-stack strong {
+      white-space: nowrap;
+    }
+
+    .planning-expiry {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .planning-expiry.due {
+      color: #ff6670;
+      font-weight: 800;
+    }
+
+    .planning-stock-summary {
+      white-space: nowrap;
+      font-weight: 800;
+    }
+
+    .selection-summary {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .selection-summary-stats {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .selection-summary-stat {
+      padding: 3px 7px;
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }
 
     .route-sheet-grid {
@@ -938,6 +1000,7 @@
     .route-badge.live { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
     .route-badge.saved { color: #baf3cf; border-color: rgba(46,204,113,0.24); background: rgba(46,204,113,0.12); }
     .route-badge.stock { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
+    .route-badge.expiry { color: #ffc5ca; border-color: rgba(255,91,102,0.24); background: rgba(255,91,102,0.12); }
     .route-badge.hygiene { color: #bbd8ff; border-color: rgba(88,166,255,0.24); background: rgba(88,166,255,0.12); }
 
     .candidate-grid {
@@ -1380,7 +1443,9 @@
     }
 
     :root[data-olvend-theme="light"] .route-badge.critical,
-    :root[data-olvend-theme="light"] .route-badge.service {
+    :root[data-olvend-theme="light"] .route-badge.service,
+    :root[data-olvend-theme="light"] .route-badge.expiry,
+    :root[data-olvend-theme="light"] .route-badge.stock {
       color: #b42318;
       background: rgba(255,91,102,0.12);
       border-color: rgba(255,91,102,0.34);
@@ -1421,6 +1486,15 @@
 
     :root[data-olvend-theme="light"] .sheet-table tr.selected td {
       background: rgba(213,16,26,0.06);
+    }
+
+    :root[data-olvend-theme="light"] .selection-summary-stat {
+      border-color: rgba(15,23,42,0.12);
+      background: #f8fafc;
+    }
+
+    :root[data-olvend-theme="light"] .planning-expiry.due {
+      color: #b42318;
     }
 
     :root[data-olvend-theme="light"] .sheet-title,
@@ -1825,6 +1899,7 @@
       telemetryEligibleMachineIds: new Set(),
       inventoriedMachineIds: new Set(),
       lastMachineVisits: new Map(),
+      lastCompletedMachineVisits: new Map(),
       candidates: [],
       filteredCandidates: [],
       selectedKeys: new Set(),
@@ -2098,7 +2173,7 @@
     }
 
     function hasStockRecommendation(candidate) {
-      return Boolean(candidate?.operationalRecommendations?.some((reason) => reason?.type === 'stock'))
+      return Boolean(candidate?.operationalRecommendations?.some((reason) => ['stock', 'expiry'].includes(reason?.type)))
     }
 
     function isRecommendedCandidateAccessible(candidate) {
@@ -2168,6 +2243,7 @@
           unit: 'ks',
           active: slot.active,
           note: slot.note,
+          expiry_date: slot.expiry_date,
           source_kind: 'planogram',
         })),
       ]
@@ -2192,13 +2268,46 @@
         .sort((a, b) => a.ratio - b.ratio)
 
       const visit = state.lastMachineVisits.get(machineId)
+      const completedVisit = state.lastCompletedMachineVisits.get(machineId)
       const lastVisitAt = getVisitTimestamp(visit)
       const ageDays = daysSince(lastVisitAt)
       const staleVisit = isFoodMachine
         ? ageDays != null && ageDays >= maxVisitDays
         : ageDays == null || ageDays >= maxVisitDays
 
+      const planningDateKey = String(routeDateInput.value || '').slice(0, 10)
+      const lastCompletedVisitAt = getVisitTimestamp(completedVisit)
+      const lastVisitDateKey = lastCompletedVisitAt
+        ? new Date(lastCompletedVisitAt).toLocaleDateString('sv-SE')
+        : ''
+      const expiryItems = inventoryContainers
+        .filter((container) => String(container.machine_id || '') === machineId)
+        .filter((container) => container.active !== false && container.source_kind === 'planogram')
+        .filter((container) => Number(container.current_quantity || 0) > 0 && container.expiry_date)
+        .map((container) => ({
+          container,
+          current: Number(container.current_quantity || 0),
+          expiryDate: String(container.expiry_date || '').slice(0, 10),
+        }))
+        .filter((item) => item.expiryDate)
+        .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate))
+      const dueExpiryItems = expiryItems
+        .filter((item) => planningDateKey && item.expiryDate <= planningDateKey)
+        .filter((item) => !lastVisitDateKey || lastVisitDateKey < item.expiryDate)
+
       const reasons = []
+      if (dueExpiryItems.length) {
+        const nearest = dueExpiryItems[0]
+        const overdueDays = Math.max(0, daysSince(nearest.expiryDate) || 0)
+        reasons.push({
+          type: 'expiry',
+          badge: overdueDays > 0
+            ? `${dueExpiryItems.length}× po expiraci`
+            : `${dueExpiryItems.length}× expirace v den trasy`,
+          note: `${nearest.container.container_code || 'Pozice'} ${nearest.container.product_name || 'produkt'} · ${nearest.current} ks · expirace ${formatDateLabel(nearest.expiryDate)}`,
+          priority: 'critical',
+        })
+      }
       if (lowContainers.length) {
         const worst = lowContainers[0]
         const pct = Math.max(0, Math.round(Number(worst.ratio || 0) * 100))
@@ -2227,8 +2336,17 @@
       return {
         reasons,
         priority: getPriorityMax(...reasons.map((reason) => reason.priority)) || 'normal',
-        estimatedMinutes: reasons.some((reason) => reason.type === 'stock') ? 20 : 12,
+        estimatedMinutes: reasons.some((reason) => ['stock', 'expiry'].includes(reason.type)) ? 20 : 12,
         sourceNote: reasons.map((reason) => reason.note).join(' · '),
+        expiryItems: expiryItems.map((item) => ({
+          machineId,
+          position: item.container.container_code || 'Bez označení',
+          productName: item.container.product_name || 'Neurčený produkt',
+          productSku: item.container.product_sku || '',
+          current: item.current,
+          expiryDate: item.expiryDate,
+          due: Boolean(planningDateKey && item.expiryDate <= planningDateKey && (!lastVisitDateKey || lastVisitDateKey < item.expiryDate)),
+        })),
         stockShortages: lowContainers.map((item) => {
           const fillPercent = Math.max(0, Math.min(100, Math.round(Number(item.ratio || 0) * 100)))
           return {
@@ -2894,96 +3012,26 @@
       const missingSummary = [...missingByUnit.entries()]
         .map(([unit, quantity]) => formatStockAmount(quantity, unit === 'jedn.' ? '' : unit))
         .join(' + ')
+      const expiryItems = [...(candidate.expiryItems || [])]
+        .sort((a, b) => String(a.expiryDate || '').localeCompare(String(b.expiryDate || '')))
+      const detailRows = new Map()
+      shortages.forEach((item) => {
+        detailRows.set(`${item.machineId}:${item.position}`, { ...item, low: true })
+      })
+      expiryItems.forEach((item) => {
+        const key = `${item.machineId}:${item.position}`
+        detailRows.set(key, { ...(detailRows.get(key) || item), expiryDate: item.expiryDate, due: item.due })
+      })
+      const attentionItems = [...detailRows.values()]
+      const machineServiceEntries = candidate.machineServiceEntries || []
 
       return `
         <div class="stock-detail-panel">
-          <div class="stock-detail-summary">
-            <strong>Co je potřeba doplnit</strong>
-            <span>${formatNumber(shortages.length)} pozic${missingSummary ? ` · do plna celkem ${escapeHtml(missingSummary)}` : ''}</span>
-          </div>
-          <div class="stock-detail-scroll">
-            <table class="stock-detail-table">
-              <thead>
-                <tr>
-                  <th>Automat</th>
-                  <th>Pozice</th>
-                  <th>Produkt</th>
-                  <th>Aktuálně / kapacita</th>
-                  <th>Naplnění</th>
-                  <th>Do plna</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${shortages.map((item) => {
-                  const statusClass = item.critical ? 'critical' : 'low'
-                  const statusLabel = item.critical ? 'kritické' : 'nízké'
-                  return `
-                    <tr>
-                      <td>${escapeHtml(item.machineName || candidate.machineLabel || candidate.name || '-')}</td>
-                      <td><strong>${escapeHtml(item.position || '-')}</strong></td>
-                      <td class="stock-product">
-                        ${escapeHtml(item.productName || 'Neurčený produkt')}
-                        ${item.productSku ? `<span class="sheet-muted">SKU ${escapeHtml(item.productSku)}</span>` : ''}
-                      </td>
-                      <td class="stock-state ${statusClass}">${escapeHtml(formatStockAmount(item.current, item.unit))} / ${escapeHtml(formatStockAmount(item.capacity, item.unit))}</td>
-                      <td>
-                        <div class="stock-fill">
-                          <span class="stock-fill-bar"><span class="${statusClass}" style="width:${Math.max(0, Math.min(100, Number(item.fillPercent || 0)))}%"></span></span>
-                          <span>${formatNumber(item.fillPercent || 0)} % · ${statusLabel}</span>
-                        </div>
-                      </td>
-                      <td><strong>+${escapeHtml(formatStockAmount(item.missing, item.unit))}</strong></td>
-                    </tr>
-                  `
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `
-    }
-
-    function renderCandidates() {
-      syncEditUi()
-      if (selectionSummary) {
-        const serviceOnly = ['open_service', 'assigned_service', 'unassigned_service'].includes(sourceFilter.value)
-        const modeLabel = getCurrentCreateMode() === 'template'
-          ? 'zastávek ze stálé trasy'
-          : getCurrentCreateMode() === 'service' && serviceOnly
-            ? 'servisních zastávek'
-            : planningMode.value === 'machine'
-              ? 'strojů'
-              : 'lokalit'
-        selectionSummary.textContent = `Zobrazuji ${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} ${modeLabel}.`
-      }
-
-      if (!state.filteredCandidates.length) {
-        candidateList.innerHTML = '<div class="empty-state">V tomhle filtru teď není nic k výběru.</div>'
-        renderSummary()
-        return
-      }
-
-      const rows = state.filteredCandidates.map((candidate) => {
-        const checked = state.selectedKeys.has(candidate.key)
-        const stockShortageCount = candidate.stockShortages?.length || 0
-        const stockDetailOpen = stockShortageCount > 0 && state.expandedStockKeys.has(candidate.key)
-        const reasons = []
-
-        if (candidate.openRequestCount) reasons.push(`<span class="route-badge service">${candidate.openRequestCount}× servis</span>`)
-        ;(candidate.operationalRecommendations || []).slice(0, 2).forEach((reason) => {
-          const label = reason.machineName ? `${reason.machineName}: ${reason.badge}` : reason.badge
-          reasons.push(`<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(label)}</span>`)
-        })
-        if (candidate.matchesSelectedDay) reasons.push('<span class="route-badge window">dnešní okno</span>')
-        if (candidate.routeAccessStatus === 'needs_confirmation') reasons.push('<span class="route-badge heuristic">ověřit přístup</span>')
-        if (candidate.routeAccessStatus === 'closed') reasons.push('<span class="route-badge critical">v tento den zavřeno</span>')
-        if (isCandidateServiceSuspended(candidate)) {
-          reasons.push(`<span class="route-badge critical">servis pozastaven do ${escapeHtml(formatDateLabel(candidate.serviceSuspendedUntil))}</span>`)
-        }
-        reasons.push(`<span class="route-badge ${escapeHtml(candidate.effectivePriority)}">${escapeHtml(priorityLabel(candidate.effectivePriority))}</span>`)
-        const machineServiceEntries = candidate.machineServiceEntries || []
-        const serviceTimeControl = machineServiceEntries.length
-          ? `
+          ${machineServiceEntries.length ? `
+            <div class="stock-detail-summary">
+              <strong>Čas obsluhy na místě</strong>
+              <span>Celkem ${formatNumber(candidate.estimatedServiceMinutes || 0)} min · uprav jen výjimky</span>
+            </div>
             <div class="machine-time-list">
               ${machineServiceEntries.map((entry) => `
                 <label class="machine-time-row">
@@ -3000,17 +3048,137 @@
                   />
                 </label>
               `).join('')}
-              ${machineServiceEntries.length > 1 ? `<span class="sheet-muted">Celkem ${formatNumber(candidate.estimatedServiceMinutes || 0)} min</span>` : ''}
             </div>
-          `
-          : `${formatNumber(candidate.estimatedServiceMinutes || 0)} min`
+          ` : ''}
+          ${attentionItems.length ? `
+          <div class="stock-detail-summary">
+            <strong>Co se má na místě řešit</strong>
+            <span>${formatNumber(shortages.length)} k doplnění · ${formatNumber(expiryItems.filter((item) => item.due).length)} s expirací${missingSummary ? ` · do plna ${escapeHtml(missingSummary)}` : ''}</span>
+          </div>
+          <div class="stock-detail-scroll">
+            <table class="stock-detail-table">
+              <thead>
+                <tr>
+                  <th>Automat</th>
+                  <th>Pozice</th>
+                  <th>Produkt</th>
+                  <th>Expirace</th>
+                  <th>Aktuálně / kapacita</th>
+                  <th>Naplnění</th>
+                  <th>Do plna</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${attentionItems.map((item) => {
+                  const statusClass = item.critical ? 'critical' : 'low'
+                  const statusLabel = item.low ? (item.critical ? 'kritické' : 'nízké') : 'stav OK'
+                  return `
+                    <tr>
+                      <td>${escapeHtml(item.machineName || candidate.machineLabel || candidate.name || '-')}</td>
+                      <td><strong>${escapeHtml(item.position || '-')}</strong></td>
+                      <td class="stock-product">
+                        ${escapeHtml(item.productName || 'Neurčený produkt')}
+                        ${item.productSku ? `<span class="sheet-muted">SKU ${escapeHtml(item.productSku)}</span>` : ''}
+                      </td>
+                      <td class="planning-expiry ${item.due ? 'due' : ''}">${item.expiryDate ? escapeHtml(formatDateLabel(item.expiryDate)) : '—'}</td>
+                      <td class="stock-state ${item.low ? statusClass : ''}">${escapeHtml(formatStockAmount(item.current, item.unit || 'ks'))}${item.capacity != null ? ` / ${escapeHtml(formatStockAmount(item.capacity, item.unit || 'ks'))}` : ''}</td>
+                      <td>
+                        ${item.low ? `<div class="stock-fill">
+                          <span class="stock-fill-bar"><span class="${statusClass}" style="width:${Math.max(0, Math.min(100, Number(item.fillPercent || 0)))}%"></span></span>
+                          <span>${formatNumber(item.fillPercent || 0)} % · ${statusLabel}</span>
+                        </div>` : '<span class="sheet-muted">kontrola expirace</span>'}
+                      </td>
+                      <td>${item.low ? `<strong>+${escapeHtml(formatStockAmount(item.missing, item.unit))}</strong>` : '—'}</td>
+                    </tr>
+                  `
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+          ` : ''}
+        </div>
+      `
+    }
 
-        const stockDetailButton = stockShortageCount
-          ? `<button class="stock-detail-trigger" type="button" data-stock-detail-key="${escapeHtml(candidate.key)}" aria-expanded="${stockDetailOpen ? 'true' : 'false'}">${stockDetailOpen ? 'Skrýt přehled' : `Co chybí · ${formatNumber(stockShortageCount)}`}</button>`
+    function renderCandidates() {
+      syncEditUi()
+      if (selectionSummary) {
+        const serviceOnly = ['open_service', 'assigned_service', 'unassigned_service'].includes(sourceFilter.value)
+        const modeLabel = getCurrentCreateMode() === 'template'
+          ? 'zastávek ze stálé trasy'
+          : getCurrentCreateMode() === 'service' && serviceOnly
+            ? 'servisních zastávek'
+            : planningMode.value === 'machine'
+              ? 'strojů'
+              : 'lokalit'
+        const selectedVisible = state.filteredCandidates.filter((candidate) => state.selectedKeys.has(candidate.key)).length
+        const expiryCount = state.filteredCandidates.filter((candidate) => candidate.expiryItems?.some((item) => item.due)).length
+        const stockCount = state.filteredCandidates.filter((candidate) => candidate.stockShortages?.length).length
+        const serviceCount = state.filteredCandidates.filter((candidate) => candidate.openRequestCount > 0).length
+        selectionSummary.innerHTML = `
+          <strong>${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} ${escapeHtml(modeLabel)}</strong>
+          <span class="selection-summary-stats">
+            <span class="selection-summary-stat">Vybráno ${formatNumber(selectedVisible)}</span>
+            <span class="selection-summary-stat">Expirace ${formatNumber(expiryCount)}</span>
+            <span class="selection-summary-stat">Nízký stav ${formatNumber(stockCount)}</span>
+            <span class="selection-summary-stat">Servis ${formatNumber(serviceCount)}</span>
+          </span>
+        `
+      }
+
+      if (!state.filteredCandidates.length) {
+        candidateList.innerHTML = '<div class="empty-state">V tomhle filtru teď není nic k výběru.</div>'
+        renderSummary()
+        return
+      }
+
+      const rows = state.filteredCandidates.map((candidate) => {
+        const checked = state.selectedKeys.has(candidate.key)
+        const stockShortageCount = candidate.stockShortages?.length || 0
+        const expiryDueItems = (candidate.expiryItems || []).filter((item) => item.due)
+        const attentionCount = new Set([
+          ...(candidate.stockShortages || []).map((item) => `${item.machineId}:${item.position}`),
+          ...expiryDueItems.map((item) => `${item.machineId}:${item.position}`),
+        ]).size
+        const stockDetailOpen = state.expandedStockKeys.has(candidate.key)
+        const reasons = []
+
+        if (candidate.openRequestCount) reasons.push(`<span class="route-badge service">${candidate.openRequestCount}× servis</span>`)
+        ;(candidate.operationalRecommendations || []).slice(0, 2).forEach((reason) => {
+          const label = reason.machineName ? `${reason.machineName}: ${reason.badge}` : reason.badge
+          reasons.push(`<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(label)}</span>`)
+        })
+        if (candidate.matchesSelectedDay) reasons.push('<span class="route-badge window">dnešní okno</span>')
+        if (candidate.routeAccessStatus === 'needs_confirmation') reasons.push('<span class="route-badge heuristic">ověřit přístup</span>')
+        if (candidate.routeAccessStatus === 'closed') reasons.push('<span class="route-badge critical">v tento den zavřeno</span>')
+        if (isCandidateServiceSuspended(candidate)) {
+          reasons.push(`<span class="route-badge critical">servis pozastaven do ${escapeHtml(formatDateLabel(candidate.serviceSuspendedUntil))}</span>`)
+        }
+        reasons.push(`<span class="route-badge ${escapeHtml(candidate.effectivePriority)}">${escapeHtml(priorityLabel(candidate.effectivePriority))}</span>`)
+        const machineServiceEntries = candidate.machineServiceEntries || []
+        const serviceTimeControl = `
+          <div class="planning-cell-stack">
+            <strong>${formatNumber(candidate.estimatedServiceMinutes || 0)} min</strong>
+            ${machineServiceEntries.length
+              ? `<button class="stock-detail-trigger" type="button" data-stock-detail-key="${escapeHtml(candidate.key)}" aria-expanded="${stockDetailOpen ? 'true' : 'false'}">Časy · ${formatNumber(machineServiceEntries.length)} str.</button>`
+              : ''}
+          </div>
+        `
+
+        const stockDetailButton = attentionCount
+          ? `<button class="stock-detail-trigger" type="button" data-stock-detail-key="${escapeHtml(candidate.key)}" aria-expanded="${stockDetailOpen ? 'true' : 'false'}">Detail · ${formatNumber(attentionCount)}</button>`
           : ''
 
+        const nearestExpiry = [...expiryDueItems].sort((a, b) => String(a.expiryDate).localeCompare(String(b.expiryDate)))[0]
+        const expiryCell = nearestExpiry
+          ? `<strong class="planning-expiry due">${escapeHtml(formatDateLabel(nearestExpiry.expiryDate))}</strong><span class="sheet-muted">${formatNumber(expiryDueItems.length)} pozic · ${formatNumber(expiryDueItems.reduce((sum, item) => sum + Number(item.current || 0), 0))} ks</span>`
+          : '<span class="sheet-muted">—</span>'
+        const stockCell = stockShortageCount
+          ? `<span class="planning-stock-summary">${formatNumber(stockShortageCount)} pozic</span>${stockDetailButton}`
+          : stockDetailButton || '<span class="sheet-muted">—</span>'
+
         return `
-          <tr class="candidate-row ${checked ? 'selected' : ''}">
+          <tr class="candidate-row ${checked ? 'selected' : ''}" data-candidate-key="${escapeHtml(candidate.key)}" tabindex="0">
             <td class="col-check">
               <input type="checkbox" data-key="${escapeHtml(candidate.key)}" ${checked ? 'checked' : ''} aria-label="Vybrat ${escapeHtml(candidate.name)}" />
             </td>
@@ -3021,24 +3189,24 @@
                 ${candidate.machineLabel ? `<span class="sheet-muted">${escapeHtml(candidate.machineLabel)}</span>` : ''}
               </div>
             </td>
-            <td>${escapeHtml(candidate.city || '-')}</td>
             <td>
-              <div class="sheet-main-cell">
-                <span>${escapeHtml(candidate.address || 'Bez adresy')}</span>
-                <span class="sheet-muted">${escapeHtml(candidate.sourceNote || '')}</span>
+              <div class="planning-cell-stack">
+                <strong>${escapeHtml(candidate.city || '-')}</strong>
+                <span class="sheet-muted">${escapeHtml(candidate.address || 'Bez adresy')}</span>
               </div>
             </td>
             <td>
               <div class="sheet-main-cell">
                 <span>${reasons.join('')}</span>
-                ${stockDetailButton}
               </div>
             </td>
+            <td><div class="planning-cell-stack">${expiryCell}</div></td>
+            <td><div class="planning-cell-stack">${stockCell}</div></td>
             <td>${serviceTimeControl}</td>
             <td>${escapeHtml(candidate.serviceWindow || '-')}</td>
             <td><a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(candidate))}" target="_blank" rel="noopener noreferrer">Mapa</a></td>
           </tr>
-          ${stockDetailOpen ? `<tr class="stock-detail-row"><td colspan="8">${renderCandidateStockDetail(candidate)}</td></tr>` : ''}
+          ${stockDetailOpen ? `<tr class="stock-detail-row"><td colspan="9">${renderCandidateStockDetail(candidate)}</td></tr>` : ''}
         `
       }).join('')
 
@@ -3047,10 +3215,11 @@
           <thead>
             <tr>
               <th class="col-check">✓</th>
-              <th>Název</th>
-              <th>Město</th>
-              <th>Adresa / zdroj</th>
+              <th>Zastávka / automat</th>
+              <th>Místo</th>
               <th>Důvod</th>
+              <th>Expirace</th>
+              <th>Zásoby</th>
               <th>Čas</th>
               <th>Okno</th>
               <th>Mapa</th>
@@ -3072,6 +3241,28 @@
           }
           renderCandidates()
           renderSummary()
+        })
+      })
+
+      const toggleCandidateRow = (row) => {
+        const key = row.dataset.candidateKey
+        if (!key) return
+        invalidatePlanAfterSelectionChange()
+        if (state.selectedKeys.has(key)) state.selectedKeys.delete(key)
+        else state.selectedKeys.add(key)
+        renderCandidates()
+        renderSummary()
+      }
+
+      candidateList.querySelectorAll('tr[data-candidate-key]').forEach((row) => {
+        row.addEventListener('click', (event) => {
+          if (event.target.closest('button, a, input, select, textarea')) return
+          toggleCandidateRow(row)
+        })
+        row.addEventListener('keydown', (event) => {
+          if (!['Enter', ' '].includes(event.key) || event.target.closest('button, a, input, select, textarea')) return
+          event.preventDefault()
+          toggleCandidateRow(row)
         })
       })
 
@@ -3118,6 +3309,11 @@
             : ['unknown', 'needs_confirmation'].includes(stop.openingStatus)
               ? '<span class="route-badge heuristic">dobu ověřit</span>'
               : ''
+        const expiryDueItems = (stop.expiryItems || []).filter((item) => item.due)
+        const nearestExpiry = [...expiryDueItems].sort((a, b) => String(a.expiryDate).localeCompare(String(b.expiryDate)))[0]
+        const expiryText = nearestExpiry
+          ? `<strong class="planning-expiry due">${escapeHtml(formatDateLabel(nearestExpiry.expiryDate))}</strong><span class="sheet-muted">${formatNumber(expiryDueItems.length)} pozic</span>`
+          : '<span class="sheet-muted">—</span>'
 
         return `
           <tr class="route-order-row" draggable="true" data-route-drag-index="${index}" aria-label="Zastávka ${index + 1}: ${escapeHtml(stop.name)}. Přetažením změníš pořadí.">
@@ -3145,6 +3341,7 @@
               ${(stop.operationalRecommendations || []).slice(0, 2).map((reason) => `<span class="route-badge ${escapeHtml(reason.type || 'heuristic')}">${escapeHtml(reason.badge)}</span>`).join('')}
               ${stop.matchesSelectedDay ? '<span class="route-badge window">okno</span>' : ''}
             </td>
+            <td><div class="planning-cell-stack">${expiryText}</div></td>
             <td><div class="sheet-main-cell"><span>${escapeHtml(distanceText)}</span><span class="sheet-muted">ze ${index === 0 ? 'startu' : `zastávky ${index}`}</span></div></td>
             <td><div class="sheet-main-cell"><strong>${escapeHtml(formatTimeOfDay(arrival))}</strong>${openingBadge}<span class="sheet-muted">${escapeHtml(stop.serviceWindow || 'otevírací doba není potvrzena')}</span></div></td>
             <td>${formatNumber(stop.estimatedServiceMinutes)} min</td>
@@ -3162,6 +3359,7 @@
               <th>Město</th>
               <th>Adresa</th>
               <th>Důvod</th>
+              <th>Expirace</th>
               <th>Vzdálenost</th>
               <th>Příjezd / otevřeno</th>
               <th>Práce</th>
@@ -3767,6 +3965,11 @@
               machineId: item.machine.id,
               machineName: item.machine.name || `Stroj ${item.machine.id}`,
             }))),
+            expiryItems: operationalRecommendations.flatMap((item) => (item.recommendation.expiryItems || []).map((expiryItem) => ({
+              ...expiryItem,
+              machineId: item.machine.id,
+              machineName: item.machine.name || `Stroj ${item.machine.id}`,
+            }))),
             estimatedServiceMinutes: Math.max(
               relatedRequests.reduce((sum, request) => sum + (request.estimated_duration_minutes || 0), 0),
               configuredMachineMinutes,
@@ -3844,6 +4047,11 @@
             operationalRecommendations: operationalRecommendation?.reasons || [],
             stockShortages: (operationalRecommendation?.stockShortages || []).map((shortage) => ({
               ...shortage,
+              machineId: machine.id,
+              machineName: machine.name || `Stroj ${machine.id}`,
+            })),
+            expiryItems: (operationalRecommendation?.expiryItems || []).map((expiryItem) => ({
+              ...expiryItem,
               machineId: machine.id,
               machineName: machine.name || `Stroj ${machine.id}`,
             })),
@@ -4595,6 +4803,36 @@
       }
 
       const lastStop = state.currentPlan.orderedStops[state.currentPlan.orderedStops.length - 1] || null
+      let persistedStopOrder = 0
+      const persistedStopTargets = state.currentPlan.orderedStops.flatMap((stop) => {
+        const explicitMachineId = stop.machineId || stop.requests?.[0]?.machine_id || null
+        const machineTargets = explicitMachineId
+          ? [{ machineId: explicitMachineId, name: stop.machineLabel || stop.name, minutes: stop.estimatedServiceMinutes }]
+          : (stop.machineServiceEntries || []).map((entry) => ({
+              machineId: entry.machineId,
+              name: entry.name,
+              minutes: entry.minutes
+            }))
+        const targets = machineTargets.length ? machineTargets : [{ machineId: null, name: '', minutes: stop.estimatedServiceMinutes }]
+
+        return targets.map((target) => {
+          const targetRequest = (stop.requests || []).find((request) => String(request.machine_id || '') === String(target.machineId || ''))
+            || (targets.length === 1 ? stop.requests?.[0] : null)
+          const hasMachine = Boolean(target.machineId)
+          return {
+            stop,
+            target,
+            targetRequest,
+            multipleMachines: targets.length > 1,
+            stopOrder: ++persistedStopOrder,
+            stopKind: targetRequest
+              ? 'service_request'
+              : hasMachine && stop.stopKind === 'location_check'
+                ? 'manual'
+                : stop.stopKind || 'location_check'
+          }
+        })
+      })
 
       const planPayload = {
         planning_date: routeDateInput.value,
@@ -4613,7 +4851,7 @@
         end_latitude: state.currentPlan.returnToStart ? state.currentPlan.startPoint.latitude : lastStop?.latitude ?? null,
         end_longitude: state.currentPlan.returnToStart ? state.currentPlan.startPoint.longitude : lastStop?.longitude ?? null,
         return_to_start: state.currentPlan.returnToStart,
-        stop_count: state.currentPlan.orderedStops.length,
+        stop_count: persistedStopTargets.length,
         estimated_distance_km: Number(state.currentPlan.estimatedDistanceKm.toFixed(2)),
         estimated_drive_minutes: state.currentPlan.estimatedDriveMinutes,
         estimated_service_minutes: state.currentPlan.estimatedServiceMinutes,
@@ -4648,21 +4886,23 @@
         created_by: employeeId,
       }
 
-      const stopPayloadBase = (planId) => state.currentPlan.orderedStops.map((stop, index) => ({
+      const stopPayloadBase = (planId) => persistedStopTargets.map(({ stop, target, targetRequest, multipleMachines, stopOrder, stopKind }) => ({
         route_plan_id: planId,
         location_id: stop.locationId || stop.id,
-        service_request_id: stop.requests?.[0]?.id || null,
-        machine_id: stop.machineId || stop.requests?.[0]?.machine_id || null,
-        stop_order: index + 1,
-        stop_kind: stop.stopKind || (stop.openRequestCount ? 'service_request' : 'location_check'),
-        title: stop.openRequestCount ? stop.requests?.[0]?.title || stop.name : stop.name,
+        service_request_id: targetRequest?.id || null,
+        machine_id: target.machineId || null,
+        stop_order: stopOrder,
+        stop_kind: stopKind,
+        title: targetRequest?.title || (multipleMachines && target.name
+          ? `${stop.name} · ${target.name}`
+          : stop.name),
         address_snapshot: stop.address,
         city_snapshot: stop.city,
         latitude: stop.latitude,
         longitude: stop.longitude,
         priority_snapshot: stop.effectivePriority,
         service_window_snapshot: stop.serviceWindow,
-        estimated_service_minutes: stop.estimatedServiceMinutes,
+        estimated_service_minutes: Number(target.minutes || stop.estimatedServiceMinutes || 0) || null,
         note: stop.routeNote || null,
       }))
 
@@ -5147,7 +5387,7 @@
         const to = from + pageSize - 1
         const { data, error } = await supabase
           .from('machine_planogram_slots')
-          .select('id, machine_id, slot_code, product_name, product_sku, capacity_units, current_units, active, note')
+          .select('id, machine_id, slot_code, product_name, product_sku, capacity_units, current_units, expiry_date, active, note')
           .eq('active', true)
           .order('machine_id', { ascending: true })
           .range(from, to)
@@ -5177,12 +5417,14 @@
       if (error) {
         if (/route_machine_visits|schema cache/i.test(String(error.message || ''))) {
           state.lastMachineVisits = new Map()
+          state.lastCompletedMachineVisits = new Map()
           return
         }
         throw error
       }
 
       const visitMap = new Map()
+      const completedVisitMap = new Map()
       ;(data || [])
         .slice()
         .sort((a, b) => new Date(getVisitTimestamp(b) || 0).getTime() - new Date(getVisitTimestamp(a) || 0).getTime())
@@ -5191,7 +5433,17 @@
           if (!key || visitMap.has(key)) return
           visitMap.set(key, visit)
         })
+      ;(data || [])
+        .filter((visit) => visit.status === 'completed')
+        .slice()
+        .sort((a, b) => new Date(getVisitTimestamp(b) || 0).getTime() - new Date(getVisitTimestamp(a) || 0).getTime())
+        .forEach((visit) => {
+          const key = String(visit.machine_id || '')
+          if (!key || completedVisitMap.has(key)) return
+          completedVisitMap.set(key, visit)
+        })
       state.lastMachineVisits = visitMap
+      state.lastCompletedMachineVisits = completedVisitMap
     }
 
     async function loadEmployees() {
