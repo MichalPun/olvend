@@ -9318,6 +9318,119 @@
       return result
     }
 
+    function getFefoProductKey(value) {
+      const text = normalizeText(value || '')
+      if (text.includes('labuznik')) return 'labuznik'
+      if (text.includes('debrecin')) return 'debrecinska'
+      if (text.includes('trhane')) return 'trhane-veprove'
+      if (text.includes('teriyaki')) return 'kure-teriyaki'
+      if (text.includes('strips')) return 'kureci-stripsy'
+      return text.replace(/\b(atm|bageta|chlebickovy|bagetovy)\b/g, ' ').replace(/\s+/g, ' ').trim()
+    }
+
+    function getMandatoryFefoAllocation(detail, productId) {
+      const route = getAssignedRoutePlan()
+      const product = state.products.find((item) => String(item.id) === String(productId || ''))
+      const machine = state.machines.find((item) => String(item.id) === String(detail?.machineId || ''))
+      if (!route?.id || !product || !machine) return null
+      const productKey = getFefoProductKey(product.name || product.sku)
+      const evidenceNumber = String(machine.evidence_number || '')
+      for (const instruction of state.instructions || []) {
+        if (!isFefoDailyInstruction(instruction)) continue
+        const payload = getFefoInstructionPayload(instruction)
+        if (payload.routeId && String(payload.routeId) !== String(route.id)) continue
+        const structured = Array.isArray(payload.allocations) ? payload.allocations : []
+        const direct = structured.find((allocation) => (
+          String(allocation.machineId || '') === String(machine.id)
+          || String(allocation.evidenceNumber || '') === evidenceNumber
+        ) && (
+          String(allocation.productId || '') === String(product.id)
+          || String(allocation.productSku || '') === String(product.sku || '')
+          || getFefoProductKey(allocation.productName || '') === productKey
+        ))
+        if (direct) {
+          return {
+            instructionId: instruction.id,
+            expiryDate: normalizeFoodExpiryDate(direct.expiryDate || payload.expiryDate),
+            quantity: Math.max(0, Number(direct.quantity || 0))
+          }
+        }
+        const destination = (Array.isArray(payload.destinations) ? payload.destinations : []).find((item) => {
+          const match = String(item.location || '').match(/\bEV\s*(\d+)\b/i)
+          return match && String(match[1]) === evidenceNumber
+        })
+        if (!destination) continue
+        const item = String(destination.items || '').split('·').map((part) => part.trim()).find((part) => {
+          const match = part.match(/^([0-9.,]+)\s*[x×]\s*(.+)$/i)
+          return match && getFefoProductKey(match[2]) === productKey
+        })
+        const match = item?.match(/^([0-9.,]+)\s*[x×]\s*(.+)$/i)
+        if (match) {
+          return {
+            instructionId: instruction.id,
+            expiryDate: normalizeFoodExpiryDate(payload.expiryDate),
+            quantity: Math.max(0, Number(String(match[1]).replace(',', '.')) || 0)
+          }
+        }
+      }
+      return null
+    }
+
+    function getProtectedFefoExpiry(detail) {
+      const route = getAssignedRoutePlan()
+      if (!route?.id) return ''
+      const instruction = (state.instructions || []).find((item) => {
+        if (!isFefoDailyInstruction(item)) return false
+        const payload = getFefoInstructionPayload(item)
+        return !payload.routeId || String(payload.routeId) === String(route.id)
+      })
+      return instruction ? normalizeFoodExpiryDate(getFefoInstructionPayload(instruction).expiryDate) : ''
+    }
+
+    function getFefoBatchAllowance(detail, stopId, slotId, productId) {
+      const protectedExpiry = getProtectedFefoExpiry(detail)
+      if (!protectedExpiry) return { protectedExpiry: '', targetRemaining: Infinity }
+      const allocation = getMandatoryFefoAllocation(detail, productId)
+      if (!allocation || allocation.expiryDate !== protectedExpiry) return { protectedExpiry, targetRemaining: 0 }
+      const alreadyReserved = (detail?.slots || []).reduce((sum, item) => {
+        if (String(item.id) === String(slotId)) return sum
+        const draft = detail?.draft?.slots?.[String(item.id)] || {}
+        return sum + (draft.fillItems || []).reduce((fillSum, fill) => (
+          String(fill.productId) === String(productId)
+          && normalizeFoodExpiryDate(fill.expiryDate) === protectedExpiry
+            ? fillSum + Math.max(0, Number(fill.quantity || 0))
+            : fillSum
+        ), 0)
+      }, 0)
+      return {
+        protectedExpiry,
+        targetQuantity: allocation.quantity,
+        targetRemaining: Math.max(0, allocation.quantity - alreadyReserved),
+        allocation
+      }
+    }
+
+    function getMandatoryFefoShortfalls(detail, stopId) {
+      const products = [...new Map((detail?.slots || []).flatMap((slot) => (
+        getFoodSlotProductOptions(slot).map((product) => [String(product.id), product])
+      ))).values()]
+      return products.flatMap((product) => {
+        const allocation = getMandatoryFefoAllocation(detail, product.id)
+        if (!allocation?.expiryDate || allocation.quantity <= 0) return []
+        const allocated = (detail?.slots || []).reduce((sum, slot) => {
+          const draft = getFoodSlotDraft(stopId, slot)
+          return sum + (draft.fillItems || []).reduce((fillSum, fill) => (
+            String(fill.productId) === String(product.id)
+            && normalizeFoodExpiryDate(fill.expiryDate) === allocation.expiryDate
+              ? fillSum + Math.max(0, Number(fill.quantity || 0))
+              : fillSum
+          ), 0)
+        }, 0)
+        const missing = Math.max(0, allocation.quantity - allocated)
+        return missing > 0.0001 ? [{ product, allocation, allocated, missing }] : []
+      })
+    }
+
     function getFoodReservedVehicleQuantity(detail, stopId, productId, excludedSlotId = null) {
       return (detail?.slots || []).reduce((sum, item) => {
         if (String(item.id) === String(excludedSlotId)) return sum
@@ -9330,7 +9443,23 @@
     }
 
     function getFoodAvailableVehicleQuantity(detail, stopId, slotId, productId) {
-      const onHand = Math.max(0, Number(detail?.vehicleStock?.[String(productId)] || 0))
+      const batches = detail?.vehicleBatches?.[String(productId)] || []
+      const allowance = getFefoBatchAllowance(detail, stopId, slotId, productId)
+      const onHand = batches.length && allowance.protectedExpiry
+        ? (() => {
+            const protectedOnHand = batches.reduce((sum, batch) => (
+              normalizeFoodExpiryDate(batch.expiry_date) === allowance.protectedExpiry
+                ? sum + Math.max(0, Number(batch.quantity_on_hand || 0))
+                : sum
+            ), 0)
+            const otherOnHand = batches.reduce((sum, batch) => (
+              normalizeFoodExpiryDate(batch.expiry_date) !== allowance.protectedExpiry
+                ? sum + Math.max(0, Number(batch.quantity_on_hand || 0))
+                : sum
+            ), 0)
+            return otherOnHand + Math.min(protectedOnHand, Math.max(0, Number(allowance.targetQuantity || 0)))
+          })()
+        : Math.max(0, Number(detail?.vehicleStock?.[String(productId)] || 0))
       const reserved = getFoodReservedVehicleQuantity(detail, stopId, productId, slotId)
       return Math.max(0, Math.floor(onHand - reserved))
     }
@@ -9350,12 +9479,17 @@
       }
       const batches = detail?.vehicleBatches?.[String(productId)] || []
       if (!requested || !batches.length) return [{ productId, quantity: requested, batchId: null, expiryDate: '' }]
+      const allowance = getFefoBatchAllowance(detail, stopId, slotId, productId)
+      let protectedRemaining = allowance.targetRemaining
       const result = []
       let remaining = requested
       for (const batch of batches) {
         if (remaining <= 0.0001) break
         const key = String(batch.batch_id || 'none')
-        const available = Math.max(0, Number(batch.quantity_on_hand || 0) - Number(reservedByBatch.get(key) || 0))
+        let available = Math.max(0, Number(batch.quantity_on_hand || 0) - Number(reservedByBatch.get(key) || 0))
+        if (allowance.protectedExpiry && normalizeFoodExpiryDate(batch.expiry_date) === allowance.protectedExpiry) {
+          available = Math.min(available, protectedRemaining)
+        }
         if (!available) continue
         const moved = Math.min(remaining, available)
         result.push({
@@ -9364,9 +9498,12 @@
           batchId: batch.batch_id || null,
           expiryDate: batch.expiry_date || ''
         })
+        if (allowance.protectedExpiry && normalizeFoodExpiryDate(batch.expiry_date) === allowance.protectedExpiry) {
+          protectedRemaining = Math.max(0, protectedRemaining - moved)
+        }
         remaining = Number((remaining - moved).toFixed(3))
       }
-      if (remaining > 0.0001) result.push({ productId, quantity: remaining, batchId: null, expiryDate: '' })
+      if (remaining > 0.0001 && !allowance.protectedExpiry) result.push({ productId, quantity: remaining, batchId: null, expiryDate: '' })
       return result
     }
 
@@ -12103,6 +12240,7 @@
           loading: false,
           error: '',
           visitId,
+          machineId: machine.id,
           manualStockMode: machine.sales_tracking_mode === 'none',
           slots,
           visitItems: existingItems,
@@ -12472,6 +12610,10 @@
         if (!foodDetail) throw new Error('Potravinový planogram není načtený.')
         const missingSlot = (foodDetail.slots || []).find((slot) => !getFoodSlotDraft(stop.id, slot).accepted)
         if (missingSlot) throw new Error(`Nejdřív potvrď pozici ${missingSlot.slot_code}.`)
+        const fefoShortfall = getMandatoryFefoShortfalls(foodDetail, stop.id)[0]
+        if (fefoShortfall) {
+          throw new Error(`Povinné FEFO není splněné: do tohoto automatu chybí vložit ${formatNumber(fefoShortfall.missing)} ks ${fefoShortfall.product.name || fefoShortfall.product.sku} s expirací ${formatFoodExpiryDateInput(fefoShortfall.allocation.expiryDate)}.`)
+        }
         const missingCheck = getFoodGuidedCheckRows(foodDetail).find((row) => row.required !== false && row.status !== 'done')
         if (missingCheck) throw new Error(`Nejdřív dokonči povinnost: ${missingCheck.label}.`)
         const cashResolved = foodDetail.cash && (foodDetail.cash.collection_required
@@ -13263,6 +13405,13 @@
       const remainingExistingQuantity = fullSwap ? retainedReplacementUnits : Math.max(0, actualBefore - wasteQuantity - transferQuantity)
       const tracksExistingExpiry = isFoodExpiryTracked(fullSwap ? selectedProduct : (existingProduct || plannedProduct || selectedProduct))
       const existingExpiryDate = normalizeFoodExpiryDate(draft.existingExpiryDate)
+      const recordedExpiryDate = normalizeFoodExpiryDate(slot.expiry_date)
+      const expiryWasCorrected = Boolean(
+        actualBefore > 0
+        && recordedExpiryDate
+        && existingExpiryDate
+        && recordedExpiryDate !== existingExpiryDate
+      )
       const expiredWasteQuantity = wasteItems
         .filter((item) => item.reason === 'expired')
         .reduce((sum, item) => sum + item.quantity, 0)
@@ -13530,6 +13679,9 @@
           return `Doplnění: ${fill.quantity} ks · SKU ${product?.sku || ''}${fill.expiryDate ? ` · expirace ${fill.expiryDate}` : ''}`
         }),
         ...missingFillExpiryProducts.map((productName) => `Upozornění: expirace nezadaná · ${productName}`),
+        expiryWasCorrected
+          ? `Fyzická oprava expirace původní zásoby: ${recordedExpiryDate} → ${existingExpiryDate}`
+          : null,
         draft.assortmentMismatch
           ? `Skutečný produkt: ${existingProduct?.name || existingProduct?.sku || 'neurčen'} · ponecháno ${remainingExistingQuantity} ks do doprodeje${existingExpiryDate ? ` · expirace ${existingExpiryDate}` : ''} · plán ${desiredTargetProduct?.name || desiredTargetProduct?.sku || ''}`
           : null,
