@@ -1979,8 +1979,14 @@
     .fleet-cost-breakdown { color: #667085; font-size: 12px; font-weight: 750; line-height: 1.4; }
     .fleet-cost-km-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
     .fleet-cost-km-item { display: grid; gap: 4px; min-width: 0; padding: 7px 8px; border: 1px solid #e4e7ec; border-radius: 9px; background: rgba(255,255,255,.72); }
-    .fleet-cost-km-label { color: #667085; font-size: 10px; font-weight: 850; text-transform: uppercase; }
-    .fleet-cost-summary .cost-km-badge { width: fit-content; font-size: 13px; text-transform: none; }
+    .fleet-cost-km-label { color: #344054; font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .fleet-cost-summary .cost-km-badge { width: fit-content; padding: 7px 10px; font-size: 16px; font-weight: 950; text-transform: none; }
+    .fleet-cost-summary .cost-km-badge.good { color: #054f31; border-color: #12b76a; background: #d1fadf; }
+    .fleet-cost-summary .cost-km-badge.warning { color: #7a2e0e; border-color: #f79009; background: #fef0c7; }
+    .fleet-cost-summary .cost-km-badge.danger { color: #912018; border-color: #f04438; background: #fee4e2; }
+    .fleet-cost-summary .cost-km-badge.idle { color: #344054; border-color: #98a2b3; background: #eaecf0; }
+    .fleet-cost-consumption { color: #344054; font-size: 12px; font-weight: 750; line-height: 1.35; }
+    .fleet-cost-consumption strong { color: #101828; font-size: 14px; font-weight: 950; white-space: nowrap; }
     .fleet-cost-summary .fleet-control-cell { gap: 5px; }
     .fleet-cost-summary .fleet-control-cell .usage-badge { width: 100%; justify-content: center; padding: 7px 9px; font-size: 13px; }
     .fleet-cost-summary .fleet-control-cell .fleet-secondary { font-size: 12px; }
@@ -1997,7 +2003,8 @@
       .fleet-table td strong, .fleet-table .fleet-primary, .fleet-table .fleet-fuel-primary { font-size: 14px; line-height: 1.35; }
       .fleet-table .fleet-vehicle-name { font-size: 15px; }
       .fleet-table .fleet-secondary { font-size: 11px; line-height: 1.45; }
-      .fleet-table .badge, .fleet-table .warehouse-badge, .fleet-table .km-badge, .fleet-table .usage-badge, .fleet-table .receipt-link, .fleet-table .cost-km-badge { font-size: 10px; }
+      .fleet-table .badge, .fleet-table .warehouse-badge, .fleet-table .km-badge, .fleet-table .usage-badge, .fleet-table .receipt-link { font-size: 10px; }
+      .fleet-table .fleet-cost-summary .cost-km-badge { font-size: 16px; }
       .fleet-table .vehicle-metric-label { font-size: 12px; }
       .fleet-table .vehicle-metric-value { font-size: 14px; }
       .service-countdown { font-size: 11px; }
@@ -3127,9 +3134,7 @@
       const appDistanceKm = periodLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
       const dkvOdometers = dkvFuelLogs.map((log) => Number(log.fuel_odometer_km)).filter((value) => Number.isFinite(value) && value > 0)
       const dkvOdometerDistanceKm = dkvOdometers.length >= 2 ? Math.max(...dkvOdometers) - Math.min(...dkvOdometers) : 0
-      const distanceKm = Math.max(appDistanceKm, dkvOdometerDistanceKm)
-      const distanceSource = dkvOdometerDistanceKm > appDistanceKm ? 'dkv_odometer' : 'app_logs'
-      const fuelAmount = dkvFuelLogs.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
+      const recordedDistanceKm = Math.max(appDistanceKm, dkvOdometerDistanceKm)
       const sortedFuelLogs = [...dkvFuelLogs]
         .filter((log) => Number.isFinite(Number(log.fuel_odometer_km)) && Number(log.fuel_odometer_km) > 0)
         .sort((a, b) => Number(a.fuel_odometer_km) - Number(b.fuel_odometer_km) || String(a.log_date).localeCompare(String(b.log_date)))
@@ -3141,17 +3146,24 @@
         const segmentKm = currentKm - previousKm
         const segmentConsumption = segmentKm > 0 ? (liters / segmentKm) * 100 : 0
         if (segmentKm < 20 || segmentConsumption < 3 || segmentConsumption > 25) continue
-        consumptionSegments.push({ distanceKm: segmentKm, fuelLiters: liters })
+        consumptionSegments.push({
+          distanceKm: segmentKm,
+          fuelLiters: liters,
+          fuelAmount: Number(sortedFuelLogs[index].fuel_cost || 0)
+        })
       }
       const fuelLiters = consumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelLiters || 0), 0)
       const consumptionDistanceKm = consumptionSegments.reduce((sum, segment) => sum + Number(segment.distanceKm || 0), 0)
+      const fuelAmount = consumptionSegments.reduce((sum, segment) => sum + Number(segment.fuelAmount || 0), 0)
       const otherAmount = dkvExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
       const totalAmount = fuelAmount + otherAmount
+      const distanceKm = consumptionDistanceKm
       return {
         distanceKm,
         appDistanceKm,
         dkvOdometerDistanceKm,
-        distanceSource,
+        recordedDistanceKm,
+        distanceSource: consumptionDistanceKm > 0 ? 'dkv_segments' : 'unverified',
         distanceRows: periodLogs.filter((log) => Number(log.distance_km || 0) > 0).length,
         fuelAmount,
         otherAmount,
@@ -3265,7 +3277,7 @@
           <div class="cost-dashboard-head">
             <div>
               <h4>Náklad na kilometr z DKV</h4>
-              <div class="cost-dashboard-subtitle">Náklady se počítají ze všech naimportovaných DKV transakcí v období. Kilometry po ${escapeHtml(latestDkvDataDate ? formatDateLabel(latestDkvDataDate) : 'posledním importu')} se nezapočítávají; při neúplných jízdách se použije doložený rozsah tachometrů DKV.</div>
+              <div class="cost-dashboard-subtitle">Náklad i spotřeba se počítají ze stejných navazujících DKV tankování do ${escapeHtml(latestDkvDataDate ? formatDateLabel(latestDkvDataDate) : 'posledního importu')}. Osamocené nebo chybné stavy tachometru se do výsledku nezapočítají.</div>
             </div>
             <div class="cost-period-switch" role="group" aria-label="Období nákladů na kilometr">
               ${[
@@ -3277,8 +3289,8 @@
           </div>
           <div class="cost-fleet-summary">
             <div class="cost-fleet-stat"><div class="cost-fleet-label">Flotila Kč/km</div><div class="cost-fleet-value">${escapeHtml(fleetCostPerKm != null ? `${formatDecimal(fleetCostPerKm, 2)} Kč` : 'Bez km')}</div></div>
-            <div class="cost-fleet-stat"><div class="cost-fleet-label">Ujeté km</div><div class="cost-fleet-value">${escapeHtml(formatQuantity(fleetDistanceKm, 'km'))}</div></div>
-            <div class="cost-fleet-stat"><div class="cost-fleet-label">DKV náklad</div><div class="cost-fleet-value">${escapeHtml(formatMoney(fleetDkvAmount))}</div></div>
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">Ověřené km</div><div class="cost-fleet-value">${escapeHtml(formatQuantity(fleetDistanceKm, 'km'))}</div></div>
+            <div class="cost-fleet-stat"><div class="cost-fleet-label">DKV náklad ve výpočtu</div><div class="cost-fleet-value">${escapeHtml(formatMoney(fleetDkvAmount))}</div></div>
             <div class="cost-fleet-stat"><div class="cost-fleet-label">Spotřeba</div><div class="cost-fleet-value">${escapeHtml(fleetConsumption != null ? `${formatConsumption(fleetConsumption)} / 100 km` : 'Bez výpočtu')}</div></div>
           </div>
           <div class="cost-control-grid">
@@ -3290,7 +3302,7 @@
                 </div>
                 <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
                 <div class="cost-control-note">
-                  ${escapeHtml(`${period.label} (${insight.periodDateLabel}) · ${formatQuantity(insight.distanceKm, 'km')} ${insight.distanceSource === 'dkv_odometer' ? 'z tachometrů DKV' : 'z jízd'} · DKV ${formatMoney(insight.totalAmount)} · dlouhodobě ${insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'}`)}
+                  ${escapeHtml(`${period.label} (${insight.periodDateLabel}) · ${formatQuantity(insight.distanceKm, 'km')} z navazujících tankování DKV · DKV ${formatMoney(insight.totalAmount)} · dlouhodobě ${insight.cumulativeCostPerKm != null ? `${formatDecimal(insight.cumulativeCostPerKm, 2)} Kč/km` : 'bez km'}`)}
                 </div>
               </article>
             `).join('')}
@@ -3312,7 +3324,7 @@
                 <span class="cost-control-status">${escapeHtml(insight.statusLabel)}</span>
               </div>
               <div class="cost-control-value">${escapeHtml(insight.costPerKm != null ? `${formatDecimal(insight.costPerKm, 2)} Kč/km` : 'Bez km')}</div>
-              <div class="cost-control-note">${escapeHtml(`${formatQuantity(insight.distanceKm, 'km')} ${insight.distanceSource === 'dkv_odometer' ? 'z tachometrů DKV' : 'z jízd'} · DKV ${formatMoney(insight.totalAmount)} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}</div>
+              <div class="cost-control-note">${escapeHtml(`${formatQuantity(insight.distanceKm, 'km')} z navazujících tankování DKV · DKV ${formatMoney(insight.totalAmount)} · limit ${formatDecimal(insight.limitCostPerKm, 2)} Kč/km`)}</div>
             </article>
             <article class="cost-control-card ${escapeHtml(insight.cumulativeTone)}">
               <div class="cost-control-top">
@@ -3334,7 +3346,7 @@
                 <div class="cost-control-title">Km z aplikace</div>
               </div>
               <div class="cost-control-value">${escapeHtml(formatQuantity(insight.distanceKm, 'km'))}</div>
-              <div class="cost-control-note">${escapeHtml(`${insight.distanceSource === 'dkv_odometer' ? `Použit rozsah DKV ${formatQuantity(insight.dkvOdometerDistanceKm, 'km')}; jízdy mají jen ${formatQuantity(insight.appDistanceKm, 'km')}` : `${insight.distanceRows} jízd s km`} · ${insight.litersPer100Km != null ? `${formatConsumption(insight.litersPer100Km)} / 100 km` : 'bez výpočtu spotřeby'}`)}</div>
+              <div class="cost-control-note">${escapeHtml(`${formatQuantity(insight.distanceKm, 'km')} v ověřených intervalech · ${insight.litersPer100Km != null ? `${formatConsumption(insight.litersPer100Km)} / 100 km` : 'bez výpočtu spotřeby'}`)}</div>
             </article>
           </div>
         </section>
@@ -3983,10 +3995,12 @@
                   <div class="fleet-cost-km-item">
                     <span class="fleet-cost-km-label">DKV ${escapeHtml(costPerKmInsight.periodShortLabel)}</span>
                     <span class="cost-km-badge ${escapeHtml(costPerKmInsight.tone)}">${escapeHtml(costPerKmInsight.costPerKm != null ? `${formatDecimal(costPerKmInsight.costPerKm, 2)} Kč/km` : 'Bez km')}</span>
+                    <span class="fleet-cost-consumption">Spotřeba <strong>${escapeHtml(costPerKmInsight.litersPer100Km != null ? `${formatConsumption(costPerKmInsight.litersPer100Km)} / 100 km` : 'bez výpočtu')}</strong></span>
                   </div>
                   <div class="fleet-cost-km-item">
                     <span class="fleet-cost-km-label">Celé období</span>
                     <span class="cost-km-badge ${escapeHtml(costPerKmInsight.cumulativeTone)}">${escapeHtml(costPerKmInsight.cumulativeCostPerKm != null ? `${formatDecimal(costPerKmInsight.cumulativeCostPerKm, 2)} Kč/km` : 'Bez km')}</span>
+                    <span class="fleet-cost-consumption">Spotřeba <strong>${escapeHtml(costPerKmInsight.cumulativeLitersPer100Km != null ? `${formatConsumption(costPerKmInsight.cumulativeLitersPer100Km)} / 100 km` : 'bez výpočtu')}</strong></span>
                   </div>
                 </div>
               ` : ''}

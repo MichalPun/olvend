@@ -738,10 +738,7 @@
       const tripDistance = periodLogs.reduce((sum, log) => sum + Number(log.distance_km || 0), 0)
       const odometers = fuelRows.map((log) => Number(log.fuel_odometer_km)).filter((value) => Number.isFinite(value) && value > 0)
       const odometerDistance = odometers.length >= 2 ? Math.max(...odometers) - Math.min(...odometers) : 0
-      const distanceKm = Math.max(tripDistance, odometerDistance)
-      const fuelCost = fuelRows.reduce((sum, log) => sum + Number(log.fuel_cost || 0), 0)
       const otherCost = expenseRows.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
-      const dkvCost = fuelCost + otherCost
       const sortedFuelRows = [...fuelRows]
         .filter((log) => Number.isFinite(Number(log.fuel_odometer_km)) && Number(log.fuel_odometer_km) > 0)
         .sort((a, b) => Number(a.fuel_odometer_km) - Number(b.fuel_odometer_km) || String(a.log_date).localeCompare(String(b.log_date)))
@@ -753,10 +750,17 @@
         const segmentKm = currentKm - previousKm
         const segmentConsumption = segmentKm > 0 ? (liters / segmentKm) * 100 : 0
         if (segmentKm < 20 || segmentConsumption < 3 || segmentConsumption > 25) continue
-        consumptionSegments.push({ distanceKm: segmentKm, fuelLiters: liters })
+        consumptionSegments.push({
+          distanceKm: segmentKm,
+          fuelLiters: liters,
+          fuelCost: Number(sortedFuelRows[index].fuel_cost || 0)
+        })
       }
       const fuelLiters = consumptionSegments.reduce((sum, segment) => sum + segment.fuelLiters, 0)
       const consumptionDistanceKm = consumptionSegments.reduce((sum, segment) => sum + segment.distanceKm, 0)
+      const fuelCost = consumptionSegments.reduce((sum, segment) => sum + segment.fuelCost, 0)
+      const dkvCost = fuelCost + otherCost
+      const distanceKm = consumptionDistanceKm
       return {
         distanceKm,
         dkvCost,
@@ -764,7 +768,7 @@
         consumptionDistanceKm,
         costPerKm: distanceKm > 0 && dkvCost > 0 ? dkvCost / distanceKm : null,
         consumption: consumptionDistanceKm > 0 && fuelLiters > 0 ? (fuelLiters / consumptionDistanceKm) * 100 : null,
-        distanceSource: odometerDistance > tripDistance ? 'odometer' : 'trips',
+        distanceSource: consumptionDistanceKm > 0 ? 'segments' : 'unverified',
         transactionCount: fuelRows.length + expenseRows.length
       }
     }
@@ -806,7 +810,7 @@
         <div class="dkv-report-head">
           <div>
             <h3>Skutečný DKV náklad vozového parku</h3>
-            <p>Náklady bereme pouze z importů DKV. Období končí posledním importem ${escapeHtml(formatDateLabel(latestDkvDate))}; pokud chybí jízdy, použijeme doložený rozsah tachometrů DKV.</p>
+            <p>Náklady i spotřebu počítáme ze stejných navazujících DKV tankování. Období končí posledním importem ${escapeHtml(formatDateLabel(latestDkvDate))}; osamocené nebo chybné stavy tachometru výsledek nezkreslí.</p>
           </div>
           <div class="dkv-period-switch" role="group" aria-label="Období DKV nákladů">
             ${[['30d', '30 dní'], ['90d', '90 dní'], ['all', 'Vše']].map(([key, label]) => `<button class="dkv-period-btn ${dkvPeriod === key ? 'active' : ''}" type="button" data-dkv-period="${key}">${label}</button>`).join('')}
@@ -814,15 +818,15 @@
         </div>
         <div class="dkv-kpi-grid">
           <div class="dkv-kpi"><div class="dkv-kpi-label">Flotila Kč / km</div><div class="dkv-kpi-value">${escapeHtml(fleetCostPerKm == null ? 'Bez výpočtu' : `${fleetCostPerKm.toFixed(2).replace('.', ',')} Kč`)}</div></div>
-          <div class="dkv-kpi"><div class="dkv-kpi-label">Ujeté km</div><div class="dkv-kpi-value">${escapeHtml(`${Math.round(fleetDistance).toLocaleString('cs-CZ')} km`)}</div></div>
-          <div class="dkv-kpi"><div class="dkv-kpi-label">DKV náklad</div><div class="dkv-kpi-value">${escapeHtml(formatCurrency(fleetCost))}</div></div>
+          <div class="dkv-kpi"><div class="dkv-kpi-label">Ověřené km</div><div class="dkv-kpi-value">${escapeHtml(`${Math.round(fleetDistance).toLocaleString('cs-CZ')} km`)}</div></div>
+          <div class="dkv-kpi"><div class="dkv-kpi-label">DKV náklad ve výpočtu</div><div class="dkv-kpi-value">${escapeHtml(formatCurrency(fleetCost))}</div></div>
           <div class="dkv-kpi"><div class="dkv-kpi-label">Spotřeba</div><div class="dkv-kpi-value">${escapeHtml(fleetConsumption == null ? 'Bez výpočtu' : `${fleetConsumption.toFixed(1).replace('.', ',')} l / 100 km`)}</div></div>
         </div>
         ${cards.length ? `<div class="dkv-vehicle-grid">${cards.map(({ vehicle, from, metrics }) => `
           <article class="dkv-vehicle-card">
             <div class="dkv-vehicle-top">
               <div class="dkv-vehicle-name">${escapeHtml([vehicle.name, vehicle.plate].filter(Boolean).join(' · ') || 'Vozidlo')}</div>
-              <span class="dkv-source-badge">${metrics.distanceSource === 'odometer' ? 'tachometr DKV' : 'jízdy'}</span>
+              <span class="dkv-source-badge">${metrics.distanceSource === 'segments' ? 'ověřené DKV intervaly' : 'bez ověření'}</span>
             </div>
             <div class="dkv-vehicle-value">${escapeHtml(metrics.costPerKm == null ? 'Bez km' : `${metrics.costPerKm.toFixed(2).replace('.', ',')} Kč/km`)}</div>
             <div class="dkv-vehicle-note">${escapeHtml(`${formatDateLabel(from)} – ${formatDateLabel(period.to)} · ${Math.round(metrics.distanceKm).toLocaleString('cs-CZ')} km · DKV ${formatCurrency(metrics.dkvCost)}${metrics.consumption == null ? '' : ` · ${metrics.consumption.toFixed(1).replace('.', ',')} l/100 km`}`)}</div>
@@ -836,15 +840,15 @@
       latestDkvDate = '2026-07-31'
       const period = getDkvPeriodDefinition()
       const sampleCards = [
-        ['Opel Movano · 2BN 7419', '7,37 Kč/km', '8,9 l/100 km'],
-        ['Opel Vivaro · 3BJ 1780', '2,85 Kč/km', '7,4 l/100 km'],
-        ['Fiat Doblo · 5AP 9000', '2,38 Kč/km', '7,0 l/100 km'],
-        ['Opel Combo Life', '2,35 Kč/km', '6,6 l/100 km'],
-        ['Renault Kangoo · 2TX 7928', '1,74 Kč/km', '6,2 l/100 km']
+        ['Opel Movano · 2BN 7419', '3,45 Kč/km', '8,9 l/100 km'],
+        ['Opel Combo Life', '2,86 Kč/km', '6,6 l/100 km'],
+        ['Opel Vivaro · 3BJ 1780', '2,78 Kč/km', '7,4 l/100 km'],
+        ['Fiat Doblo · 5AP 9000', '2,56 Kč/km', '7,0 l/100 km'],
+        ['Renault Kangoo · 2TX 7928', '2,36 Kč/km', '6,2 l/100 km']
       ]
       dkvCostPanel.innerHTML = `
         <div class="dkv-report-head"><div><h3>Skutečný DKV náklad vozového parku</h3><p>Náklady bereme pouze z importů DKV. Období končí posledním importem 31. 7. 2026; při neúplných jízdách se použije rozsah tachometrů.</p></div><div class="dkv-period-switch">${[['30d','30 dní'],['90d','90 dní'],['all','Vše']].map(([key,label]) => `<button class="dkv-period-btn ${dkvPeriod === key ? 'active' : ''}" type="button" data-dkv-period="${key}">${label}</button>`).join('')}</div></div>
-        <div class="dkv-kpi-grid"><div class="dkv-kpi"><div class="dkv-kpi-label">Flotila Kč / km</div><div class="dkv-kpi-value">2,58 Kč</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">Ujeté km</div><div class="dkv-kpi-value">37 017 km</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">DKV náklad</div><div class="dkv-kpi-value">95 605 Kč</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">Spotřeba</div><div class="dkv-kpi-value">7,2 l / 100 km</div></div></div>
+        <div class="dkv-kpi-grid"><div class="dkv-kpi"><div class="dkv-kpi-label">Flotila Kč / km</div><div class="dkv-kpi-value">2,69 Kč</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">Ověřené km</div><div class="dkv-kpi-value">27 174 km</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">DKV náklad ve výpočtu</div><div class="dkv-kpi-value">73 203 Kč</div></div><div class="dkv-kpi"><div class="dkv-kpi-label">Spotřeba</div><div class="dkv-kpi-value">7,2 l / 100 km</div></div></div>
         <div class="dkv-vehicle-grid">${sampleCards.map(([name,value,consumption]) => `<article class="dkv-vehicle-card"><div class="dkv-vehicle-top"><div class="dkv-vehicle-name">${name}</div><span class="dkv-source-badge">DKV</span></div><div class="dkv-vehicle-value">${value}</div><div class="dkv-vehicle-note">${formatDateLabel(period.from)} – ${formatDateLabel(period.to)} · ${consumption} · lokální náhled</div></article>`).join('')}</div>`
     }
 
