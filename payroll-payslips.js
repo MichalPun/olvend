@@ -151,13 +151,14 @@ function renderDetail(notice = '') {
         <section class="payslip-block"><h3>2. Prémie</h3><label class="payslip-check"><input id="bonusIncluded" type="checkbox" ${bonus.included ? 'checked' : ''} ${disabled}> Zobrazit zaměstnanci rozpis prémie</label><div class="payslip-item-controls"><label class="payslip-field"><span>Částka</span><input id="bonusAmount" type="number" min="0" step="0.01" value="${esc(bonus.amount)}" ${disabled}></label><label class="payslip-field"><span>Název</span><input id="bonusTitle" value="${esc(bonus.title)}" ${disabled}></label></div><label class="payslip-field"><span>Vysvětlení / přenesení prémie</span><textarea id="bonusExplanation" placeholder="Např. část prémie převedena z minulého období…" ${disabled}>${esc(bonus.explanation || '')}</textarea></label></section>
         <section class="payslip-block"><h3>3. Komentář k výplatě</h3><p>Soukromá zpráva, kterou zaměstnanec uvidí vedle PDF.</p><label class="payslip-field"><span>Komentář</span><textarea id="generalMessage" placeholder="Např. vysvětlení mimořádné odměny nebo změny…" ${disabled}>${esc(payslip?.general_message || '')}</textarea></label></section>
       </div>
-      <section class="payslip-block"><h3>4. Srážky a inventurní rozdíly</h3><p>Načítají se pouze uzavřené inventury z tohoto období. Zahrnutí částky vyžaduje evidovaný souhlas zaměstnance.</p><div class="payslip-item-list">${deductions.length ? deductions.map((item, index) => `
+      <section class="payslip-block"><div class="payslip-block-heading"><div><h3>4. Srážky a inventurní rozdíly</h3><p>Uzavřené inventury se načtou automaticky. Další doloženou srážku můžete přidat ručně.</p></div>${locked ? '' : '<button class="btn" id="addManualDeductionBtn" type="button">+ Přidat ruční srážku</button>'}</div><div class="payslip-item-list">${deductions.length ? deductions.map((item, index) => `
         <article class="payslip-item" data-deduction-index="${index}" data-source-id="${esc(item.source_id || '')}" data-source-type="${esc(item.source_type || '')}" data-source-label="${esc(item.source_label || '')}">
-          <div class="payslip-item-head"><div><strong>${esc(item.title)}</strong><small class="sub">${esc(item.source_label || 'Ruční položka')}</small></div><span>${money(item.amount)}</span></div>
+          <div class="payslip-item-head"><div><strong>${esc(item.title)}</strong><small class="sub">${esc(item.source_label || 'Ruční položka')}</small></div><div class="payslip-item-head-actions"><span>${money(item.amount)}</span>${item.source_type !== 'inventory_audit' && !locked ? '<button type="button" data-remove-deduction>Odebrat</button>' : ''}</div></div>
           <label class="payslip-check"><input data-deduction-included type="checkbox" ${item.included ? 'checked' : ''} ${disabled}> Zahrnout do výplatnice</label>
+          ${item.source_type !== 'inventory_audit' ? `<label class="payslip-field payslip-manual-title"><span>Název srážky</span><input data-deduction-title value="${esc(item.title)}" placeholder="Např. Dohodnutá náhrada škody" ${disabled}></label>` : ''}
           <div class="payslip-item-controls"><label class="payslip-field"><span>Částka</span><input data-deduction-amount type="number" min="0" step="0.01" value="${esc(item.amount)}" ${disabled}></label><label class="payslip-field"><span>Vysvětlení</span><input data-deduction-explanation value="${esc(item.explanation || '')}" placeholder="Důvod a způsob výpočtu" ${disabled}></label></div>
           <label class="payslip-check payslip-agreement"><input data-deduction-agreement type="checkbox" ${item.agreement_confirmed ? 'checked' : ''} ${disabled}> Potvrzuji, že je evidována dohoda / právní podklad pro tuto srážku.</label>
-        </article>`).join('') : '<div class="payslip-empty">Pro tento měsíc nejsou připravené žádné inventurní srážky.</div>'}</div></section>
+        </article>`).join('') : '<div class="payslip-empty" data-deduction-empty>Pro tento měsíc zatím nejsou zadané žádné srážky.</div>'}</div></section>
       <div class="payslip-actions">${locked ? '<button class="btn" id="reopenPayslipBtn" type="button">Vrátit k úpravě</button>' : '<button class="btn" id="savePayslipBtn" type="button">Uložit rozpracované</button><button class="btn red" id="publishPayslipBtn" type="button">Publikovat zaměstnanci</button>'}</div>
     </div>`
   bindDetailEvents()
@@ -188,15 +189,16 @@ function renderEmployeePreview() {
     </div></div>`
 }
 
-function collectItems() {
+function collectItems(includeExcluded = false) {
   const items = []
-  if (document.getElementById('bonusIncluded')?.checked) items.push({
-    item_type: 'bonus', title: document.getElementById('bonusTitle').value.trim() || 'Prémie za období', amount: Number(document.getElementById('bonusAmount').value || 0), explanation: document.getElementById('bonusExplanation').value.trim() || null, included: true, agreement_confirmed: false, display_order: 10
+  const bonusIncluded = Boolean(document.getElementById('bonusIncluded')?.checked)
+  if (bonusIncluded || includeExcluded) items.push({
+    item_type: 'bonus', title: document.getElementById('bonusTitle').value.trim() || 'Prémie za období', amount: Number(document.getElementById('bonusAmount').value || 0), explanation: document.getElementById('bonusExplanation').value.trim() || null, included: bonusIncluded, agreement_confirmed: false, display_order: 10
   })
   document.querySelectorAll('[data-deduction-index]').forEach((node, index) => {
     const included = node.querySelector('[data-deduction-included]').checked
-    if (!included) return
-    items.push({ item_type: 'deduction', title: node.querySelector('.payslip-item-head strong').textContent.trim(), amount: Number(node.querySelector('[data-deduction-amount]').value || 0), explanation: node.querySelector('[data-deduction-explanation]').value.trim() || null, source_type: node.dataset.sourceType || null, source_id: node.dataset.sourceId || null, source_label: node.dataset.sourceLabel || null, agreement_confirmed: node.querySelector('[data-deduction-agreement]').checked, included: true, display_order: 100 + index })
+    if (!included && !includeExcluded) return
+    items.push({ item_type: 'deduction', title: node.querySelector('[data-deduction-title]')?.value.trim() || node.querySelector('.payslip-item-head strong').textContent.trim() || 'Ruční srážka', amount: Number(node.querySelector('[data-deduction-amount]').value || 0), explanation: node.querySelector('[data-deduction-explanation]').value.trim() || null, source_type: node.dataset.sourceType || null, source_id: node.dataset.sourceId || null, source_label: node.dataset.sourceLabel || null, agreement_confirmed: node.querySelector('[data-deduction-agreement]').checked, included, display_order: 100 + index })
   })
   return items
 }
@@ -218,11 +220,11 @@ async function save(status) {
   const employee = selectedEmployee()
   const existing = payslipFor(employee.id)
   const file = document.getElementById('payslipFile')?.files?.[0] || null
-  const items = collectItems()
+  const items = collectItems(true)
   if (status === 'published') {
     if (!state.context.currentEmployeeId) throw new Error('Přihlášený účet není propojený se zaměstnancem a nemůže dokument publikovat.')
     if (!file && !existing?.file_path) throw new Error('Nejprve nahrajte PDF výplatnice.')
-    const invalid = items.find((item) => item.item_type === 'deduction' && (!item.agreement_confirmed || item.amount <= 0))
+    const invalid = items.find((item) => item.item_type === 'deduction' && item.included && (!item.agreement_confirmed || item.amount <= 0))
     if (invalid) throw new Error(`Srážku „${invalid.title}“ nelze publikovat bez evidované dohody a platné částky.`)
   }
   state.busy = true
@@ -285,9 +287,31 @@ function bindDetailEvents() {
   document.getElementById('publishPayslipBtn')?.addEventListener('click', () => save('published').catch((error) => renderDetail(`Chyba: ${error.message}`)))
   document.getElementById('previewPayslipBtn')?.addEventListener('click', () => preview().catch((error) => renderDetail(`Chyba: ${error.message}`)))
   document.getElementById('reopenPayslipBtn')?.addEventListener('click', () => reopen().catch((error) => renderDetail(`Chyba: ${error.message}`)))
-  document.querySelectorAll('#payslipDetail input, #payslipDetail textarea, #payslipDetail select').forEach((input) => {
-    input.addEventListener('input', renderEmployeePreview)
+  const bindPreviewInputs = (root) => root.querySelectorAll('input, textarea, select').forEach((input) => {
+    input.addEventListener('input', () => {
+      const item = input.closest('[data-deduction-index]')
+      if (item && input.matches('[data-deduction-amount]')) item.querySelector('.payslip-item-head-actions span').textContent = money(input.value)
+      if (item && input.matches('[data-deduction-title]')) item.querySelector('.payslip-item-head strong').textContent = input.value.trim() || 'Ruční srážka'
+      renderEmployeePreview()
+    })
     input.addEventListener('change', renderEmployeePreview)
+  })
+  bindPreviewInputs(el.detail)
+  const list = el.detail.querySelector('.payslip-item-list')
+  document.getElementById('addManualDeductionBtn')?.addEventListener('click', () => {
+    list?.querySelector('[data-deduction-empty]')?.remove()
+    const token = `manual-${Date.now()}`
+    list?.insertAdjacentHTML('beforeend', `<article class="payslip-item" data-deduction-index="${token}" data-source-type="manual" data-source-label="Ručně zadaná položka"><div class="payslip-item-head"><div><strong>Ruční srážka</strong><small class="sub">Ručně zadaná položka</small></div><div class="payslip-item-head-actions"><span>0 Kč</span><button type="button" data-remove-deduction>Odebrat</button></div></div><label class="payslip-check"><input data-deduction-included type="checkbox"> Zahrnout do výplatnice</label><label class="payslip-field payslip-manual-title"><span>Název srážky</span><input data-deduction-title value="Ruční srážka" placeholder="Např. Dohodnutá náhrada škody"></label><div class="payslip-item-controls"><label class="payslip-field"><span>Částka</span><input data-deduction-amount type="number" min="0" step="0.01" value="0"></label><label class="payslip-field"><span>Vysvětlení</span><input data-deduction-explanation placeholder="Důvod a způsob výpočtu"></label></div><label class="payslip-check payslip-agreement"><input data-deduction-agreement type="checkbox"> Potvrzuji, že je evidována dohoda / právní podklad pro tuto srážku.</label></article>`)
+    const added = list?.lastElementChild
+    if (added) bindPreviewInputs(added)
+    renderEmployeePreview()
+  })
+  list?.addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove-deduction]')
+    if (!remove) return
+    remove.closest('[data-deduction-index]')?.remove()
+    if (!list.querySelector('[data-deduction-index]')) list.innerHTML = '<div class="payslip-empty" data-deduction-empty>Pro tento měsíc zatím nejsou zadané žádné srážky.</div>'
+    renderEmployeePreview()
   })
 }
 
