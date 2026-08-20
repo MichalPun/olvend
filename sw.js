@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v140-fefo-instruction';
+const CACHE_NAME = 'olvend-v141-payroll-payslips';
 const APP_SHELL = [
   './',
   './index.html',
@@ -16,6 +16,8 @@ const APP_SHELL = [
   './budget.html',
   './reporty.html',
   './payroll.html',
+  './payroll-payslips.js',
+  './payroll-payslips.css',
   './mail.html',
   './mail-settings.html',
   './mail-api.js',
