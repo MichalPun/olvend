@@ -7,6 +7,7 @@ const el = {
   view: document.getElementById('payslipsView'),
   list: document.getElementById('payslipEmployeeList'),
   detail: document.getElementById('payslipDetail'),
+  preview: document.getElementById('payslipPreview'),
   period: document.getElementById('payslipPeriodLabel'),
   summary: document.getElementById('payslipSummary'),
   reload: document.getElementById('payslipReloadBtn')
@@ -41,6 +42,7 @@ function showFatal(error) {
   console.error(error)
   const unavailable = error?.code === 'PGRST205' || String(error?.message || '').includes("payroll_payslips")
   el.detail.innerHTML = `<div class="payslip-empty"><strong>${unavailable ? 'Databázová část výplatnic ještě není nasazená.' : 'Výplatnice se nepodařilo načíst.'}</strong><br>${unavailable ? 'Po nasazení zabezpečeného úložiště bude tato část automaticky připravená.' : esc(error?.message || error)}</div>`
+  if (el.preview) el.preview.innerHTML = '<div class="payslip-empty">Náhled není dostupný.</div>'
 }
 
 function statusLabel(row) {
@@ -159,6 +161,31 @@ function renderDetail(notice = '') {
       <div class="payslip-actions">${locked ? '<button class="btn" id="reopenPayslipBtn" type="button">Vrátit k úpravě</button>' : '<button class="btn" id="savePayslipBtn" type="button">Uložit rozpracované</button><button class="btn red" id="publishPayslipBtn" type="button">Publikovat zaměstnanci</button>'}</div>
     </div>`
   bindDetailEvents()
+  renderEmployeePreview()
+}
+
+function renderEmployeePreview() {
+  if (!el.preview) return
+  const employee = selectedEmployee()
+  if (!employee) {
+    el.preview.innerHTML = '<div class="payslip-empty">Vyberte zaměstnance pro náhled.</div>'
+    return
+  }
+  const payslip = payslipFor(employee.id)
+  const file = document.getElementById('payslipFile')?.files?.[0]
+  const fileName = file?.name || payslip?.file_name || 'PDF zatím není nahrané'
+  const message = document.getElementById('generalMessage')?.value?.trim() || ''
+  const items = collectItems()
+  const status = payslip?.status === 'published' ? 'Publikováno' : 'Náhled'
+  el.preview.innerHTML = `<div class="payslip-preview-head"><strong>Náhled zaměstnance</strong><span>Mění se živě podle zadaných údajů. Zaměstnanec uvidí pouze vlastní publikovaný dokument.</span></div>
+    <div class="employee-preview-shell"><div class="employee-preview-screen">
+      <header class="employee-preview-top"><div><strong>Výplatnice</strong><small>${esc(monthLabel(state.context?.period))} · ${esc(employee.name)}</small></div><span class="employee-preview-new">${esc(status)}</span></header>
+      <div class="employee-preview-body">
+        ${message ? `<div class="employee-preview-message">${esc(message)}</div>` : ''}
+        <div class="employee-preview-file"><b>PDF</b><div><strong>${esc(fileName)}</strong><small>${file || payslip?.file_path ? 'Dokument připravený k otevření' : 'Soubor bude dostupný po nahrání'}</small></div></div>
+        ${items.length ? `<div class="employee-preview-items">${items.map((item) => `<div class="employee-preview-item ${item.item_type}"><div><strong>${esc(item.title)}</strong>${item.explanation ? `<small>${esc(item.explanation)}</small>` : ''}${item.source_label ? `<small>${esc(item.source_label)}</small>` : ''}</div><b>${item.item_type === 'deduction' ? '−' : '+'}${esc(money(item.amount))}</b></div>`).join('')}</div>` : '<div class="employee-preview-empty">Bez samostatně zobrazené prémie nebo srážky.</div>'}
+      </div><footer class="employee-preview-foot">Moje → Dokumenty → Výplatnice</footer>
+    </div></div>`
 }
 
 function collectItems() {
@@ -258,6 +285,10 @@ function bindDetailEvents() {
   document.getElementById('publishPayslipBtn')?.addEventListener('click', () => save('published').catch((error) => renderDetail(`Chyba: ${error.message}`)))
   document.getElementById('previewPayslipBtn')?.addEventListener('click', () => preview().catch((error) => renderDetail(`Chyba: ${error.message}`)))
   document.getElementById('reopenPayslipBtn')?.addEventListener('click', () => reopen().catch((error) => renderDetail(`Chyba: ${error.message}`)))
+  document.querySelectorAll('#payslipDetail input, #payslipDetail textarea, #payslipDetail select').forEach((input) => {
+    input.addEventListener('input', renderEmployeePreview)
+    input.addEventListener('change', renderEmployeePreview)
+  })
 }
 
 document.addEventListener('olvend-payroll-loaded', (event) => {
