@@ -1950,6 +1950,7 @@
       const canEdit = !['in_progress', 'done', 'cancelled'].includes(effectiveStatus)
       const canComplete = !['done', 'cancelled'].includes(effectiveStatus)
       const canCancel = !['done', 'cancelled'].includes(effectiveStatus)
+      const canDelete = ['draft', 'assigned'].includes(effectiveStatus) && !plan.started_at && !plan.completed_at
       const routeKey = getPlanKey(plan)
       const telemetry = plan.telemetryRevenue || {}
       const revenue = Number(telemetry.revenue || 0)
@@ -2068,6 +2069,7 @@
             </div>
             <div class="detail-actions">
               ${mapsUrl ? `<a class="btn secondary" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener noreferrer">Otevřít v Google Maps</a>` : ''}
+              ${canDelete ? '<button class="btn danger" id="deleteRouteBtn" type="button">Smazat trasu</button>' : ''}
               ${canCancel ? '<button class="btn danger" id="cancelRouteBtn" type="button">Zrušit</button>' : ''}
             </div>
           </div>
@@ -2177,6 +2179,7 @@
 
       document.getElementById('markDoneBtn')?.addEventListener('click', () => updateRouteStatus('done'))
       document.getElementById('cancelRouteBtn')?.addEventListener('click', () => updateRouteStatus('cancelled'))
+      document.getElementById('deleteRouteBtn')?.addEventListener('click', deleteRoute)
       detailShell.querySelectorAll('[data-save-supervisor-cash]').forEach((button) => {
         button.addEventListener('click', () => saveSupervisorCashCount(button))
       })
@@ -2514,6 +2517,37 @@
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se uložit změnu trasy: ${error.message || error}`, 'error')
+      }
+    }
+
+    async function deleteRoute() {
+      if (!state.plan) return
+      const effectiveStatus = getEffectiveExecutionStatus(state.plan)
+      if (!['draft', 'assigned'].includes(effectiveStatus) || state.plan.started_at || state.plan.completed_at) {
+        setStatus('Smazat lze jen trasu, která ještě nezačala.', 'error')
+        return
+      }
+
+      if (!window.confirm(`Opravdu chceš trvale smazat trasu „${state.plan.title}“? Její zastávky se znovu uvolní pro plánování.`)) return
+
+      try {
+        if (Number.isFinite(Number(state.plan.id))) {
+          const { error } = await supabase.rpc('delete_unstarted_route_plan_v43', {
+            p_route_plan_id: Number(state.plan.id),
+          })
+          if (error) throw error
+        } else {
+          const routeKey = getPlanKey(state.plan)
+          const localPlans = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(
+            localPlans.filter((item) => getPlanKey(item) !== routeKey)
+          ))
+        }
+
+        window.location.href = 'routes.html'
+      } catch (error) {
+        console.error(error)
+        setStatus(`Trasu se nepodařilo smazat: ${error.message || error}`, 'error')
       }
     }
 

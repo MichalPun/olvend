@@ -1716,8 +1716,8 @@
                       <div class="compact-field">
                         <label for="sourceFilter">Rozsah</label>
                         <select id="sourceFilter">
-                          <option value="recommended">Dostupné pro zvolený den</option>
-                          <option value="all_active">Všechny zastávky</option>
+                          <option value="recommended">Nepokryté pro zvolený den</option>
+                          <option value="all_active">Všechny včetně pokrytých</option>
                           <option value="open_service">Jen otevřené servisy</option>
                           <option value="assigned_service">Servisy přiřazené technikovi</option>
                           <option value="unassigned_service">Servisy bez technika</option>
@@ -3115,10 +3115,12 @@
         const expiryCount = state.filteredCandidates.filter((candidate) => candidate.expiryItems?.some((item) => item.due)).length
         const stockCount = state.filteredCandidates.filter((candidate) => candidate.stockShortages?.length).length
         const serviceCount = state.filteredCandidates.filter((candidate) => candidate.openRequestCount > 0).length
+        const coveredCount = state.candidates.filter((candidate) => isCandidateScheduledElsewhere(candidate)).length
         selectionSummary.innerHTML = `
           <strong>${formatNumber(state.filteredCandidates.length)} z ${formatNumber(state.candidates.length)} ${escapeHtml(modeLabel)}</strong>
           <span class="selection-summary-stats">
             <span class="selection-summary-stat">Vybráno ${formatNumber(selectedVisible)}</span>
+            <span class="selection-summary-stat">Na jiné trase ${formatNumber(coveredCount)}</span>
             <span class="selection-summary-stat">Expirace ${formatNumber(expiryCount)}</span>
             <span class="selection-summary-stat">Nízký stav ${formatNumber(stockCount)}</span>
             <span class="selection-summary-stat">Servis ${formatNumber(serviceCount)}</span>
@@ -3697,6 +3699,11 @@
         const distanceKm = formatNumber(plan.estimated_distance_km ?? plan.estimatedDistanceKm ?? 0, 1)
         const driveMinutes = formatNumber(plan.estimated_drive_minutes ?? plan.estimatedDriveMinutes ?? 0)
         const statusMeta = getExecutionStatusMeta(plan.execution_status)
+        const canDelete = plan.local_saved_at || (
+          ['draft', 'assigned'].includes(String(plan.execution_status || 'draft').toLowerCase())
+          && !plan.started_at
+          && !plan.completed_at
+        )
         const stops = Array.isArray(plan.route_plan_stops) ? plan.route_plan_stops : []
         const doneCount = stops.filter((stop) => stop.status === 'done').length
         const skippedCount = stops.filter((stop) => stop.status === 'skipped').length
@@ -3742,6 +3749,7 @@
             </div>
             <div class="toolbar-actions" style="margin-top:12px;">
               <button class="btn secondary" type="button" data-open-saved-plan="${escapeHtml(String(plan.id || plan.local_saved_at || title))}">Otevřít detail</button>
+              ${canDelete ? `<button class="btn danger" type="button" data-delete-saved-plan="${escapeHtml(String(plan.id || plan.local_saved_at || title))}">Smazat trasu</button>` : ''}
             </div>
             ${stops.length ? `
               <details class="saved-route-details">
@@ -4110,6 +4118,18 @@
         ))
       }
 
+      if (sourceMode !== 'all_active') {
+        filtered = filtered.filter((candidate) => !isCandidateScheduledElsewhere(candidate))
+        const availableKeys = new Set(
+          state.candidates
+            .filter((candidate) => !isCandidateScheduledElsewhere(candidate))
+            .map((candidate) => candidate.key)
+        )
+        state.selectedKeys = new Set(
+          [...state.selectedKeys].filter((key) => availableKeys.has(key))
+        )
+      }
+
       if (query) {
         filtered = filtered.filter((candidate) => {
           const haystack = [
@@ -4196,6 +4216,13 @@
 
       if (mode === 'template' && template) {
         applyTemplateSelection(template, { preserveExisting: true })
+        if (sourceMode !== 'all_active') {
+          const candidatesByKey = new Map(state.candidates.map((candidate) => [candidate.key, candidate]))
+          state.selectedKeys = new Set([...state.selectedKeys].filter((key) => {
+            const candidate = candidatesByKey.get(key)
+            return candidate && !isCandidateScheduledElsewhere(candidate)
+          }))
+        }
       }
 
       renderCandidates()
@@ -5085,10 +5112,11 @@
     }
 
     function getPlanStops(plan) {
-      if (Array.isArray(plan?.route_plan_stops)) return plan.route_plan_stops
+      const relationalStops = Array.isArray(plan?.route_plan_stops) ? plan.route_plan_stops : []
+      if (relationalStops.length) return relationalStops
       if (Array.isArray(plan?.ordered_stops)) return plan.ordered_stops
       if (Array.isArray(plan?.route_payload?.orderedStops)) return plan.route_payload.orderedStops
-      return []
+      return relationalStops
     }
 
     function isCandidateScheduledElsewhere(candidate) {
@@ -5726,7 +5754,44 @@
     })
 
     if (savedPlansList) {
-      savedPlansList.addEventListener('click', (event) => {
+      savedPlansList.addEventListener('click', async (event) => {
+        const deleteButton = event.target.closest('[data-delete-saved-plan]')
+        if (deleteButton) {
+          const selectedPlan = state.savedPlans.find((plan) => String(plan.id || plan.local_saved_at || plan.title) === String(deleteButton.dataset.deleteSavedPlan))
+          if (!selectedPlan) return
+          const title = selectedPlan.title || `Trasa ${formatDateLabel(selectedPlan.planning_date)}`
+          if (!window.confirm(`Opravdu chceš trvale smazat trasu „${title}“? Její zastávky se znovu uvolní pro plánování.`)) return
+
+          try {
+            if (selectedPlan.local_saved_at) {
+              const localPlans = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]')
+              localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(
+                localPlans.filter((plan) => String(plan.local_saved_at || '') !== String(selectedPlan.local_saved_at))
+              ))
+            } else {
+              const { error } = await supabase.rpc('delete_unstarted_route_plan_v43', {
+                p_route_plan_id: Number(selectedPlan.id),
+              })
+              if (error) throw error
+            }
+
+            if (String(state.editingPlanKey || '') === getPlanKey(selectedPlan)) {
+              state.editingPlanKey = null
+              state.currentPlan = null
+              state.selectedKeys.clear()
+              syncEditUi()
+            }
+            await Promise.all([loadSavedPlans(), loadScheduledStopsForDate()])
+            buildCandidateRows()
+            applyFilters()
+            setStatus('Trasa byla smazána a její zastávky jsou znovu dostupné.', 'success')
+          } catch (error) {
+            console.error(error)
+            setStatus(`Trasu se nepodařilo smazat: ${error.message || error}`, 'error')
+          }
+          return
+        }
+
         const openButton = event.target.closest('[data-open-saved-plan]')
         if (!openButton) return
 

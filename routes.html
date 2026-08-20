@@ -785,10 +785,12 @@
       const effectiveStatus = getEffectiveExecutionStatus(plan)
       const canEdit = !['in_progress', 'done', 'cancelled'].includes(effectiveStatus)
       const canCancel = !['done', 'cancelled'].includes(effectiveStatus)
+      const canDelete = ['draft', 'assigned'].includes(effectiveStatus) && !plan.started_at && !plan.completed_at
       const planKey = String(plan.id || '')
 
       routeRowMenu.innerHTML = `
         ${canEdit ? `<a role="menuitem" href="routes-create.html?edit=${encodeURIComponent(planKey)}">Upravit trasu</a>` : ''}
+        ${canDelete ? `<button role="menuitem" class="danger-action" type="button" data-delete-route="${escapeHtml(planKey)}">Smazat trasu</button>` : ''}
         ${canCancel ? `<button role="menuitem" class="danger-action" type="button" data-cancel-route="${escapeHtml(planKey)}">Zrušit trasu</button>` : ''}
       `
 
@@ -826,6 +828,28 @@
       if (error) throw error
       await loadRoutes()
       routeLoadStatus.textContent = 'Trasa zrušena'
+    }
+
+    async function deleteRoute(planKey) {
+      const plan = state.plans.find((item) => String(item.id || '') === String(planKey))
+      if (!plan) return
+
+      const effectiveStatus = getEffectiveExecutionStatus(plan)
+      if (!['draft', 'assigned'].includes(effectiveStatus) || plan.started_at || plan.completed_at) {
+        throw new Error('Smazat lze jen trasu, která ještě nezačala.')
+      }
+
+      const routeTitle = plan.title || `Trasa ${formatDateLabel(plan.planning_date)}`
+      if (!window.confirm(`Opravdu chceš trvale smazat trasu „${routeTitle}“? Nezačatá trasa zmizí ze seznamu a její zastávky se znovu uvolní pro plánování.`)) return
+
+      routeLoadStatus.textContent = 'Mažu trasu'
+      const { error } = await supabase.rpc('delete_unstarted_route_plan_v43', {
+        p_route_plan_id: Number(plan.id),
+      })
+
+      if (error) throw error
+      await loadRoutes()
+      routeLoadStatus.textContent = 'Trasa smazána'
     }
 
     function renderRecentPlans() {
@@ -941,6 +965,21 @@
     })
 
     routeRowMenu.addEventListener('click', async (event) => {
+      const deleteButton = event.target.closest('[data-delete-route]')
+      if (deleteButton) {
+        event.stopPropagation()
+        const planKey = deleteButton.dataset.deleteRoute
+        closeRouteRowMenu()
+        try {
+          await deleteRoute(planKey)
+        } catch (error) {
+          console.error(error)
+          routeLoadStatus.textContent = 'Smazání selhalo'
+          window.alert(`Trasu se nepodařilo smazat: ${error.message || error}`)
+        }
+        return
+      }
+
       const cancelButton = event.target.closest('[data-cancel-route]')
       if (!cancelButton) return
       event.stopPropagation()
