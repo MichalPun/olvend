@@ -80,11 +80,28 @@ async function sendMeeting() {
 
 async function init() {
   const now = new Date(); setText('personalPeriodLabel', monthLabel(now))
-  const { count } = await supabase.from('payroll_payslips').select('id', { count: 'exact', head: true }); setText('personalDocumentCount', count ?? '0')
-  await Promise.all([loadBonus(), loadBonusHistory(), loadMeetings()])
   $('#bonusMonthPrev').onclick = async () => { state.month.setMonth(state.month.getMonth() - 1); if (state.month < new Date(2026, 7, 1)) state.month = new Date(2026, 7, 1); await loadBonus() }
   $('#bonusMonthNext').onclick = async () => { const next = new Date(state.month); next.setMonth(next.getMonth() + 1); if (next <= new Date(new Date().getFullYear(), new Date().getMonth(), 1)) { state.month = next; await loadBonus() } }
   $('#sendMeetingRequest').onclick = sendMeeting
+
+  const documents = await supabase.from('payroll_payslips').select('id', { count: 'exact', head: true })
+  setText('personalDocumentCount', documents.error ? '—' : (documents.count ?? '0'))
+
+  const results = await Promise.allSettled([loadBonus(), loadBonusHistory(), loadMeetings()])
+  if (results[0].status === 'rejected') {
+    console.error('Prémie:', results[0].reason)
+    setText('personalBonusAmount', 'Nelze načíst')
+  }
+  if (results[1].status === 'rejected') {
+    console.error('Historie prémií:', results[1].reason)
+    $('#bonusHistory').innerHTML = '<div class="personal-history-row"><span><strong>Historii se nepodařilo načíst</strong></span></div>'
+  }
+  if (results[2].status === 'rejected') {
+    console.error('Schůzky:', results[2].reason)
+    $('#meetingDays').innerHTML = '<div class="empty">Volné termíny se teď nepodařilo načíst.</div>'
+    $('#meetingSlots').innerHTML = ''
+    $('#meetingInvitations').innerHTML = ''
+  }
 }
 
-init().catch(error => { console.error('Osobní zóna:', error); setText('personalBonusAmount', 'Nelze načíst') })
+init().catch(error => { console.error('Osobní zóna:', error) })

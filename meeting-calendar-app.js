@@ -7,6 +7,9 @@ const csTime = new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-di
 const state = { weekStart: startOfWeek(new Date()), employees: [], settings: null, shifts: [], routes: [], blocks: [], meetings: [] }
 const topicLabels = { work: 'Práce a směny', pay_bonus: 'Mzda a prémie', operations: 'Provozní problém', evaluation: 'Vyhodnocení práce', personal: 'Osobní záležitost', other: 'Jiné' }
 const modeLabels = { in_person: 'Osobně · Blučina', phone: 'Telefonicky', video: 'Videohovor' }
+const calendarStartMinutes = 7 * 60
+const calendarEndMinutes = 22 * 60
+const calendarStepMinutes = 15
 
 function startOfWeek(date) { const d = new Date(date); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); d.setHours(0, 0, 0, 0); return d }
 function key(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
@@ -45,20 +48,22 @@ function managerShift(dateKey) { return state.shifts.find(row => row.employee_id
 function shiftLabel(shift) { if (!shift) return ['Bez plánu', 'off']; if (shift.shift_type === 'manager_office') return ['Office', '']; if (['vacation', 'day_off', 'holiday'].includes(shift.shift_type)) return ['Volno', 'off']; return ['Trasa', 'route'] }
 function eventGrid(start, end) {
   const d = new Date(start); const localDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()); const day = Math.round((localDay - state.weekStart) / 86400000) + 1
-  const startHours = d.getHours() + d.getMinutes() / 60; const hours = Math.max(.5, (new Date(end) - d) / 3600000)
-  return { day, row: Math.max(1, startHours - 7), length: hours }
+  const startMinutes = d.getHours() * 60 + d.getMinutes()
+  const durationMinutes = Math.max(calendarStepMinutes, (new Date(end) - d) / 60000)
+  return { day, row: Math.floor((startMinutes - calendarStartMinutes) / calendarStepMinutes), length: Math.ceil(durationMinutes / calendarStepMinutes) }
 }
 
 function renderCalendar() {
   const calendar = $('#calendar'); if (!calendar) return
   const days = Array.from({ length: 5 }, (_, i) => { const d = new Date(state.weekStart); d.setDate(d.getDate() + i); const shift = managerShift(key(d)); const [label, cls] = shiftLabel(shift); return { d, label, cls } })
-  calendar.innerHTML = '<div class="corner"></div>' + days.map(day => `<div class="day-head ${key(day.d) === key(new Date()) ? 'today' : ''}"><strong>${esc(csDate.format(day.d).split(' ')[0])}</strong><span>${esc(day.d.toLocaleDateString('cs-CZ'))}</span><span class="shift-chip ${day.cls}">${day.label}</span></div>`).join('') + Array.from({ length: 11 }, (_, h) => `<div class="time">${String(h + 7).padStart(2, '0')}:00</div>${days.map(() => '<div class="cell"></div>').join('')}`).join('')
+  const quarterRows = (calendarEndMinutes - calendarStartMinutes) / calendarStepMinutes
+  calendar.innerHTML = '<div class="corner"></div>' + days.map(day => `<div class="day-head ${key(day.d) === key(new Date()) ? 'today' : ''}"><strong>${esc(csDate.format(day.d).split(' ')[0])}</strong><span>${esc(day.d.toLocaleDateString('cs-CZ'))}</span><span class="shift-chip ${day.cls}">${day.label}</span></div>`).join('') + Array.from({ length: quarterRows }, (_, index) => { const minutes = calendarStartMinutes + index * calendarStepMinutes; const hour = Math.floor(minutes / 60); const minute = minutes % 60; const isHour = minute === 0; return `<div class="time ${isHour ? 'hour' : 'quarter'}">${isHour ? `${String(hour).padStart(2, '0')}:00` : ''}</div>${days.map(() => `<div class="cell ${isHour ? 'hour' : 'quarter'}"></div>`).join('')}` }).join('')
   const events = []
   state.blocks.forEach(row => events.push({ start: row.starts_at, end: row.ends_at, cls: 'busy', title: row.note || 'Obsazeno', note: `${csTime.format(new Date(row.starts_at))}–${csTime.format(new Date(row.ends_at))}` }))
   state.routes.filter(row => row.planned_employee_id === state.settings?.manager_employee_id && row.execution_status !== 'cancelled').forEach(row => { const start = isoAt(row.planning_date, String(row.planned_departure_time).slice(0, 5)); events.push({ start, end: durationEnd(start, Number(row.estimated_drive_minutes || 0) + Number(row.estimated_service_minutes || 0)), cls: 'busy', title: 'Trasa / výjezd', note: 'Blokováno plánem trasy' }) })
   state.meetings.forEach(row => events.push({ start: row.starts_at, end: row.ends_at, cls: row.status === 'approved' ? 'meeting' : 'request', title: employeeName(row.employee_id), note: `${csTime.format(new Date(row.starts_at))} · ${row.status === 'approved' ? 'potvrzeno' : 'čeká'}`, meeting: row }))
   days.forEach(day => { const shift = managerShift(key(day.d)); if (!shift || shift.shift_type !== 'manager_office') return; const start = isoAt(shift.plan_date, String(shift.planned_start || '08:00').slice(0, 5)); const end = isoAt(shift.plan_date, String(shift.planned_end || '16:00').slice(0, 5)); for (let at = new Date(start); at < new Date(end); at = new Date(at.getTime() + (state.settings.slot_minutes + state.settings.buffer_minutes) * 60000)) { const slotEnd = new Date(at.getTime() + state.settings.slot_minutes * 60000); if (slotEnd > new Date(end) || slotEnd < new Date()) continue; if (events.some(e => overlaps(at, slotEnd, e.start, e.end))) continue; events.push({ start: at.toISOString(), end: slotEnd.toISOString(), cls: 'free', title: 'Volný termín', note: csTime.format(at) }) } })
-  events.forEach(event => { const pos = eventGrid(event.start, event.end); if (pos.day < 1 || pos.day > 5) return; const el = document.createElement('div'); el.className = `event ${event.cls}`; el.style.gridColumn = String(pos.day + 1); el.style.gridRow = `${Math.floor(pos.row) + 2} / span ${Math.max(1, Math.ceil(pos.length))}`; el.innerHTML = `<strong>${esc(event.title)}</strong><span>${esc(event.note)}</span>`; if (event.meeting) { el.dataset.meetingId = event.meeting.id; el.onclick = () => openMeeting(event.meeting) } calendar.appendChild(el) })
+  events.forEach(event => { const pos = eventGrid(event.start, event.end); if (pos.day < 1 || pos.day > 5 || pos.row < 0 || pos.row >= quarterRows) return; const el = document.createElement('div'); el.className = `event ${event.cls} ${pos.length <= 2 ? 'compact' : ''}`; el.style.gridColumn = String(pos.day + 1); el.style.gridRow = `${pos.row + 2} / span ${Math.min(pos.length, quarterRows - pos.row)}`; el.innerHTML = `<strong>${esc(event.title)}</strong><span>${esc(event.note)}</span>`; if (event.meeting) { el.dataset.meetingId = event.meeting.id; el.onclick = () => openMeeting(event.meeting) } calendar.appendChild(el) })
   const end = days[4].d; $('.week-switch strong').textContent = `${state.weekStart.toLocaleDateString('cs-CZ')}–${end.toLocaleDateString('cs-CZ')}`
 }
 
