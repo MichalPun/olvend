@@ -1401,6 +1401,11 @@
       return telemetryMachine?.machineName || `Automat ${visit?.machine_id || ''}`
     }
 
+    function isFoodMachineVisit(visit) {
+      const machine = Array.isArray(visit?.machines) ? visit.machines[0] : visit?.machines
+      return String(machine?.machine_type || '').trim().toLowerCase() === 'snack'
+    }
+
     function issueTypeLabel(value) {
       const labels = {
         none: 'Bez problému',
@@ -1428,7 +1433,7 @@
     }
 
     function getNoFillDecisionLabel(visit, item) {
-      if (item?._missingVisitItem) return 'Aplikace doporučila 0 ks · bez důvodu operátorky'
+      if (item?._missingVisitItem) return 'Pozice nebyla při návštěvě zpracována · bez důvodu operátorky'
       const decision = getVisitItemDecision(visit, item)
       const reason = decision.skipReason || decision.notInsertedReason || ''
       const labels = {
@@ -1453,7 +1458,7 @@
       const removedRows = items.filter((item) => Number(item.removed_quantity || 0) > 0)
       const itemSlotIds = new Set(items.map((item) => String(item.planogram_slot_id || '')).filter(Boolean))
       const visitCompletedAt = new Date(visit.completed_at || 0).getTime()
-      const missingSlotRows = state.depletedRouteSlots.filter((slot) => {
+      const missingSlotRows = (isFoodMachineVisit(visit) ? state.depletedRouteSlots : []).filter((slot) => {
         if (String(slot.machine_id) !== String(visit.machine_id) || itemSlotIds.has(String(slot.id))) return false
         const context = state.lowStockVisitContext[`food_slot:${slot.id}`]
         const contextVisitAt = new Date(context?.last_visit_at || 0).getTime()
@@ -1471,14 +1476,14 @@
         unit: 'ks',
         _missingVisitItem: true,
       }))
-      const noFillRows = [...items.filter((item) => {
+      const noFillRows = isFoodMachineVisit(visit) ? [...items.filter((item) => {
         if (item.item_kind !== 'food_slot' || Number(item.actual_add_quantity || 0) > 0) return false
         const context = state.lowStockVisitContext[`food_slot:${item.planogram_slot_id}`]
         const decision = getVisitItemDecision(visit, item)
         return Number(context?.vehicle_quantity_at_visit || 0) > 0
           || Boolean(decision.skipReason || decision.notInsertedReason)
           || item.issue_type === 'missing_stock'
-      }), ...missingSlotRows]
+      }), ...missingSlotRows] : []
       const completedChecks = checks.filter((check) => ['done', 'not_applicable'].includes(String(check.status || ''))).length
       const productRows = [
         ...fills.map((fill) => {
@@ -2341,12 +2346,15 @@
       }
 
       state.mobileVisits = data || []
-      const machineIds = [...new Set(state.mobileVisits.map((visit) => Number(visit.machine_id)).filter(Number.isFinite))]
-      if (machineIds.length) {
+      const foodMachineIds = [...new Set(state.mobileVisits
+        .filter((visit) => isFoodMachineVisit(visit))
+        .map((visit) => Number(visit.machine_id))
+        .filter(Number.isFinite))]
+      if (foodMachineIds.length) {
         const { data: depletedSlots, error: depletedSlotsError } = await supabase
           .from('machine_planogram_slots')
           .select('id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units')
-          .in('machine_id', machineIds)
+          .in('machine_id', foodMachineIds)
           .eq('active', true)
           .lte('current_units', 0)
         if (!depletedSlotsError) state.depletedRouteSlots = depletedSlots || []
