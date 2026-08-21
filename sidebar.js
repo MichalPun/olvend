@@ -223,6 +223,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "meeting-calendar.html": {
+      currentLabel: "Kalendář a schůzky",
+      activeKey: "meeting-calendar",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "mail.html": {
       currentLabel: "E-mail",
       activeKey: "mail",
@@ -420,6 +427,7 @@
           children: [
             { key: "hr", href: "hr.html", label: "HR přehled" },
             { key: "hr-planning", href: "hr-planning.html", label: "Plán směn" },
+            { key: "meeting-calendar", href: "meeting-calendar.html", label: "Kalendář a schůzky" },
             { key: "employees", href: "employees.html", label: "Zaměstnanci" }
           ]
         },
@@ -567,7 +575,7 @@
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
     'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
-    'management-people': 'people', hr: 'people', 'hr-planning': 'people', employees: 'people',
+    'management-people': 'people', hr: 'people', 'hr-planning': 'people', 'meeting-calendar': 'calendar', employees: 'people',
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',
     'report-attendance': 'calendar', 'report-shift-overview': 'clock', 'report-routes-daily': 'routes',
     'report-vehicles': 'vehicle', 'report-monthly-review': 'finance', 'report-invoice-comparison': 'invoice',
