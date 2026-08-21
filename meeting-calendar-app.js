@@ -13,7 +13,7 @@ function key(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1)
 function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])) }
 function employeeName(id) { const row = state.employees.find(item => item.id === id); return row ? [row.name, row.surname].filter(Boolean).join(' ') : 'Zaměstnanec' }
 function initials(id) { return employeeName(id).split(/\s+/).map(v => v[0]).slice(0, 2).join('').toUpperCase() }
-function isoAt(date, time) { return new Date(`${date}T${time}:00+02:00`).toISOString() }
+function isoAt(date, time) { return new Date(`${date}T${time}:00`).toISOString() }
 function durationEnd(start, minutes) { return new Date(new Date(start).getTime() + minutes * 60000).toISOString() }
 function overlaps(aStart, aEnd, bStart, bEnd) { return new Date(aStart) < new Date(bEnd) && new Date(aEnd) > new Date(bStart) }
 
@@ -33,8 +33,8 @@ async function load() {
     supabase.from('meeting_calendar_settings').select('*').eq('id', 1).single(),
     supabase.from('shift_plan_days').select('*').gte('plan_date', from).lte('plan_date', to).eq('status', 'published'),
     supabase.from('route_plans').select('id,planning_date,planned_employee_id,planned_departure_time,estimated_drive_minutes,estimated_service_minutes,execution_status').gte('planning_date', from).lte('planning_date', to),
-    supabase.from('manager_calendar_blocks').select('*').lt('starts_at', `${to}T23:59:59+02:00`).gt('ends_at', `${from}T00:00:00+02:00`),
-    supabase.from('employee_meetings').select('*').lt('starts_at', `${to}T23:59:59+02:00`).gt('ends_at', `${from}T00:00:00+02:00`).neq('status', 'cancelled').order('starts_at')
+    supabase.from('manager_calendar_blocks').select('*').lt('starts_at', new Date(`${to}T23:59:59`).toISOString()).gt('ends_at', new Date(`${from}T00:00:00`).toISOString()),
+    supabase.from('employee_meetings').select('*').lt('starts_at', new Date(`${to}T23:59:59`).toISOString()).gt('ends_at', new Date(`${from}T00:00:00`).toISOString()).neq('status', 'cancelled').order('starts_at')
   ])
   for (const result of [employees, settings, shifts, routes, blocks, meetings]) if (result.error) throw result.error
   state.employees = employees.data || []; state.settings = settings.data; state.shifts = shifts.data || []; state.routes = routes.data || []; state.blocks = blocks.data || []; state.meetings = meetings.data || []
@@ -76,7 +76,12 @@ function renderSummary() {
   const values = [pending, approved, free, next ? `${csDate.format(new Date(next.starts_at))} ${csTime.format(new Date(next.starts_at))}` : '—', `${Math.min(100, Math.round((state.blocks.length + approved) / Math.max(1, free + state.blocks.length + approved) * 100))} %`]
   $$('.summary strong').forEach((el, index) => { el.textContent = values[index] })
 }
-function render() { renderCalendar(); renderRequests(); renderSummary(); populateEmployees() }
+function renderSettings() {
+  const selects = $$('#availabilityModal select')
+  if (selects[0]) selects[0].value = `${state.settings.slot_minutes} minut`
+  if (selects[1]) selects[1].value = state.settings.buffer_minutes ? `${state.settings.buffer_minutes} minut` : 'Bez rezervy'
+}
+function render() { renderCalendar(); renderRequests(); renderSummary(); populateEmployees(); renderSettings() }
 
 function openMeeting(row) {
   const drawer = $('#requestDrawer'); drawer.hidden = false; drawer.dataset.meetingId = row.id
