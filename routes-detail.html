@@ -1058,6 +1058,28 @@
       return { cls: 'warn', label: `O ${formatDurationAfterPreposition(Math.abs(rounded))} kratší` }
     }
 
+    function stopWorkDeviationMeta(row, tolerance) {
+      if (!row?.actualArrival) return null
+      const diff = Math.round(Number(row.actualServiceMinutes || 0) - Number(row.plannedServiceMinutes || 0))
+      if (!row.completed) {
+        if (diff > tolerance) return { cls: 'bad', label: `Práce +${diff} min` }
+        return { cls: 'neutral', label: 'Probíhá' }
+      }
+      if (Math.abs(diff) <= tolerance) return { cls: 'good', label: 'Podle plánu' }
+      return diff > 0
+        ? { cls: 'bad', label: `Práce +${diff} min` }
+        : { cls: 'warn', label: `Práce ${diff} min` }
+    }
+
+    function arrivalDeviationMeta(diff, tolerance, pending = false) {
+      if (pending || diff == null) return { cls: 'neutral', label: 'Čeká' }
+      const rounded = Math.round(diff)
+      if (Math.abs(rounded) <= tolerance) return { cls: 'good', label: 'Příjezd dle plánu' }
+      return rounded > 0
+        ? { cls: 'bad', label: `Příjezd +${rounded} min` }
+        : { cls: 'warn', label: `Příjezd ${rounded} min` }
+    }
+
     function getStopPlaceDisplay(stop, index) {
       const machineName = stop?.machineName || stop?.title || stop?.name || `Automat ${index + 1}`
       const locationName = stop?.locationName || ''
@@ -1213,14 +1235,12 @@
           <div class="route-time-table">
             <table><thead><tr><th>Místo</th><th>Původní plán</th><th>Aktuální odhad</th><th>Skutečnost</th><th>Odchylka</th></tr></thead><tbody>
               ${schedule.rows.map((row, index) => {
-                const actualShift = row.completed
-                  ? signedMinutesBetween(row.expectedDeparture, row.actualDeparture)
-                  : signedMinutesBetween(row.expectedArrival, row.actualArrival)
-                const meta = routeDeviationMeta(actualShift, tolerance, !row.actualArrival)
+                const workMeta = stopWorkDeviationMeta(row, tolerance)
                 const forecastShift = signedMinutesBetween(row.expectedArrival, row.forecastArrival)
-                const forecastMeta = routeDeviationMeta(forecastShift, tolerance, !schedule.actualStart)
+                const forecastMeta = arrivalDeviationMeta(forecastShift, tolerance, !schedule.actualStart)
                 const place = getStopPlaceDisplay(row.stop, index)
-                return `<tr><td><div class="route-time-place"><span class="route-time-order">${index + 1}</span><span class="route-time-place-text"><strong>${escapeHtml(place.primary)}</strong>${place.secondary ? `<small>${escapeHtml(place.secondary)}</small>` : ''}</span></div></td><td class="route-time-clock">${escapeHtml(formatClock(row.plannedArrival))}–${escapeHtml(formatClock(row.plannedDeparture))}<small>${escapeHtml(formatDurationWords(row.plannedServiceMinutes))}</small></td><td class="route-time-clock">${schedule.actualStart ? `${escapeHtml(formatClock(row.forecastArrival))}–${escapeHtml(formatClock(row.forecastDeparture))}<small>${row.completed ? 'podle skutečnosti' : 'průběžně přepočítáno'}</small>` : '—<small>čeká na výjezd</small>'}</td><td class="route-time-clock">${row.actualArrival ? `${escapeHtml(formatClock(row.actualArrival))}–${escapeHtml(formatClock(row.actualDeparture))}<small>${escapeHtml(formatDurationWords(row.actualServiceMinutes))}${row.completed ? '' : ' · probíhá'}</small>` : '—<small>čeká na návštěvu</small>'}</td><td><span class="route-time-result ${row.actualArrival ? meta.cls : forecastMeta.cls}">${escapeHtml(row.actualArrival ? meta.label : forecastMeta.label)}</span></td></tr>`
+                const deviationMeta = workMeta || forecastMeta
+                return `<tr><td><div class="route-time-place"><span class="route-time-order">${index + 1}</span><span class="route-time-place-text"><strong>${escapeHtml(place.primary)}</strong>${place.secondary ? `<small>${escapeHtml(place.secondary)}</small>` : ''}</span></div></td><td class="route-time-clock">${escapeHtml(formatClock(row.plannedArrival))}–${escapeHtml(formatClock(row.plannedDeparture))}<small>${escapeHtml(formatDurationWords(row.plannedServiceMinutes))}</small></td><td class="route-time-clock">${schedule.actualStart ? `${escapeHtml(formatClock(row.forecastArrival))}–${escapeHtml(formatClock(row.forecastDeparture))}<small>${row.completed ? 'podle skutečnosti' : 'průběžně přepočítáno'}</small>` : '—<small>čeká na výjezd</small>'}</td><td class="route-time-clock">${row.actualArrival ? `${escapeHtml(formatClock(row.actualArrival))}–${escapeHtml(formatClock(row.actualDeparture))}<small>${escapeHtml(formatDurationWords(row.actualServiceMinutes))}${row.completed ? '' : ' · probíhá'}</small>` : '—<small>čeká na návštěvu</small>'}</td><td><span class="route-time-result ${deviationMeta.cls}">${escapeHtml(deviationMeta.label)}</span></td></tr>`
               }).join('') || '<tr><td colspan="5">Trasa nemá žádné zastávky.</td></tr>'}
               ${plan.return_to_start ? `<tr><td><div class="route-time-place"><span class="route-time-order">⌂</span><span>Návrat na sklad</span></div></td><td class="route-time-clock">${escapeHtml(formatClock(schedule.plannedEnd))}<small>${escapeHtml(formatDurationWords(schedule.returnDriveMinutes))} jízdy</small></td><td class="route-time-clock">${schedule.actualStart ? escapeHtml(formatClock(schedule.forecastEnd)) : '—'}<small>${schedule.actualStart ? 'průběžný odhad návratu' : 'čeká na výjezd'}</small></td><td class="route-time-clock">${plan.completed_at ? escapeHtml(formatClock(plan.completed_at)) : '—'}<small>${plan.completed_at ? 'návrat potvrzen' : schedule.rows.length && schedule.rows.every((row) => row.completed) ? 'návrat probíhá' : 'čeká po posledním automatu'}</small></td><td><span class="route-time-result ${plan.completed_at ? overall.cls : 'neutral'}">${plan.completed_at ? escapeHtml(overall.label) : 'Průběžný odhad'}</span></td></tr>` : ''}
             </tbody></table>
