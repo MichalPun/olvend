@@ -57,7 +57,18 @@ function renderCalendar() {
   const calendar = $('#calendar'); if (!calendar) return
   const days = Array.from({ length: 5 }, (_, i) => { const d = new Date(state.weekStart); d.setDate(d.getDate() + i); const shift = managerShift(key(d)); const [label, cls] = shiftLabel(shift); return { d, label, cls } })
   const quarterRows = (calendarEndMinutes - calendarStartMinutes) / calendarStepMinutes
-  calendar.innerHTML = '<div class="corner"></div>' + days.map(day => `<div class="day-head ${key(day.d) === key(new Date()) ? 'today' : ''}"><strong>${esc(csDate.format(day.d).split(' ')[0])}</strong><span>${esc(day.d.toLocaleDateString('cs-CZ'))}</span><span class="shift-chip ${day.cls}">${day.label}</span></div>`).join('') + Array.from({ length: quarterRows }, (_, index) => { const minutes = calendarStartMinutes + index * calendarStepMinutes; const hour = Math.floor(minutes / 60); const minute = minutes % 60; const isHour = minute === 0; return `<div class="time ${isHour ? 'hour' : 'quarter'}">${isHour ? `${String(hour).padStart(2, '0')}:00` : ''}</div>${days.map(() => `<div class="cell ${isHour ? 'hour' : 'quarter'}"></div>`).join('')}` }).join('')
+  calendar.innerHTML = '<div class="corner" style="grid-column:1;grid-row:1"></div>'
+    + days.map((day, dayIndex) => `<div class="day-head ${key(day.d) === key(new Date()) ? 'today' : ''}" style="grid-column:${dayIndex + 2};grid-row:1"><strong>${esc(csDate.format(day.d).split(' ')[0])}</strong><span>${esc(day.d.toLocaleDateString('cs-CZ'))}</span><span class="shift-chip ${day.cls}">${day.label}</span></div>`).join('')
+    + Array.from({ length: quarterRows }, (_, index) => {
+      const minutes = calendarStartMinutes + index * calendarStepMinutes
+      const hour = Math.floor(minutes / 60)
+      const minute = minutes % 60
+      const isHour = minute === 0
+      const gridRow = index + 2
+      const time = `<div class="time ${isHour ? 'hour' : 'quarter'}" style="grid-column:1;grid-row:${gridRow}">${isHour ? `${String(hour).padStart(2, '0')}:00` : ''}</div>`
+      const cells = days.map((_, dayIndex) => `<div class="cell ${isHour ? 'hour' : 'quarter'}" style="grid-column:${dayIndex + 2};grid-row:${gridRow}"></div>`).join('')
+      return time + cells
+    }).join('')
   const events = []
   state.blocks.forEach(row => events.push({ start: row.starts_at, end: row.ends_at, cls: 'busy', title: row.note || 'Obsazeno', note: `${csTime.format(new Date(row.starts_at))}–${csTime.format(new Date(row.ends_at))}` }))
   state.routes.filter(row => row.planned_employee_id === state.settings?.manager_employee_id && row.execution_status !== 'cancelled').forEach(row => { const start = isoAt(row.planning_date, String(row.planned_departure_time).slice(0, 5)); events.push({ start, end: durationEnd(start, Number(row.estimated_drive_minutes || 0) + Number(row.estimated_service_minutes || 0)), cls: 'busy', title: 'Trasa / výjezd', note: 'Blokováno plánem trasy' }) })
