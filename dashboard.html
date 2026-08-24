@@ -4395,7 +4395,7 @@
 
     .ops-need-table {
       width: 100%;
-      min-width: 1180px;
+      min-width: 920px;
       border-collapse: separate;
       border-spacing: 0;
       table-layout: fixed;
@@ -4452,6 +4452,42 @@
     .ops-need-action { color: #b42318; font-weight: 900; text-decoration: none; white-space: nowrap; }
     .ops-need-action:hover { text-decoration: underline; }
     .ops-need-empty { padding: 22px; color: #667085; text-align: center; }
+
+    .ops-need-location-row { cursor: pointer; }
+    .ops-need-location-row[aria-expanded="true"] td { background: #eef4fa; }
+    .ops-need-location-row .ops-need-location-name { font-size: 12.5px; }
+    .ops-need-location-row .ops-need-location-name small { font-weight: 700; }
+    .ops-need-counts { display: flex; flex-wrap: wrap; gap: 4px; }
+    .ops-need-counts .ops-need-status { min-height: 20px; }
+    .ops-need-expand {
+      display: inline-grid;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      color: #475467;
+      background: transparent;
+      place-items: center;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      transition: transform 120ms ease;
+    }
+    .ops-need-location-row[aria-expanded="true"] .ops-need-expand { transform: rotate(90deg); }
+    .ops-need-detail-row td { padding: 0; background: #f8fafc !important; }
+    .ops-need-detail-list { display: grid; padding: 5px 12px 9px 34px; }
+    .ops-need-detail-item {
+      display: grid;
+      grid-template-columns: 112px minmax(150px, 0.8fr) minmax(230px, 1.5fr) 105px 125px minmax(170px, 1fr);
+      align-items: center;
+      min-height: 38px;
+      border-bottom: 1px solid rgba(15, 23, 42, 0.07);
+    }
+    .ops-need-detail-item:last-child { border-bottom: 0; }
+    .ops-need-detail-item > span { min-width: 0; padding: 5px 8px; }
+    .ops-need-detail-item strong { font-size: 10.5px; }
+    .ops-need-detail-head { color: #667085; font-size: 8.5px; font-weight: 900; text-transform: uppercase; }
+    .ops-need-detail-head > span { padding-top: 2px; padding-bottom: 2px; }
 
     @media (max-width: 900px) {
       .ops-need-toolbar { grid-template-columns: 1fr 1fr; }
@@ -4934,6 +4970,7 @@
     let telemetryRefreshQueuedForce = false;
     let telemetryHasRenderedData = false;
     const telemetryNeedFilters = { search: "", type: "all", route: "all" };
+    const telemetryNeedExpandedLocations = new Set();
     let telemetryLastRefreshAt = 0;
     let dashboardInitialLoadComplete = false;
     const telemetryMarkupCache = new Map();
@@ -6639,12 +6676,6 @@
           || String(left.position).localeCompare(String(right.position), "cs", { numeric: true });
       });
 
-      const counts = {
-        total: rows.length,
-        critical: rows.filter((row) => row.critical).length,
-        expiry: rows.filter((row) => row.types.has("expiry")).length,
-        covered: rows.filter((row) => row.plannedRoute).length
-      };
       const formatExpiry = (row) => {
         if (!row.expiryDate) return '<small>Bez sledované expirace</small>';
         const date = new Date(`${row.expiryDate}T00:00:00`).toLocaleDateString("cs-CZ");
@@ -6659,15 +6690,52 @@
         if (row.types.has("expiry")) return '<span class="ops-need-status warning">Blízká expirace</span>';
         return '<span class="ops-need-status warning">Nízký stav</span>';
       };
+      const formatEvent = (row) => row.lastVisitAt
+        ? `Návštěva ${formatLowStockMoment(row.lastVisitAt)}${row.vehicleStockKnown ? ` · auto ${Number(row.vehicleQuantityAtVisit || 0).toLocaleString("cs-CZ")} ${row.unit}` : ""}`
+        : row.soldOutAt ? `Vyprodáno ${formatLowStockMoment(row.soldOutAt)}` : "Bez navazující události";
+      const grouped = new Map();
+      rows.forEach((row) => {
+        if (!grouped.has(row.locationName)) grouped.set(row.locationName, { key: row.locationName, rows: [], types: new Set() });
+        const group = grouped.get(row.locationName);
+        group.rows.push(row);
+        row.types.forEach((type) => group.types.add(type));
+        if (row.critical) group.types.add("critical");
+      });
+      const locations = Array.from(grouped.values()).map((group) => {
+        group.criticalCount = group.rows.filter((row) => row.critical).length;
+        group.expiryCount = group.rows.filter((row) => row.types.has("expiry")).length;
+        group.stockCount = group.rows.filter((row) => row.types.has("stock")).length;
+        group.inventoryCount = group.rows.filter((row) => row.inventory).length;
+        group.machines = [...new Set(group.rows.map((row) => [row.machineCode, row.machineName].filter(Boolean).join(" · ") || "Automat"))];
+        group.coveredCount = group.rows.filter((row) => row.plannedRoute).length;
+        group.fullyCovered = group.rows.length > 0 && group.coveredCount === group.rows.length;
+        group.partlyCovered = group.coveredCount > 0 && !group.fullyCovered;
+        group.onlyOnTheWay = group.rows.every((row) => row.onlyOnTheWay);
+        group.nearestExpiry = group.rows.filter((row) => row.expiryDate).sort((a, b) => Number(a.daysRemaining) - Number(b.daysRemaining))[0] || null;
+        group.route = group.rows.find((row) => row.plannedRoute)?.plannedRoute || null;
+        group.search = group.rows.map((row) => [row.locationName, row.machineName, row.machineCode, row.position, row.productName].join(" ")).join(" ").toLocaleLowerCase("cs");
+        group.routeToken = group.fullyCovered ? "covered" : "uncovered";
+        return group;
+      }).sort((left, right) => {
+        const score = (group) => group.criticalCount * 100 + group.expiryCount * 40 + group.stockCount * 10 + group.inventoryCount * 5;
+        return score(right) - score(left) || left.key.localeCompare(right.key, "cs");
+      });
+      const counts = {
+        locations: locations.length,
+        positions: rows.length,
+        critical: rows.filter((row) => row.critical).length,
+        expiry: rows.filter((row) => row.types.has("expiry")).length,
+        covered: locations.filter((group) => group.fullyCovered).length
+      };
       const filterType = telemetryNeedFilters.type || "all";
       const filterRoute = telemetryNeedFilters.route || "all";
 
       return `
         <div class="ops-need-summary">
-          <span><strong>${escapeHtml(String(counts.total))}</strong> řádků celkem</span>
+          <span><strong>${escapeHtml(String(counts.locations))}</strong> lokalit · ${escapeHtml(String(counts.positions))} pozic</span>
           <span class="danger"><strong>${escapeHtml(String(counts.critical))}</strong> kritických</span>
           <span class="warning"><strong>${escapeHtml(String(counts.expiry))}</strong> s expirací</span>
-          <span class="success"><strong>${escapeHtml(String(counts.covered))}</strong> na trase</span>
+          <span class="success"><strong>${escapeHtml(String(counts.covered))}</strong> lokalit pokryto</span>
         </div>
         <div class="ops-need-toolbar">
           <input type="search" data-ops-need-filter="search" value="${escapeHtml(telemetryNeedFilters.search || "")}" placeholder="Hledat lokalitu, automat, EV, produkt nebo pozici…" />
@@ -6683,34 +6751,45 @@
             <option value="covered" ${filterRoute === "covered" ? "selected" : ""}>Na trase</option>
             <option value="uncovered" ${filterRoute === "uncovered" ? "selected" : ""}>Bez trasy</option>
           </select>
-          <span class="ops-need-visible-count" data-ops-need-visible-count>${escapeHtml(String(rows.length))} z ${escapeHtml(String(rows.length))}</span>
+          <span class="ops-need-visible-count" data-ops-need-visible-count>${escapeHtml(String(locations.length))} z ${escapeHtml(String(locations.length))} lokalit</span>
         </div>
         <div class="ops-need-table-wrap" data-refresh-scroll="operational-needs">
           <table class="ops-need-table">
-            <colgroup><col style="width:110px"><col style="width:190px"><col style="width:155px"><col style="width:245px"><col style="width:105px"><col style="width:115px"><col style="width:205px"><col style="width:135px"><col style="width:88px"></colgroup>
-            <thead><tr><th>Důvod</th><th>Lokalita</th><th>Automat</th><th>Pozice / produkt</th><th>Stav</th><th>Expirace</th><th>Poslední událost</th><th>Trasa</th><th>Akce</th></tr></thead>
+            <colgroup><col style="width:250px"><col style="width:220px"><col style="width:230px"><col style="width:130px"><col style="width:145px"><col style="width:105px"><col style="width:42px"></colgroup>
+            <thead><tr><th>Lokalita</th><th>Automaty</th><th>Co je potřeba</th><th>Nejbližší expirace</th><th>Trasa</th><th>Akce</th><th></th></tr></thead>
             <tbody>
-              ${rows.map((row) => {
-                const typeTokens = [...row.types, row.critical ? "critical" : ""].filter(Boolean).join(" ");
-                const routeToken = row.plannedRoute ? "covered" : "uncovered";
-                const search = [row.locationName, row.machineName, row.machineCode, row.position, row.productName].join(" ").toLocaleLowerCase("cs");
-                const routeLabel = row.plannedRoute ? formatLowStockRouteDate(row.plannedRoute) : row.onlyOnTheWay ? "Neplánovat samostatně" : "Bez naplánované trasy";
-                const actionHref = row.plannedRoute ? `routes-detail.html?id=${encodeURIComponent(row.plannedRoute.id)}` : "route-dispatch.html";
-                const eventLabel = row.lastVisitAt
-                  ? `Návštěva ${formatLowStockMoment(row.lastVisitAt)}${row.vehicleStockKnown ? ` · auto ${Number(row.vehicleQuantityAtVisit || 0).toLocaleString("cs-CZ")} ${row.unit}` : ""}`
-                  : row.soldOutAt ? `Vyprodáno ${formatLowStockMoment(row.soldOutAt)}` : "Bez navazující události";
-                return `<tr data-ops-need-row data-search="${escapeHtml(search)}" data-types="${escapeHtml(typeTokens)}" data-route="${routeToken}">
-                  <td>${formatReason(row)}</td>
-                  <td><strong>${escapeHtml(row.locationName)}</strong></td>
-                  <td><strong>${escapeHtml([row.machineCode, row.machineName].filter(Boolean).join(" · ") || "Automat")}</strong></td>
-                  <td><strong>${escapeHtml(row.productName)}</strong><small>Pozice ${escapeHtml(String(row.position))}</small></td>
-                  <td><strong>${row.inventory ? "–" : escapeHtml(`${row.current.toLocaleString("cs-CZ")} / ${row.capacity ? row.capacity.toLocaleString("cs-CZ") : "?"} ${row.unit}`)}</strong>${row.inventory ? "" : `<small>${escapeHtml(`${Math.round(row.percent)} %`)}</small>`}</td>
-                  <td>${formatExpiry(row)}</td>
-                  <td><small>${escapeHtml(eventLabel)}</small></td>
-                  <td>${row.plannedRoute ? '<span class="ops-need-status success">Na trase</span>' : '<span class="ops-need-status warning">Bez trasy</span>'}<small>${escapeHtml(routeLabel)}</small></td>
-                  <td><a class="ops-need-action" href="${escapeHtml(actionHref)}">${row.plannedRoute ? "Otevřít" : row.onlyOnTheWay ? "Přidat ručně" : "Naplánovat"}</a></td>
-                </tr>`;
-              }).join("") || '<tr><td colspan="9" class="ops-need-empty">Žádná položka nyní nevyžaduje kontrolu.</td></tr>'}
+              ${locations.map((group, index) => {
+                const locationKey = `location-${index}`;
+                const expanded = telemetryNeedExpandedLocations.has(group.key);
+                const typeTokens = [...group.types].join(" ");
+                const routeLabel = group.fullyCovered ? formatLowStockRouteDate(group.route) : group.partlyCovered ? `${group.coveredCount} z ${group.rows.length} pozic na trase` : group.onlyOnTheWay ? "Jen při cestě" : "Bez naplánované trasy";
+                const actionHref = group.fullyCovered && group.route ? `routes-detail.html?id=${encodeURIComponent(group.route.id)}` : "route-dispatch.html";
+                const actionLabel = group.fullyCovered ? "Otevřít" : group.partlyCovered ? "Doplnit plán" : group.onlyOnTheWay ? "Přidat ručně" : "Naplánovat";
+                const detailRows = group.rows.map((row) => `
+                  <div class="ops-need-detail-item">
+                    <span>${formatReason(row)}</span>
+                    <span><strong>${escapeHtml([row.machineCode, row.machineName].filter(Boolean).join(" · ") || "Automat")}</strong></span>
+                    <span><strong>${escapeHtml(row.productName)}</strong><small>Pozice ${escapeHtml(String(row.position))}</small></span>
+                    <span><strong>${row.inventory ? "–" : escapeHtml(`${row.current.toLocaleString("cs-CZ")} / ${row.capacity ? row.capacity.toLocaleString("cs-CZ") : "?"} ${row.unit}`)}</strong>${row.inventory ? "" : `<small>${escapeHtml(`${Math.round(row.percent)} %`)}</small>`}</span>
+                    <span>${formatExpiry(row)}</span>
+                    <span><small>${escapeHtml(formatEvent(row))}</small></span>
+                  </div>`).join("");
+                return `<tr class="ops-need-location-row" data-ops-need-row data-location-key="${escapeHtml(group.key)}" data-detail-key="${locationKey}" data-search="${escapeHtml(group.search)}" data-types="${escapeHtml(typeTokens)}" data-route="${group.routeToken}" aria-expanded="${expanded ? "true" : "false"}" tabindex="0">
+                  <td><strong class="ops-need-location-name">${escapeHtml(group.key)}</strong><small>${escapeHtml(group.rows.length === 1 ? "1 problematická pozice" : `${group.rows.length} problematických pozic`)}</small></td>
+                  <td><strong>${escapeHtml(`${group.machines.length} ${group.machines.length === 1 ? "automat" : "automatů"}`)}</strong><small>${escapeHtml(group.machines.slice(0, 2).join(" · "))}${group.machines.length > 2 ? ` +${group.machines.length - 2}` : ""}</small></td>
+                  <td><div class="ops-need-counts">${group.criticalCount ? `<span class="ops-need-status">${group.criticalCount} kritické</span>` : ""}${group.stockCount ? `<span class="ops-need-status warning">${group.stockCount} zásoby</span>` : ""}${group.expiryCount ? `<span class="ops-need-status warning">${group.expiryCount} expirace</span>` : ""}${group.inventoryCount ? `<span class="ops-need-status info">${group.inventoryCount} kontrola</span>` : ""}</div></td>
+                  <td>${group.nearestExpiry ? formatExpiry(group.nearestExpiry) : '<small>Bez expirace</small>'}</td>
+                  <td>${group.fullyCovered ? '<span class="ops-need-status success">Na trase</span>' : group.partlyCovered ? '<span class="ops-need-status warning">Částečně</span>' : '<span class="ops-need-status warning">Bez trasy</span>'}<small>${escapeHtml(routeLabel)}</small></td>
+                  <td><a class="ops-need-action" href="${escapeHtml(actionHref)}">${escapeHtml(actionLabel)}</a></td>
+                  <td><button class="ops-need-expand" type="button" title="Zobrazit pozice" aria-label="Zobrazit pozice">›</button></td>
+                </tr>
+                <tr class="ops-need-detail-row" data-ops-need-detail="${locationKey}" ${expanded ? "" : "hidden"}><td colspan="7">
+                  <div class="ops-need-detail-list">
+                    <div class="ops-need-detail-item ops-need-detail-head"><span>Důvod</span><span>Automat</span><span>Pozice / produkt</span><span>Stav</span><span>Expirace</span><span>Poslední událost</span></div>
+                    ${detailRows}
+                  </div>
+                </td></tr>`;
+              }).join("") || '<tr><td colspan="7" class="ops-need-empty">Žádná lokalita nyní nevyžaduje kontrolu.</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -6729,10 +6808,12 @@
         const routeMatch = telemetryNeedFilters.route === "all" || row.dataset.route === telemetryNeedFilters.route;
         const show = searchMatch && typeMatch && routeMatch;
         row.hidden = !show;
+        const detail = row.nextElementSibling?.matches("[data-ops-need-detail]") ? row.nextElementSibling : null;
+        if (detail) detail.hidden = !show || !telemetryNeedExpandedLocations.has(row.dataset.locationKey);
         if (show) visible += 1;
       });
       const count = telemetryControlGrid.querySelector("[data-ops-need-visible-count]");
-      if (count) count.textContent = `${visible} z ${rows.length}`;
+      if (count) count.textContent = `${visible} z ${rows.length} lokalit`;
     }
 
     function bindTelemetryNeedFilters() {
@@ -6744,8 +6825,34 @@
         telemetryNeedFilters[key] = key === "search" ? String(control.value || "").trim().toLocaleLowerCase("cs") : control.value;
         applyTelemetryNeedFilters();
       };
+      const toggleLocation = (row) => {
+        if (!row) return;
+        const key = row.dataset.locationKey;
+        const expanded = !telemetryNeedExpandedLocations.has(key);
+        if (expanded) telemetryNeedExpandedLocations.add(key);
+        else telemetryNeedExpandedLocations.delete(key);
+        row.setAttribute("aria-expanded", String(expanded));
+        const detail = row.nextElementSibling?.matches("[data-ops-need-detail]") ? row.nextElementSibling : null;
+        if (detail) detail.hidden = !expanded;
+        const button = row.querySelector(".ops-need-expand");
+        if (button) {
+          button.title = expanded ? "Skrýt pozice" : "Zobrazit pozice";
+          button.setAttribute("aria-label", button.title);
+        }
+      };
       telemetryControlGrid.addEventListener("input", update);
       telemetryControlGrid.addEventListener("change", update);
+      telemetryControlGrid.addEventListener("click", (event) => {
+        if (event.target.closest("a")) return;
+        toggleLocation(event.target.closest("[data-ops-need-row]"));
+      });
+      telemetryControlGrid.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const row = event.target.closest("[data-ops-need-row]");
+        if (!row || event.target.closest("a")) return;
+        event.preventDefault();
+        toggleLocation(row);
+      });
       telemetryControlGrid.dataset.opsNeedFiltersBound = "true";
     }
 
@@ -6872,7 +6979,7 @@
 
       const controlGridChanged = patchTelemetryBlocks(telemetryControlGrid, "control", [
         { key: "operational-needs", html: `<section class="telemetry-panel span-all" data-telemetry-key="operational-needs">
-          <div class="telemetry-panel-head"><h3>Zásoby a expirace · pracovní tabulka</h3><span>Jeden řádek = jedna konkrétní pozice · tabulka je filtrovatelná a posuvná</span></div>
+          <div class="telemetry-panel-head"><h3>Zásoby a expirace · pracovní tabulka</h3><span>Jedna lokalita = jeden řádek · pozice rozbalíte kliknutím</span></div>
           ${renderTelemetryOperationalNeeds(lowStock, expiryRows, initialInventory)}
         </section>` },
         { key: "dex-coverage", html: `<section class="telemetry-panel" data-telemetry-key="dex-coverage">
