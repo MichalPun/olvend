@@ -97,7 +97,20 @@ function renderSettings() {
   if (selects[0]) selects[0].value = `${state.settings.slot_minutes} minut`
   if (selects[1]) selects[1].value = state.settings.buffer_minutes ? `${state.settings.buffer_minutes} minut` : 'Bez rezervy'
 }
-function render() { renderCalendar(); renderRequests(); renderSummary(); populateEmployees(); renderSettings() }
+function render() {
+  renderCalendar(); renderRequests(); renderSummary(); populateEmployees(); renderSettings()
+  $('.summary')?.setAttribute('aria-busy', 'false')
+  $('.requests')?.setAttribute('aria-busy', 'false')
+}
+
+function renderLoadError(error) {
+  $('.summary')?.setAttribute('aria-busy', 'false')
+  $('.requests')?.setAttribute('aria-busy', 'false')
+  const message = esc(error?.message || 'Neznámá chyba')
+  if ($('#incomingRequests')) $('#incomingRequests').innerHTML = `<div class="loading-state">Kalendář se nepodařilo načíst.<br>${message}</div>`
+  if ($('#outgoingRequests')) $('#outgoingRequests').innerHTML = '<div class="loading-state">Pozvánky nejsou dostupné.</div>'
+  if ($('.requests-head .count')) $('.requests-head .count').textContent = 'chyba'
+}
 
 function openMeeting(row) {
   const drawer = $('#requestDrawer'); drawer.hidden = false; drawer.dataset.meetingId = row.id
@@ -136,4 +149,4 @@ bindModal(['#openBusyBlock'], '#busyBlockModal', ['#closeBusyBlock', '#cancelBus
 $('#saveAvailability').onclick = saveAvailability; $('#sendInvitation').onclick = sendInvitation; $('#saveBusyBlock').onclick = saveBlock
 $$('[data-request-view]').forEach(button => button.onclick = () => { $$('[data-request-view]').forEach(item => item.classList.toggle('active', item === button)); const outgoing = button.dataset.requestView === 'outgoing'; $('#incomingRequests').hidden = outgoing; $('#outgoingRequests').hidden = !outgoing })
 const weekButtons = $$('.week-switch button'); weekButtons[0].onclick = () => { state.weekStart.setDate(state.weekStart.getDate() - 7); load() }; weekButtons[1].onclick = () => { state.weekStart = startOfWeek(new Date()); load() }; weekButtons[2].onclick = () => { state.weekStart.setDate(state.weekStart.getDate() + 7); load() }
-load().catch(error => { console.error(error); alert(`Kalendář se nepodařilo načíst: ${error.message}`) })
+load().catch(error => { console.error(error); renderLoadError(error) })
