@@ -477,6 +477,21 @@
       };
       data.containers.forEach((row) => addLow(row, Number(row.current_quantity || 0), Number(row.capacity_quantity || 0), row.product_name));
       data.slots.forEach((row) => addLow(row, Number(row.current_units || 0), Number(row.capacity_units || 0), row.product_name));
+      const topupByMachine = new Map();
+      data.slots.forEach((row) => {
+        const capacity = Math.max(0, Number(row.capacity_units || 0));
+        if (!capacity || /vick|víčk/.test(norm(row.product_name))) return;
+        const configuredTarget = Number(row.target_units);
+        const target = Number.isFinite(configuredTarget) && configuredTarget > 0 ? Math.min(capacity, configuredTarget) : capacity;
+        const current = Math.max(0, Math.min(target, Number(row.current_units || 0)));
+        const missing = Math.max(0, Math.round(target - current));
+        const storedSuggestion = Math.max(0, Math.round(Number(row.desired_units || 0)));
+        const depletion = target > 0 ? missing / target : 0;
+        if (!missing || (!storedSuggestion && depletion < 0.25)) return;
+        const key = String(row.machine_id); const existing = topupByMachine.get(key) || [];
+        existing.push({ name: row.product_name, missing, target, depletion });
+        topupByMachine.set(key, existing);
+      });
       const expiredFoodByMachine = new Map();
       data.slots.forEach((row) => {
         const currentUnits = Number(row.current_units || 0);
@@ -510,12 +525,13 @@
         if (!location) { state.unlocatedMachineCount += 1; return null; }
         if (scheduled.has(String(machine.id))) return null;
         const lows = lowByMachine.get(String(machine.id)) || [];
+        const topups = topupByMachine.get(String(machine.id)) || [];
         const expiredFood = expiredFoodByMachine.get(String(machine.id)) || [];
         const last = lastVisit.get(String(machine.id)); const days = last ? Math.floor((today - new Date(last)) / 86400000) : 999;
         const rule = ruleMap.get(String(machine.id));
         const maxDays = Math.max(1, Number(rule?.max_visit_interval_days || 10));
         const periodicVisitDue = days >= maxDays;
-        if (!lows.length && !periodicVisitDue && !expiredFood.length) return null;
+        if (!lows.length && !topups.length && !periodicVisitDue && !expiredFood.length) return null;
         if (isMachinePlanningExcluded(rule, today) && !expiredFood.length) { state.planningExcludedMachineCount += 1; return null; }
         if (location?.service_suspended_until && new Date(location.service_suspended_until) >= today && !expiredFood.length) return null;
         if (location.latitude == null || location.longitude == null) {
@@ -531,18 +547,20 @@
           reasons.push(`${hardExpired ? 'prošlá expirace' : 'riziko expirace'}: ${expiredFood.length} ${expiredFood.length === 1 ? 'pozice' : expiredFood.length < 5 ? 'pozice' : 'pozic'} / očekáváno zbýt ${expiredUnits} ks · nejstarší ${new Date(`${earliestExpiry}T12:00:00`).toLocaleDateString('cs-CZ')}`);
         }
         if (lows.some((item) => item.empty)) reasons.push('vyprodaná pozice'); else if (lows.length) reasons.push(`${lows.length} nízkých zásob (limit ${Math.round((lows[0]?.stockLimit ?? 0.2) * 100)} %)`);
+        if (topups.length) reasons.push(`${topups.length} pozic k běžnému doplnění`);
         if (periodicVisitDue) reasons.push(last ? `${days} dní bez návštěvy (limit ${maxDays})` : `bez evidované návštěvy (limit ${maxDays} dní)`);
         const metrics = metricsByMachine.get(String(machine.id)) || {};
-        return { id: machine.id, machineId: machine.id, locationId: location.id, requestId: null, name: machine.name || `Automat ${machine.id}`, evidence: machine.evidence_number, machineType: machine.machine_type, snack, latitude: Number(location.latitude), longitude: Number(location.longitude), city: location.city || '', address: location.address || '', locationName: location.name || '', serviceMinutes: snack ? FOOD_SERVICE_MINUTES : COFFEE_SERVICE_MINUTES, priority: expiredFood.length ? 4 : lows.some((item) => item.empty) ? 3 : lows.length ? 2 : 1, reasons, hasExpiredFood: expiredFood.length > 0, expiredFood, expiredFoodPositions: expiredFood.length, expiredFoodUnits: expiredFood.reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hardExpiredFoodPositions: expiredFood.filter((item) => item.hardExpired).length, hardExpiredFoodUnits: expiredFood.filter((item) => item.hardExpired).reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hasLowStock: lows.length > 0, hasService: false, lowCount: lows.length, emptyCount: lows.filter((item) => item.empty).length, periodicVisitDue, daysSinceVisit: last ? days : null, maxVisitDays: maxDays, revenue30: Number(metrics.revenue_30_days || 0), units30: Number(metrics.units_30_days || 0), ownerId: state.ownership.get(String(machine.id)) || null };
+        return { id: machine.id, machineId: machine.id, locationId: location.id, requestId: null, name: machine.name || `Automat ${machine.id}`, evidence: machine.evidence_number, machineType: machine.machine_type, snack, latitude: Number(location.latitude), longitude: Number(location.longitude), city: location.city || '', address: location.address || '', locationName: location.name || '', serviceMinutes: snack ? FOOD_SERVICE_MINUTES : COFFEE_SERVICE_MINUTES, priority: expiredFood.length ? 4 : lows.some((item) => item.empty) ? 3 : lows.length ? 2 : topups.length ? 1 : 1, reasons, hasExpiredFood: expiredFood.length > 0, expiredFood, expiredFoodPositions: expiredFood.length, expiredFoodUnits: expiredFood.reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hardExpiredFoodPositions: expiredFood.filter((item) => item.hardExpired).length, hardExpiredFoodUnits: expiredFood.filter((item) => item.hardExpired).reduce((sum, item) => sum + item.projectedRemainingUnits, 0), hasLowStock: lows.length > 0, hasTopup: topups.length > 0, hasService: false, lowCount: lows.length, topupCount: topups.length, topupUnits: topups.reduce((sum, item) => sum + item.missing, 0), emptyCount: lows.filter((item) => item.empty).length, periodicVisitDue, daysSinceVisit: last ? days : null, maxVisitDays: maxDays, revenue30: Number(metrics.revenue_30_days || 0), units30: Number(metrics.units_30_days || 0), ownerId: state.ownership.get(String(machine.id)) || null };
       }).filter(Boolean).sort((a,b) => b.priority - a.priority);
       const expiryCount = state.candidates.filter((item) => item.hasExpiredFood).length;
       const lowCount = state.candidates.filter((item) => item.hasLowStock).length;
+      const topupCount = state.candidates.filter((item) => item.hasTopup).length;
       const intervalCount = state.candidates.filter((item) => item.periodicVisitDue).length;
       const locationCount = new Set(state.candidates.map((item) => String(item.locationId))).size;
       const omittedText = state.omittedCandidates.length ? ` Pozor: ${state.omittedCandidates.length} umístěných automatů nelze naplánovat, protože jejich lokalita nemá souřadnice.` : '';
       const unlocatedText = state.unlocatedMachineCount ? ' Stroje bez umístění (sklad / rezerva) se do návštěv správně nepočítají.' : '';
       const exceptionText = state.planningExcludedMachineCount ? ` Podle pravidel automatů vynecháno: ${state.planningExcludedMachineCount}.` : '';
-      els.candidateSummary.textContent = `${state.candidates.length} provozních kandidátů v ${locationCount} lokalitách: expirace ${expiryCount} · zásoby ${lowCount} · interval návštěvy ${intervalCount}. Servisní požadavky se operátorkám nepřidělují. Jedna lokalita vždy patří jednomu člověku.${exceptionText}${omittedText}${unlocatedText}`;
+      els.candidateSummary.textContent = `${state.candidates.length} provozních kandidátů v ${locationCount} lokalitách: expirace ${expiryCount} · kritické zásoby ${lowCount} · běžné doplnění ${topupCount} · interval návštěvy ${intervalCount}. Servisní požadavky se operátorkám nepřidělují. Jedna lokalita vždy patří jednomu člověku.${exceptionText}${omittedText}${unlocatedText}`;
       renderCandidateSelection();
     }
 
@@ -644,7 +662,7 @@
         const explanation = automaticDeferral?.deferralReason || reasons;
         const priorityKey = unit.priority >= 3 ? 'critical' : unit.priority >= 2 ? 'high' : 'normal';
         const priorityLabel = unit.priority >= 3 ? 'Kritická' : unit.priority >= 2 ? 'Vysoká' : 'Normální';
-        const chips = `${unit.lowCount ? `<span class="reason-chip stock">${unit.lowCount}× nízký stav</span>` : ''}${unit.expiredFoodPositions ? `<span class="reason-chip expiry">${unit.expiredFoodPositions}× expirace</span>` : ''}${unit.maxOverdueDays ? `<span class="reason-chip interval">interval +${unit.maxOverdueDays} dní</span>` : ''}` || `<span class="reason-chip">${esc(reasons || 'doporučeno')}</span>`;
+        const chips = `${unit.lowCount ? `<span class="reason-chip stock">${unit.lowCount}× nízký stav</span>` : ''}${unit.topupCount ? `<span class="reason-chip">${unit.topupCount}× běžně doplnit</span>` : ''}${unit.expiredFoodPositions ? `<span class="reason-chip expiry">${unit.expiredFoodPositions}× expirace</span>` : ''}${unit.maxOverdueDays ? `<span class="reason-chip interval">interval +${unit.maxOverdueDays} dní</span>` : ''}` || `<span class="reason-chip">${esc(reasons || 'doporučeno')}</span>`;
         const serviceMinutes = includedStops.reduce((sum, stop) => sum + Number(stop.serviceMinutes || 0), 0);
         const extraKm = route ? includedStops.reduce((sum, stop) => sum + Number(stop.distanceFromPreviousKm || 0), 0) : 0;
         const lastVisitDays = Math.max(...unit.stops.map((stop) => Number(stop.daysSinceVisit || 0)), 0);
@@ -672,7 +690,7 @@
       const grouped = new Map();
       stops.forEach((stop) => {
         const key = String(stop.locationId || `machine-${stop.id}`);
-        if (!grouped.has(key)) grouped.set(key, { key, locationId: stop.locationId, latitude: stop.latitude, longitude: stop.longitude, city: stop.city, snack: false, priority: 0, expiredFoodPositions: 0, expiredFoodUnits: 0, hardExpiredFoodPositions: 0, hardExpiredFoodUnits: 0, lowCount: 0, emptyCount: 0, revenue30: 0, units30: 0, maxOverdueDays: 0, stops: [] });
+        if (!grouped.has(key)) grouped.set(key, { key, locationId: stop.locationId, latitude: stop.latitude, longitude: stop.longitude, city: stop.city, snack: false, priority: 0, expiredFoodPositions: 0, expiredFoodUnits: 0, hardExpiredFoodPositions: 0, hardExpiredFoodUnits: 0, lowCount: 0, topupCount: 0, topupUnits: 0, emptyCount: 0, revenue30: 0, units30: 0, maxOverdueDays: 0, stops: [] });
         const unit = grouped.get(key);
         unit.stops.push(stop);
         unit.snack ||= stop.snack;
@@ -682,6 +700,8 @@
         unit.hardExpiredFoodPositions += Number(stop.hardExpiredFoodPositions || 0);
         unit.hardExpiredFoodUnits += Number(stop.hardExpiredFoodUnits || 0);
         unit.lowCount += Number(stop.lowCount || 0);
+        unit.topupCount += Number(stop.topupCount || 0);
+        unit.topupUnits += Number(stop.topupUnits || 0);
         unit.emptyCount += Number(stop.emptyCount || 0);
         unit.revenue30 += Number(stop.revenue30 || 0);
         unit.units30 += Number(stop.units30 || 0);
@@ -701,10 +721,19 @@
         + Number(unit.hardExpiredFoodUnits || 0) * 20
         + Number(unit.emptyCount || 0) * 50
         + Number(unit.lowCount || 0) * 12
+        + Number(unit.topupCount || 0) * 8
+        + Number(unit.topupUnits || 0) * 2
         + Number(unit.maxOverdueDays || 0) * 10;
     }
     function economicDeferralReason(unit, allUnits, warehouse) {
       if (unit.expiredFoodPositions > 0) return '';
+      const singleEmptyPositionOnly = Number(unit.emptyCount || 0) === 1
+        && Number(unit.lowCount || 0) === 1
+        && Number(unit.topupCount || 0) <= 1
+        && Number(unit.maxOverdueDays || 0) <= 0;
+      if (singleEmptyPositionOnly) {
+        return 'pouze při cestě: jediná vyprodaná pozice sama o sobě není důvodem k samostatné návštěvě';
+      }
       const distanceFromBase = haversine(warehouse, unit);
       if (distanceFromBase < 90 || unit.emptyCount >= 3) return '';
       const nearbyDistance = Math.min(...allUnits.filter((other) => other.key !== unit.key).map((other) => haversine(unit, other)), Number.POSITIVE_INFINITY);
@@ -720,7 +749,7 @@
           const current = estimateStops(route.stops, warehouse);
           const options = locationUnits(route.stops).map((unit) => {
             if (unit.expiredFoodPositions > 0) return null;
-            if (!unit.lowCount || unit.emptyCount >= 3 || haversine(warehouse, unit) < 90) return null;
+            if ((!unit.lowCount && !unit.topupCount) || unit.emptyCount >= 3 || haversine(warehouse, unit) < 90) return null;
             const remainingStops = route.stops.filter((stop) => String(stop.locationId || `machine-${stop.id}`) !== unit.key);
             const without = estimateStops(remainingStops, warehouse);
             const marginalKm = Math.max(0, current.distanceKm - without.distanceKm);
@@ -1342,7 +1371,7 @@
         queryWithRetry('produkty', () => supabase.from('products').select('sku,name,product_category').eq('active',true))
       ]);
       const containerRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true));
-      const slotRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,expiry_date,active').eq('active',true));
+      const slotRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,target_units,desired_units,expiry_date,active').eq('active',true));
       const [visits,rules,history,logs,scheduled] = await Promise.all([
         queryWithRetry('návštěvy automatů', () => supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500)),
         queryWithRetry('pravidla návštěv', () => supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note')),
