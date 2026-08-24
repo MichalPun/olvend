@@ -234,6 +234,7 @@
     const norm = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     const fullName = (employee) => [employee.name, employee.surname].filter(Boolean).join(' ') || `Zaměstnanec ${employee.id}`;
     const vehicleName = (vehicle) => [vehicle.plate, vehicle.brand, vehicle.model, vehicle.name].filter(Boolean).join(' · ') || `Vozidlo ${vehicle.id}`;
+    const isManagerEmployee = (employee) => /management|manager|jednatel|owner|admin/.test(norm(employee?.role));
     const minutesLabel = (minutes) => `${Math.floor(Number(minutes || 0) / 60)} h ${String(Math.round(Number(minutes || 0)) % 60).padStart(2, '0')} min`;
     const dateKey = (date) => date.toLocaleDateString('en-CA');
     const daysAgo = (days) => { const date = new Date(); date.setDate(date.getDate() - days); return dateKey(date); };
@@ -306,10 +307,16 @@
         || state.km30.has(String(employee.id))
       );
       const routeShiftTypes = new Set(['operator','technician_field','manager_field']);
+      const optionalManagerShiftTypes = new Set(['manager_office','office']);
       const shiftEmployeeIds = new Set(state.publishedShiftRows.filter((row) => routeShiftTypes.has(row.shift_type)).map((row) => String(row.employee_id)));
       const fallbackShown = operational.length ? operational : state.employees;
       const shown = state.publishedShiftPlan
-        ? state.employees.filter((employee) => shiftEmployeeIds.has(String(employee.id)) || state.scheduledEmployees.has(String(employee.id)))
+        ? state.employees.filter((employee) => {
+          const shift = state.publishedShiftRows.find((row) => String(row.employee_id) === String(employee.id));
+          return shiftEmployeeIds.has(String(employee.id))
+            || state.scheduledEmployees.has(String(employee.id))
+            || (isManagerEmployee(employee) && optionalManagerShiftTypes.has(shift?.shift_type));
+        })
         : fallbackShown;
       const used = new Set(state.scheduledVehicles);
       const teamKmTotal = shown.reduce((sum, employee) => sum + Number(state.km30.get(String(employee.id)) || 0), 0);
@@ -318,16 +325,16 @@
         const shiftVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(shift?.vehicle_id || ''));
         const preferred = shiftVehicle || preferredVehicle(employee, used); if (preferred) used.add(String(preferred.id));
         const employeeName = fullName(employee); const lowerName = norm(employeeName);
-        const checked = shift ? routeShiftTypes.has(shift.shift_type) : (/dvor|nerud|punc/.test(lowerName) || (index < 3 && !shown.some((item) => /dvor|nerud|punc/.test(norm(fullName(item))))));
+        const checked = shift ? routeShiftTypes.has(shift.shift_type) : (!isManagerEmployee(employee) && (/dvor|nerud|punc/.test(lowerName) || index < 3));
         const km = Number(state.km30.get(String(employee.id)) || 0);
         const avg = shown.length ? teamKmTotal / shown.length : 0;
         const delta = Math.round(km - avg);
         const alreadyPlanned = state.scheduledEmployees.has(String(employee.id));
-        const reserve = /management|manager|jednatel|owner|admin/.test(norm(employee.role));
+        const reserve = isManagerEmployee(employee);
         const departure = String(shift?.planned_start || (/dvor|nerud/.test(lowerName) ? '06:00' : '07:00')).slice(0,5);
         const maxHours = shift?.planned_minutes ? Math.max(1, Number(shift.planned_minutes) / 60) : (/nerud/.test(lowerName) ? 10 : 8);
         const sourceLabel = alreadyPlanned ? 'Již má trasu' : shift ? (shift.vehicle_id ? 'Z publikované směny' : 'Chybí vozidlo') : checked ? reserve ? 'Záloha' : 'Doporučení' : 'Nejede';
-        return `<tr data-employee-id="${esc(employee.id)}"><td><input class="check crew-check" type="checkbox" ${checked && !alreadyPlanned ? 'checked' : ''} ${alreadyPlanned ? 'disabled' : ''}></td><td><div class="person">${esc(employeeName)}</div><div class="sub">${esc(employee.role || 'Provoz')}${shift ? ' · publikovaná směna' : ''}</div></td><td><select class="inline-select" data-vehicle><option value="">Bez vozidla</option>${state.vehicles.map((vehicle) => `<option value="${esc(vehicle.id)}" ${preferred && String(preferred.id) === String(vehicle.id) ? 'selected' : ''} ${state.scheduledVehicles.has(String(vehicle.id)) ? 'disabled' : ''}>${esc(vehicleName(vehicle))} · ${vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený'}${state.scheduledVehicles.has(String(vehicle.id)) ? ' · již v trase' : ''}</option>`).join('')}</select></td><td><input class="time" data-departure type="time" value="${esc(departure)}"></td><td><input class="hours" data-hours type="number" value="${esc(maxHours)}" step="0.5"></td><td><select class="inline-select" data-priority><option value="standard" ${reserve ? '' : 'selected'}>Běžná trasa</option><option value="reserve" ${reserve ? 'selected' : ''}>Záloha</option></select></td><td>${esc(state.ownership.get(`employee:${employee.id}:area`) || 'Podle historie')}</td><td><b>${Math.round(km).toLocaleString('cs-CZ')} km</b><div class="sub">${delta ? `${delta > 0 ? '+' : ''}${delta} km proti týmu` : 'týmový průměr'}</div></td><td><span class="badge ${alreadyPlanned ? 'blue' : shift?.vehicle_id ? 'green' : shift ? 'amber' : checked ? 'green' : 'gray'}">${esc(sourceLabel)}</span></td></tr>`;
+        return `<tr data-employee-id="${esc(employee.id)}"><td><input class="check crew-check" type="checkbox" ${checked && !alreadyPlanned ? 'checked' : ''} ${alreadyPlanned ? 'disabled' : ''}></td><td><div class="person">${esc(employeeName)}</div><div class="sub">${esc(employee.role || 'Provoz')}${shift ? ' · publikovaná směna' : ''}</div></td><td><select class="inline-select" data-vehicle><option value="">Bez vozidla</option>${state.vehicles.map((vehicle) => `<option value="${esc(vehicle.id)}" ${preferred && String(preferred.id) === String(vehicle.id) ? 'selected' : ''} ${state.scheduledVehicles.has(String(vehicle.id)) ? 'disabled' : ''}>${esc(vehicleName(vehicle))} · ${vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený'}${state.scheduledVehicles.has(String(vehicle.id)) ? ' · již v trase' : ''}</option>`).join('')}</select></td><td><input class="time" data-departure type="time" value="${esc(departure)}"></td><td><input class="hours" data-hours type="number" value="${esc(maxHours)}" step="0.5"></td><td><select class="inline-select" data-priority><option value="standard" ${reserve ? '' : 'selected'}>Operátor · vytížit</option><option value="reserve" ${reserve ? 'selected' : ''}>Záloha · jen nutně</option></select></td><td>${esc(state.ownership.get(`employee:${employee.id}:area`) || 'Podle historie')}</td><td><b>${Math.round(km).toLocaleString('cs-CZ')} km</b><div class="sub">${delta ? `${delta > 0 ? '+' : ''}${delta} km proti týmu` : 'týmový průměr'}</div></td><td><span class="badge ${alreadyPlanned ? 'blue' : shift?.vehicle_id ? 'green' : shift ? 'amber' : checked ? 'green' : 'gray'}">${esc(sourceLabel)}</span></td></tr>`;
       }).join('') || '<tr><td colspan="9">Nejsou dostupní zaměstnanci.</td></tr>';
       syncCrew();
       els.note.textContent = state.publishedShiftPlan
@@ -472,13 +479,29 @@
       const rows = [];
       for (let page = 0; page < maxPages; page += 1) {
         const from = page * pageSize;
-        const result = await buildQuery().range(from, from + pageSize - 1);
-        if (result.error) throw result.error;
+        const result = await queryWithRetry('stránkovaná data plánovače', () => buildQuery().range(from, from + pageSize - 1));
         const data = result.data || [];
         rows.push(...data);
         if (data.length < pageSize) break;
       }
       return rows;
+    }
+
+    async function queryWithRetry(label, buildQuery, { optional = false } = {}) {
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await buildQuery();
+        if (!result.error) return result;
+        lastError = result.error;
+        const transient = /statement timeout|canceling statement|timeout|fetch failed/i.test(String(result.error.message || result.error));
+        if (!transient || attempt === 1) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+      }
+      if (optional) {
+        console.warn(`${label} se nepodařilo načíst; plán pokračuje bez tohoto doplňkového podkladu.`, lastError);
+        return { data: [], error: null };
+      }
+      throw new Error(`${label}: ${lastError?.message || lastError || 'neznámá chyba'}`);
     }
 
     function renderCandidateSelection() {
@@ -638,7 +661,8 @@
       const distanceWeight = strategy === 'territory' ? 0.9 : strategy === 'distance' ? 1.6 : 1.15;
       const balanceDivisor = strategy === 'balanced' ? 18 : strategy === 'territory' ? 35 : 50;
       const ownership = unit.stops.reduce((sum, candidate) => sum + (String(candidate.ownerId || '') === String(route.employee.id) ? ownBonus : candidate.ownerId ? foreignPenalty : 0), 0);
-      const kmBalance = (Number(state.km30.get(String(route.employee.id)) || 0) - minHistoricalKm) / balanceDivisor;
+      const projectedKm = Number(state.km30.get(String(route.employee.id)) || 0) + Number(option.estimate.distanceKm || 0);
+      const kmBalance = (projectedKm - minHistoricalKm) / balanceDivisor;
       const incrementalKm = Math.max(0, option.estimate.distanceKm - route.distanceKm);
       const load = workloadPenalty(route, option.estimate.totalMinutes);
       const emptyRouteBonus = route.stops.length || route.dispatchPriority === 'reserve' ? 0 : -90;
@@ -721,13 +745,13 @@
             const ownCount = unit.stops.filter((stop) => String(stop.ownerId || '') === String(route.employee.id)).length;
             const existingBearing = routeBearing(route, warehouse);
             const corridorPenalty = existingBearing == null ? 0 : bearingDifference(existingBearing, bearing(warehouse, unit)) * 1.8;
-            const historicalPenalty = (Number(state.km30.get(String(route.employee.id)) || 0) - minHistoricalKm) / 30;
+            const historicalPenalty = (Number(state.km30.get(String(route.employee.id)) || 0) + estimate.distanceKm - minHistoricalKm) / 24;
             const utility = unitPlanningValue(unit)
               + Number(unit.priority || 0) * 25
               + ownCount * 45
               - incrementalKm * 8
               - incrementalMinutes * 2
-              - corridorPenalty
+              - corridorPenalty * 2.2
               - historicalPenalty;
             if (!best || utility > best.utility) best = { unitIndex, route, estimate, utility };
           });
@@ -764,6 +788,7 @@
             routes.forEach((toRoute, toIndex) => {
               if (fromIndex === toIndex || !compatibleUnit(toRoute, unit)) return;
               if (fromRoute.stops.length === unit.stops.length) return;
+              if (toRoute.dispatchPriority === 'reserve' && !toRoute.stops.length && fromRoute.totalMinutes <= fromRoute.maxHours * 60) return;
               const fromEstimate = estimateStops(fromRoute.stops.filter((stop) => String(stop.locationId || `machine-${stop.id}`) !== unit.key), warehouse);
               const toEstimate = estimateStops([...toRoute.stops, ...unit.stops], warehouse);
               if (fromEstimate.totalMinutes > fromRoute.maxHours * 60 || toEstimate.totalMinutes > toRoute.maxHours * 60) return;
@@ -825,17 +850,19 @@
     async function optimizeWithGoogle(route, warehouse) {
       if (!route.stops.length) return route;
       try {
-        const response = await supabase.functions.invoke('google-route-plan', { body: { origin: warehouse, stops: route.stops.map((stop) => ({ key:`machine-${stop.id}`, id:stop.id, machineId:stop.id, locationId:stop.locationId, name:stop.name, city:stop.city, address:stop.address, latitude:stop.latitude, longitude:stop.longitude, estimatedServiceMinutes:stop.serviceMinutes })), returnToStart:true, departureTime:new Date(`${els.date.value}T${route.departure}:00`).toISOString() } });
+        const units = locationUnits(route.stops);
+        const response = await supabase.functions.invoke('google-route-plan', { body: { origin: warehouse, stops: units.map((unit) => { const stop = unit.stops[0]; return { key:`location-${unit.key}`, id:unit.key, locationId:stop.locationId, name:stop.locationName || stop.name, city:stop.city, address:stop.address, latitude:stop.latitude, longitude:stop.longitude, estimatedServiceMinutes:unit.stops.reduce((sum, item) => sum + Number(item.serviceMinutes || 0), 0) }; }), returnToStart:true, departureTime:new Date(`${els.date.value}T${route.departure}:00`).toISOString() } });
         if (response.error || response.data?.error || !response.data?.orderedStops?.length) return route;
         const originalStops = [...route.stops];
-        const byId = new Map(originalStops.flatMap((stop) => [[String(stop.id), stop], [`machine-${stop.id}`, stop]]));
-        const mappedStops = response.data.orderedStops.map((row) =>
-          byId.get(String(row.key || ''))
-          || byId.get(String(row.machineId || row.id || ''))
-          || originalStops[Number(row.originalIndex)]
+        const byUnitKey = new Map(units.map((unit) => [[`location-${unit.key}`, unit], [String(unit.key), unit]]).flat());
+        const mappedUnits = response.data.orderedStops.map((row) =>
+          byUnitKey.get(String(row.key || ''))
+          || byUnitKey.get(String(row.locationId || row.id || ''))
+          || units[Number(row.originalIndex)]
         ).filter(Boolean);
+        const mappedStops = mappedUnits.flatMap((unit) => unit.stops);
         if (mappedStops.length !== originalStops.length || new Set(mappedStops.map((stop) => String(stop.id))).size !== originalStops.length) {
-          console.warn('Google route returned an incomplete stop mapping; keeping the verified local order.', { expected: originalStops.length, received: mappedStops.length });
+          console.warn('Google route returned an incomplete location mapping; keeping the verified local order.', { expected: originalStops.length, received: mappedStops.length });
           return route;
         }
         route.stops = mappedStops;
@@ -997,17 +1024,15 @@
         return false;
       });
       const standardRoutes = routes.filter((route) => route.dispatchPriority !== 'reserve');
-      const corridorAssigned = assignContiguousCorridors(globallyOrderedUnits, standardRoutes, warehouse)
-        || assignContiguousCorridors(globallyOrderedUnits, routes, warehouse);
-      let remaining = [];
-      if (!corridorAssigned) {
-        const minHistoricalKm = Math.min(...crew.map((item) => Number(state.km30.get(String(item.employee.id)) || 0)));
-        unassigned.push(...assignCapacityAware(globallyOrderedUnits, routes, warehouse, minHistoricalKm));
-        routes.forEach((route) => calculateMetrics(route, warehouse));
-        remaining = retryUnassigned(unassigned, routes, warehouse, minHistoricalKm);
-      } else {
-        routes.forEach((route) => calculateMetrics(route, warehouse));
+      const primaryRoutes = standardRoutes.length ? standardRoutes : routes;
+      const minHistoricalKm = Math.min(...crew.map((item) => Number(state.km30.get(String(item.employee.id)) || 0)));
+      unassigned.push(...assignCapacityAware(globallyOrderedUnits, primaryRoutes, warehouse, minHistoricalKm));
+      primaryRoutes.forEach((route) => calculateMetrics(route, warehouse));
+      let remaining = retryUnassigned(unassigned, primaryRoutes, warehouse, minHistoricalKm);
+      if (remaining.length && primaryRoutes.length !== routes.length) {
+        remaining = retryUnassigned(remaining, routes, warehouse, minHistoricalKm);
       }
+      routes.forEach((route) => calculateMetrics(route, warehouse));
       deferUneconomicDetours(routes, warehouse);
       routes.forEach((route) => calculateMetrics(route, warehouse));
       els.status.textContent = 'Upřesňuji kilometry';
@@ -1151,23 +1176,24 @@
       await loadPublishedShiftTeam(els.date.value);
       const historyStart=daysAgo(90); const kmStart=daysAgo(30);
       const metricsFrom = new Date(Date.now() - 30 * 86400000).toISOString();
-      const [employees,vehicles,warehouses,machines,locations,products,containerRows,slotRows,visits,rules,history,logs,metrics,scheduled] = await Promise.all([
-        supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname'),
-        supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate'),
-        supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name'),
-        supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active').eq('active',true),
-        supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true),
-        supabase.from('products').select('sku,name,product_category').eq('active',true),
-        fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true)),
-        fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,expiry_date,active').eq('active',true)),
-        supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500),
-        supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note'),
-        supabase.from('route_plans').select('planned_employee_id,planning_date,execution_status,route_plan_stops(machine_id,location_id,status)').gte('planning_date',historyStart).neq('execution_status','cancelled'),
-        supabase.from('vehicle_operation_logs').select('employee_id,distance_km,log_date').gte('log_date',kmStart),
-        supabase.rpc('get_route_dispatch_machine_metrics_v29', { p_from: metricsFrom, p_to: new Date().toISOString() }),
-        supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled')
+      const [employees,vehicles,warehouses,machines,locations,products] = await Promise.all([
+        queryWithRetry('zaměstnanci', () => supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname')),
+        queryWithRetry('vozidla', () => supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate')),
+        queryWithRetry('sklady', () => supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name')),
+        queryWithRetry('automaty', () => supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active').eq('active',true)),
+        queryWithRetry('lokality', () => supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true)),
+        queryWithRetry('produkty', () => supabase.from('products').select('sku,name,product_category').eq('active',true))
       ]);
-      const results=[employees,vehicles,warehouses,machines,locations,products,visits,rules,history,logs,metrics,scheduled]; const failed=results.find((result)=>result.error); if(failed) throw failed.error;
+      const containerRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true));
+      const slotRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,expiry_date,active').eq('active',true));
+      const [visits,rules,history,logs,scheduled] = await Promise.all([
+        queryWithRetry('návštěvy automatů', () => supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500)),
+        queryWithRetry('pravidla návštěv', () => supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note')),
+        queryWithRetry('historie přidělení', () => supabase.from('route_plans').select('planned_employee_id,planning_date,execution_status,route_plan_stops(machine_id,location_id,status)').gte('planning_date',historyStart).neq('execution_status','cancelled')),
+        queryWithRetry('kilometry zaměstnanců', () => supabase.from('vehicle_operation_logs').select('employee_id,distance_km,log_date').gte('log_date',kmStart)),
+        queryWithRetry('již naplánované trasy', () => supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled'))
+      ]);
+      const metrics = await queryWithRetry('ekonomické metriky', () => supabase.rpc('get_route_dispatch_machine_metrics_v29', { p_from: metricsFrom, p_to: new Date().toISOString() }), { optional: true });
       state.ownership.clear(); state.km30.clear(); state.scheduledEmployees.clear(); state.scheduledVehicles.clear();
       state.employees=employees.data||[]; state.vehicles=vehicles.data||[]; state.warehouses=(warehouses.data||[]).map((row)=>({...row,latitude:Number(row.latitude),longitude:Number(row.longitude)})); state.machines=machines.data||[]; state.locations=locations.data||[];
       (scheduled.data||[]).forEach((plan)=>{ if(plan.planned_employee_id) state.scheduledEmployees.add(String(plan.planned_employee_id)); if(plan.vehicle_id) state.scheduledVehicles.add(String(plan.vehicle_id)); });
