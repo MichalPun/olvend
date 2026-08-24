@@ -8281,36 +8281,11 @@
           routeNote: urgency.get(String(stop.id))?.reason || ''
         }))
         const common = { origin, destination: start, stops: routeStops, returnToStart: true, departureTime: new Date(Date.now() + 120000).toISOString() }
-        const [baselineResult, optimizedResult] = await Promise.all([
-          supabase.functions.invoke('google-route-plan', { body: { ...common, mode: 'ordered' } }),
-          supabase.functions.invoke('google-route-plan', { body: { ...common, mode: 'optimize' } })
-        ])
+        const baselineResult = await supabase.functions.invoke('google-route-plan', { body: { ...common, mode: 'ordered' } })
         if (baselineResult.error) throw baselineResult.error
-        if (optimizedResult.error) throw optimizedResult.error
-        let optimized = optimizedResult.data || {}
         const baseline = baselineResult.data || {}
-        const optimizedIds = (optimized.orderedStops || []).map((stop) => Number(stop.id)).filter(Boolean)
-        if (optimizedIds.length !== remaining.length) throw new Error('Přepočet nevrátil všechny zbývající zastávky.')
-        const remainingById = new Map(remaining.map((stop) => [String(stop.id), stop]))
-        const locationGroups = new Map()
-        const locationOrder = []
-        optimizedIds.forEach((id) => {
-          const locationKey = getRouteStopLocationKey(remainingById.get(String(id)))
-          if (!locationGroups.has(locationKey)) {
-            locationGroups.set(locationKey, [])
-            locationOrder.push(locationKey)
-          }
-          locationGroups.get(locationKey).push(id)
-        })
-        const groupedIds = locationOrder.flatMap((locationKey) => locationGroups.get(locationKey) || [])
-        const groupingChanged = groupedIds.some((id, index) => String(id) !== String(optimizedIds[index]))
-        if (groupingChanged) {
-          const groupedStops = groupedIds.map((id) => routeStops.find((routeStop) => String(routeStop.id) === String(id))).filter(Boolean)
-          const groupedResult = await supabase.functions.invoke('google-route-plan', { body: { ...common, stops: groupedStops, mode: 'ordered' } })
-          if (groupedResult.error) throw groupedResult.error
-          optimized = groupedResult.data || {}
-        }
-        const orderedIds = (optimized.orderedStops || []).map((stop) => Number(stop.id)).filter(Boolean)
+        const optimized = baseline
+        const orderedIds = (baseline.orderedStops || []).map((stop) => Number(stop.id)).filter(Boolean)
         if (orderedIds.length !== remaining.length) throw new Error('Přepočet nevrátil všechny automaty v lokalitách.')
         const first = remaining.find((stop) => String(stop.id) === String(orderedIds[0]))
         const firstSignal = first ? urgency.get(String(first.id)) : null
@@ -8326,12 +8301,10 @@
           scheduleCursor = new Date(scheduleCursor.getTime() + Number(sourceStop?.estimated_service_minutes || 0) * 60000)
           return { stop_id: Number(optimizedStop.id), arrival_at: arrivalAt, departure_at: scheduleCursor.toISOString(), drive_seconds: Number(optimizedStop.googleLegDurationSeconds || 0) }
         })
-        const orderChanged = orderedIds.some((id, index) => String(id) !== String(remaining[index]?.id))
+        const orderChanged = false
         const reason = firstSignal
-          ? `${getRouteStopTitle(first)}: ${firstSignal.reason}. Časová okna byla zahrnuta do přepočtu.`
-          : orderChanged
-            ? 'Pořadí bylo upraveno podle aktuální dopravy a nejkratší zbývající cesty.'
-            : 'Současné pořadí zůstává podle aktuální dopravy nejvýhodnější.'
+          ? `${getRouteStopTitle(first)}: ${firstSignal.reason}. Pořadí schválené manažerem zůstalo zachováno.`
+          : 'Pořadí schválené manažerem zůstalo zachováno; přepočítaly se pouze časy příjezdů.'
         const metadata = {
           trigger_key: triggerKey,
           updated_at: new Date().toISOString(),
