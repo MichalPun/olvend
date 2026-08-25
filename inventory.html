@@ -6816,12 +6816,25 @@
         vehicleInventoryAuditItems = []
         return
       }
-      const { data, error } = await supabase
-        .from('inventory_audit_items')
-        .select('id, audit_id, stock_location_id, product_id, batch_id, book_quantity, counted_quantity, counted_package_id, counted_package_count, counted_loose_quantity, difference_quantity, difference_value, reported_book_quantity, reported_difference_quantity, reported_difference_value, unit_cost, note, counted_note, counted_at, parent_audit_item_id, resolution_code, resolution_note, charge_selected, charge_quantity, charge_amount, products(id, name, sku, base_unit)')
-        .in('audit_id', ids)
-        .order('id', { ascending: true })
-      vehicleInventoryAuditItems = error ? [] : (data ?? [])
+      const pageSize = 1000
+      const loadedItems = []
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('inventory_audit_items')
+          .select('id, audit_id, stock_location_id, product_id, batch_id, book_quantity, counted_quantity, counted_package_id, counted_package_count, counted_loose_quantity, difference_quantity, difference_value, reported_book_quantity, reported_difference_quantity, reported_difference_value, unit_cost, note, counted_note, counted_at, parent_audit_item_id, resolution_code, resolution_note, charge_selected, charge_quantity, charge_amount, products(id, name, sku, base_unit)')
+          .in('audit_id', ids)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (error) {
+          console.error('Nepodařilo se načíst položky inventur.', error)
+          vehicleInventoryAuditItems = []
+          return
+        }
+        const page = data ?? []
+        loadedItems.push(...page)
+        if (page.length < pageSize) break
+      }
+      vehicleInventoryAuditItems = loadedItems
     }
     function getVehicleAuditItems(auditId) {
       return vehicleInventoryAuditItems.filter((item) => String(item.audit_id) === String(auditId))
@@ -6953,6 +6966,8 @@
       return `<tr data-inventory-resolution-item data-item-id="${escapeHtml(String(item.id))}" data-unit-cost="${escapeHtml(String(Number(item.unit_cost || 0)))}" data-max-qty="${escapeHtml(String(maxQty))}">
         <td data-label="K úhradě"><input type="checkbox" data-resolution-charge ${chargeSelected ? 'checked' : ''} ${canResolve ? '' : 'disabled'} /></td>
         <td data-label="Produkt"><strong>${escapeHtml(product.name || 'Produkt')}</strong><span class="subtext">${escapeHtml(product.sku ? `SKU ${product.sku}` : 'Bez SKU')}</span></td>
+        <td data-label="Evidence"><strong>${escapeHtml(formatQuantityValue(item.book_quantity || 0, unit))}</strong></td>
+        <td data-label="Spočítáno">${item.counted_at ? `<strong>${escapeHtml(formatQuantityValue(item.counted_quantity || 0, unit))}</strong><span class="subtext">Potvrzeno ${escapeHtml(new Date(item.counted_at).toLocaleString('cs-CZ'))}</span>` : '<span class="subtext">Čeká na zadání</span>'}</td>
         <td data-label="Inventurní rozdíl"><strong>${escapeHtml(formatQuantityValue(item.difference_quantity || 0, unit))}</strong><span class="subtext">${escapeHtml(formatStockMoney(item.difference_value || 0))}</span></td>
         <td data-label="Kontrola skladu">${controlItem ? (controlItem.counted_at ? `<strong>${escapeHtml(formatQuantityValue(controlItem.difference_quantity || 0, unit))}</strong><span class="subtext">Spočítáno</span>` : '<span class="badge warn">Čeká</span>') : '<span class="subtext">Není potřeba</span>'}</td>
         <td data-label="Návrh příčiny">${escapeHtml(getInventorySuggestedCause(item, controlItem))}</td>
@@ -7018,7 +7033,7 @@
           </div></section>
           ${controlAudit ? `<section class="inventory-control-strip"><div><span>Automaticky vytvořená kontrola</span><strong>Inventura skladu #${escapeHtml(String(controlAudit.id))}</strong></div><div><span>Rozsah</span><strong>${escapeHtml(String(controlItems.length))} položek</strong></div><div><span>Převzal</span><strong>${escapeHtml(controlAudit.assigned_employee_id ? getVehicleAuditEmployeeLabel(controlAudit.assigned_employee_id) : 'Čeká ve frontě skladu')}</strong></div><div><span>Stav</span><strong>${escapeHtml(String(controlCounted))}/${escapeHtml(String(controlItems.length))} spočítáno</strong></div><div><button class="btn secondary small" type="button" data-detail-action="open-audit" data-audit-id="${escapeHtml(String(controlAudit.id))}">Otevřít kontrolu</button></div></section>` : ''}
           <section class="inventory-resolution-titlebar"><div><h5>Rozhodnutí po položkách</h5><p>Finanční schodky jsou předvybrané v plné výši. Odškrtni pouze položky, které se hradit nemají.</p></div><span class="badge info">${canDecideResponsibility ? 'Pracovní návrh' : 'Čeká na fyzické počty'}</span></section>
-          <div class="table-wrap"><table class="inventory-resolution-table"><thead><tr><th>K úhradě</th><th>Produkt</th><th>Inventurní rozdíl</th><th>Kontrola skladu</th><th>Návrh příčiny</th><th>Rozhodnutí / poznámka</th><th>Množství</th><th>Dáno k proplacení</th></tr></thead><tbody>${resolutionItems.map((item) => renderInventoryResolutionRow(item, controlAudit, canDecideResponsibility)).join('')}</tbody></table></div>
+          <div class="table-wrap"><table class="inventory-resolution-table"><thead><tr><th>K úhradě</th><th>Produkt</th><th>Evidence</th><th>Spočítáno</th><th>Inventurní rozdíl</th><th>Kontrola skladu</th><th>Návrh příčiny</th><th>Rozhodnutí / poznámka</th><th>Množství</th><th>Dáno k proplacení</th></tr></thead><tbody>${resolutionItems.map((item) => renderInventoryResolutionRow(item, controlAudit, canDecideResponsibility)).join('')}</tbody></table></div>
           <div class="inventory-resolution-totals"><div class="inventory-resolution-total"><span>Inventurní rozdíl</span><strong>${escapeHtml(formatStockMoney(valueTotal))}</strong></div><div class="inventory-resolution-total"><span>Dáno k proplacení</span><strong data-resolution-charge-total>${escapeHtml(formatStockMoney(chargeTotal))}</strong></div></div>
           <section style="padding:11px 13px;border-top:1px solid var(--border);"><label style="display:block;margin-bottom:5px;color:var(--muted);font-size:10px;font-weight:800;">VYJÁDŘENÍ OPERÁTORA</label><div class="status-line ${audit.operator_statement ? 'success' : ''}">${audit.operator_statement ? escapeHtml(audit.operator_statement) : 'Operátor zatím neposlal vyjádření. Rozdíl sám o sobě neznamená odpovědnost.'}</div><label style="display:block;margin:10px 0 5px;color:var(--muted);font-size:10px;font-weight:800;">ODŮVODNĚNÍ MANAŽERA</label><textarea data-audit-decision-note placeholder="Shrnutí provedených kontrol a výsledku">${escapeHtml(audit.responsibility_decision_note || '')}</textarea></section>
           <section class="inventory-resolution-actions">
