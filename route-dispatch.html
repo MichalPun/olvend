@@ -427,9 +427,21 @@
 
     function buildCandidates(data) {
       const locationMap = new Map(data.locations.map((row) => [String(row.id), row]));
+      const machineMap = new Map(data.machines.map((row) => [String(row.id), row]));
       const ruleMap = new Map(data.rules.map((row) => [String(row.machine_id), row]));
       const productMap = new Map((data.products || []).map((row) => [String(row.sku || '').trim().toLowerCase(), row]));
       const metricsByMachine = new Map(data.metrics.map((row) => [String(row.machine_id), row]));
+      const inventoriedMachines = new Set((data.inventoryRows || []).map((row) => String(row.machine_id)));
+      data.machines.forEach((machine) => { if (machine.stock_initialized_at) inventoriedMachines.add(String(machine.id)); });
+      const enabledTelemetryLinks = new Set((data.telemetryLinks || []).filter((row) => row.telemetry_enabled).map((row) => `${row.machine_id}:${norm(row.provider)}`));
+      const telemetryCutoff = Date.now() - 48 * 60 * 60 * 1000;
+      const freshTelemetryMachines = new Set((data.telemetryStates || [])
+        .filter((row) => enabledTelemetryLinks.has(`${row.machine_id}:${norm(row.provider)}`) && new Date(row.last_seen_at || 0).getTime() >= telemetryCutoff)
+        .map((row) => String(row.machine_id)));
+      const isSnackMachine = (machineId) => {
+        const machine = machineMap.get(String(machineId));
+        return /snack|food|potrav/.test(norm(`${machine?.machine_type || ''} ${machine?.name || ''}`));
+      };
       const isReadyFood = (row) => {
         const product = productMap.get(String(row.product_sku || '').trim().toLowerCase());
         return product?.product_category === 'food_ready'
@@ -475,10 +487,14 @@
         const key = String(row.machine_id); const existing = lowByMachine.get(key) || [];
         existing.push({ name, ratio, empty: current <= 0, stockLimit }); lowByMachine.set(key, existing);
       };
-      data.containers.forEach((row) => addLow(row, Number(row.current_quantity || 0), Number(row.capacity_quantity || 0), row.product_name));
-      data.slots.forEach((row) => addLow(row, Number(row.current_units || 0), Number(row.capacity_units || 0), row.product_name));
+      data.containers.forEach((row) => {
+        const machineId = String(row.machine_id);
+        if (!freshTelemetryMachines.has(machineId) || !inventoriedMachines.has(machineId)) return;
+        addLow(row, Number(row.current_quantity || 0), Number(row.capacity_quantity || 0), row.product_name);
+      });
+      data.slots.filter((row) => isSnackMachine(row.machine_id)).forEach((row) => addLow(row, Number(row.current_units || 0), Number(row.capacity_units || 0), row.product_name));
       const topupByMachine = new Map();
-      data.slots.forEach((row) => {
+      data.slots.filter((row) => isSnackMachine(row.machine_id)).forEach((row) => {
         const capacity = Math.max(0, Number(row.capacity_units || 0));
         if (!capacity || /vick|víčk/.test(norm(row.product_name))) return;
         const configuredTarget = Number(row.target_units);
@@ -1366,18 +1382,21 @@
         queryWithRetry('zaměstnanci', () => supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname')),
         queryWithRetry('vozidla', () => supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate')),
         queryWithRetry('sklady', () => supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name')),
-        queryWithRetry('automaty', () => supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active').eq('active',true)),
+        queryWithRetry('automaty', () => supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active,stock_initialized_at').eq('active',true)),
         queryWithRetry('lokality', () => supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true)),
         queryWithRetry('produkty', () => supabase.from('products').select('sku,name,product_category').eq('active',true))
       ]);
       const containerRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true));
       const slotRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,target_units,desired_units,expiry_date,active').eq('active',true));
-      const [visits,rules,history,logs,scheduled] = await Promise.all([
+      const [visits,rules,history,logs,scheduled,telemetryLinks,telemetryStates,inventoryRows] = await Promise.all([
         queryWithRetry('návštěvy automatů', () => supabase.from('route_machine_visits').select('machine_id,visit_date,status,arrived_at,completed_at,synced_at,created_at').in('status',['arrived','completed']).order('completed_at',{ascending:false,nullsFirst:false}).order('arrived_at',{ascending:false,nullsFirst:false}).limit(1500)),
         queryWithRetry('pravidla návštěv', () => supabase.from('machine_service_rules').select('machine_id,stock_critical_percent,max_visit_interval_days,route_visit_rules_active,route_planning_paused_until,route_planning_excluded_months,route_planning_note')),
         queryWithRetry('historie přidělení', () => supabase.from('route_plans').select('planned_employee_id,planning_date,execution_status,route_plan_stops(machine_id,location_id,status)').gte('planning_date',historyStart).neq('execution_status','cancelled')),
         queryWithRetry('kilometry zaměstnanců', () => supabase.from('vehicle_operation_logs').select('employee_id,distance_km,log_date').gte('log_date',kmStart)),
-        queryWithRetry('již naplánované trasy', () => supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled'))
+        queryWithRetry('již naplánované trasy', () => supabase.from('route_plans').select('id,planning_date,planned_employee_id,vehicle_id,execution_status,route_plan_stops(machine_id)').eq('planning_date',els.date.value).neq('execution_status','cancelled')),
+        queryWithRetry('telemetrická napojení', () => supabase.from('machine_external_links').select('machine_id,provider,telemetry_enabled').eq('telemetry_enabled',true)),
+        queryWithRetry('stav telemetrie', () => supabase.from('machine_telemetry_state').select('machine_id,provider,last_seen_at')),
+        queryWithRetry('počáteční stavy automatů', () => supabase.from('route_machine_visit_items').select('machine_id').not('actual_before_quantity','is',null).limit(5000))
       ]);
       const metrics = await queryWithRetry('ekonomické metriky', () => supabase.rpc('get_route_dispatch_machine_metrics_v29', { p_from: metricsFrom, p_to: new Date().toISOString() }), { optional: true });
       state.ownership.clear(); state.km30.clear(); state.scheduledEmployees.clear(); state.scheduledVehicles.clear();
@@ -1388,7 +1407,7 @@
       state.machines.forEach((machine)=>{ const options=state.employees.map((employee)=>({id:employee.id,count:Number(ownerCounts.get(`${machine.id}:${employee.id}`)||0)})).sort((a,b)=>b.count-a.count); if(options[0]?.count) state.ownership.set(String(machine.id),options[0].id); });
       state.employees.forEach((employee)=>{ const owned=state.machines.filter((machine)=>String(state.ownership.get(String(machine.id))||'')===String(employee.id)); const cities=owned.map((machine)=>state.locations.find((location)=>String(location.id)===String(machine.location_id))?.city).filter(Boolean); const counts=new Map(); cities.forEach((city)=>counts.set(city,(counts.get(city)||0)+1)); const area=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([city])=>city).join(' / '); if(area) state.ownership.set(`employee:${employee.id}:area`,area); });
       els.warehouse.innerHTML=state.warehouses.map((row)=>`<option value="${esc(row.id)}">${esc([row.name,row.city].filter(Boolean).join(' · '))}</option>`).join(''); const preferred=state.warehouses.find((row)=>norm(row.name).includes('blucina')); if(preferred) els.warehouse.value=String(preferred.id);
-      buildCandidates({ machines:state.machines, locations:state.locations, products:products.data||[], containers:containerRows, slots:slotRows, visits:visits.data||[], rules:rules.data||[], metrics:metrics.data||[], scheduled:scheduled.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu';
+      buildCandidates({ machines:state.machines, locations:state.locations, products:products.data||[], containers:containerRows, slots:slotRows, visits:visits.data||[], rules:rules.data||[], metrics:metrics.data||[], scheduled:scheduled.data||[], telemetryLinks:telemetryLinks.data||[], telemetryStates:telemetryStates.data||[], inventoryRows:inventoryRows.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu';
     }
 
     els.crew.addEventListener('change',syncCrew);
