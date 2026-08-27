@@ -8919,6 +8919,18 @@
       if (payload.warehouse_picked_at !== undefined) localItem.warehouse_picked_at = payload.warehouse_picked_at
       if (payload.warehouse_picked_by !== undefined) localItem.warehouse_picked_by = payload.warehouse_picked_by
     }
+    function markMobilePickItemDirty(itemId) {
+      if (!itemId) return
+      mobilePickRequestsBody
+        .querySelectorAll(`[data-item-id="${CSS.escape(String(itemId))}"]`)
+        .forEach((control) => { control.dataset.mobilePickDirty = 'true' })
+    }
+    function clearMobilePickItemDirty(itemId) {
+      if (!itemId) return
+      mobilePickRequestsBody
+        .querySelectorAll(`[data-item-id="${CSS.escape(String(itemId))}"]`)
+        .forEach((control) => { delete control.dataset.mobilePickDirty })
+    }
     function shouldResetMobilePickChecklist(item, payload) {
       if (!item?.warehouse_picked_at) return false
       return normalizeText(item.unit || '') !== normalizeText(payload.unit || '')
@@ -8959,16 +8971,20 @@
         .eq('id', itemId)
       if (error) throw error
       updateLocalMobilePickItem(itemId, payload)
+      clearMobilePickItemDirty(itemId)
     }
     async function saveMobilePickPreparedItems(requestId) {
-      const rows = [...mobilePickRequestsBody.querySelectorAll(`[data-mobile-pick-qty]`)]
-        .filter((input) => {
-          const item = mobileStockRequestItems.find((candidate) => String(candidate.id) === String(input.dataset.itemId))
-          return item && String(item.request_id) === String(requestId)
-        })
-      for (const input of rows) {
-        const itemId = input.dataset.itemId
+      // Ulož jen řádky, které uživatel v této otevřené stránce skutečně změnil.
+      // Dříve se při Připraveno/Potvrdit znovu odeslal celý starý formulář a
+      // přepsal novější změny provedené souběžně v jiné otevřené relaci.
+      const dirtyItemIds = [...new Set(
+        [...mobilePickRequestsBody.querySelectorAll(`[data-mobile-pick-dirty="true"][data-item-id]`)]
+          .map((control) => control.dataset.itemId)
+          .filter(Boolean)
+      )]
+      for (const itemId of dirtyItemIds) {
         const item = mobileStockRequestItems.find((candidate) => String(candidate.id) === String(itemId))
+        if (!item || String(item.request_id) !== String(requestId)) continue
         const payload = getMobilePickSavePayload(item, mobilePickPreparedPayload(itemId))
         const { error } = await supabase
           .from('mobile_stock_request_items')
@@ -8976,6 +8992,7 @@
           .eq('id', itemId)
         if (error) throw error
         updateLocalMobilePickItem(itemId, payload)
+        clearMobilePickItemDirty(itemId)
       }
     }
     async function toggleMobilePickItemPicked(itemId) {
@@ -13242,6 +13259,7 @@
           || String(item.batch_selection_mode || 'auto') !== String(batchInput.value ? 'manual' : 'auto')
         ))
       )
+      markMobilePickItemDirty(item.id)
       if (unitInput) {
         const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
         const preparedStockQuantity = getMobilePickStockQuantity(item)
@@ -13279,6 +13297,7 @@
       if (!qtyInput) return
       const item = mobileStockRequestItems.find((candidate) => String(candidate.id) === String(qtyInput.dataset.itemId || ''))
       if (!item) return
+      markMobilePickItemDirty(item.id)
       item.prepared_quantity = Number(qtyInput.value || 0)
       updateMobilePickVehicleProjection(item.id)
     })
