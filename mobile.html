@@ -5046,7 +5046,9 @@
       showWorkSummary: false,
       routeMachineReadOnly: false,
       setupWarnings: [],
-      activeInstructionId: null
+      activeInstructionId: null,
+      activeLocationOperatorMessage: null,
+      pendingLocationOperatorMessages: []
     }
 
     function getIsoDateOffset(days = 0) {
@@ -12735,6 +12737,7 @@
       renderAssignedRoute()
       renderRouteMachineScreen()
       openScreen('route-machine')
+      await maybeOpenLocationOperatorMessages(stop)
     }
 
     async function viewRouteStop(stopId) {
@@ -15600,8 +15603,108 @@
       if (error) throw error
     }
 
+    function openNextLocationOperatorMessage() {
+      const queued = state.pendingLocationOperatorMessages.shift()
+      if (!queued) {
+        state.activeLocationOperatorMessage = null
+        closeInstructionSheet()
+        return
+      }
+      const { message, stop, plan } = queued
+      const location = getRouteStopLocation(stop)
+      const machine = message.machine_id
+        ? state.machines.find((item) => String(item.id) === String(message.machine_id))
+        : null
+      state.activeInstructionId = null
+      state.activeLocationOperatorMessage = { message, stop, plan }
+      const card = els.instructionSheet.querySelector('.instruction-sheet-card')
+      card?.classList.add('fefo-instruction-sheet')
+      els.instructionSheetKicker.textContent = `Vzkaz k lokalitě · ${location?.name || getRouteStopTitle(stop)}`
+      els.instructionSheetTitle.textContent = message.title || 'Než začnete u automatu'
+      els.instructionSheetMessage.innerHTML = `
+        ${machine ? `<h3>${escapeHtml(machine.name || getMachineRouteLabel(machine, 'Automat'))}</h3>` : ''}
+        ${formatInstructionMessage(message.message || '')}
+      `
+      els.instructionSheetAttachment.hidden = true
+      els.instructionSheetAttachment.innerHTML = ''
+      els.instructionSheetNote.textContent = message.requires_acknowledgement
+        ? 'Po potvrzení se otevře běžný pracovní postup této zastávky.'
+        : 'Vzkaz je informativní. Pokračováním se otevře běžný pracovní postup zastávky.'
+      els.instructionSheetClose.hidden = false
+      els.acknowledgeInstructionButton.hidden = false
+      els.acknowledgeInstructionButton.disabled = false
+      els.acknowledgeInstructionButton.textContent = message.requires_acknowledgement
+        ? 'Přečetla jsem, pokračovat'
+        : 'Pokračovat'
+      els.closeInstructionButton.hidden = true
+      els.instructionSheet.hidden = false
+      card?.scrollTo({ top: 0 })
+    }
+
+    async function maybeOpenLocationOperatorMessages(stop) {
+      const plan = getAssignedRoutePlan()
+      if (!stop?.location_id || !plan?.id || !state.employee?.id) return
+      try {
+        const now = Date.now()
+        const { data, error } = await supabase
+          .from('location_operator_messages')
+          .select('id, location_id, machine_id, title, message, display_mode, valid_from, valid_to, requires_acknowledgement, is_active, created_at')
+          .eq('location_id', stop.location_id)
+          .eq('is_active', true)
+          .order('created_at', { ascending: true })
+        if (error) throw error
+        const messages = (data || []).filter((item) => {
+          if (item.machine_id && String(item.machine_id) !== String(stop.machine_id || '')) return false
+          if (item.valid_from && new Date(item.valid_from).getTime() > now) return false
+          if (item.valid_to && new Date(item.valid_to).getTime() < now) return false
+          return true
+        })
+        if (!messages.length) return
+        const messageIds = messages.map((item) => item.id)
+        const { data: acknowledgements, error: ackError } = await supabase
+          .from('location_operator_message_acknowledgements')
+          .select('message_id')
+          .eq('employee_id', state.employee.id)
+          .eq('route_plan_id', plan.id)
+          .in('message_id', messageIds)
+        if (ackError) throw ackError
+        const acknowledgedIds = new Set((acknowledgements || []).map((item) => String(item.message_id)))
+        const pending = messages.filter((item) => !acknowledgedIds.has(String(item.id)))
+        if (!pending.length) return
+        state.pendingLocationOperatorMessages = pending.map((message) => ({ message, stop, plan }))
+        openNextLocationOperatorMessage()
+      } catch (error) {
+        console.warn('Vzkazy k lokalitě se nepodařilo načíst', error)
+      }
+    }
+
+    async function acknowledgeActiveLocationOperatorMessage() {
+      const active = state.activeLocationOperatorMessage
+      if (!active) return
+      const acknowledgement = {
+        message_id: active.message.id,
+        employee_id: state.employee.id,
+        route_plan_id: active.plan.id,
+        route_plan_stop_id: active.stop.id,
+        acknowledged_at: new Date().toISOString()
+      }
+      const { error } = await supabase
+        .from('location_operator_message_acknowledgements')
+        .upsert(acknowledgement, { onConflict: 'message_id,employee_id,route_plan_id' })
+      if (error) throw error
+      state.activeLocationOperatorMessage = null
+      if (state.pendingLocationOperatorMessages.length) {
+        openNextLocationOperatorMessage()
+        return
+      }
+      closeInstructionSheet()
+      showMessage('Vzkaz k lokalitě je potvrzený. Můžeš pokračovat v práci.', 'success', { scroll: false })
+    }
+
     function closeInstructionSheet() {
       state.activeInstructionId = null
+      state.activeLocationOperatorMessage = null
+      state.pendingLocationOperatorMessages = []
       if (els.instructionSheet) els.instructionSheet.hidden = true
     }
 
@@ -15612,6 +15715,8 @@
         return
       }
       state.activeInstructionId = instruction.id
+      state.activeLocationOperatorMessage = null
+      state.pendingLocationOperatorMessages = []
       const acknowledged = state.acknowledgements.some((item) => String(item.instruction_id) === String(instruction.id))
       const requiresAcknowledgement = Boolean(instruction.requires_acknowledgement)
       const fefoInstruction = isFefoDailyInstruction(instruction)
@@ -15645,6 +15750,7 @@
       }
       els.instructionSheet.hidden = false
       els.instructionSheet.querySelector('.instruction-sheet-card')?.scrollTo({ top: 0 })
+      els.instructionSheetClose.hidden = false
       els.acknowledgeInstructionButton.hidden = acknowledged || !requiresAcknowledgement
       els.acknowledgeInstructionButton.disabled = fefoInstruction && !acknowledged
       els.acknowledgeInstructionButton.textContent = fefoInstruction ? 'Potvrdit pokyn' : 'Přečetl/a jsem a rozumím'
@@ -15662,6 +15768,7 @@
     }
 
     async function acknowledgeActiveInstruction() {
+      if (state.activeLocationOperatorMessage) return acknowledgeActiveLocationOperatorMessage()
       const instruction = state.instructions.find((item) => String(item.id) === String(state.activeInstructionId))
       if (!instruction) return closeInstructionSheet()
       if (isFefoDailyInstruction(instruction) && !els.instructionSheetMessage.querySelector('[data-fefo-instruction-confirm]')?.checked) {
@@ -17000,7 +17107,11 @@
       els.closeInstructionButton?.addEventListener('click', closeInstructionSheet)
       els.acknowledgeInstructionButton?.addEventListener('click', () => acknowledgeActiveInstruction().catch((error) => {
         els.acknowledgeInstructionButton.disabled = false
-        els.acknowledgeInstructionButton.textContent = 'Přečetl/a jsem a rozumím'
+        els.acknowledgeInstructionButton.textContent = state.activeLocationOperatorMessage
+          ? state.activeLocationOperatorMessage.message.requires_acknowledgement
+            ? 'Přečetla jsem, pokračovat'
+            : 'Pokračovat'
+          : 'Přečetl/a jsem a rozumím'
         handleError(error)
       }))
 

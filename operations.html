@@ -2061,6 +2061,54 @@
       return map[value] || 'Bez typu'
     }
 
+    function operatorMessageModeLabel(value) {
+      const map = {
+        next_visit: 'Jen při nejbližší návštěvě',
+        every_visit: 'Při každé návštěvě do odvolání',
+        until_date: 'Při každé návštěvě do data'
+      }
+      return map[value] || 'Při nejbližší návštěvě'
+    }
+
+    async function saveLocationOperatorMessage(locationId) {
+      const message = detailModalBody.querySelector('[data-operator-message-text]')?.value?.trim() || ''
+      const title = detailModalBody.querySelector('[data-operator-message-title]')?.value?.trim() || 'Než začnete u automatu'
+      const machineId = detailModalBody.querySelector('[data-operator-message-machine]')?.value || null
+      const displayMode = detailModalBody.querySelector('[data-operator-message-mode]')?.value || 'next_visit'
+      const validToInput = detailModalBody.querySelector('[data-operator-message-valid-to]')?.value || ''
+      const requiresAcknowledgement = Boolean(detailModalBody.querySelector('[data-operator-message-ack]')?.checked)
+      if (!message) throw new Error('Napiš vzkaz pro operátorku.')
+      if (displayMode === 'until_date' && !validToInput) throw new Error('U vzkazu platného do data vyber poslední den platnosti.')
+
+      const payload = {
+        location_id: Number(locationId),
+        machine_id: machineId ? Number(machineId) : null,
+        title,
+        message,
+        display_mode: displayMode,
+        valid_from: new Date().toISOString(),
+        valid_to: displayMode === 'until_date' ? new Date(`${validToInput}T23:59:59`).toISOString() : null,
+        requires_acknowledgement: requiresAcknowledgement,
+        is_active: true
+      }
+      const { error } = await supabase.from('location_operator_messages').insert(payload)
+      if (error) throw error
+      setStatus('Vzkaz je zveřejněný. Operátorka jej uvidí při otevření zastávky.', 'success')
+      const location = locationsData.find((item) => String(item.id) === String(locationId))
+      if (location) await openDetailModal(location)
+    }
+
+    async function deactivateLocationOperatorMessage(messageId, locationId) {
+      const { error } = await supabase
+        .from('location_operator_messages')
+        .update({ is_active: false, closed_at: new Date().toISOString() })
+        .eq('id', messageId)
+      if (error) throw error
+      setStatus('Vzkaz je ukončený a v mobilu se už nezobrazí.', 'success')
+      const location = locationsData.find((item) => String(item.id) === String(locationId))
+      if (location) await openDetailModal(location)
+    }
+
     async function openDetailModal(location) {
       const query = encodeURIComponent(buildMapQuery(location))
       const requestUrl = `service-requests.html?location=${encodeURIComponent(String(location.id))}`
@@ -2083,6 +2131,10 @@
       let locationMachines = []
       let locationHistory = []
       let financialRules = []
+      let operatorMessages = []
+      let operatorMessageAcks = []
+      let operatorMessagesAvailable = true
+      let operatorMessagesCanManage = false
       try {
         const [{ data: machinesData }, { data: historyData }, { data: financialData }] = await Promise.all([
           supabase.from('machines').select('id, name, machine_type, status, active, brand, model, serial_number, qr_token').eq('location_id', location.id).order('name', { ascending: true }),
@@ -2094,6 +2146,33 @@
         financialRules = financialData ?? []
       } catch (error) {
         console.warn('Location detail v1.5 data unavailable', error)
+      }
+
+      try {
+        const messageResult = await supabase
+          .from('location_operator_messages')
+          .select('id, location_id, machine_id, title, message, display_mode, valid_from, valid_to, requires_acknowledgement, is_active, closed_at, created_at')
+          .eq('location_id', location.id)
+          .order('created_at', { ascending: false })
+          .limit(20)
+        if (messageResult.error) throw messageResult.error
+        operatorMessages = messageResult.data || []
+        const managerResult = await supabase.rpc('location_message_can_manage')
+        if (managerResult.error) throw managerResult.error
+        operatorMessagesCanManage = managerResult.data === true
+        const messageIds = operatorMessages.map((item) => item.id)
+        if (messageIds.length) {
+          const ackResult = await supabase
+            .from('location_operator_message_acknowledgements')
+            .select('id, message_id, employee_id, route_plan_id, acknowledged_at, employee:employees(name, surname)')
+            .in('message_id', messageIds)
+            .order('acknowledged_at', { ascending: false })
+          if (ackResult.error) throw ackResult.error
+          operatorMessageAcks = ackResult.data || []
+        }
+      } catch (error) {
+        operatorMessagesAvailable = false
+        console.warn('Location operator messages unavailable', error)
       }
 
       const machinesMarkup = locationMachines.length
@@ -2131,6 +2210,97 @@
           </div>
         `).join('')
         : '<div class="detail-note-box">Finanční pravidla pro tuhle lokalitu zatím nejsou zadaná.</div>'
+
+      const operatorMessageHistoryMarkup = operatorMessages.length
+        ? operatorMessages.map((item) => {
+          const machine = locationMachines.find((candidate) => String(candidate.id) === String(item.machine_id || ''))
+          const acknowledgements = operatorMessageAcks.filter((ack) => String(ack.message_id) === String(item.id))
+          const latestAck = acknowledgements[0] || null
+          const employee = Array.isArray(latestAck?.employee) ? latestAck.employee[0] : latestAck?.employee
+          const employeeName = [employee?.name, employee?.surname].filter(Boolean).join(' ')
+          const expired = item.valid_to && new Date(item.valid_to).getTime() < Date.now()
+          const active = item.is_active !== false && !expired
+          const validity = item.display_mode === 'until_date' && item.valid_to
+            ? `${operatorMessageModeLabel(item.display_mode)} ${new Date(item.valid_to).toLocaleDateString('cs-CZ')}`
+            : operatorMessageModeLabel(item.display_mode)
+          return `
+            <div class="detail-item">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+                <div>
+                  <span class="detail-item-label">${escapeHtml(machine?.name || 'Celá lokalita')} · ${escapeHtml(validity)}</span>
+                  <span class="detail-item-value">${escapeHtml(item.title || 'Než začnete u automatu')}</span>
+                </div>
+                <span class="badge ${active ? 'active' : 'inactive'}">${active ? 'Aktivní' : 'Ukončený'}</span>
+              </div>
+              <div class="detail-note-box" style="margin-top:8px;">${escapeHtml(item.message || '')}</div>
+              <span class="detail-item-value" style="margin-top:8px;color:var(--muted);font-weight:600;">
+                ${acknowledgements.length
+                  ? `Potvrzeno ${acknowledgements.length}×${employeeName ? ` · naposledy ${escapeHtml(employeeName)}` : ''} · ${escapeHtml(formatFullDateTime(latestAck?.acknowledged_at))}`
+                  : 'Zatím bez potvrzení'}
+              </span>
+              ${active && operatorMessagesCanManage ? `
+                <div class="detail-actions" style="margin-top:8px;">
+                  <button class="btn secondary" type="button" data-detail-action="deactivate-operator-message" data-message-id="${item.id}" data-location-id="${location.id}">Ukončit vzkaz</button>
+                </div>
+              ` : ''}
+            </div>
+          `
+        }).join('')
+        : '<div class="detail-note-box">Na této lokalitě zatím není žádný vzkaz pro obsluhu.</div>'
+
+      const operatorMessagesMarkup = operatorMessagesAvailable ? `
+        <section class="detail-box" data-operator-messages-section>
+          <div class="detail-header-row">
+            <div class="detail-header-copy">
+              <span class="detail-kicker">Trasa · vzkaz na místě</span>
+              <span class="detail-title" style="font-size:16px;">Vzkazy pro obsluhu</span>
+              <span class="detail-subtitle">Zobrazí se v mobilu po otevření zastávky na této lokalitě.</span>
+            </div>
+            <div class="detail-actions top">
+              ${operatorMessagesCanManage ? `<button class="btn" type="button" data-detail-action="save-operator-message" data-location-id="${location.id}">Uložit a zveřejnit</button>` : ''}
+            </div>
+          </div>
+          ${operatorMessagesCanManage ? `<div class="form-grid">
+            <div class="field">
+              <label>Nadpis</label>
+              <input data-operator-message-title value="Než začnete u automatu" />
+            </div>
+            <div class="field">
+              <label>Platí pro</label>
+              <select data-operator-message-machine>
+                <option value="">Celou lokalitu</option>
+                ${locationMachines.map((machine) => `<option value="${machine.id}">${escapeHtml(machine.name || 'Stroj')}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>Zobrazit</label>
+              <select data-operator-message-mode>
+                <option value="next_visit">Při nejbližší návštěvě</option>
+                <option value="every_visit">Při každé návštěvě do odvolání</option>
+                <option value="until_date">Při každé návštěvě do data</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Platí nejdéle do (jen pro volbu „do data“)</label>
+              <input type="date" data-operator-message-valid-to />
+            </div>
+            <div class="field full">
+              <label>Vzkaz pro operátorku</label>
+              <textarea data-operator-message-text placeholder="Např. zkontrolujte výdej kelímků a při přetrvávající závadě přidejte fotografii."></textarea>
+            </div>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" data-operator-message-ack checked />
+            <span>Vyžadovat potvrzení přečtení</span>
+          </label>` : '<div class="detail-note-box compact">Nové vzkazy může zveřejnit pouze administrátor nebo manažer.</div>'}
+          <div class="detail-stack" style="margin-top:10px;">${operatorMessageHistoryMarkup}</div>
+        </section>
+      ` : `
+        <section class="detail-box">
+          <h4>Vzkazy pro obsluhu</h4>
+          <div class="detail-note-box">Databázová část vzkazů zatím není dostupná. Po nasazení migrace se formulář načte automaticky.</div>
+        </section>
+      `
 
       detailModalTitle.textContent = location.name || 'Detail lokality'
       detailModalBody.innerHTML = `
@@ -2180,6 +2350,8 @@
               </table>
             </div>
           </section>
+
+          ${operatorMessagesMarkup}
 
           <section class="detail-box">
             <h4>Kontakt a servis</h4>
@@ -2550,7 +2722,38 @@
     detailModalBackdrop.addEventListener('click', (e) => {
       if (e.target === detailModalBackdrop) closeDetailModal()
     })
-    detailModalBody.addEventListener('click', (event) => {
+    detailModalBody.addEventListener('click', async (event) => {
+      const saveMessageButton = event.target.closest('[data-detail-action="save-operator-message"]')
+      if (saveMessageButton) {
+        const originalLabel = saveMessageButton.textContent
+        saveMessageButton.disabled = true
+        saveMessageButton.textContent = 'Ukládám...'
+        try {
+          await saveLocationOperatorMessage(saveMessageButton.dataset.locationId)
+        } catch (error) {
+          setStatus(error.message || 'Vzkaz se nepodařilo uložit.', 'error')
+          saveMessageButton.disabled = false
+          saveMessageButton.textContent = originalLabel
+        }
+        return
+      }
+      const deactivateMessageButton = event.target.closest('[data-detail-action="deactivate-operator-message"]')
+      if (deactivateMessageButton) {
+        const originalLabel = deactivateMessageButton.textContent
+        deactivateMessageButton.disabled = true
+        deactivateMessageButton.textContent = 'Ukončuji...'
+        try {
+          await deactivateLocationOperatorMessage(
+            deactivateMessageButton.dataset.messageId,
+            deactivateMessageButton.dataset.locationId
+          )
+        } catch (error) {
+          setStatus(error.message || 'Vzkaz se nepodařilo ukončit.', 'error')
+          deactivateMessageButton.disabled = false
+          deactivateMessageButton.textContent = originalLabel
+        }
+        return
+      }
       const actionButton = event.target.closest('[data-detail-action="edit"]')
       if (!actionButton) return
       const location = locationsData.find((item) => String(item.id) === String(actionButton.dataset.id))
