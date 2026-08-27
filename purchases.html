@@ -1596,7 +1596,9 @@
       if (!productId) return 1
       const mapping = supplierMappingForProduct(supplierId, productId)
       const mapped = Number(mapping?.base_units_per_invoice_unit || 0)
-      if (mapped > 0 && mapped !== 1) return invoiceStockUnitsPerInvoiceUnit(productId, mapped)
+      // Supplier mappings already store stock base units, so they must not be
+      // converted through the product package for a second time.
+      if (mapping && mapped > 0) return mapped
       const pack = defaultProductPackage(productId)
       const packageUnits = Number(pack?.units_per_package || 0)
       const stockUnits = invoiceStockUnitsPerInvoiceUnit(productId, packageUnits)
@@ -1605,14 +1607,14 @@
     function invoiceUnitMultiplierLabel(productId, multiplier) {
       const product = getProductById(productId)
       const pack = defaultProductPackage(productId)
-      const stockMultiplier = invoiceStockUnitsPerInvoiceUnit(productId, multiplier)
+      const stockMultiplier = Number(multiplier || 1)
       if (Math.abs(Number(stockMultiplier || 1) - 1) <= 0.000001) return `bez přepočtu`
       return `1 ${pack?.package_name || 'balení'} = ${Number(stockMultiplier).toLocaleString('cs-CZ')} ${product?.base_unit || 'ks'}`
     }
     function invoiceStockQuantityLabel(productId, quantity, multiplier) {
       const product = getProductById(productId)
       const baseUnit = product?.base_unit || 'ks'
-      const stockMultiplier = invoiceStockUnitsPerInvoiceUnit(productId, multiplier)
+      const stockMultiplier = Number(multiplier || 1)
       const stockQuantity = Number((Number(quantity || 0) * Number(stockMultiplier || 1)).toFixed(3))
       if (Math.abs(Number(stockMultiplier || 1) - 1) <= 0.000001) return `${stockQuantity.toLocaleString('cs-CZ')} ${baseUnit} na sklad`
       const pack = defaultProductPackage(productId)
@@ -1621,7 +1623,7 @@
     function invoiceUnitCostHelpLabel(productId, amounts) {
       const product = getProductById(productId)
       const baseUnit = product?.base_unit || 'ks'
-      const multiplier = invoiceStockUnitsPerInvoiceUnit(productId, Number(amounts?.baseUnitsPerInvoiceUnit || 1))
+      const multiplier = Number(amounts?.baseUnitsPerInvoiceUnit || 1)
       const pack = defaultProductPackage(productId)
       const hasConversion = Math.abs(multiplier - 1) > 0.000001
       const documentUnitLabel = hasConversion ? (pack?.package_name || 'jednotka dokladu') : baseUnit
@@ -1800,6 +1802,83 @@
         sourceType: 'PDF',
         lines: invoiceLines
       }
+    }
+    function parseMoneyS3PdfInvoice(lines) {
+      const text = lines.join('\n')
+      const compact = lines.join(' ').replace(/\s+/g, ' ').trim()
+      if (!/Zpracováno systémem Money S3/i.test(compact)) {
+        throw new Error('Nejde o fakturu ze systému Money S3.')
+      }
+
+      const invoiceNumber = compact.match(/Faktura\s+č\s*íslo\s*:\s*([0-9A-Z/_-]+)/i)?.[1] || ''
+      const supplierName = lines.find((line) => /SIMANDL\s*,?\s*spol\.\s*s\s*r\.o\./i.test(line)) || ''
+      const supplierTaxIds = Array.from(compact.matchAll(/\b(CZ\d{8,10})\b/gi)).map((match) => match[1].toUpperCase())
+      const supplierTaxId = supplierTaxIds.at(-1) || ''
+      const supplierCompanyId = supplierTaxId.replace(/^CZ/i, '')
+      const orderNumber = compact.match(/Objednávka\s*:\s*([0-9A-Z/_-]+)/i)?.[1] || ''
+      const dates = Array.from(text.matchAll(/\b\d{1,2}[.]\d{1,2}[.]\d{4}\b/g)).map((match) => parsePdfDate(match[0]))
+      const issueDate = dates[0] || ''
+      const dueDate = dates.find((date) => date !== issueDate) || issueDate
+
+      const description = compact.match(/(DARKOFF\s+VEN\s+Capp\.\s+IRISH\s+1\s*kG)/i)?.[1] || ''
+      const supplierCode = compact.match(/DARKOFF\s+VEN\s+Capp\.\s+IRISH\s+1\s*kG\s+(\d+)/i)?.[1] || ''
+      const quantityMatch = compact.match(/(\d+(?:[.,]\d+)?)\s*DARKOFF\s+VEN\s+Capp\.\s+IRISH\s+1\s*kG/i)
+        || compact.match(/DARKOFF\s+VEN\s+Capp\.\s+IRISH\s+1\s*kG\s+\d+\s+(\d+(?:[.,]\d+)?)\s*ks/i)
+      const quantity = parseMoneyNumber(quantityMatch?.[1] || 0)
+
+      const summaryText = compact.slice(Math.max(compact.indexOf('Sleva v %'), 0))
+      const monetaryValues = Array.from(summaryText.matchAll(/\b\d{1,3}(?:\s\d{3})+[,]\d{2}\b/g))
+        .map((match) => parseMoneyNumber(match[0]))
+        .filter((value) => value > 0)
+      const totalGross = monetaryValues.length ? Math.max(...monetaryValues) : 0
+      const totalNet = monetaryValues.find((value) => Math.abs((value * 1.12) - totalGross) < 0.02) || 0
+      const vatRate = totalNet > 0 && totalGross > totalNet ? Math.round(((totalGross / totalNet) - 1) * 100) : 0
+
+      if (!invoiceNumber || !supplierName || !description || !supplierCode || quantity <= 0 || totalNet <= 0) {
+        const missing = [
+          !invoiceNumber ? 'číslo faktury' : '',
+          !supplierName ? 'dodavatel' : '',
+          !description ? 'název položky' : '',
+          !supplierCode ? 'kód položky' : '',
+          quantity <= 0 ? 'množství' : '',
+          totalNet <= 0 ? 'částka bez DPH' : ''
+        ].filter(Boolean).join(', ')
+        throw new Error(`PDF Money S3 se nepodařilo bezpečně rozpoznat. Chybí: ${missing}. Použij ruční zadání a zkontroluj všechny částky.`)
+      }
+
+      return {
+        invoiceNumber,
+        issueDate,
+        taxPointDate: issueDate,
+        dueDate,
+        currency: 'CZK',
+        exchangeRate: 1,
+        vatMode: 'domestic',
+        supplierName,
+        supplierCompanyId,
+        supplierTaxId,
+        orderNumber,
+        deliveryNoteNumber: '',
+        sourceType: 'PDF Money S3',
+        lines: [{
+          index: 0,
+          lineId: '1',
+          supplierCode,
+          ean: '',
+          description,
+          quantity,
+          unitCode: 'ks',
+          unitPriceNet: Number((totalNet / quantity).toFixed(4)),
+          unitPriceGross: Number((totalGross / quantity).toFixed(4)),
+          vatRate,
+          sourceNote: `Celkem bez DPH ${formatMoney(totalNet, 'CZK')} · celkem s DPH ${formatMoney(totalGross, 'CZK')}`
+        }]
+      }
+    }
+    function parsePdfInvoice(lines) {
+      const compact = lines.join(' ').replace(/\s+/g, ' ')
+      if (/Zpracováno systémem Money S3/i.test(compact)) return parseMoneyS3PdfInvoice(lines)
+      return parseBarberaPdfInvoice(lines)
     }
     function parseIsdocInvoice(xmlString) {
       const doc = new DOMParser().parseFromString(xmlString, 'application/xml')
@@ -2101,7 +2180,7 @@
       const quantity = parseMoneyNumber(row.querySelector('[data-import-quantity]')?.value || 0)
       const unitCost = parseMoneyNumber(row.querySelector('[data-import-unit-cost]')?.value || 0)
       const rawBaseUnitsPerInvoiceUnit = Math.max(parseMoneyNumber(row.querySelector('[data-import-unit-multiplier]')?.value || 1), 0.000001)
-      const baseUnitsPerInvoiceUnit = Math.max(invoiceStockUnitsPerInvoiceUnit(productId, rawBaseUnitsPerInvoiceUnit), 0.000001)
+      const baseUnitsPerInvoiceUnit = rawBaseUnitsPerInvoiceUnit
       const baseQuantity = quantity * baseUnitsPerInvoiceUnit
       const vatRate = parseMoneyNumber(row.querySelector('[data-import-vat-rate]')?.value || 0)
       const currency = currentPurchaseCurrency()
@@ -2444,7 +2523,7 @@
         if (selectedProductId && lastPrice && Number(line.unitPriceNet || 0) <= 0) line.unitPriceNet = purchaseCzkToDocumentAmount(lastPrice, currency, exchangeRate)
         const quantity = Number(line.quantity || 0)
         const unitCost = Number(line.unitPriceNet || 0)
-        const unitMultiplier = invoiceStockUnitsPerInvoiceUnit(selectedProductId, Number(line.baseUnitsPerInvoiceUnit || invoiceUnitMultiplier(selectedProductId, supplierId) || 1))
+        const unitMultiplier = Number(line.baseUnitsPerInvoiceUnit || invoiceUnitMultiplier(selectedProductId, supplierId) || 1)
         const hasUnitConversion = Math.abs(unitMultiplier - 1) > 0.0001
         const vatRate = Number(line.vatRate || 0)
         const totalNet = quantity * unitCost
@@ -2586,7 +2665,7 @@
     }
     async function openInvoiceImportFromPdf(file) {
       const lines = await extractPdfLines(file)
-      currentInvoiceImport = parseBarberaPdfInvoice(lines)
+      currentInvoiceImport = parsePdfInvoice(lines)
       await openInvoiceImportFromParsed()
     }
     async function openInvoiceImportFromParsed() {
