@@ -79,13 +79,13 @@ set
     when '25' then 'Proteinový suk vanilka SKU SOCO-PROTEIN-VANILKA-45; Proteinový suk čokoláda SKU SOCO-PROTEIN-COKOLADA-45'
   end,
   operator_instruction = case slot.product_sku
-    when '40' then 'Po doprodání Margot přejdi na Brigit.'
-    when '26' then 'Po doprodání 3Bit doplň libovolnou dostupnou schválenou příchuť Bongo.'
-    when '31' then 'Po doprodání Miňonek doplň libovolnou dostupnou schválenou příchuť RawBar.'
-    when '27' then 'Po doprodání KitKat doplň libovolnou dostupnou schválenou příchuť Extasy.'
-    when '25' then 'Po doprodání Twix doplň libovolnou dostupnou schválenou příchuť Proteinového suku.'
+    when '40' then 'Při nejbližší návštěvě stáhni Margot zpět do vozidla pro doprodej na silných pozicích a slot přepni na Brigit.'
+    when '26' then 'Při nejbližší návštěvě stáhni 3Bit zpět do vozidla pro doprodej na silných pozicích a doplň libovolnou dostupnou schválenou příchuť Bongo.'
+    when '31' then 'Při nejbližší návštěvě stáhni Miňonky zpět do vozidla pro doprodej na silných pozicích a doplň libovolnou dostupnou schválenou příchuť RawBar.'
+    when '27' then 'Při nejbližší návštěvě stáhni KitKat zpět do vozidla pro doprodej na silných pozicích a doplň libovolnou dostupnou schválenou příchuť Extasy.'
+    when '25' then 'Při nejbližší návštěvě stáhni Twix zpět do vozidla pro doprodej na silných pozicích a doplň libovolnou dostupnou schválenou příchuť Proteinového suku.'
   end,
-  pending_change_mode = 'sell_through',
+  pending_change_mode = 'full_swap',
   updated_at = now()
 from target_slots target
 where slot.id = target.id
@@ -108,7 +108,7 @@ begin
   select count(*), count(*) filter (where
     slot.planned_product_sku is null
     or slot.product_family is null
-    or slot.pending_change_mode <> 'sell_through'
+    or slot.pending_change_mode <> 'full_swap'
     or (slot.product_sku <> '40' and slot.substitution_policy <> 'approved_list')
     or (slot.product_sku <> '40' and coalesce(slot.allowed_substitutes, '') = '')
   )
