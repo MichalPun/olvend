@@ -4500,8 +4500,8 @@
               <div class="stock-request-choices" id="operationalRequestChoices">
                 <button class="partner-choice" data-operational-kind="partner_delivery" type="button"><span class="choice-icon blue">→</span><strong>Objednávka od partnera</strong><small>Mléko, káva a další zboží, které partnerovi dovezeme</small></button>
                 <button data-operational-kind="equipment" data-operational-title="Sáčky na hotovost" type="button"><span class="choice-icon green">▣</span><strong>Sáčky na hotovost</strong><small>Očíslované sáčky pro výběry</small></button>
-                <button data-operational-kind="equipment" data-operational-title="Odpadkové pytle" type="button"><span class="choice-icon green">♲</span><strong>Odpadkové pytle</strong><small>Spotřební materiál k automatům</small></button>
-                <button data-operational-kind="equipment" data-operational-title="Kapalina do ostřikovačů" type="button"><span class="choice-icon blue">◒</span><strong>Ostřikovače</strong><small>Kapalina pro vozidlo</small></button>
+                <button data-operational-kind="equipment" data-operational-title="Odpadkové pytle do košů" type="button"><span class="choice-icon green">♲</span><strong>Odpadkové pytle do košů</strong><small>Pytle určené do odpadkových košů, ne sáčky na hotovost</small></button>
+                <button data-operational-kind="equipment" data-operational-title="Kapalina do ostřikovačů" type="button"><span class="choice-icon blue">◒</span><strong>Kapalina do ostřikovačů</strong><small>Kapalina pro vozidlo</small></button>
                 <button data-operational-kind="vehicle_service" data-operational-title="Servis vozidla" type="button"><span class="choice-icon amber">!</span><strong>Servis vozidla</strong><small>Závada nebo plánovaná kontrola</small></button>
               </div>
               <label class="visually-hidden">Typ požadavku
@@ -4515,7 +4515,7 @@
               <label class="visually-hidden" id="operationalRequestTitleLabel">Co potřebuješ
                 <select id="operationalRequestTitle">
                   <option value="Sáčky na hotovost">Sáčky na hotovost</option>
-                  <option value="Odpadkové pytle">Odpadkové pytle</option>
+                  <option value="Odpadkové pytle do košů">Odpadkové pytle do košů</option>
                   <option value="Kapalina do ostřikovačů">Kapalina do ostřikovačů</option>
                   <option value="Jiné provozní vybavení">Jiné provozní vybavení</option>
                 </select>
@@ -4533,6 +4533,10 @@
                 </div>
                 <button class="secondary-btn" id="addOperationalPartnerItem" type="button">+ Přidat položku</button>
                 <div class="stock-draft" id="operationalPartnerDraft"></div>
+              </div>
+              <div class="stock-form-grid" id="operationalEquipmentQuantityFields">
+                <label>Kolik potřebuješ<input id="operationalEquipmentQuantity" inputmode="decimal" value="1" /></label>
+                <label>Jednotka<select id="operationalEquipmentUnit"><option value="ks">ks</option><option value="balení">balení</option><option value="l">l</option></select></label>
               </div>
               <label>Kdy je to potřeba
                 <select id="operationalNeedTiming"><option>Na další směnu</option><option>Co nejdříve</option><option>Při další návštěvě</option><option>Bez termínu</option></select>
@@ -5184,6 +5188,9 @@
       operationalPartnerQuantity: document.getElementById('operationalPartnerQuantity'),
       operationalPartnerUnit: document.getElementById('operationalPartnerUnit'),
       operationalPartnerDraft: document.getElementById('operationalPartnerDraft'),
+      operationalEquipmentQuantityFields: document.getElementById('operationalEquipmentQuantityFields'),
+      operationalEquipmentQuantity: document.getElementById('operationalEquipmentQuantity'),
+      operationalEquipmentUnit: document.getElementById('operationalEquipmentUnit'),
       operationalNeedTiming: document.getElementById('operationalNeedTiming'),
       operationalRequestNote: document.getElementById('operationalRequestNote'),
       submitOperationalRequest: document.getElementById('submitOperationalRequest'),
@@ -6777,9 +6784,10 @@
       els.operationalRequestTitleLabel.hidden = true
       els.operationalPartnerLabel.hidden = !isPartner
       els.operationalPartnerItems.hidden = !isPartner
+      els.operationalEquipmentQuantityFields.hidden = kind !== 'equipment'
       const titleOptions = isService
         ? ['Servis vozidla', 'Pneumatiky', 'Kontrola provozních kapalin', 'Jiná závada']
-        : ['Sáčky na hotovost', 'Odpadkové pytle', 'Kapalina do ostřikovačů', 'Jiné provozní vybavení']
+        : ['Sáčky na hotovost', 'Odpadkové pytle do košů', 'Kapalina do ostřikovačů', 'Jiné provozní vybavení']
       if (!isPartner) {
         els.operationalRequestTitle.innerHTML = titleOptions.map((title) => `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`).join('')
       }
@@ -6808,6 +6816,20 @@
       const title = isPartner ? `Dodávka partnerovi · ${partner?.name || 'partner'}` : els.operationalRequestTitle.value
       const vehicleId = getCurrentVehicleId() || null
       const vehicle = state.vehicles.find((item) => String(item.id) === String(vehicleId || ''))
+      const equipmentQuantity = parseNumber(els.operationalEquipmentQuantity?.value) || 0
+      if (kind === 'equipment' && equipmentQuantity <= 0) throw new Error('Zadej požadované množství větší než nula.')
+      const requestItems = isPartner
+        ? state.operationalPartnerItems
+        : kind === 'equipment'
+          ? [{
+              product_id: null,
+              product_name: title,
+              sku: null,
+              unit: els.operationalEquipmentUnit?.value || 'ks',
+              requested_quantity: equipmentQuantity,
+              note: null
+            }]
+          : []
       els.submitOperationalRequest.disabled = true
       els.submitOperationalRequest.textContent = 'Odesílám…'
       try {
@@ -6824,12 +6846,14 @@
           }
         const { data: request, error } = await supabase.rpc('create_operational_request_v18', {
           p_request: requestPayload,
-          p_items: isPartner ? state.operationalPartnerItems : []
+          p_items: requestItems
         })
         if (error) throw error
         state.operationalPartnerItems = []
         state.operationalRequestSelectionMade = false
         els.operationalRequestNote.value = ''
+        if (els.operationalEquipmentQuantity) els.operationalEquipmentQuantity.value = '1'
+        if (els.operationalEquipmentUnit) els.operationalEquipmentUnit.value = 'ks'
         showMessage(isPartner ? `Požadavek #${request.id} je ve skladu k vychystání.` : `Požadavek #${request.id} byl odeslán.`)
         closeStockDetail()
       } finally {
