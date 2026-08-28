@@ -10,6 +10,13 @@ const employeeById = (id) => state.employees.find((employee) => String(employee.
 const assignmentFor = (locationId) => state.assignments.get(String(locationId)) || { location_id: locationId, primary_employee_id: null, backup_employee_id: null, assignment_scope: 'location', selected_machine_ids: [], effective_from: new Date().toISOString().slice(0, 10), note: '' };
 const machinesFor = (locationId) => state.machines.filter((machine) => String(machine.location_id) === String(locationId));
 const colorForEmployee = (id) => employeeById(id)?.color || '#7b8493';
+const mapPointFor = (location) => {
+  if (location.latitude == null || location.longitude == null || location.latitude === '' || location.longitude === '') return null;
+  const lat = Number(location.latitude), lng = Number(location.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < 48.3 || lat > 51.2 || lng < 11.8 || lng > 19.2) return null;
+  return [lat, lng];
+};
 const map = L.map('map', { zoomControl: true }).setView([49.25, 16.9], 7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
 const toast = $('toast');
@@ -65,8 +72,9 @@ function renderMap() {
   state.markers.clear();
   const bounds = [];
   state.locations.forEach((location) => {
-    const lat = Number(location.latitude), lng = Number(location.longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const point = mapPointFor(location);
+    if (!point) return;
+    const [lat, lng] = point;
     const assignment = assignmentFor(location.id);
     const owner = employeeName(employeeById(assignment.primary_employee_id));
     const marker = L.marker([lat, lng], { icon: markerIcon(location) }).addTo(map)
@@ -256,7 +264,7 @@ $('apply').onclick = async () => {
 ['search', 'tableSearch'].forEach((id) => $(id).addEventListener('input', filterRows));
 ['statusFilter', 'typeFilter', 'ownerFilter'].forEach((id) => $(id).addEventListener('change', filterRows));
 $('clear').onclick = () => { ['search', 'tableSearch'].forEach((id) => $(id).value = ''); ['statusFilter', 'typeFilter', 'ownerFilter'].forEach((id) => $(id).value = ''); filterRows(); };
-$('fit').onclick = () => { const points = state.locations.filter((location) => Number.isFinite(Number(location.latitude)) && Number.isFinite(Number(location.longitude))).map((location) => [Number(location.latitude), Number(location.longitude)]); if (points.length) map.fitBounds(points, { padding: [24, 24] }); };
+$('fit').onclick = () => { const points = state.locations.map(mapPointFor).filter(Boolean); if (points.length) map.fitBounds(points, { padding: [24, 24] }); };
 $('showUnassigned').onclick = () => { $('statusFilter').value = 'unassigned'; filterRows(); };
 $('suggest').onclick = () => say('Výchozí návrh byl vytvořen z posledních 90 dní. Ruční změny zůstávají uzamčené.');
 $('save').onclick = () => say('Změny se ukládají průběžně po každé úpravě.');
