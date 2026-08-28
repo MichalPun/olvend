@@ -61,6 +61,8 @@
     .route-group-main { display:flex; align-items:center; gap:8px; }
     .route-group-main span { color:var(--muted); font-weight:400; }
     .route-group-actions { float:right; display:flex; align-items:center; gap:7px; }
+    .route-toggle { width:28px; height:28px; display:inline-grid; place-items:center; flex:none; padding:0; border:1px solid var(--border); border-radius:6px; background:var(--panel); color:var(--text); cursor:pointer; font-size:15px; font-weight:900; }
+    .route-toggle:hover { border-color:rgba(213,16,26,.4); color:var(--accent); }
     .numeric { text-align:right; font-variant-numeric:tabular-nums; }
     .money { font-weight:800; }
     .subtext { display:block; margin-top:2px; color:var(--muted); font-size:10px; }
@@ -127,7 +129,7 @@
       <div class="page-shell">
         <div class="topbar">
           <div class="title"><h1>Svoz hotovosti</h1><p>Jedna tabulka pro přepočítání sáčků z tras, evidenci rozdílů a protokol k tisku nebo uložení do PDF.</p></div>
-          <div class="actions"><button class="btn secondary" id="refreshBtn" type="button">Obnovit</button><button class="btn secondary" id="exportBtn" type="button">Export CSV</button><button class="btn" id="saveAllBtn" type="button" disabled>Uložit změny</button></div>
+          <div class="actions"><button class="btn secondary" id="refreshBtn" type="button">Obnovit</button><button class="btn secondary" id="toggleAllRoutesBtn" type="button">Rozbalit vše</button><button class="btn secondary" id="exportBtn" type="button">Export CSV</button><button class="btn" id="saveAllBtn" type="button" disabled>Uložit změny</button></div>
         </div>
 
         <div class="tabs" role="tablist"><button class="tab active" data-mode="open" type="button">K přepočítání</button><button class="tab" data-mode="closed" type="button">Uzavřené protokoly</button><button class="tab" data-mode="all" type="button">Všechny svozy</button></div>
@@ -179,6 +181,7 @@
     const saveAllBtn = document.getElementById('saveAllBtn')
     const saveFooterBtn = document.getElementById('saveFooterBtn')
     const refreshBtn = document.getElementById('refreshBtn')
+    const toggleAllRoutesBtn = document.getElementById('toggleAllRoutesBtn')
     const exportBtn = document.getElementById('exportBtn')
     const protocolModal = document.getElementById('protocolModal')
     const protocolBody = document.getElementById('protocolBody')
@@ -186,7 +189,7 @@
     const printProtocolBtn = document.getElementById('printProtocolBtn')
     const closeRouteBtn = document.getElementById('closeRouteBtn')
 
-    const state = { rows:[], mode:'open', dirty:new Map(), currentEmployeeId:null, activeRouteKey:null }
+    const state = { rows:[], mode:'open', dirty:new Map(), currentEmployeeId:null, activeRouteKey:null, collapsedRoutes:new Set(), knownRouteKeys:new Set() }
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#039;', '"':'&quot;' }[character]))
@@ -302,6 +305,8 @@
     function renderTable() {
       const rows = getFilteredRows()
       const groups = groupRows(rows)
+      const allCollapsed = groups.length > 0 && groups.every(([key]) => state.collapsedRoutes.has(String(key)))
+      toggleAllRoutesBtn.textContent = allCollapsed ? 'Rozbalit vše' : 'Sbalit vše'
       if (!rows.length) {
         cashBody.innerHTML = '<tr><td colspan="12"><div class="empty"><strong>Žádné svozy pro tento výběr</strong>Změň filtr nebo přepni záložku.</div></td></tr>'
         cashFoot.innerHTML = ''
@@ -312,9 +317,10 @@
           const counted = countedRows.reduce((sum, row) => sum + Number(getRowNumbers(row).counted || 0), 0)
           const difference = countedRows.reduce((sum, row) => sum + Number(getRowNumbers(row).difference || 0), 0)
           const closed = group.every((row) => row.closed_at)
+          const collapsed = state.collapsedRoutes.has(String(key))
           return `
-            <tr class="route-group"><td colspan="12"><div class="route-group-actions"><span>${group.length} sáčků · ${countedRows.length}/${group.length} spočítáno · rozdíl ${escapeHtml(signedMoney(difference))}</span><button class="btn secondary small" type="button" data-protocol-route="${escapeHtml(key)}">${closed ? 'Zobrazit protokol' : 'Protokol trasy'}</button></div><div class="route-group-main">Trasa #${escapeHtml(group[0].route_plan_id || '—')} · ${escapeHtml(group[0].operator_name || 'Neurčeno')} <span>${escapeHtml(formatDate(group[0].visit_date))} · očekáváno ${escapeHtml(formatMoney(expected))}</span></div></td></tr>
-            ${group.map(renderRow).join('')}
+            <tr class="route-group"><td colspan="12"><div class="route-group-actions"><span>${group.length} sáčků · ${countedRows.length}/${group.length} spočítáno · rozdíl ${escapeHtml(signedMoney(difference))}</span><button class="btn secondary small" type="button" data-protocol-route="${escapeHtml(key)}">${closed ? 'Zobrazit protokol' : 'Protokol trasy'}</button></div><div class="route-group-main"><button class="route-toggle" type="button" data-toggle-route="${escapeHtml(key)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${collapsed ? 'Rozbalit' : 'Sbalit'} trasu #${escapeHtml(group[0].route_plan_id || '—')}">${collapsed ? '▸' : '▾'}</button><div>Trasa #${escapeHtml(group[0].route_plan_id || '—')} · ${escapeHtml(group[0].operator_name || 'Neurčeno')} <span>${escapeHtml(formatDate(group[0].visit_date))} · očekáváno ${escapeHtml(formatMoney(expected))}</span></div></div></td></tr>
+            ${collapsed ? '' : group.map(renderRow).join('')}
           `
         }).join('')
         const expected = rows.reduce((sum, row) => sum + Number(row.expected_cash_czk || 0), 0)
@@ -373,6 +379,11 @@
         .limit(1200)
       if (error) throw error
       state.rows = data || []
+      const incomingRouteKeys = new Set(state.rows.map((row) => routeKey(row)))
+      incomingRouteKeys.forEach((key) => {
+        if (!state.knownRouteKeys.has(key)) state.collapsedRoutes.add(key)
+      })
+      state.knownRouteKeys = incomingRouteKeys
       state.dirty.clear()
       fillOperatorFilter()
       renderTable()
@@ -505,12 +516,32 @@
     cashBody.addEventListener('change', (event) => {
       if (event.target.matches('[data-count-input], [data-reason-input]')) renderTable()
     })
-    cashBody.addEventListener('click', (event) => { const button=event.target.closest('[data-protocol-route]'); if(button) renderProtocol(button.dataset.protocolRoute) })
+    cashBody.addEventListener('click', (event) => {
+      const toggle = event.target.closest('[data-toggle-route]')
+      if (toggle) {
+        const key = String(toggle.dataset.toggleRoute)
+        if (state.collapsedRoutes.has(key)) state.collapsedRoutes.delete(key)
+        else state.collapsedRoutes.add(key)
+        renderTable()
+        return
+      }
+      const button = event.target.closest('[data-protocol-route]')
+      if (button) renderProtocol(button.dataset.protocolRoute)
+    })
     document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active')); tab.classList.add('active'); state.mode=tab.dataset.mode; renderTable() }))
     ;[searchInput,operatorFilter,dateFrom,dateTo].forEach((control) => control.addEventListener(control.tagName === 'INPUT' ? 'input' : 'change', renderTable))
     saveAllBtn.addEventListener('click', saveAll)
     saveFooterBtn.addEventListener('click', saveAll)
     refreshBtn.addEventListener('click', () => loadRows().catch(handleLoadError))
+    toggleAllRoutesBtn.addEventListener('click', () => {
+      const keys = groupRows(getFilteredRows()).map(([key]) => String(key))
+      const allCollapsed = keys.length > 0 && keys.every((key) => state.collapsedRoutes.has(key))
+      keys.forEach((key) => {
+        if (allCollapsed) state.collapsedRoutes.delete(key)
+        else state.collapsedRoutes.add(key)
+      })
+      renderTable()
+    })
     exportBtn.addEventListener('click', exportCsv)
     closeProtocolBtn.addEventListener('click', () => protocolModal.classList.remove('show'))
     protocolModal.addEventListener('click', (event) => { if(event.target === protocolModal) protocolModal.classList.remove('show') })
