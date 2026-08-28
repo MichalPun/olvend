@@ -195,6 +195,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "cash-collection.html": {
+      currentLabel: "Svoz hotovosti",
+      activeKey: "cash-collection",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "suppliers.html": {
       currentLabel: "Kontakty",
       activeKey: "suppliers",
@@ -407,6 +414,7 @@
           children: [
             { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
             { key: "purchases-overview", href: "purchases.html?view=received", label: "Přijaté doklady" },
+            { key: "cash-collection", href: "cash-collection.html", label: "Svoz hotovosti" },
             { key: "budget", href: "budget.html", label: "Rozpočet" }
           ]
         },
@@ -573,7 +581,7 @@
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
-    'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', budget: 'reports',
+    'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', 'meeting-calendar': 'calendar', employees: 'people',
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',

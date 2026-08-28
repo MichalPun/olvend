@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v145-location-operator-messages';
+const CACHE_NAME = 'olvend-v146-cash-collection';
 const APP_SHELL = [
   './',
   './index.html',
@@ -14,6 +14,7 @@ const APP_SHELL = [
   './warehouses.html',
   './company.html',
   './budget.html',
+  './cash-collection.html',
   './reporty.html',
   './payroll.html',
   './payroll-payslips.js',
