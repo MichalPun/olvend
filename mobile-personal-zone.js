@@ -7,11 +7,115 @@ const monthLabel = date => new Intl.DateTimeFormat('cs-CZ', { month: 'long', yea
 const dateLabel = value => new Intl.DateTimeFormat('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' }).format(new Date(value))
 const timeLabel = value => new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
-const state = { month: new Date(new Date().getFullYear(), new Date().getMonth(), 1), slots: [], selectedSlot: null, meetings: [] }
+const state = { month: new Date(new Date().getFullYear(), new Date().getMonth(), 1), slots: [], selectedSlot: null, meetings: [], territoryRows: [], territoryMap: null, territoryLayers: [] }
 
 function periodKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01` }
 function dateKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value }
+
+function mapPoint(location) {
+  const lat = Number(location?.latitude), lng = Number(location?.longitude)
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 48.3 && lat <= 51.2 && lng >= 11.8 && lng <= 19.2 ? [lat, lng] : null
+}
+
+function convexHull(points) {
+  const unique = [...new Map(points.map(([lat, lng]) => [`${lat}:${lng}`, [lng, lat]])).values()].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  if (unique.length <= 2) return unique.map(([lng, lat]) => [lat, lng])
+  const cross = (origin, a, b) => (a[0] - origin[0]) * (b[1] - origin[1]) - (a[1] - origin[1]) * (b[0] - origin[0])
+  const half = rows => rows.reduce((hull, point) => {
+    while (hull.length >= 2 && cross(hull.at(-2), hull.at(-1), point) <= 0) hull.pop()
+    hull.push(point)
+    return hull
+  }, [])
+  return half(unique).slice(0, -1).concat(half([...unique].reverse()).slice(0, -1)).map(([lng, lat]) => [lat, lng])
+}
+
+function expandedHull(points, factor = 1.1) {
+  const center = points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map(value => value / points.length)
+  return points.map(([lat, lng]) => [center[0] + (lat - center[0]) * factor, center[1] + (lng - center[1]) * factor])
+}
+
+function territoryLabel(rows) {
+  const cities = [...new Set(rows.filter(row => row.role === 'primary').map(row => row.location.city).filter(Boolean))]
+  if (!cities.length) return 'Moje oblast'
+  if (cities.some(city => /Ostrava|Bohumín|Bruntál/i.test(city))) return 'Moravskoslezský kraj'
+  if (cities.some(city => /Břeclav|Hodonín|Dubňany|Pohořelice|Milovice/i.test(city))) return 'Jižní oblast'
+  if (cities.some(city => /Brno|Tišnov|Jihlava|Meziříčí/i.test(city))) return 'Brno, Tišnov a Vysočina'
+  return cities.slice(0, 3).join(', ')
+}
+
+function renderTerritoryMap() {
+  const container = document.getElementById('mobileTerritoryMap')
+  if (!container || typeof window.L === 'undefined') return
+  const rows = state.territoryRows.filter(row => row.role === 'primary' && mapPoint(row.location))
+  const points = rows.map(row => mapPoint(row.location))
+  if (!state.territoryMap) {
+    state.territoryMap = window.L.map(container, { zoomControl: true, attributionControl: true, scrollWheelZoom: false })
+    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(state.territoryMap)
+  }
+  state.territoryLayers.forEach(layer => layer.remove())
+  state.territoryLayers = []
+  if (!points.length) {
+    state.territoryMap.setView([49.25, 16.9], 7)
+    setTimeout(() => state.territoryMap?.invalidateSize(), 0)
+    return
+  }
+  const hull = convexHull(points)
+  if (hull.length >= 3) state.territoryLayers.push(window.L.polygon(expandedHull(hull), { color:'#16865a', weight:2, dashArray:'7 6', fillColor:'#16865a', fillOpacity:.08 }).addTo(state.territoryMap))
+  rows.forEach(row => state.territoryLayers.push(window.L.circleMarker(mapPoint(row.location), { radius:6, color:'#fff', weight:2, fillColor:'#16865a', fillOpacity:1 }).bindTooltip(esc(row.location.name || row.location.city || 'Lokalita')).addTo(state.territoryMap)))
+  state.territoryMap.fitBounds(points, { padding:[24, 24], maxZoom:9 })
+  setTimeout(() => state.territoryMap?.invalidateSize(), 0)
+}
+
+function renderTerritory() {
+  const primaryRows = state.territoryRows.filter(row => row.role === 'primary')
+  const backupRows = state.territoryRows.filter(row => row.role === 'backup')
+  const machineCount = primaryRows.reduce((sum, row) => sum + row.machineCount, 0)
+  const validFrom = primaryRows.map(row => row.assignment.effective_from).filter(Boolean).sort()[0]
+  const title = territoryLabel(primaryRows)
+  setText('personalTerritoryLocations', `${primaryRows.length} lokalit`)
+  setText('personalTerritoryMachines', `${machineCount} automatů`)
+  setText('territoryTitle', title)
+  setText('territorySubtitle', primaryRows.length ? primaryRows.map(row => row.location.city).filter(Boolean).filter((value, index, all) => all.indexOf(value) === index).slice(0, 4).join(', ') : 'Zatím bez přidělené hlavní oblasti')
+  setText('territoryRole', primaryRows.length ? 'Hlavní operátor' : 'Náhradník')
+  setText('territoryLocationCount', primaryRows.length)
+  setText('territoryMachineCount', machineCount)
+  setText('territoryBackupCount', backupRows.length)
+  setText('territoryListCount', `${state.territoryRows.length} záznamů`)
+  setText('territoryValidFrom', validFrom ? `Platí od ${new Date(`${validFrom}T12:00:00`).toLocaleDateString('cs-CZ')}` : 'Aktuální rozdělení')
+  const list = document.getElementById('territoryLocationList')
+  if (list) list.innerHTML = state.territoryRows.map(row => `<div class="territory-location-row ${row.role === 'backup' ? 'backup' : ''}"><span><strong>${esc(row.location.name || 'Lokalita')}</strong><small>${esc([row.location.city, row.location.address].filter(Boolean).join(' · '))}</small></span><b>${row.role === 'backup' ? 'Náhradník' : `${row.machineCount} automatů`}</b></div>`).join('') || '<div class="territory-empty">Zatím nemáte přidělenou oblast. Konkrétní naplánovanou trasu tím nejsou dotčeny.</div>'
+}
+
+async function loadTerritory() {
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  if (userError) throw userError
+  if (!user) return
+  const { data: employee, error: employeeError } = await supabase.from('employees').select('id').eq('auth_user_id', user.id).maybeSingle()
+  if (employeeError) throw employeeError
+  if (!employee?.id) return
+  const { data: assignments, error: assignmentError } = await supabase.from('operator_territory_assignments').select('*').or(`primary_employee_id.eq.${employee.id},backup_employee_id.eq.${employee.id}`).order('effective_from', { ascending:false })
+  if (assignmentError) throw assignmentError
+  const locationIds = [...new Set((assignments || []).map(row => row.location_id).filter(Boolean))]
+  if (!locationIds.length) { state.territoryRows = []; renderTerritory(); return }
+  const [locations, machines] = await Promise.all([
+    supabase.from('locations').select('id,name,city,address,latitude,longitude,active').in('id', locationIds),
+    supabase.from('machines').select('id,location_id,active,status').in('location_id', locationIds).eq('active', true)
+  ])
+  if (locations.error) throw locations.error
+  if (machines.error) throw machines.error
+  const locationById = new Map((locations.data || []).filter(row => row.active !== false).map(row => [String(row.id), row]))
+  const machinesByLocation = new Map()
+  ;(machines.data || []).filter(machine => !/warehouse|sklad|reserve|rezerv/i.test(String(machine.status || ''))).forEach(machine => machinesByLocation.set(String(machine.location_id), [...(machinesByLocation.get(String(machine.location_id)) || []), machine]))
+  state.territoryRows = (assignments || []).flatMap(assignment => {
+    const location = locationById.get(String(assignment.location_id))
+    if (!location) return []
+    const allMachines = machinesByLocation.get(String(location.id)) || []
+    const machineCount = assignment.assignment_scope === 'machines' ? allMachines.filter(machine => (assignment.selected_machine_ids || []).map(String).includes(String(machine.id))).length : allMachines.length
+    return [{ assignment, location, machineCount, role: String(assignment.primary_employee_id) === String(employee.id) ? 'primary' : 'backup' }]
+  }).sort((a, b) => (a.role === b.role ? String(a.location.city || a.location.name).localeCompare(String(b.location.city || b.location.name), 'cs') : a.role === 'primary' ? -1 : 1))
+  renderTerritory()
+}
 
 async function loadBonus() {
   const { data, error } = await supabase.rpc('my_bonus_summary', { p_period: periodKey(state.month) })
@@ -87,7 +191,7 @@ async function init() {
   const documents = await supabase.from('payroll_payslips').select('id', { count: 'exact', head: true })
   setText('personalDocumentCount', documents.error ? '—' : (documents.count ?? '0'))
 
-  const results = await Promise.allSettled([loadBonus(), loadBonusHistory(), loadMeetings()])
+  const results = await Promise.allSettled([loadBonus(), loadBonusHistory(), loadMeetings(), loadTerritory()])
   if (results[0].status === 'rejected') {
     console.error('Prémie:', results[0].reason)
     setText('personalBonusAmount', 'Nelze načíst')
@@ -102,6 +206,17 @@ async function init() {
     $('#meetingSlots').innerHTML = ''
     $('#meetingInvitations').innerHTML = ''
   }
+  if (results[3].status === 'rejected') {
+    console.error('Moje oblast:', results[3].reason)
+    setText('personalTerritoryLocations', 'Nelze načíst')
+    setText('personalTerritoryMachines', 'Zkuste obnovit stránku')
+    const list = document.getElementById('territoryLocationList')
+    if (list) list.innerHTML = '<div class="territory-empty">Oblast se teď nepodařilo načíst.</div>'
+  }
 }
+
+window.addEventListener('olvend:screen-opened', event => {
+  if (event.detail?.screen === 'territory') setTimeout(renderTerritoryMap, 0)
+})
 
 init().catch(error => { console.error('Osobní zóna:', error) })

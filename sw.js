@@ -1,8 +1,11 @@
-const CACHE_NAME = 'olvend-v146-cash-collection';
+const CACHE_NAME = 'olvend-v147-mobile-light-stock';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './mobile-personal-zone.js',
+  './vendor/leaflet/leaflet.css',
+  './vendor/leaflet/leaflet.js',
   './route-skip-approval.html',
   './supabase.js',
   './dashboard.html',
