@@ -387,7 +387,6 @@
           label: "Sklad",
           children: [
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
-            { key: "operational-requests", href: "inventory.html?tab=movements&warehouseView=requests", label: "Požadavky a výdeje" },
             { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" }
           ]
         },
