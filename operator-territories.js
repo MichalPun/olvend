@@ -2,7 +2,7 @@ import { supabase } from './supabase.js';
 
 const palette = ['#df111c', '#246db6', '#16834b', '#7656a8', '#b46b00', '#00838f', '#9b3659'];
 const MICHAL_EMPLOYEE_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
-const state = { employees: [], locations: [], machines: [], assignments: new Map(), markers: new Map(), selectedId: null, settings: null };
+const state = { employees: [], locations: [], machines: [], assignments: new Map(), markers: new Map(), territoryLayers: [], selectedId: null, settings: null };
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const employeeName = (employee) => employee ? `${employee.name || ''} ${employee.surname || ''}`.trim() : 'Bez operátora';
@@ -18,6 +18,9 @@ const mapPointFor = (location) => {
   return [lat, lng];
 };
 const map = L.map('map', { zoomControl: true }).setView([49.25, 16.9], 7);
+map.createPane('territories');
+map.getPane('territories').style.zIndex = 350;
+map.getPane('territories').style.pointerEvents = 'none';
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
 const toast = $('toast');
 let toastTimer;
@@ -67,6 +70,85 @@ function renderLegend() {
   $('mapLegend').innerHTML = state.employees.map((employee) => `<span class="badge"><i class="legend-dot" style="--c:${employee.color}"></i>${esc(employee.name || employeeName(employee))}</span>`).join('') + '<span class="badge"><i class="legend-dot" style="--c:#7b8493"></i>Bez operátora</span>';
 }
 
+function distanceKm(a, b) {
+  const toRad = (value) => value * Math.PI / 180;
+  const dLat = toRad(b[0] - a[0]), dLng = toRad(b[1] - a[1]);
+  const lat1 = toRad(a[0]), lat2 = toRad(b[0]);
+  const value = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function pointClusters(points, maximumGapKm = 72) {
+  const remaining = new Set(points.map((_, index) => index));
+  const clusters = [];
+  while (remaining.size) {
+    const seed = remaining.values().next().value;
+    const queue = [seed], cluster = [];
+    remaining.delete(seed);
+    while (queue.length) {
+      const index = queue.shift();
+      cluster.push(points[index]);
+      [...remaining].forEach((candidate) => {
+        if (distanceKm(points[index], points[candidate]) <= maximumGapKm) {
+          remaining.delete(candidate);
+          queue.push(candidate);
+        }
+      });
+    }
+    clusters.push(cluster);
+  }
+  return clusters;
+}
+
+function convexHull(points) {
+  const unique = [...new Map(points.map(([lat, lng]) => [`${lat}:${lng}`, [lng, lat]])).values()]
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (unique.length <= 2) return unique.map(([lng, lat]) => [lat, lng]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  unique.forEach((point) => {
+    while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop();
+    lower.push(point);
+  });
+  const upper = [];
+  [...unique].reverse().forEach((point) => {
+    while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop();
+    upper.push(point);
+  });
+  return lower.slice(0, -1).concat(upper.slice(0, -1)).map(([lng, lat]) => [lat, lng]);
+}
+
+function expandedHull(points, factor = 1.12) {
+  const center = points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((value) => value / points.length);
+  return points.map(([lat, lng]) => [center[0] + (lat - center[0]) * factor, center[1] + (lng - center[1]) * factor]);
+}
+
+function renderTerritories() {
+  state.territoryLayers.forEach((layer) => layer.remove());
+  state.territoryLayers = [];
+  state.employees.filter((employee) => employee.isRouteOperator).forEach((employee) => {
+    const points = state.locations
+      .filter((location) => String(assignmentFor(location.id).primary_employee_id || '') === String(employee.id))
+      .map(mapPointFor)
+      .filter(Boolean);
+    pointClusters(points).forEach((cluster) => {
+      const hull = convexHull(cluster);
+      let layer;
+      if (hull.length >= 3) {
+        layer = L.polygon(expandedHull(hull), { pane: 'territories', color: employee.color, weight: 3, opacity: .72, fillColor: employee.color, fillOpacity: .11, interactive: false });
+      } else if (hull.length === 2) {
+        layer = L.polyline(hull, { pane: 'territories', color: employee.color, weight: 18, opacity: .14, interactive: false });
+      } else if (hull.length === 1) {
+        layer = L.circle(hull[0], { pane: 'territories', radius: 9000, color: employee.color, weight: 2.5, opacity: .68, fillColor: employee.color, fillOpacity: .1, interactive: false });
+      }
+      if (layer) {
+        layer.addTo(map);
+        state.territoryLayers.push(layer);
+      }
+    });
+  });
+}
+
 function renderMap() {
   state.markers.forEach((marker) => marker.remove());
   state.markers.clear();
@@ -84,6 +166,7 @@ function renderMap() {
     state.markers.set(String(location.id), marker);
     bounds.push([lat, lng]);
   });
+  renderTerritories();
   if (bounds.length) map.fitBounds(bounds, { padding: [24, 24] });
   setTimeout(() => map.invalidateSize(), 80);
 }
