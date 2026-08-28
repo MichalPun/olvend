@@ -1,4 +1,4 @@
-import { supabase, requireAuth } from './supabase.js';
+import { supabase } from './supabase.js';
 
 const palette = ['#df111c', '#246db6', '#16834b', '#7656a8', '#b46b00', '#00838f', '#9b3659'];
 const MICHAL_EMPLOYEE_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
@@ -21,6 +21,25 @@ function say(message, error = false) {
   toast.style.background = error ? '#a20f18' : '#1d2936';
   toast.classList.add('show');
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+async function requireManager() {
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+  if (!user) {
+    location.href = 'index.html';
+    throw new Error('Nepřihlášený uživatel');
+  }
+  const { data: employee, error } = await supabase
+    .from('employees')
+    .select('id,role')
+    .eq('auth_user_id', user.id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!['admin', 'manager'].includes(String(employee?.role || '').toLowerCase())) {
+    location.href = 'mobile.html';
+    throw new Error('Bez oprávnění');
+  }
 }
 
 function markerIcon(location) {
@@ -192,7 +211,7 @@ function renderAll() {
 }
 
 async function load() {
-  await requireAuth();
+  await requireManager();
   $('effectiveFrom').value = '2026-08-31';
   const [employees, locations, machines, assignments, settings] = await Promise.all([
     supabase.from('employees').select('id,name,surname,role,active,bonus_eligible').eq('active', true).order('surname'),
