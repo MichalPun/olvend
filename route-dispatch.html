@@ -295,7 +295,7 @@
     const PREPARATION_MINUTES = 15;
     const COFFEE_SERVICE_MINUTES = 17;
     const FOOD_SERVICE_MINUTES = 17;
-    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), excludedMachineIds: new Set(), omittedCandidates: [], autoDeferredUnits: [], unlocatedMachineCount: 0, planningExcludedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set(), publishedShiftRows: [], publishedShiftPlan: null };
+    const state = { employees: [], vehicles: [], warehouses: [], machines: [], locations: [], candidates: [], excludedLocationKeys: new Set(), excludedMachineIds: new Set(), omittedCandidates: [], autoDeferredUnits: [], unlocatedMachineCount: 0, planningExcludedMachineCount: 0, ownership: new Map(), km30: new Map(), routes: [], scheduledEmployees: new Set(), scheduledVehicles: new Set(), publishedShiftRows: [], publishedShiftPlan: null, territorySettings: { territory_strength:'strong', history_fallback_days:90, balance_employee_km:true, keep_locations_together:true, manager_default_reserve:true } };
     const els = {
       date: document.getElementById('planningDate'), warehouse: document.getElementById('warehouseSelect'), strategy: document.getElementById('strategy'),
       crew: document.getElementById('crewRows'), plans: document.getElementById('planRows'), detail: document.getElementById('routeDetail'), detailStops: document.getElementById('detailStops'),
@@ -405,7 +405,7 @@
         const avg = shown.length ? teamKmTotal / shown.length : 0;
         const delta = Math.round(km - avg);
         const alreadyPlanned = state.scheduledEmployees.has(String(employee.id));
-        const reserve = isManagerEmployee(employee);
+        const reserve = isManagerEmployee(employee) && state.territorySettings.manager_default_reserve !== false;
         const departure = String(shift?.planned_start || (/dvor|nerud/.test(lowerName) ? '06:00' : '07:00')).slice(0,5);
         const maxHours = shift?.planned_minutes ? Math.max(1, Number(shift.planned_minutes) / 60) : (/nerud/.test(lowerName) ? 10 : 8);
         const sourceLabel = alreadyPlanned ? 'Již má trasu' : shift ? (shift.vehicle_id ? 'Z publikované směny' : 'Chybí vozidlo') : checked ? reserve ? 'Záloha' : 'Doporučení' : 'Nejede';
@@ -705,7 +705,7 @@
     function locationUnits(stops) {
       const grouped = new Map();
       stops.forEach((stop) => {
-        const key = String(stop.locationId || `machine-${stop.id}`);
+        const key = state.territorySettings.keep_locations_together === false ? `machine-${stop.id}` : String(stop.locationId || `machine-${stop.id}`);
         if (!grouped.has(key)) grouped.set(key, { key, locationId: stop.locationId, latitude: stop.latitude, longitude: stop.longitude, city: stop.city, snack: false, priority: 0, expiredFoodPositions: 0, expiredFoodUnits: 0, hardExpiredFoodPositions: 0, hardExpiredFoodUnits: 0, lowCount: 0, topupCount: 0, topupUnits: 0, emptyCount: 0, revenue30: 0, units30: 0, maxOverdueDays: 0, stops: [] });
         const unit = grouped.get(key);
         unit.stops.push(stop);
@@ -829,7 +829,9 @@
 
     function ownershipPenalty(stop, route) {
       if (!stop.ownerId || String(stop.ownerId) === String(route.employee.id)) return 0;
-      return els.strategy.value === 'territory' ? 22 : els.strategy.value === 'distance' ? 0 : 6;
+      const strength = state.territorySettings.territory_strength || 'strong';
+      const rulePenalty = strength === 'strong' ? 22 : strength === 'balanced' ? 10 : 3;
+      return els.strategy.value === 'distance' ? Math.min(3, rulePenalty) : rulePenalty;
     }
 
     function workloadPenalty(route, totalMinutes = route.totalMinutes) {
@@ -844,13 +846,14 @@
     function assignmentScore(option, unit, minHistoricalKm, warehouse) {
       const route = option.route;
       const strategy = els.strategy.value;
-      const ownBonus = strategy === 'territory' ? -65 : strategy === 'distance' ? -8 : -30;
-      const foreignPenalty = strategy === 'territory' ? 22 : strategy === 'distance' ? 3 : 10;
+      const strength = state.territorySettings.territory_strength || 'strong';
+      const ownBonus = strength === 'strong' ? -65 : strength === 'balanced' ? -30 : -8;
+      const foreignPenalty = strength === 'strong' ? 22 : strength === 'balanced' ? 10 : 3;
       const distanceWeight = strategy === 'territory' ? 0.9 : strategy === 'distance' ? 1.6 : 1.15;
       const balanceDivisor = strategy === 'balanced' ? 18 : strategy === 'territory' ? 35 : 50;
       const ownership = unit.stops.reduce((sum, candidate) => sum + (String(candidate.ownerId || '') === String(route.employee.id) ? ownBonus : candidate.ownerId ? foreignPenalty : 0), 0);
       const projectedKm = Number(state.km30.get(String(route.employee.id)) || 0) + Number(option.estimate.distanceKm || 0);
-      const kmBalance = (projectedKm - minHistoricalKm) / balanceDivisor;
+      const kmBalance = state.territorySettings.balance_employee_km === false ? 0 : (projectedKm - minHistoricalKm) / balanceDivisor;
       const incrementalKm = Math.max(0, option.estimate.distanceKm - route.distanceKm);
       const load = workloadPenalty(route, option.estimate.totalMinutes);
       const emptyRouteBonus = route.stops.length || route.dispatchPriority === 'reserve' ? 0 : -90;
@@ -1376,15 +1379,18 @@
       if (!preserveDate || !els.date.value) els.date.value = dateKey(new Date(Date.now()+86400000));
       els.status.textContent = 'Načítám podklady';
       await loadPublishedShiftTeam(els.date.value);
-      const historyStart=daysAgo(90); const kmStart=daysAgo(30);
+      const territorySettings = await queryWithRetry('pravidla oblastí', () => supabase.from('operator_territory_settings').select('*').eq('id',true).maybeSingle(), { optional:true });
+      if(territorySettings.data) state.territorySettings={...state.territorySettings,...territorySettings.data};
+      const historyStart=daysAgo(Number(state.territorySettings.history_fallback_days||90)); const kmStart=daysAgo(30);
       const metricsFrom = new Date(Date.now() - 30 * 86400000).toISOString();
-      const [employees,vehicles,warehouses,machines,locations,products] = await Promise.all([
+      const [employees,vehicles,warehouses,machines,locations,products,territories] = await Promise.all([
         queryWithRetry('zaměstnanci', () => supabase.from('employees').select('id,name,surname,email,role,active').eq('active',true).order('surname')),
         queryWithRetry('vozidla', () => supabase.from('vehicles').select('id,plate,brand,model,name,active,assigned_employee_id,service_scope').eq('active',true).order('plate')),
         queryWithRetry('sklady', () => supabase.from('warehouses').select('id,name,city,address,latitude,longitude,active').eq('active',true).order('name')),
         queryWithRetry('automaty', () => supabase.from('machines').select('id,evidence_number,location_id,name,machine_type,status,active,stock_initialized_at').eq('active',true)),
         queryWithRetry('lokality', () => supabase.from('locations').select('id,name,city,address,latitude,longitude,active,service_suspended_until').eq('active',true)),
-        queryWithRetry('produkty', () => supabase.from('products').select('sku,name,product_category').eq('active',true))
+        queryWithRetry('produkty', () => supabase.from('products').select('sku,name,product_category').eq('active',true)),
+        queryWithRetry('uložené oblasti operátorů', () => supabase.from('operator_territory_assignments').select('location_id,primary_employee_id,backup_employee_id,assignment_scope,selected_machine_ids,effective_from,locked'), { optional: true })
       ]);
       const containerRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_coffee_containers').select('machine_id,product_name,current_quantity,capacity_quantity,active').eq('active',true));
       const slotRows = await fetchSupabaseRowsPaged(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,target_units,desired_units,expiry_date,active').eq('active',true));
@@ -1405,6 +1411,13 @@
       (logs.data||[]).forEach((row)=>state.km30.set(String(row.employee_id),Number(state.km30.get(String(row.employee_id))||0)+Number(row.distance_km||0)));
       const ownerCounts=new Map(); (history.data||[]).forEach((plan)=>(plan.route_plan_stops||[]).forEach((stop)=>{ if(!stop.machine_id||!plan.planned_employee_id)return; const key=`${stop.machine_id}:${plan.planned_employee_id}`; ownerCounts.set(key,Number(ownerCounts.get(key)||0)+1); }));
       state.machines.forEach((machine)=>{ const options=state.employees.map((employee)=>({id:employee.id,count:Number(ownerCounts.get(`${machine.id}:${employee.id}`)||0)})).sort((a,b)=>b.count-a.count); if(options[0]?.count) state.ownership.set(String(machine.id),options[0].id); });
+      (territories.data||[]).forEach((territory)=>{
+        if(!territory.primary_employee_id||String(territory.effective_from||'')>els.date.value)return;
+        const machineIds=territory.assignment_scope==='machines'
+          ? new Set((territory.selected_machine_ids||[]).map(String))
+          : new Set(state.machines.filter((machine)=>String(machine.location_id)===String(territory.location_id)).map((machine)=>String(machine.id)));
+        machineIds.forEach((machineId)=>state.ownership.set(machineId,territory.primary_employee_id));
+      });
       state.employees.forEach((employee)=>{ const owned=state.machines.filter((machine)=>String(state.ownership.get(String(machine.id))||'')===String(employee.id)); const cities=owned.map((machine)=>state.locations.find((location)=>String(location.id)===String(machine.location_id))?.city).filter(Boolean); const counts=new Map(); cities.forEach((city)=>counts.set(city,(counts.get(city)||0)+1)); const area=[...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([city])=>city).join(' / '); if(area) state.ownership.set(`employee:${employee.id}:area`,area); });
       els.warehouse.innerHTML=state.warehouses.map((row)=>`<option value="${esc(row.id)}">${esc([row.name,row.city].filter(Boolean).join(' · '))}</option>`).join(''); const preferred=state.warehouses.find((row)=>norm(row.name).includes('blucina')); if(preferred) els.warehouse.value=String(preferred.id);
       buildCandidates({ machines:state.machines, locations:state.locations, products:products.data||[], containers:containerRows, slots:slotRows, visits:visits.data||[], rules:rules.data||[], metrics:metrics.data||[], scheduled:scheduled.data||[], telemetryLinks:telemetryLinks.data||[], telemetryStates:telemetryStates.data||[], inventoryRows:inventoryRows.data||[] }); renderCrew(); els.status.textContent=state.publishedShiftPlan?'Připraveno z plánu směn':'Připraveno · bez publikovaného plánu';

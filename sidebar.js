@@ -111,6 +111,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "operator-territories.html": {
+      currentLabel: "Oblasti operátorů",
+      activeKey: "operator-territories",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "controlling.html": {
       currentLabel: "Kontrolní trasy",
       activeKey: "controlling",
@@ -376,6 +383,7 @@
           children: [
             { key: "routes", href: "routes.html", label: "Přehled tras" },
             { key: "route-dispatch", href: "route-dispatch.html", label: "Naplánovat tým" },
+            { key: "operator-territories", href: "operator-territories.html", label: "Oblasti operátorů" },
             { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
             { key: "operations", href: "operations.html", label: "Lokality" },
             { key: "fleet", href: "vehicles.html", label: "Vozový park" }
