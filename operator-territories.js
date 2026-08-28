@@ -135,11 +135,11 @@ function renderTerritories() {
       const hull = convexHull(cluster);
       let layer;
       if (hull.length >= 3) {
-        layer = L.polygon(expandedHull(hull), { pane: 'territories', color: employee.color, weight: 3, opacity: .72, fillColor: employee.color, fillOpacity: .11, interactive: false });
+        layer = L.polygon(expandedHull(hull), { pane: 'territories', color: employee.color, weight: 2, opacity: .72, dashArray: '7 6', lineCap: 'round', lineJoin: 'round', fillColor: employee.color, fillOpacity: .065, interactive: false });
       } else if (hull.length === 2) {
-        layer = L.polyline(hull, { pane: 'territories', color: employee.color, weight: 18, opacity: .14, interactive: false });
+        layer = L.polyline(hull, { pane: 'territories', color: employee.color, weight: 12, opacity: .11, lineCap: 'round', interactive: false });
       } else if (hull.length === 1) {
-        layer = L.circle(hull[0], { pane: 'territories', radius: 9000, color: employee.color, weight: 2.5, opacity: .68, fillColor: employee.color, fillOpacity: .1, interactive: false });
+        layer = L.circle(hull[0], { pane: 'territories', radius: 9000, color: employee.color, weight: 2, opacity: .68, dashArray: '7 6', fillColor: employee.color, fillOpacity: .06, interactive: false });
       }
       if (layer) {
         layer.addTo(map);
