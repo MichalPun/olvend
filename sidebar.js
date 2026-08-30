@@ -181,6 +181,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "price-label-print.html": {
+      currentLabel: "Tisk cenovek",
+      activeKey: "price-labels",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "purchases.html": {
       currentLabel: "Nákupy",
       activeKey: "purchases-overview",
@@ -395,7 +402,8 @@
           label: "Sklad",
           children: [
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
-            { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" }
+            { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" },
+            { key: "price-labels", href: "price-label-print.html", label: "Tisk cenovek" }
           ]
         },
         {
