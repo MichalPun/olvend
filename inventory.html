@@ -6137,8 +6137,16 @@
           const staleLimit = Number(profile.stale_vehicle_days ?? 1)
           const staleRisk = currentVehicleQty > 0.0001 && staleLimit >= 0 && staleDays !== null && staleDays >= staleLimit
           const missingPackage = requiredFromNew > 0.0001 && packageQty <= 0
-          const approvedPackageCount = packagePlan.approvedPackageCount
-          const approvedQty = packagePlan.approvedQty
+          let approvedPackageCount = Number(packagePlan.approvedPackageCount || 0)
+          let approvedQty = Number(packagePlan.approvedQty || 0)
+          const warehouseWholePackageQty = packageQty > 0
+            ? Math.max(0, Math.floor((warehouseQty + 0.0001) / packageQty) * packageQty)
+            : Math.max(0, warehouseQty)
+          const warehouseShortageQty = Math.max(0, Number((approvedQty - warehouseWholePackageQty).toFixed(3)))
+          if (warehouseShortageQty > 0.0001) {
+            approvedQty = Number(Math.min(approvedQty, warehouseWholePackageQty).toFixed(3))
+            approvedPackageCount = packageQty > 0 ? Math.floor((approvedQty + 0.0001) / packageQty) : 0
+          }
           const deferredAfterLoadQty = Number(packagePlan.deferredAfterLoadQty || 0)
           const projectedVehicleAfterTrip = Number((projectedVehicleBeforeTarget + approvedQty - tripDemandQty).toFixed(3))
           const reasons = []
@@ -6190,12 +6198,16 @@
             reasons.push('odklad nezakládám, po skutečné jízdě zůstává položka na autě')
           }
           if (deferredAfterLoadQty > 0.0001 && approvedQty > 0) reasons.push(`zbytek ${formatQuantityValue(deferredAfterLoadQty, product.base_unit || 'ks')} zůstane odložený`)
-          if (warehouseQty < approvedQty - 0.0001) reasons.push('na skladě není dost kusů')
+          if (warehouseShortageQty > 0.0001) {
+            reasons.push(`sklad nepokryje ${formatQuantityValue(warehouseShortageQty, product.base_unit || 'ks')} · dostupné celé balení ${formatQuantityValue(warehouseWholePackageQty, product.base_unit || 'ks')}`)
+          }
           if (staleRisk) reasons.push(`ověřit inventurou, zůstatek na autě je bez pohybu ${staleDays} dní`)
           if (!reasons.length && approvedQty > 0) reasons.push('doporučeno podle historie')
           if (!reasons.length) reasons.push('není potřeba donaložit')
           const status = approvedQty > 0
-            ? 'recommended'
+            ? warehouseShortageQty > 0.0001 ? 'partial' : 'recommended'
+            : warehouseShortageQty > 0.0001
+              ? 'uncovered'
             : missingPackage
               ? 'missing_package'
               : staleRisk
@@ -6211,6 +6223,8 @@
             pendingLoadQty,
             plannedVehicleQty,
             warehouseQty,
+            warehouseWholePackageQty,
+            warehouseShortageQty,
             expectedDemand: estimate.expected,
             routeNeed,
             routeForecast,
@@ -6252,7 +6266,7 @@
         })
         .filter((row) => row.approvedQty > 0 || row.staleRisk || row.expectedDemand > 0 || row.currentVehicleQty > 0 || row.pendingLoadQty > 0)
         .sort((a, b) => {
-          const statusOrder = { recommended: 0, missing_package: 1, audit: 2, blocked: 3, idle: 4 }
+          const statusOrder = { uncovered: 0, partial: 1, recommended: 2, missing_package: 3, audit: 4, blocked: 5, idle: 6 }
           const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
           if (statusDiff) return statusDiff
           return normalizeText(a.product.name || '').localeCompare(normalizeText(b.product.name || ''), 'cs')
@@ -6280,6 +6294,13 @@
       const row = autoLoadRows.find((item) => String(item.product?.id) === String(productId))
       if (!row) throw new Error('Upravovanou položku už v návrhu nemám. Přepočítej vychystání.')
       const quantity = normalizeAutoLoadApprovedQuantity(row.product, input.value)
+      const availableQty = Number(row.warehouseWholePackageQty ?? row.warehouseQty ?? 0)
+      if (quantity > availableQty + 0.0001) {
+        throw new Error(`${row.product.name}: sklad může vydat nejvýše ${formatQuantityValue(availableQty, row.product.base_unit || 'ks')}.`)
+      }
+      if (quantity > 0 && Number(row.packageQty || 0) > 0 && getAutoLoadApprovedPackageCount(row, quantity) <= 0) {
+        throw new Error(`${row.product.name}: vychystání musí být celé balení po ${formatQuantityValue(row.packageQty, row.product.base_unit || 'ks')}.`)
+      }
       const added = Boolean(row.manualAdded)
       autoLoadManualOverrides.set(String(productId), { quantity, added })
       applyAutoLoadManualQuantity(row, quantity, { added })
@@ -6321,6 +6342,10 @@
         pendingLoadQty: 0,
         plannedVehicleQty: currentVehicleQty,
         warehouseQty: getLocationQuantity(warehouseLocation.id, product.id),
+        warehouseWholePackageQty: packageQty > 0
+          ? Math.max(0, Math.floor((getLocationQuantity(warehouseLocation.id, product.id) + 0.0001) / packageQty) * packageQty)
+          : getLocationQuantity(warehouseLocation.id, product.id),
+        warehouseShortageQty: 0,
         expectedDemand: 0,
         routeNeed: 0,
         routeForecast: { missingNow: 0, forecastSales: 0, stockoutMachines: 0, sampleDays: 0 },
@@ -6395,9 +6420,11 @@
         const unit = row.product.base_unit || 'ks'
         const automaticQty = Number(row.autoSuggestedQty ?? row.approvedQty ?? 0)
         const automaticPackageCount = Number(row.autoSuggestedPackageCount ?? row.approvedPackageCount ?? 0)
-        const statusClass = row.manualOverride ? 'auto-load-warn' : row.status === 'recommended' ? 'auto-load-ok' : row.status === 'blocked' ? 'auto-load-block' : row.status === 'missing_package' ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
+        const statusClass = row.manualOverride ? 'auto-load-warn' : row.status === 'recommended' ? 'auto-load-ok' : ['blocked', 'uncovered'].includes(row.status) ? 'auto-load-block' : ['partial', 'missing_package'].includes(row.status) ? 'auto-load-warn' : row.staleRisk ? 'auto-load-risk' : ''
         const suggestedLabel = row.manualAdded
           ? 'bez systémového návrhu'
+          : row.status === 'uncovered'
+          ? 'NEPOKRYTO SKLADEM'
           : automaticQty > 0
           ? `${automaticPackageCount} bal. / ${formatQuantityValue(automaticQty, unit)}`
           : row.missingPackage
@@ -6474,6 +6501,10 @@
       syncAutoLoadApprovedInputs()
       const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
       if (!rows.length) throw new Error('Není tu žádná položka k vychystání.')
+      const invalidStockRow = rows.find((row) => Number(row.approvedQty || 0) > Number(row.warehouseWholePackageQty ?? row.warehouseQty ?? 0) + 0.0001)
+      if (invalidStockRow) {
+        throw new Error(`${invalidStockRow.product.name}: sklad nemá potvrzené množství. Přepočítej vychystání nebo vyber náhradu.`)
+      }
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const warehouseId = Number(autoLoadWarehouse?.value || 0)
       const employeeId = autoLoadEmployee?.value || ''
