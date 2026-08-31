@@ -4512,7 +4512,7 @@
         <section class="today-task-list" id="todayTaskList"></section>
 
         <button class="today-vehicle" id="todayVehicleButton" type="button"><span><strong id="todayVehicleTitle">Vozidlo zatím není vybrané</strong><span id="todayVehicleCopy">Vybereš ho při zahájení směny.</span></span><b>›</b></button>
-        <p class="today-build-info">Mobilní režim 1.9 · build 2026.08.31.2</p>
+        <p class="today-build-info">Mobilní režim 1.9 · build 2026.08.31.3</p>
 
         <div class="today-hidden-data" hidden>
           <div id="todayRouteSection"></div>
@@ -8447,21 +8447,25 @@
       if (!requested || !context?.loaded || !product?.id || getFoodPlanogramChange(slot)?.fullSwap) return requested
       const sku = String(product.sku || slot?.product_sku || '')
       const candidates = context.routeSlots
-        .filter((candidate) => String(candidate.product_sku || '') === sku)
+        .filter((candidate) => [candidate.product_sku, candidate.pending_product_sku, candidate.planned_product_sku]
+          .some((candidateSku) => String(candidateSku || '') === sku))
         .map((candidate) => {
           const current = isFoodExpiryExpired(candidate.expiry_date) ? 0 : Math.max(0, Number(candidate.current_units || 0))
+          const capacity = Math.max(0, Number(candidate.capacity_units || 0))
           const target = getFoodDemandTargetQuantity(candidate, detail, sku)
           return {
             slot: candidate,
             current,
+            capacity,
             target,
             need: Math.max(0, Math.round(target - Math.min(target, current))),
+            free: Math.max(0, Math.round(capacity - Math.min(capacity, current))),
             dailySales: getFoodDailySales(detail, candidate, sku) || 0,
             order: Number(context.stopOrderByMachine.get(String(candidate.machine_id)) ?? Number.MAX_SAFE_INTEGER),
             allocated: 0
           }
         })
-        .filter((candidate) => candidate.need > 0)
+        .filter((candidate) => candidate.free > 0)
       if (!candidates.length) return requested
       const reservedByBatch = getFoodTransferReservedByBatch(detail, stopId, product.id)
       const stockBatches = detail?.vehicleBatches?.[String(product.id)] || []
@@ -8476,15 +8480,26 @@
         candidate.allocated += 1
         remaining -= 1
       }
+      // Nejdřív pokryj očekávanou potřebu celé zbývající trasy. Vyšší prodejnost
+      // znamená kratší zásobu ve dnech, proto silnější automat dostává kus dřív.
       while (remaining > 0) {
         const next = candidates
-          .filter((candidate) => candidate.allocated < candidate.need)
-          .sort((a,b) => ((a.current + a.allocated) / Math.max(1, a.target)) - ((b.current + b.allocated) / Math.max(1, b.target))
+          .filter((candidate) => candidate.allocated < Math.min(candidate.free, candidate.need))
+          .sort((a,b) => ((a.current + a.allocated) / Math.max(0.1, a.dailySales || 0.1)) - ((b.current + b.allocated) / Math.max(0.1, b.dailySales || 0.1))
             || b.dailySales - a.dailySales
             || a.order - b.order)[0]
         if (!next) break
         next.allocated += 1
         remaining -= 1
+      }
+      // Přebytek nezamykej v autě ani ho nerozmělňuj do slabých automatů. Po
+      // pokrytí základu ho dávej od nejsilnějšího cíle až do fyzické kapacity.
+      const strongestFirst = [...candidates].sort((a,b) => b.dailySales - a.dailySales || a.order - b.order)
+      for (const candidate of strongestFirst) {
+        if (remaining <= 0) break
+        const extra = Math.min(remaining, Math.max(0, candidate.free - candidate.allocated))
+        candidate.allocated += extra
+        remaining -= extra
       }
       const allocation = candidates.find((candidate) => String(candidate.slot.id) === String(slot.id))?.allocated
       return Math.max(0, Math.min(requested, Number(allocation ?? requested)))
@@ -9802,12 +9817,12 @@
       const routeDate = String(getAssignedRoutePlan()?.planning_date || new Date().toLocaleDateString('sv-SE'))
       if (effectiveDate && effectiveDate > routeDate) return null
       const currentSku = String(slot?.product_sku || '')
-      const plannedSkuBeforeMix = slot?.planned_product_sku
-        && String(slot.planned_product_sku) !== currentSku
-        && Number(slot?.changeover_new_units || 0) <= 0
+      const plannedSku = slot?.planned_product_sku && String(slot.planned_product_sku) !== currentSku
         ? slot.planned_product_sku
         : ''
-      const nextSku = String(slot?.pending_product_sku || plannedSkuBeforeMix || '')
+      // planned_product_sku zůstává platným cílem i v průběhu směsi starého a
+      // nového produktu. Počet nových kusů nesmí schovat povinnou změnu.
+      const nextSku = String(slot?.pending_product_sku || plannedSku || '')
       const currentPrice = Number(slot?.price_czk || 0)
       const nextPriceRaw = slot?.pending_price_czk ?? slot?.planned_price_czk
       const nextPrice = nextPriceRaw == null ? null : Number(nextPriceRaw)
@@ -9824,6 +9839,7 @@
         nextPrice: Number.isFinite(nextPrice) ? nextPrice : currentPrice,
         mode: slot?.pending_change_mode || 'sell_through',
         fullSwap: productChanged && slot?.pending_change_mode === 'full_swap',
+        inProgressComposition: Boolean(productChanged && Number(slot?.changeover_new_units || 0) > 0),
         instruction: slot?.pending_change_note || slot?.operator_instruction || ''
       }
     }
@@ -9854,7 +9870,10 @@
       const target = getFoodDemandTargetQuantity(slot, detail)
       const targetNeed = Math.max(0, Math.round(target - Math.min(target, current)))
       const demandAware = Boolean(detail?.routePlanningContext?.loaded)
-      return Math.min(freeCapacity, demandAware ? targetNeed : Math.max(Math.round(storedSuggestion), targetNeed))
+      // Na trase je lokální maximum fyzicky volné místo. O skutečném návrhu
+      // rozhodne společná alokace všech zbývajících automatů; lokální odhad ho
+      // nesmí předem oříznout (zejména na poslední zastávce).
+      return Math.min(freeCapacity, demandAware ? freeCapacity : Math.max(Math.round(storedSuggestion), targetNeed))
     }
 
     function allocateFoodFillFromVehicleBatches(detail, productId, quantity) {
@@ -10249,6 +10268,7 @@
         transferRecommendation: draft.transferRecommendation || null,
         manualProductChoice: Boolean(draft.manualProductChoice),
         pickConfirmed: Boolean(draft.pickConfirmed),
+        cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
         note: draft.note || '',
         accepted: Boolean(draft.accepted)
       }
@@ -10263,7 +10283,7 @@
       const replacementProduct = planogramChange?.productChanged
         ? options.find((product) => String(product.sku || '') === String(planogramChange.nextSku || '')) || planogramChange.nextProduct || null
         : null
-      const primary = planogramChange?.fullSwap ? replacementProduct : currentProduct
+      const primary = planogramChange?.productChanged ? replacementProduct : currentProduct
       const selected = options.find((product) => String(product.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId || '')) || primary
       const selectedExplicitly = Boolean(draft.manualProductChoice || draft.pickedQuantity > 0)
       const availability = (product) => product ? getFoodAvailableVehicleQuantity(detail, stopId, slot.id, product.id) : 0
@@ -10418,6 +10438,13 @@
       return String(a?.slot_code || '').localeCompare(String(b?.slot_code || ''), 'cs', { numeric: true })
     }
 
+    function getNextFoodCartLoadOrder(detail) {
+      return (detail?.slots || []).reduce((highest, slot) => {
+        const value = Number(detail?.draft?.slots?.[String(slot.id)]?.cartLoadOrder || 0)
+        return Math.max(highest, Number.isFinite(value) ? value : 0)
+      }, 0) + 1
+    }
+
     function getFoodGuidedWorkSlots(stopId, detail) {
       return (detail?.slots || []).filter((slot) => {
         const draft = getFoodSlotDraft(stopId, slot)
@@ -10431,7 +10458,15 @@
           || draft.wasteItems.length > 0
           || getFoodPlanogramChange(slot)
           || shortExpiry
-      }).sort((a, b) => compareFoodCartLoadOrder(b, a))
+      }).sort((a, b) => {
+        const aLoadOrder = Number(getFoodSlotDraft(stopId, a).cartLoadOrder || 0)
+        const bLoadOrder = Number(getFoodSlotDraft(stopId, b).cartLoadOrder || 0)
+        if (aLoadOrder > 0 || bLoadOrder > 0) {
+          if (aLoadOrder > 0 && bLoadOrder > 0 && aLoadOrder !== bLoadOrder) return bLoadOrder - aLoadOrder
+          if ((aLoadOrder > 0) !== (bLoadOrder > 0)) return aLoadOrder > 0 ? -1 : 1
+        }
+        return compareFoodCartLoadOrder(b, a)
+      })
     }
 
     function getFoodGuidedStage(stopId, detail, readOnly = false) {
@@ -10493,13 +10528,15 @@
         const noStockResolved = !optionalMode && !draft.picked && draft.skipped && Boolean(draft.skipReason)
         const canConfirmNoStock = !optionalMode && desired > 0 && !draft.picked && confirmQuantity <= 0 && !noStockResolved
         const substitute = Boolean(suggestion?.isSubstitute)
-        const displayProductName = planogramChange?.fullSwap
+        const displayProductName = planogramChange?.productChanged
           ? (suggestion?.product?.name || planogramChange.nextName || planogramChange.nextSku || 'Nový produkt')
           : substitute ? suggestion.product?.name : (slot.product_name || product?.name || 'Produkt')
         const rowDetail = optionalMode
           ? `V automatu ${slot.current_units || 0}/${slot.capacity_units || 0} ks · v autě ${availableInVehicle} ks`
           : planogramChange?.fullSwap
             ? `Kompletní výměna za ${slot.product_name || slot.product_sku || 'původní produkt'} · vezmi ${suggestion?.quantity || 0} ks · v autě ${availableInVehicle} ks`
+          : planogramChange?.productChanged
+            ? `Řízená změna z ${slot.product_name || slot.product_sku || 'původního produktu'} · nový produkt ${planogramChange.nextName || planogramChange.nextSku} · v autě ${availableInVehicle} ks`
           : Number(suggestion?.desired || 0) < Number(suggestion?.localDesired || 0)
             ? `Rozděleno pro zbývající trasu · zde ${suggestion?.desired || 0} z lokální potřeby ${suggestion?.localDesired || 0} ks · v autě ${availableInVehicle} ks`
           : substitute
@@ -10528,7 +10565,7 @@
         return `
           <div class="coffee-guide-row ${draft.pickConfirmed || noStockResolved ? 'done' : draft.picked && draft.pickedQuantity > 0 ? 'selected' : emptySkipNeedsReason || canConfirmNoStock ? 'selected' : ''}">
             <span class="coffee-guide-icon">${draft.pickConfirmed || noStockResolved ? '✓' : optionalMode ? '+' : emptySkipNeedsReason || canConfirmNoStock ? '!' : '→'}</span>
-            <span class="coffee-guide-main"><small class="food-position-label">Pozice ${escapeHtml(slot.slot_code)}${planogramChange?.fullSwap ? ' · kompletní výměna' : substitute ? ' · schválená náhrada' : ''}</small><strong>${escapeHtml(displayProductName)}</strong>${getFoodSlotComposition(slot).length > 1 ? `<small class="food-substitution-line">Uvnitř nyní: ${escapeHtml(getFoodSlotCompositionLabel(slot))}</small>` : substitute ? `<small class="food-substitution-line">Náhrada za: ${escapeHtml(slot.product_name || suggestion.primary?.name || 'původní produkt')}</small>` : ''}<small>${escapeHtml(rowDetail)}</small>${vehicleExpiryParts.length ? `<small class="food-expiry-line ${vehicleExpiryMissing ? 'warning' : ''}">Z auta FEFO: ${escapeHtml(vehicleExpiryParts.join(' · '))}</small>` : ''}${machineExpiry ? `<small class="food-expiry-line ${machineExpiryExpired ? 'danger' : machineExpiryShort ? 'warning' : ''}">${escapeHtml(machineExpiry)}</small>` : ''}</span>
+            <span class="coffee-guide-main"><small class="food-position-label">Pozice ${escapeHtml(slot.slot_code)}${planogramChange?.fullSwap ? ' · kompletní výměna' : planogramChange?.productChanged ? ' · povinná změna produktu' : substitute ? ' · schválená náhrada' : ''}</small><strong>${escapeHtml(displayProductName)}</strong>${getFoodSlotComposition(slot).length > 1 ? `<small class="food-substitution-line">Uvnitř nyní: ${escapeHtml(getFoodSlotCompositionLabel(slot))}</small>` : substitute ? `<small class="food-substitution-line">Náhrada za: ${escapeHtml(slot.product_name || suggestion.primary?.name || 'původní produkt')}</small>` : ''}<small>${escapeHtml(rowDetail)}</small>${vehicleExpiryParts.length ? `<small class="food-expiry-line ${vehicleExpiryMissing ? 'warning' : ''}">Z auta FEFO: ${escapeHtml(vehicleExpiryParts.join(' · '))}</small>` : ''}${machineExpiry ? `<small class="food-expiry-line ${machineExpiryExpired ? 'danger' : machineExpiryShort ? 'warning' : ''}">${escapeHtml(machineExpiry)}</small>` : ''}</span>
             <span class="coffee-pick-actions">${canConfirm ? `<button class="coffee-pick-confirm ${draft.pickConfirmed ? 'confirmed' : ''}" type="button" data-food-action="confirm-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.pickConfirmed ? `✓ ${escapeHtml(confirmQuantity)} ks` : `Potvrdit ${escapeHtml(confirmQuantity)} ks`}</button><button class="coffee-pick-open" type="button" data-food-action="skip-pick-now" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Nedoplňuji</button>` : canConfirmNoStock ? `<button class="coffee-pick-confirm" type="button" data-food-action="confirm-no-stock" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${suggestion?.routeReserved ? '✓ Nechávám pro další zastávky' : '✓ Není v autě'}</button>` : noStockResolved ? `<span class="coffee-pick-confirm confirmed">${draft.skipReason === 'reserved_for_route' ? '✓ Pro další zastávky' : '✓ 0 ks'}</span>` : ''}<button class="coffee-pick-open" type="button" data-food-action="guided-food-expand-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${open ? 'Zavřít' : optionalMode ? 'Přidat' : emptySkipNeedsReason ? 'Vybrat důvod' : 'Upravit'}</button></span>
           </div>
           ${open ? `<div class="coffee-pick-edit">
@@ -12895,6 +12932,7 @@
               transferRecommendation: prepared.transferRecommendation || null,
               manualProductChoice: Boolean(prepared.manualProductChoice),
               pickConfirmed: Boolean(prepared.pickConfirmed),
+              cartLoadOrder: Math.max(0, Number(prepared.cartLoadOrder || 0)),
               note: prepared.note || '',
               accepted: false,
               ...liveDraft,
@@ -14025,6 +14063,7 @@
           transferRecommendation: draft.transferRecommendation || null,
           manualProductChoice: Boolean(draft.manualProductChoice),
           pickConfirmed: Boolean(draft.pickConfirmed),
+          cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
           note: draft.note || ''
         }]
       }))
@@ -14861,6 +14900,7 @@
           skipped: false,
           skipReason: '',
           pickConfirmed: true,
+          cartLoadOrder: Number(draft.cartLoadOrder || 0) > 0 ? Number(draft.cartLoadOrder) : getNextFoodCartLoadOrder(detail),
           accepted: false
         })
         renderRouteMachineScreen()
@@ -14887,6 +14927,7 @@
           skipped: true,
           skipReason: suggestion.routeReserved ? 'reserved_for_route' : 'not_in_vehicle',
           pickConfirmed: false,
+          cartLoadOrder: 0,
           accepted: false
         })
         renderRouteMachineScreen()
@@ -14915,6 +14956,7 @@
           skipped: true,
           skipReason: 'not_refilling_today',
           pickConfirmed: false,
+          cartLoadOrder: 0,
           accepted: false
         })
         detail.draft.expandedFoodPickSlotId = ''
@@ -15128,6 +15170,11 @@
           skipped: nextQuantity <= 0,
           skipReason: '',
           pickConfirmed: false,
+          cartLoadOrder: nextQuantity > 0
+            ? (Number(draft.cartLoadOrder || 0) > 0
+              ? Number(draft.cartLoadOrder)
+              : localDesired <= 0 ? getNextFoodCartLoadOrder(detail) : 0)
+            : 0,
           accepted: false
         })
         if (Number(target.dataset.delta || 0) > 0 && nextQuantity < draft.pickedQuantity + 1) {
@@ -15161,6 +15208,9 @@
             skipped: false,
             skipReason: '',
             pickConfirmed: false,
+            cartLoadOrder: Number(draft.cartLoadOrder || 0) > 0
+              ? Number(draft.cartLoadOrder)
+              : localDesired <= 0 ? getNextFoodCartLoadOrder(detail) : 0,
             selectedProductId: productId,
             manualProductChoice: Boolean(draft.manualProductChoice),
             accepted: false
@@ -15180,6 +15230,7 @@
             skipped: true,
             skipReason: 'not_refilling_today',
             pickConfirmed: false,
+            cartLoadOrder: 0,
             accepted: false
           })
           detail.draft.expandedFoodPickSlotId = ''
@@ -15263,6 +15314,7 @@
             skipped: pickedQuantity <= 0,
             skipReason: pickedQuantity <= 0 ? 'not_in_vehicle' : '',
             pickConfirmed: false,
+            cartLoadOrder: 0,
             selectedProductId: productId,
             manualProductChoice: false,
             accepted: false
@@ -15286,6 +15338,7 @@
             skipReason: 'not_refilling_today',
             actualAdd: 0,
             pickConfirmed: false,
+            cartLoadOrder: 0,
             accepted: false
           })
         }
@@ -15302,6 +15355,18 @@
           return !(draft.skipped && draft.skipReason)
         })
         if (missing) throw new Error(`Nejdřív potvrď počet u pozice ${missing.slot_code}, případně přes „Upravit“ vyber důvod, proč ji nedoplňuješ.`)
+        // Starší rozpracované návštěvy pořadí vozíku nemají. Doplníme je jednou
+        // podle zobrazeného picklistu; nově se pořadí ukládá při skutečném
+        // potvrzení každé naložené položky.
+        let legacyLoadOrder = (detail.slots || []).reduce((highest, item) => (
+          Math.max(highest, Number(getFoodSlotDraft(stopId, item).cartLoadOrder || 0))
+        ), 0)
+        for (const item of [...(detail.slots || [])].sort(compareFoodCartLoadOrder)) {
+          const draft = getFoodSlotDraft(stopId, item)
+          if (!draft.picked || draft.pickedQuantity <= 0 || Number(draft.cartLoadOrder || 0) > 0) continue
+          legacyLoadOrder += 1
+          updateFoodSlotDraft(stopId, item.id, { cartLoadOrder: legacyLoadOrder })
+        }
         for (const item of detail.slots || []) {
           const draft = getFoodSlotDraft(stopId, item)
           updateFoodSlotDraft(stopId, item.id, {

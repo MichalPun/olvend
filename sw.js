@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v149-route-stock-planning';
+const CACHE_NAME = 'olvend-v150-route-stock-regressions';
 const APP_SHELL = [
   './',
   './index.html',
