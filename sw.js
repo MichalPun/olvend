@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v148-full-swap-pick';
+const CACHE_NAME = 'olvend-v149-route-stock-planning';
 const APP_SHELL = [
   './',
   './index.html',
