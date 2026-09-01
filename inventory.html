@@ -5480,7 +5480,7 @@
       const targetDate = autoLoadDate?.value || new Date().toISOString().slice(0, 10)
       const { data, error } = await supabase
         .from('route_plans')
-        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, execution_status, provider_status, stop_count, estimated_drive_minutes, updated_at, route_plan_stops(id, machine_id, location_id, stop_order, estimated_service_minutes, status)')
+        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, execution_status, provider_status, stop_count, estimated_drive_minutes, updated_at, route_payload, route_plan_stops(id, machine_id, location_id, stop_order, estimated_service_minutes, status)')
         .eq('planning_date', targetDate)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -5510,7 +5510,13 @@
       if (!route) throw new Error('Nejdřív vyber vytvořenou trasu. Bez trasy nelze určit, co má sklad nachystat.')
       if (!route.vehicle_id || !route.planned_employee_id) throw new Error('Trasa nemá přiřazené vozidlo nebo operátorku. Doplň je v Trasy → detail trasy.')
       const routeStops = [...(route.route_plan_stops || [])].sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
-      const machineIds = [...new Set(routeStops.map((stop) => stop.machine_id).filter(Boolean))]
+      const extraMachineIds = Array.isArray(route.route_payload?.picking_extra_machine_ids)
+        ? route.route_payload.picking_extra_machine_ids.map(Number).filter(Boolean)
+        : []
+      const machineIds = [...new Set([
+        ...routeStops.map((stop) => stop.machine_id).filter(Boolean),
+        ...extraMachineIds
+      ])]
       if (!machineIds.length) throw new Error('Trasa neobsahuje žádný automat. Vychystání by nemělo z čeho počítat potřebu.')
       const salesFrom = new Date()
       salesFrom.setDate(salesFrom.getDate() - 28)
@@ -5538,6 +5544,10 @@
         const arrival = new Date(routeStart.getTime() + ((index + 1) * drivePerStop + serviceMinutes) * 60000)
         if (stop.machine_id) arrivalByMachine.set(String(stop.machine_id), arrival)
         serviceMinutes += Number(stop.estimated_service_minutes || 0)
+      })
+      const extraMachineArrival = new Date(routeStart.getTime() + (totalDriveMinutes + serviceMinutes) * 60000)
+      extraMachineIds.forEach((machineId) => {
+        if (!arrivalByMachine.has(String(machineId))) arrivalByMachine.set(String(machineId), extraMachineArrival)
       })
       const salesByMachineProduct = new Map()
       const coverageStartByMachine = new Map()
@@ -5835,7 +5845,7 @@
         }
         autoLoadRouteForecasts.set(productKey, detail)
       })
-      return { route, machineCount: machineIds.length }
+      return { route, machineCount: machineIds.length, extraMachineCount: extraMachineIds.length }
     }
     function syncAutoLoadWarehouseFromVehicle() {
       const vehicle = vehicles.find((item) => String(item.id) === String(autoLoadVehicle?.value || ''))
@@ -5893,6 +5903,27 @@
           return normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs') || Number(a.id || 0) - Number(b.id || 0)
         })
     }
+    function getAutoLoadPreferredWarehouseProduct(stockLocationId, product) {
+      const members = getAutoLoadGroupMembers(product)
+      if (members.length <= 1) return product
+      const ranked = members.map((member) => {
+        const quantity = Math.max(0, getLocationQuantity(stockLocationId, member.id))
+        const pack = getDefaultProductPackage(member.id)
+        const packageQty = Math.max(1, Number(getAutoLoadPackageQuantity(member, pack) || 1))
+        const wholePackageQuantity = Math.floor((quantity + 0.0001) / packageQty) * packageQty
+        return {
+          member,
+          quantity,
+          wholePackageQuantity,
+          routeNeed: Number(autoLoadRouteNeeds.get(String(member.id)) || 0)
+        }
+      }).filter((row) => row.quantity > 0.0001)
+        .sort((a, b) => Number(b.wholePackageQuantity > 0) - Number(a.wholePackageQuantity > 0)
+          || Number(b.routeNeed > 0) - Number(a.routeNeed > 0)
+          || b.quantity - a.quantity
+          || normalizeText(a.member.name || '').localeCompare(normalizeText(b.member.name || ''), 'cs'))
+      return ranked[0]?.member || product
+    }
     function getAutoLoadAuditGroupMembers(product, vehicleLocationId) {
       const group = getAutoLoadFlavorGroup(product)
       if (!group) return [product]
@@ -5913,11 +5944,10 @@
       return group ? group.label : ''
     }
     function getAutoLoadGroupLoadableLocationQuantity(stockLocationId, product) {
-      const group = getAutoLoadFlavorGroup(product)
-      if (group?.includeInactiveMembers && typeof group.representative === 'function') {
-        return getLocationQuantity(stockLocationId, product.id)
-      }
-      return getAutoLoadGroupLocationQuantity(stockLocationId, product)
+      // Pozadavek lze vystavit jen na konkretni vybranou skladovou kartu.
+      // Zaporna nebo nulova zasoba jine prichute nesmi snizit dostupne mnozstvi
+      // zvolene nahrady (napr. Lemon -12 ks versus Peach +36 ks).
+      return getLocationQuantity(stockLocationId, product.id)
     }
     function getAutoLoadGroupLocationQuantity(stockLocationId, product) {
       return getAutoLoadGroupMembers(product)
@@ -6220,7 +6250,8 @@
         .filter(shouldIncludeAutoLoadProduct)
         .filter(matchesAutoLoadScope)
         .filter(isAutoLoadGroupRepresentative)
-        .map((product) => {
+        .map((groupProduct) => {
+          const product = getAutoLoadPreferredWarehouseProduct(warehouseLocation.id, groupProduct)
           const profile = getAutoLoadDefaultProfile(product)
           const pack = getDefaultProductPackage(product.id)
           const packageQty = getAutoLoadPackageQuantity(product, pack)

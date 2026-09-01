@@ -22,6 +22,10 @@ assert.match(html, /new Set\(\)/)
 assert.match(html, /NOVÝ SORTIMENT:/)
 assert.match(html, /první zásoba nového sortimentu se vydává v celém balení/)
 assert.match(html, /původního zboží pokryje stejné auto/)
+assert.match(html, /picking_extra_machine_ids/)
+assert.match(html, /getAutoLoadPreferredWarehouseProduct/)
+assert.match(html, /wholePackageQuantity/)
+assert.match(html, /Lemon -12 ks versus Peach \+36 ks/)
 
 const calculateTransitionNeed = ({ capacity, oldCurrent, oldVehicle = 0, newCurrent, expectedOldSales }) => {
   const oldAtArrival = Math.max(0, oldCurrent - expectedOldSales)
