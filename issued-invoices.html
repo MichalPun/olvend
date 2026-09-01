@@ -1602,6 +1602,48 @@
       }
       return rows
     }
+    async function partnerBillingMachineScope(locationId) {
+      const numericLocationId = Number(locationId)
+      if (!Number.isFinite(numericLocationId)) throw new Error('Vybraná provozovna nemá platné ID.')
+      const currentMachineIds = partnerBillingMachines
+        .filter((machine) => String(machine.location_id) === String(locationId))
+        .map((machine) => machine.id)
+      const { data: locationTransfers, error: locationTransfersError } = await supabase
+        .from('machine_transfers')
+        .select('id, machine_id, from_location_id, to_location_id, transferred_at')
+        .or(`from_location_id.eq.${numericLocationId},to_location_id.eq.${numericLocationId}`)
+        .order('transferred_at', { ascending:true })
+        .order('id', { ascending:true })
+      if (locationTransfersError) throw locationTransfersError
+      const machineIds = Array.from(new Set([
+        ...currentMachineIds,
+        ...(locationTransfers || []).map((transfer) => transfer.machine_id)
+      ]))
+      if (!machineIds.length) return { machineIds:[], transfers:[] }
+      const { data: transfers, error: transfersError } = await supabase
+        .from('machine_transfers')
+        .select('id, machine_id, from_location_id, to_location_id, transferred_at')
+        .in('machine_id', machineIds)
+        .order('transferred_at', { ascending:true })
+        .order('id', { ascending:true })
+      if (transfersError) throw transfersError
+      return { machineIds, transfers:transfers || [] }
+    }
+    function partnerMachineLocationAt(machineId, eventAt, transfers = []) {
+      const history = transfers.filter((transfer) => String(transfer.machine_id) === String(machineId))
+      const currentMachine = partnerBillingMachines.find((machine) => String(machine.id) === String(machineId))
+      if (!history.length) return currentMachine?.location_id ?? null
+      const eventTime = new Date(eventAt).getTime()
+      let locationId = history[0].from_location_id
+      for (const transfer of history) {
+        if (new Date(transfer.transferred_at).getTime() > eventTime) break
+        locationId = transfer.to_location_id
+      }
+      return locationId
+    }
+    function filterPartnerTelemetryByLocation(rows, locationId, transfers) {
+      return rows.filter((row) => String(partnerMachineLocationAt(row.machine_id, row.source_event_at, transfers)) === String(locationId))
+    }
     function selectAuthoritativePartnerTelemetry(rows = []) {
       const imaStartsByMachine = new Map()
       rows.forEach((row) => {
@@ -1808,7 +1850,9 @@
       const billedMachineIds = Array.isArray(base.billingMachineIds) && base.billingMachineIds.length
         ? new Set(base.billingMachineIds.map(String))
         : null
-      const billedMachines = billedMachineIds ? machines.filter((machine) => billedMachineIds.has(String(machine.id))) : machines
+      const billedMachines = billedMachineIds
+        ? partnerBillingMachines.filter((machine) => billedMachineIds.has(String(machine.id)))
+        : machines
       const profile = {
         ...(partnerProfileForLocation(location.id) || {}),
         device_label: partnerBillingDevice.value.trim(),
@@ -1970,13 +2014,16 @@
           await refreshExternalPartnerBillingPreview(setup, range, requestId)
           return
         }
-        const machineIds = partnerBillingMachines
-          .filter((machine) => String(machine.location_id) === String(partnerBillingLocation.value))
-          .map((machine) => machine.id)
+        const machineScope = await partnerBillingMachineScope(partnerBillingLocation.value)
+        const machineIds = machineScope.machineIds
         if (!machineIds.length) throw new Error('K provozovně není přiřazené žádné zařízení.')
         const rawRows = await fetchPartnerTelemetry(machineIds, range)
         if (requestId !== partnerBillingRequestSequence) return
-        const rows = selectAuthoritativePartnerTelemetry(rawRows)
+        const rows = filterPartnerTelemetryByLocation(
+          selectAuthoritativePartnerTelemetry(rawRows),
+          partnerBillingLocation.value,
+          machineScope.transfers
+        )
         const categoryContext = ['product_category', 'settlement_rules'].includes(setup.billingScope)
           ? await partnerBillingCategoryContext(machineIds)
           : null
