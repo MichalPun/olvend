@@ -2209,6 +2209,18 @@
       return normalizeText(value)
     }
 
+    function isTestPlanningRecord(...values) {
+      const text = normalizeText(values.filter(Boolean).join(' '))
+      return /(^|\s|\[)test([\]\s_-]|$)/.test(text)
+    }
+
+    function isPlanningEligibleMachine(machine) {
+      if (!machine || machine.active === false || !machine.location_id) return false
+      const status = normalizeText(machine.status)
+      if (['removed', 'deinstalled', 'inactive', 'retired', 'scrapped'].includes(status)) return false
+      return !isTestPlanningRecord(machine.name, machine.note, machine.serial_number)
+    }
+
     function isTechnicianRole(role) {
       const normalized = normalizeRole(role)
       return normalized.includes('technik') || normalized.includes('servis')
@@ -4170,7 +4182,7 @@
       const machinesByLocation = new Map()
 
       state.machines
-        .filter((machine) => machine.active !== false)
+        .filter(isPlanningEligibleMachine)
         .forEach((machine) => {
           const locationKey = String(machine.location_id ?? '')
           if (!locationKey) return
@@ -4195,6 +4207,7 @@
       const locationCandidates = state.locations
         .filter((location) => location.active !== false)
         .filter((location) => location.latitude != null && location.longitude != null)
+        .filter((location) => (machinesByLocation.get(String(location.id)) || []).length > 0)
         .map((location) => {
           const relatedRequests = requestsByLocation.get(String(location.id)) || []
           const maxRequestPriority = relatedRequests.reduce((best, request) => {
@@ -4280,7 +4293,7 @@
         })
 
       const machineCandidates = state.machines
-        .filter((machine) => machine.active !== false)
+        .filter(isPlanningEligibleMachine)
         .map((machine) => {
           const location = state.locations.find((item) => String(item.id) === String(machine.location_id))
           if (!location || location.latitude == null || location.longitude == null) return null
@@ -5546,13 +5559,15 @@
         }))
       }
 
-      state.locations = (data || []).map((item) => ({
-        ...item,
-        route_window_hint: getHistoricalRouteWindowHint(item),
-        service_window: getPlanningServiceWindow(item),
-        latitude: item.latitude != null ? Number(item.latitude) : null,
-        longitude: item.longitude != null ? Number(item.longitude) : null,
-      }))
+      state.locations = (data || [])
+        .filter((item) => !isTestPlanningRecord(item.name, item.city, item.address, item.route_note, item.service_plan_note))
+        .map((item) => ({
+          ...item,
+          route_window_hint: getHistoricalRouteWindowHint(item),
+          service_window: getPlanningServiceWindow(item),
+          latitude: item.latitude != null ? Number(item.latitude) : null,
+          longitude: item.longitude != null ? Number(item.longitude) : null,
+        }))
     }
 
     async function loadTerritoryAssignments() {
@@ -5596,12 +5611,12 @@
     async function loadMachines() {
       const { data, error } = await supabase
         .from('machines')
-        .select('id, location_id, name, machine_type, status, note, active')
+        .select('id, location_id, name, machine_type, status, note, serial_number, active')
         .eq('active', true)
         .order('name', { ascending: true })
 
       if (error) throw error
-      state.machines = data || []
+      state.machines = (data || []).filter(isPlanningEligibleMachine)
     }
 
     async function loadMachineServiceRules() {
@@ -5677,6 +5692,20 @@
         ...(visitsResult.data || []).map((item) => String(item.machine_id)),
         ...(initializedResult.data || []).map((machine) => String(machine.id))
       ])
+    }
+
+    function reconcileInventoryEvidence() {
+      const inventoriedMachineIds = new Set(state.inventoriedMachineIds)
+
+      state.lastMachineVisits.forEach((_visit, machineId) => inventoriedMachineIds.add(String(machineId)))
+      state.coffeeContainers
+        .filter((container) => container.active !== false && container.current_quantity != null)
+        .forEach((container) => inventoriedMachineIds.add(String(container.machine_id)))
+      state.planogramSlots
+        .filter((slot) => slot.active !== false && slot.current_units != null)
+        .forEach((slot) => inventoriedMachineIds.add(String(slot.machine_id)))
+
+      state.inventoriedMachineIds = inventoriedMachineIds
     }
 
     async function loadCoffeeContainers() {
@@ -5852,6 +5881,8 @@
           loadWarehouses(),
           loadLastKnownPosition(),
         ])
+
+        reconcileInventoryEvidence()
 
         applyPreferredWarehouseDefaults()
         const preferredTemplate = getDefaultTemplateForSelectedEmployee()
