@@ -344,6 +344,19 @@
     .job-editor-modal.transfer-card-mode .config-section { border-radius:4px; }
     .job-editor-modal.transfer-card-mode .config-table th,
     .job-editor-modal.transfer-card-mode .config-table td { padding:6px 7px; }
+    .simple-form-note { display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 14px;padding:11px 12px;border:1px solid rgba(89,153,222,.25);border-radius:8px;background:rgba(37,99,169,.1); }
+    .simple-form-note strong,.simple-form-note span { display:block; }
+    .simple-form-note strong { font-size:12px; }
+    .simple-form-note span { margin-top:3px;color:var(--muted);font-size:10px; }
+    .job-editor-modal:not(.advanced-open) #jobTitleField,
+    .job-editor-modal:not(.advanced-open) #jobStepsField,
+    .job-editor-modal:not(.advanced-open) #assignmentEmailField,
+    .job-editor-modal:not(.advanced-open) #jobCustomerField,
+    .job-editor-modal:not(.advanced-open) #serviceRequestField,
+    .job-editor-modal:not(.advanced-open) #deinstallationFollowUpSection,
+    .job-editor-modal:not(.advanced-open) #materialSection,
+    .job-editor-modal:not(.advanced-open) #workshopSection,
+    .job-editor-modal:not(.advanced-open) #configurationSection { display:none !important; }
     .transfer-route-board {
       margin:12px 0 16px;padding:14px;border:1px solid rgba(213,16,26,.24);border-radius:8px;
       background:linear-gradient(135deg,rgba(213,16,26,.09),rgba(255,255,255,.018));
@@ -1041,6 +1054,10 @@
               </select>
             </div>
           </div>
+          <div class="simple-form-note">
+            <div><strong>Stačí vybrat typ práce, technika, termín a trasu.</strong><span>Název se vytvoří automaticky. Materiál, konfigurace a další podklady jsou volitelné.</span></div>
+            <button class="btn secondary" id="toggleAdvancedJobFields" type="button">Volitelné podklady</button>
+          </div>
 
           <section class="transfer-route-board hidden" id="transferRouteSection">
             <div class="transfer-route-head">
@@ -1126,7 +1143,7 @@
           </section>
 
           <div class="form-grid" id="primaryJobFields">
-            <div class="field full">
+            <div class="field full" id="jobTitleField">
               <label for="jobTitle">Interní název</label>
               <input id="jobTitle" type="text" placeholder="Vyplní se automaticky podle typu, automatu a lokality" />
               <div class="help" id="jobTitleHelp">Nech prázdné, pokud stačí systémový název.</div>
@@ -1628,6 +1645,8 @@
     const mobileNavShell = document.getElementById('mobileNavShell')
 
     const jobModalBackdrop = document.getElementById('jobModalBackdrop')
+    const jobEditorModal = jobModalBackdrop.querySelector('.job-editor-modal')
+    const toggleAdvancedJobFields = document.getElementById('toggleAdvancedJobFields')
     const jobModalTitle = document.getElementById('jobModalTitle')
     const closeJobModalBtn = document.getElementById('closeJobModalBtn')
     const cancelJobModalBtn = document.getElementById('cancelJobModalBtn')
@@ -3014,6 +3033,8 @@
 
     function resetJobForm() {
       jobForm.reset()
+      jobEditorModal.classList.remove('advanced-open')
+      toggleAdvancedJobFields.textContent = 'Volitelné podklady'
       setJobFormStatus('')
       sendAssignmentEmail.dataset.manual = 'false'
       jobId.value = ''
@@ -3034,8 +3055,8 @@
       targetStockLocationId.value = ''
       renderMaterialRows([])
       configurationKind.value = 'general'
-      createFollowUpTask.checked = true
-      followUpFields.classList.remove('hidden')
+      createFollowUpTask.checked = false
+      followUpFields.classList.add('hidden')
       followUpJobType.value = 'workshop_prep'
       followUpAssignedEmployeeId.value = ''
       followUpPriority.value = 'normal'
@@ -3612,7 +3633,7 @@
       const existingFollowUp = jobs.find((job) => String(job.parent_job_id || '') === String(item.id)) || null
       const followUpRequest = safeJson(configuration.follow_up, {})
       if (item.job_type === 'deinstallation') {
-        createFollowUpTask.checked = existingFollowUp ? true : followUpRequest.enabled !== false
+        createFollowUpTask.checked = existingFollowUp ? true : followUpRequest.enabled === true
         followUpJobType.value = existingFollowUp?.job_type || followUpRequest.job_type || 'workshop_prep'
         followUpAssignedEmployeeId.value = existingFollowUp?.assigned_employee_id || followUpRequest.assigned_employee_id || ''
         followUpPriority.value = existingFollowUp?.priority || followUpRequest.priority || 'normal'
@@ -3695,6 +3716,7 @@
         target_location_id: null,
         source_stock_location_id: null,
         target_stock_location_id: null,
+        machine_transfer_id: null,
         parent_job_id: null,
         assignment_notified_at: null,
         assignment_notification_key: null,
@@ -4803,7 +4825,6 @@
         }
 
         await saveJobMaterials(data.id, capabilities.material)
-        await ensureChecklist(data)
         await syncCustomChecklist(data)
 
         if (options.draft) {
@@ -4963,21 +4984,14 @@
     }
 
     async function applyMachineUpdateForClosedJob(job) {
-      if (!job?.machine_id) return
-      const machineUpdate = {}
-      if (job.job_type === 'installation') {
-        machineUpdate.location_id = job.target_location_id || job.location_id || null
-        machineUpdate.status = 'ok'
-        machineUpdate.active = true
-      } else if (job.job_type === 'deinstallation') {
-        machineUpdate.location_id = null
-        machineUpdate.status = 'removed'
-      } else if (job.job_type === 'transfer') {
-        machineUpdate.location_id = job.target_location_id || job.location_id || null
-        machineUpdate.status = 'ok'
-      }
-      if (!Object.keys(machineUpdate).length) return
-      const { error } = await supabase.from('machines').update(machineUpdate).eq('id', Number(job.machine_id))
+      if (!['installation', 'deinstallation', 'transfer', 'delivery'].includes(String(job?.job_type || ''))) return
+      if (job.machine_transfer_id) return
+      const { error } = await supabase.rpc('complete_technician_transport_v46', {
+        p_job_id: Number(job.id),
+        p_employee_id: job.assigned_employee_id || currentUser?.id,
+        p_receiver: job.transport_receiver_name || null,
+        p_note: job.transport_completion_note || 'Přesun potvrzen vedoucím v PC'
+      })
       if (error) throw error
     }
 
@@ -5372,10 +5386,8 @@
       if (!activeDetailId) return
       const job = jobs.find((item) => String(item.id) === String(activeDetailId))
       if (!job) return
-      const signature = getSignatureForJob(job.id)
-      const requiresSignature = ['installation', 'deinstallation', 'transfer', 'service', 'delivery'].includes(String(job.job_type || ''))
-      if (requiresSignature && !signature) throw new Error('Před uzavřením doplň podpis provozovny.')
       if (job.job_type !== 'general') await saveProtocol(job)
+      await applyMachineUpdateForClosedJob(job)
       const { error } = await supabase.from('technical_jobs').update({
         status: 'closed',
         finished_at: job.finished_at || new Date().toISOString(),
@@ -5383,7 +5395,6 @@
         manager_confirmed_by: currentUser?.id || null
       }).eq('id', Number(job.id))
       if (error) throw error
-      await applyMachineUpdateForClosedJob(job)
       await loadData()
       closeDetailModal()
       activeDetailId = null
@@ -5598,9 +5609,17 @@
       exportJobsBtn.addEventListener('click', exportJobsCsv)
       printJobsBtn.addEventListener('click', () => window.print())
       openCreateBtn.addEventListener('click', () => {
+        if (activeTab === 'service') {
+          window.location.href = 'service-requests.html?action=new'
+          return
+        }
         openCreateJob(JOB_TYPES[activeTab] ? activeTab : 'installation')
       })
-      openCreateServiceBtn.addEventListener('click', () => openCreateJob('service'))
+      openCreateServiceBtn.addEventListener('click', () => { window.location.href = 'service-requests.html?action=new' })
+      toggleAdvancedJobFields.addEventListener('click', () => {
+        const open = jobEditorModal.classList.toggle('advanced-open')
+        toggleAdvancedJobFields.textContent = open ? 'Skrýt volitelné podklady' : 'Volitelné podklady'
+      })
       closeJobModalBtn.addEventListener('click', closeJobModal)
       cancelJobModalBtn.addEventListener('click', closeJobModal)
       closeDetailBtn.addEventListener('click', closeDetailModal)
@@ -5748,12 +5767,12 @@
       serviceBridgeList.addEventListener('click', (event) => {
         const bridgeButton = event.target.closest('[data-action="bridge-service-request"]')
         if (!bridgeButton) return
-        openCreateJob('service', bridgeButton.dataset.id)
+        window.location.href = `service-requests.html?request=${encodeURIComponent(bridgeButton.dataset.id)}`
       })
       servicePanel.addEventListener('click', (event) => {
         const createServiceButton = event.target.closest('[data-action="create-service-job"]')
         if (!createServiceButton) return
-        openCreateJob('service')
+        window.location.href = 'service-requests.html?action=new'
       })
       overviewWorkTableBody.addEventListener('click', (event) => {
         const button = event.target.closest('button[data-action="detail"]')

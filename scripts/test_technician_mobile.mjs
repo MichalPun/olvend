@@ -17,6 +17,8 @@ const technicalJobs = read('technical-jobs.html')
 const index = read('index.html')
 const operator = read('mobile.html')
 const migration = read('database/technician_mobile_v45.sql')
+const transferMigration = read('database/technician_transfer_atomic_v46.sql')
+const serviceRequests = read('service-requests.html')
 
 parseInlineScripts('technician-mobile.html', technician)
 parseInlineScripts('technical-overview.html', overview)
@@ -31,6 +33,10 @@ for (const required of [
   'consume_technician_part_v45',
   'data-pickup-job',
   'data-deliver-job',
+  'complete_technician_transport_v46',
+  'Předáno na nové lokalitě',
+  'Přijato na sklad / dílnu',
+  'data-block-job',
   'data-open-end',
   "event_type:'break_start'",
   "event_type:'break_end'"
@@ -61,6 +67,20 @@ for (const required of [
 assert.ok(migration.includes('unique (plan_date, employee_id, source_type, source_id)'), 'Denní plán nesmí duplikovat stejnou zakázku')
 assert.ok(migration.includes('apply_stock_movements_v13'), 'Spotřeba dílu musí použít stávající atomický skladový pohyb')
 assert.ok(migration.includes('Zakázka není přiřazená tomuto technikovi'), 'Odpis dílu musí kontrolovat přiřazení technika')
+
+for (const required of [
+  'technical_job_id',
+  'from_stock_location_id',
+  'to_stock_location_id',
+  'for update',
+  'update public.machines',
+  'insert into public.machine_transfers',
+  "'already_applied', true"
+]) assert.ok(transferMigration.toLowerCase().includes(required.toLowerCase()), `Atomický přesun postrádá ${required}`)
+
+assert.ok(!technicalJobs.includes('await ensureChecklist(data)'), 'Nová technická karta nesmí automaticky vytvářet povinný checklist')
+assert.ok(technicalJobs.includes("service-requests.html?action=new"), 'Nový servis se musí zakládat v jediném servisním formuláři')
+assert.ok(serviceRequests.includes('new-request-mode') && serviceRequests.includes('lifecycle-field'), 'Nový servisní požadavek má používat zjednodušený formulář')
 
 for (const operatorGuard of [
   'getFoodRouteAllocatedQuantity',

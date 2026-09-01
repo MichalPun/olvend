@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v151-technician-mobile';
+const CACHE_NAME = 'olvend-v152-technician-transfers';
 const APP_SHELL = [
   './',
   './index.html',
