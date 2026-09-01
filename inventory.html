@@ -2384,6 +2384,7 @@
     let autoLoadRoutePlans = []
     let autoLoadRouteNeeds = new Map()
     let autoLoadRouteForecasts = new Map()
+    let autoLoadExactProductIds = new Set()
     const AUTO_LOAD_DEFAULT_RESERVE_RATIO = 0.15
     const AUTO_LOAD_WEEKLY_AUDIT_MARKER = 'AUTO_WEEKLY_RANDOM_AUDIT'
     const AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS = 12
@@ -5514,7 +5515,7 @@
       const salesFrom = new Date()
       salesFrom.setDate(salesFrom.getDate() - 28)
       const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }, { data: serviceRules, error: serviceRulesError }] = await Promise.all([
-        supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, target_units, pending_change_mode, pending_change_effective_date, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_new_units, active').in('machine_id', machineIds).eq('active', true),
+        supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, target_units, pending_change_mode, pending_change_effective_date, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_old_units, changeover_new_units, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('machine_coffee_containers').select('machine_id, product_sku, product_name, capacity_quantity, current_quantity, unit, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString()),
         supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true),
@@ -5527,6 +5528,7 @@
       if (serviceRulesError && !/machine_service_rules|schema cache/i.test(String(serviceRulesError.message || ''))) throw serviceRulesError
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
+      autoLoadExactProductIds = new Set()
       const routeStart = new Date(`${route.planning_date}T${String(route.planned_departure_time || '07:00').slice(0, 5)}:00`)
       const totalDriveMinutes = Number(route.estimated_drive_minutes || 0)
       const drivePerStop = routeStops.length ? totalDriveMinutes / routeStops.length : 0
@@ -5684,48 +5686,85 @@
         const pendingSku = changeEffectiveForRoute
           ? String(item.pending_product_sku || item.planned_product_sku || '')
           : ''
-        const fullSwap = item.pending_change_mode === 'full_swap'
-          && pendingSku
-          && String(item.product_sku || '') !== pendingSku
-        const sku = normalizeText(fullSwap ? pendingSku : (item.product_sku || ''))
-        const productName = fullSwap
+        const productChanged = Boolean(pendingSku && String(item.product_sku || '') !== pendingSku)
+        const fullSwap = productChanged && item.pending_change_mode === 'full_swap'
+        const sellThrough = productChanged && !fullSwap
+        const sku = normalizeText(productChanged ? pendingSku : (item.product_sku || ''))
+        const productName = productChanged
           ? (item.pending_product_name || item.planned_product_name || item.product_name || '')
           : (item.product_name || '')
         const product = productsV13.find((candidate) => sku && normalizeText(candidate.sku || '') === sku)
           || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(productName))
         if (!product) return
+        if (productChanged) autoLoadExactProductIds.add(String(product.id))
         const sourceUnit = item.unit || product.base_unit
         const capacity = Number(convertRecipeQuantityToBase(
-          Number(fullSwap ? (item.target_units ?? item.capacity_units ?? 0) : (item.capacity_units ?? item.capacity_quantity ?? 0)),
+          Number(productChanged ? (item.target_units ?? item.capacity_units ?? 0) : (item.capacity_units ?? item.capacity_quantity ?? 0)),
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
         const current = Number(convertRecipeQuantityToBase(
-          Number(fullSwap ? (item.changeover_new_units || 0) : (item.current_units ?? item.current_quantity ?? 0)),
+          Number(productChanged ? (item.changeover_new_units || 0) : (item.current_units ?? item.current_quantity ?? 0)),
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
         if (capacity <= 0) return
+        const oldProduct = sellThrough
+          ? productsV13.find((candidate) => normalizeText(candidate.sku || '') === normalizeText(item.product_sku || ''))
+            || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(item.product_name || ''))
+          : null
+        const oldCurrent = sellThrough
+          ? Number(convertRecipeQuantityToBase(
+              Number(item.changeover_old_units ?? Math.max(0, Number(item.current_units ?? 0) - Number(item.changeover_new_units || 0))),
+              sourceUnit,
+              product.base_unit || sourceUnit
+            ).toFixed(3))
+          : 0
         const poolKey = `${item.machine_id}::${product.id}`
         const pool = planogramPoolsByMachineProduct.get(poolKey) || {
           machineId: item.machine_id,
           product,
           capacity: 0,
           current: 0,
-          fullSwap: false
+          fullSwap: false,
+          sellThrough: false,
+          transitionSegments: []
         }
         pool.capacity = Number((pool.capacity + capacity).toFixed(3))
         pool.current = Number((pool.current + current).toFixed(3))
         pool.fullSwap = pool.fullSwap || fullSwap
+        pool.sellThrough = pool.sellThrough || sellThrough
+        if (sellThrough) {
+          pool.transitionSegments.push({
+            oldProductId: oldProduct?.id || null,
+            oldCurrent,
+            capacity
+          })
+        }
         planogramPoolsByMachineProduct.set(poolKey, pool)
       })
       const now = new Date()
       planogramPoolsByMachineProduct.forEach((pool) => {
-        const { machineId, product, capacity, current, fullSwap } = pool
+        const { machineId, product, capacity, current, fullSwap, sellThrough, transitionSegments } = pool
         const arrival = arrivalByMachine.get(String(machineId)) || routeStart
         const arrivalForecast = estimateConfirmedSalesBetween(machineId, product.id, now, arrival)
         const forecastSales = Math.max(0, Math.min(current, arrivalForecast.quantity))
         const projectedAtArrival = Math.max(0, Number((current - forecastSales).toFixed(3)))
+        let oldCurrent = 0
+        let oldProjectedAtArrival = 0
+        let oldForecastSales = 0
+        ;(transitionSegments || []).forEach((segment) => {
+          const segmentCurrent = Math.max(0, Number(segment.oldCurrent || 0))
+          const segmentForecast = segment.oldProductId
+            ? estimateConfirmedSalesBetween(machineId, segment.oldProductId, now, arrival)
+            : { quantity: 0 }
+          const segmentSales = Math.max(0, Math.min(segmentCurrent, Number(segmentForecast.quantity || 0)))
+          oldCurrent = Number((oldCurrent + segmentCurrent).toFixed(3))
+          oldForecastSales = Number((oldForecastSales + segmentSales).toFixed(3))
+          oldProjectedAtArrival = Number((oldProjectedAtArrival + Math.max(0, segmentCurrent - segmentSales)).toFixed(3))
+        })
+        const fillableCapacityNow = sellThrough ? Math.max(0, Number((capacity - oldCurrent).toFixed(3))) : capacity
+        const fillableCapacityAtArrival = sellThrough ? Math.max(0, Number((capacity - oldProjectedAtArrival).toFixed(3))) : capacity
         const rule = serviceRulesByMachine.get(String(machineId)) || {}
         const visitIntervalDays = Math.max(1, Number(rule.max_visit_interval_days || 10))
         const criticalPercent = Math.min(100, Math.max(0, Number(rule.stock_critical_percent ?? 20)))
@@ -5737,16 +5776,17 @@
         const alwaysFillToCapacity = isAutoLoadWaterStockoutCandidate(product)
         const refillNow = alwaysFillToCapacity
           || fullSwap
+          || (sellThrough && projectedAtArrival + 0.0001 < fillableCapacityAtArrival)
           || projectedAtArrival <= criticalQuantity + 0.0001
           || (reliableForecast && projectedAtArrival + 0.0001 < coverageNeed)
-        const missingNow = Math.max(0, Number((capacity - current).toFixed(3)))
-        const needAtArrival = refillNow ? Math.max(0, Number((capacity - projectedAtArrival).toFixed(3))) : 0
-        const stockoutRisk = capacity > 0 && projectedAtArrival <= 0.0001
+        const missingNow = Math.max(0, Number((fillableCapacityNow - current).toFixed(3)))
+        const needAtArrival = refillNow ? Math.max(0, Number((fillableCapacityAtArrival - projectedAtArrival).toFixed(3))) : 0
+        const stockoutRisk = capacity > 0 && projectedAtArrival + oldProjectedAtArrival <= 0.0001
         const productKey = String(product.id)
         if (needAtArrival > 0.0001) {
           autoLoadRouteNeeds.set(productKey, Number(((autoLoadRouteNeeds.get(productKey) || 0) + needAtArrival).toFixed(3)))
         }
-        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, maxVisitDays: 0, sampleDays: 0 }
+        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, changeoverMachines: 0, changeoverOldUnits: 0, maxVisitDays: 0, sampleDays: 0 }
         if (refillNow) detail.missingNow = Number((detail.missingNow + missingNow).toFixed(3))
         detail.forecastSales = Number((detail.forecastSales + forecastSales).toFixed(3))
         detail.nextVisitSales = Number((detail.nextVisitSales + nextVisitForecast.quantity).toFixed(3))
@@ -5756,6 +5796,11 @@
         if (refillNow) detail.refillMachines += 1
         else detail.skippedMachines += 1
         if (alwaysFillToCapacity) detail.waterFullMachines += 1
+        if (sellThrough || fullSwap) {
+          detail.changeoverMachines += 1
+          detail.changeoverOldUnits = Number((detail.changeoverOldUnits + oldProjectedAtArrival).toFixed(3))
+          detail.forecastSales = Number((detail.forecastSales + oldForecastSales).toFixed(3))
+        }
         if (stockoutRisk) {
           detail.stockoutNeed = Number((detail.stockoutNeed + needAtArrival).toFixed(3))
           detail.stockoutMachines += 1
@@ -5806,10 +5851,11 @@
       return AUTO_LOAD_FLAVOR_GROUP_RULES.find((rule) => rule.matches(product)) || null
     }
     function getAutoLoadGroupMembers(product) {
+      if (autoLoadExactProductIds.has(String(product?.id || ''))) return [product]
       const group = getAutoLoadFlavorGroup(product)
       if (!group) return [product]
       return productsV13
-        .filter((item) => group.matches(item) && (item.active !== false || group.includeInactiveMembers))
+        .filter((item) => group.matches(item) && !autoLoadExactProductIds.has(String(item.id)) && (item.active !== false || group.includeInactiveMembers))
         .sort((a, b) => {
           const aRepresentative = typeof group.representative === 'function' && group.representative(a)
           const bRepresentative = typeof group.representative === 'function' && group.representative(b)
@@ -5827,12 +5873,14 @@
         .sort((a, b) => normalizeText(a.name || '').localeCompare(normalizeText(b.name || ''), 'cs') || Number(a.id || 0) - Number(b.id || 0))
     }
     function isAutoLoadGroupRepresentative(product) {
+      if (autoLoadExactProductIds.has(String(product?.id || ''))) return true
       const group = getAutoLoadFlavorGroup(product)
       if (!group) return true
       const members = getAutoLoadGroupMembers(product)
       return String(members[0]?.id || '') === String(product.id)
     }
     function getAutoLoadGroupLabel(product) {
+      if (autoLoadExactProductIds.has(String(product?.id || ''))) return ''
       const group = getAutoLoadFlavorGroup(product)
       return group ? group.label : ''
     }
@@ -5863,10 +5911,12 @@
         summary.refillMachines += Number(detail.refillMachines || 0)
         summary.waterFullMachines += Number(detail.waterFullMachines || 0)
         summary.skippedMachines += Number(detail.skippedMachines || 0)
+        summary.changeoverMachines += Number(detail.changeoverMachines || 0)
+        summary.changeoverOldUnits = Number((summary.changeoverOldUnits + Number(detail.changeoverOldUnits || 0)).toFixed(3))
         summary.maxVisitDays = Math.max(summary.maxVisitDays, Number(detail.maxVisitDays || 0))
         summary.sampleDays += Number(detail.sampleDays || 0)
         return summary
-      }, { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, maxVisitDays: 0, sampleDays: 0 })
+      }, { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, changeoverMachines: 0, changeoverOldUnits: 0, maxVisitDays: 0, sampleDays: 0 })
     }
     function getPendingAutoLoadQuantity(vehicleId, targetDate, productId) {
       const requestIds = new Set(mobileStockRequests
@@ -6181,6 +6231,24 @@
           let packagePlan = calculateAutoLoadPackagePlan(requiredFromNew, packageQty, minRatio)
           let stockoutOverride = false
           let routeCoverageOverride = false
+          let changeoverPackageOverride = false
+          if (routeForecast.changeoverMachines > 0 && requiredFromNew > 0.0001 && packageQty > 0) {
+            changeoverPackageOverride = true
+            const changeoverPackageCount = Math.max(1, Math.ceil((requiredFromNew - 0.0001) / packageQty))
+            const changeoverLoadQty = Number((changeoverPackageCount * packageQty).toFixed(3))
+            packagePlan = {
+              ...packagePlan,
+              packageCount: changeoverPackageCount,
+              suggestedQty: changeoverLoadQty,
+              approvedPackageCount: changeoverPackageCount,
+              approvedQty: changeoverLoadQty,
+              usageRatio: Math.min(1, Number((requiredFromNew / changeoverLoadQty).toFixed(3))),
+              deferredAfterLoadQty: 0,
+              blockedPackageCount: 0,
+              blockedQty: 0,
+              blockedUsageRatio: 0
+            }
+          }
           if (routeForecast.stockoutMachines > 0 && requiredFromNew > 0.0001 && Number(packagePlan.deferredAfterLoadQty || 0) > 0.0001) {
             stockoutOverride = true
             const stockoutLoadQty = normalizeAutoLoadSuggestedQuantity(product, requiredFromNew)
@@ -6254,6 +6322,12 @@
           const deferredAfterLoadQty = Number(packagePlan.deferredAfterLoadQty || 0)
           const projectedVehicleAfterTrip = Number((projectedVehicleBeforeTarget + approvedQty - tripDemandQty).toFixed(3))
           const reasons = []
+          if (routeForecast.changeoverMachines > 0) {
+            reasons.push(`nový produkt pro ${routeForecast.changeoverMachines} schválených změn sortimentu`)
+            if (routeForecast.changeoverOldUnits > 0.0001) {
+              reasons.push(`původní zboží zbývá ${formatQuantityValue(routeForecast.changeoverOldUnits, product.base_unit || 'ks')} do doprodeje`)
+            }
+          }
           if (pendingBeforeTarget.pending > 0.0001) {
             reasons.push(`do ${targetDate} čeká odhad doplnění ${formatQuantityValue(pendingBeforeTarget.pending, product.base_unit || 'ks')}`)
           }
@@ -6275,6 +6349,9 @@
           }
           if (routeCoverageOverride) {
             reasons.push('potřeba trasy musí být pokrytá celá')
+          }
+          if (changeoverPackageOverride) {
+            reasons.push('první zásoba nového sortimentu se vydává v celém balení')
           }
           if (stockoutBonusQty > 0.0001) {
             reasons.push(`balení navíc, po minulé jízdě zůstalo auto na 0`)
@@ -6654,6 +6731,9 @@
               ? `${row.manualAdded ? 'ručně přidáno' : 'ručně upraveno'} před předáním skladu: ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}`
               : `auto návrh celých balení: ${row.approvedPackageCount} bal. po ${row.packageQty}`,
             storeAsPackage ? `do evidence ${formatQuantityValue(row.approvedQty, product.base_unit || 'ks')}` : '',
+            row.routeForecast?.changeoverMachines > 0
+              ? `NOVÝ SORTIMENT: ${row.routeForecast.changeoverMachines} schválených změn pozice`
+              : '',
             `odhad jízdy ${row.expectedDemand}`,
             `auto teď ${row.currentVehicleQty}`,
             `využití ${(row.usageRatio * 100).toFixed(0)} %`
