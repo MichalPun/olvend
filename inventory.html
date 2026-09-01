@@ -5680,6 +5680,16 @@
         }
       }
       const planogramPoolsByMachineProduct = new Map()
+      const routeVehicleLocation = getVehicleStockLocationByVehicleId(route.vehicle_id)
+      const oldVehicleRemainingByProduct = new Map()
+      if (routeVehicleLocation?.id) {
+        stockBalancesV13
+          .filter((balance) => String(balance.stock_location_id) === String(routeVehicleLocation.id) && Number(balance.quantity_on_hand || 0) > 0)
+          .forEach((balance) => {
+            const key = String(balance.product_id)
+            oldVehicleRemainingByProduct.set(key, Number(((oldVehicleRemainingByProduct.get(key) || 0) + Number(balance.quantity_on_hand || 0)).toFixed(3)))
+          })
+      }
       ;[...(slots || []), ...(containers || [])].forEach((item) => {
         const effectiveDate = String(item.pending_change_effective_date || '')
         const changeEffectiveForRoute = !effectiveDate || effectiveDate <= String(route.planning_date || '')
@@ -5763,8 +5773,25 @@
           oldForecastSales = Number((oldForecastSales + segmentSales).toFixed(3))
           oldProjectedAtArrival = Number((oldProjectedAtArrival + Math.max(0, segmentCurrent - segmentSales)).toFixed(3))
         })
-        const fillableCapacityNow = sellThrough ? Math.max(0, Number((capacity - oldCurrent).toFixed(3))) : capacity
-        const fillableCapacityAtArrival = sellThrough ? Math.max(0, Number((capacity - oldProjectedAtArrival).toFixed(3))) : capacity
+        // U doprodeje nejdriv spotrebujeme puvodni zbozi, ktere uz je na
+        // konkretnim aute teto trasy. Zasoba jineho vozidla se sem nikdy
+        // nezapocte. Novy produkt se chysta jen na zbylou kapacitu.
+        let oldVehicleAllocated = 0
+        let oldVehicleFreeCapacity = sellThrough
+          ? Math.max(0, Number((capacity - projectedAtArrival - oldProjectedAtArrival).toFixed(3)))
+          : 0
+        ;(transitionSegments || []).forEach((segment) => {
+          if (!sellThrough || !segment.oldProductId || oldVehicleFreeCapacity <= 0.0001) return
+          const key = String(segment.oldProductId)
+          const available = Math.max(0, Number(oldVehicleRemainingByProduct.get(key) || 0))
+          const allocated = Math.min(available, oldVehicleFreeCapacity)
+          if (allocated <= 0.0001) return
+          oldVehicleAllocated = Number((oldVehicleAllocated + allocated).toFixed(3))
+          oldVehicleFreeCapacity = Number((oldVehicleFreeCapacity - allocated).toFixed(3))
+          oldVehicleRemainingByProduct.set(key, Number((available - allocated).toFixed(3)))
+        })
+        const fillableCapacityNow = sellThrough ? Math.max(0, Number((capacity - oldCurrent - oldVehicleAllocated).toFixed(3))) : capacity
+        const fillableCapacityAtArrival = sellThrough ? Math.max(0, Number((capacity - oldProjectedAtArrival - oldVehicleAllocated).toFixed(3))) : capacity
         const rule = serviceRulesByMachine.get(String(machineId)) || {}
         const visitIntervalDays = Math.max(1, Number(rule.max_visit_interval_days || 10))
         const criticalPercent = Math.min(100, Math.max(0, Number(rule.stock_critical_percent ?? 20)))
@@ -5786,7 +5813,7 @@
         if (needAtArrival > 0.0001) {
           autoLoadRouteNeeds.set(productKey, Number(((autoLoadRouteNeeds.get(productKey) || 0) + needAtArrival).toFixed(3)))
         }
-        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, changeoverMachines: 0, changeoverOldUnits: 0, maxVisitDays: 0, sampleDays: 0 }
+        const detail = autoLoadRouteForecasts.get(productKey) || { missingNow: 0, forecastSales: 0, nextVisitSales: 0, needAtArrival: 0, stockoutNeed: 0, stockoutMachines: 0, refillMachines: 0, waterFullMachines: 0, skippedMachines: 0, changeoverMachines: 0, changeoverOldUnits: 0, changeoverVehicleOldUnits: 0, maxVisitDays: 0, sampleDays: 0 }
         if (refillNow) detail.missingNow = Number((detail.missingNow + missingNow).toFixed(3))
         detail.forecastSales = Number((detail.forecastSales + forecastSales).toFixed(3))
         detail.nextVisitSales = Number((detail.nextVisitSales + nextVisitForecast.quantity).toFixed(3))
@@ -5799,6 +5826,7 @@
         if (sellThrough || fullSwap) {
           detail.changeoverMachines += 1
           detail.changeoverOldUnits = Number((detail.changeoverOldUnits + oldProjectedAtArrival).toFixed(3))
+          detail.changeoverVehicleOldUnits = Number((detail.changeoverVehicleOldUnits + oldVehicleAllocated).toFixed(3))
           detail.forecastSales = Number((detail.forecastSales + oldForecastSales).toFixed(3))
         }
         if (stockoutRisk) {
@@ -6326,6 +6354,9 @@
             reasons.push(`nový produkt pro ${routeForecast.changeoverMachines} schválených změn sortimentu`)
             if (routeForecast.changeoverOldUnits > 0.0001) {
               reasons.push(`původní zboží zbývá ${formatQuantityValue(routeForecast.changeoverOldUnits, product.base_unit || 'ks')} do doprodeje`)
+            }
+            if (routeForecast.changeoverVehicleOldUnits > 0.0001) {
+              reasons.push(`${formatQuantityValue(routeForecast.changeoverVehicleOldUnits, product.base_unit || 'ks')} původního zboží pokryje stejné auto`)
             }
           }
           if (pendingBeforeTarget.pending > 0.0001) {

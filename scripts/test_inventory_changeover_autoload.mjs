@@ -14,15 +14,19 @@ assert.match(html, /changeover_old_units, changeover_new_units, active/)
 assert.match(html, /const productChanged = Boolean\(pendingSku && String\(item\.product_sku \|\| ''\) !== pendingSku\)/)
 assert.match(html, /if \(productChanged\) autoLoadExactProductIds\.add\(String\(product\.id\)\)/)
 assert.match(html, /const sellThrough = productChanged && !fullSwap/)
-assert.match(html, /fillableCapacityAtArrival = sellThrough \? Math\.max\(0, Number\(\(capacity - oldProjectedAtArrival\)\.toFixed\(3\)\)\) : capacity/)
+assert.match(html, /oldVehicleRemainingByProduct/)
+assert.match(html, /Zasoba jineho vozidla se sem nikdy/)
+assert.match(html, /fillableCapacityAtArrival = sellThrough \? Math\.max\(0, Number\(\(capacity - oldProjectedAtArrival - oldVehicleAllocated\)\.toFixed\(3\)\)\) : capacity/)
 assert.match(html, /if \(autoLoadExactProductIds\.has\(String\(product\?\.id \|\| ''\)\)\) return \[product\]/)
 assert.match(html, /new Set\(\)/)
 assert.match(html, /NOVÝ SORTIMENT:/)
 assert.match(html, /první zásoba nového sortimentu se vydává v celém balení/)
+assert.match(html, /původního zboží pokryje stejné auto/)
 
-const calculateTransitionNeed = ({ capacity, oldCurrent, newCurrent, expectedOldSales }) => {
+const calculateTransitionNeed = ({ capacity, oldCurrent, oldVehicle = 0, newCurrent, expectedOldSales }) => {
   const oldAtArrival = Math.max(0, oldCurrent - expectedOldSales)
-  const fillableAtArrival = Math.max(0, capacity - oldAtArrival)
+  const oldVehicleAllocated = Math.min(oldVehicle, Math.max(0, capacity - oldAtArrival - newCurrent))
+  const fillableAtArrival = Math.max(0, capacity - oldAtArrival - oldVehicleAllocated)
   return Math.max(0, fillableAtArrival - newCurrent)
 }
 
@@ -30,5 +34,7 @@ assert.equal(calculateTransitionNeed({ capacity: 15, oldCurrent: 10, newCurrent:
 assert.equal(calculateTransitionNeed({ capacity: 15, oldCurrent: 10, newCurrent: 0, expectedOldSales: 3 }), 8)
 assert.equal(calculateTransitionNeed({ capacity: 15, oldCurrent: 15, newCurrent: 0, expectedOldSales: 0 }), 0)
 assert.equal(calculateTransitionNeed({ capacity: 10, oldCurrent: 0, newCurrent: 0, expectedOldSales: 0 }), 10)
+assert.equal(calculateTransitionNeed({ capacity: 10, oldCurrent: 0, oldVehicle: 6, newCurrent: 0, expectedOldSales: 0 }), 4)
+assert.equal(calculateTransitionNeed({ capacity: 10, oldCurrent: 0, oldVehicle: 12, newCurrent: 0, expectedOldSales: 0 }), 0)
 
 console.log('OK: změna sortimentu počítá přesné nové SKU, uvolněnou kapacitu a celé první balení')

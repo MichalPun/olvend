@@ -109,6 +109,40 @@ function context(extra = {}) {
   assert.equal(change?.fullSwap, true, 'Povinná kompletní změna musí zůstat viditelná')
 }
 
+assert.match(html, /Sell-through spotrebovava puvodni produkt z tohoto konkretniho auta/)
+assert.match(html, /const primary = planogramChange\?\.fullSwap \? replacementProduct : currentProduct/)
+assert.match(html, /planogramChange\?\.fullSwap && changeProductId/)
+assert.match(html, /Doprodej ze stejného auta/)
+assert.match(html, /staleCutoff = Date\.now\(\) - 10 \* 86400000/)
+assert.match(html, /10 dnech bez využití předvybráno k vrácení do skladu/)
+
+{
+  const oldProduct = { id: 1, sku: 'OLD', name: 'Původní produkt' }
+  const newProduct = { id: 2, sku: 'NEW', name: 'Nový produkt' }
+  const makeSandbox = ({ oldStock, newStock, fullSwap }) => context({
+    getFoodRequiredFillQuantity: () => 10,
+    getFoodSlotDraft: () => ({ fillItems: [], selectedProductId: null, manualProductChoice: false, pickedQuantity: 0 }),
+    getFoodSlotProductOptions: () => [oldProduct, newProduct],
+    getFoodPlanogramChange: () => ({ productChanged: true, fullSwap, nextSku: 'NEW', nextProduct: newProduct }),
+    getFoodAvailableVehicleQuantity: (_detail, _stopId, _slotId, productId) => String(productId) === '1' ? oldStock : newStock,
+    getFoodRouteAllocatedQuantity: (_detail, _stopId, _slot, _product, desired) => desired
+  })
+  const sellThrough = makeSandbox({ oldStock: 6, newStock: 20, fullSwap: false })
+  vm.runInContext(extractFunction('getFoodPickSuggestion'), sellThrough)
+  assert.equal(sellThrough.getFoodPickSuggestion({ vehicleStock: { 1: 6, 2: 20 } }, 'stop', { id: 1, product_sku: 'OLD' }).product.id, 1,
+    'Doprodej musí přednostně použít původní produkt ze stejného auta')
+
+  const depleted = makeSandbox({ oldStock: 0, newStock: 20, fullSwap: false })
+  vm.runInContext(extractFunction('getFoodPickSuggestion'), depleted)
+  assert.equal(depleted.getFoodPickSuggestion({ vehicleStock: { 1: 0, 2: 20 } }, 'stop', { id: 1, product_sku: 'OLD' }).product.id, 2,
+    'Po spotřebování původního produktu musí doprodej přejít na schválenou náhradu')
+
+  const forced = makeSandbox({ oldStock: 6, newStock: 20, fullSwap: true })
+  vm.runInContext(extractFunction('getFoodPickSuggestion'), forced)
+  assert.equal(forced.getFoodPickSuggestion({ vehicleStock: { 1: 6, 2: 20 } }, 'stop', { id: 1, product_sku: 'OLD' }).product.id, 2,
+    'Kompletní výměna musí použít nový produkt i když starý produkt v autě zůstává')
+}
+
 {
   const drafts = new Map([[1, { pickedQuantity: 1, cartLoadOrder: 1 }], [2, { pickedQuantity: 1, cartLoadOrder: 3 }], [3, { pickedQuantity: 1, cartLoadOrder: 2 }]])
   const sandbox = context({

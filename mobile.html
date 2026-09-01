@@ -10210,7 +10210,13 @@
       const planogramChange = getFoodPlanogramChange(slot)
       const currentProduct = state.products.find((product) => String(product.sku || '') === String(slot?.product_sku || ''))
       const changeProductId = planogramChange?.productChanged ? planogramChange.nextProduct?.id : null
-      const defaultProductId = (!draft.picked && changeProductId) || draft.selectedProductId || getFoodSlotProductOptions(slot)[0]?.id || null
+      // Pri rizene zmene se stary pouzitelny produkt nejdriv doproda ze stejneho
+      // vozidla. Novy produkt je povinny hned jen u kompletni vymeny.
+      const defaultProductId = (!draft.picked && planogramChange?.fullSwap && changeProductId)
+        || draft.selectedProductId
+        || currentProduct?.id
+        || getFoodSlotProductOptions(slot)[0]?.id
+        || null
       let rawFillItems = Array.isArray(draft.fillItems) && draft.fillItems.length
         ? draft.fillItems
         : allocateFoodFillFromVehicleBatches(detail, defaultProductId, hasDraftDecision
@@ -10219,7 +10225,7 @@
       const hasWrongFullSwapProduct = Boolean(planogramChange?.fullSwap && changeProductId && rawFillItems.some((item) => (
         Number(item.quantity || 0) > 0 && String(item.productId) !== String(changeProductId)
       )))
-      if (changeProductId && (
+      if (planogramChange?.fullSwap && changeProductId && (
         (!draft.picked && rawFillItems.every((item) => String(item.productId) !== String(changeProductId)))
         || (!draft.accepted && hasWrongFullSwapProduct)
       )) {
@@ -10284,13 +10290,16 @@
       const replacementProduct = planogramChange?.productChanged
         ? options.find((product) => String(product.sku || '') === String(planogramChange.nextSku || '')) || planogramChange.nextProduct || null
         : null
-      const primary = planogramChange?.productChanged ? replacementProduct : currentProduct
+      // Sell-through spotrebovava puvodni produkt z tohoto konkretniho auta.
+      // Na novy sortiment prejde az kdyz stary produkt v aute neni. Full-swap
+      // je jedina vyjimka, kdy je novy produkt povinny okamzite.
+      const primary = planogramChange?.fullSwap ? replacementProduct : currentProduct
       const selected = options.find((product) => String(product.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId || '')) || primary
       const selectedExplicitly = Boolean(draft.manualProductChoice || draft.pickedQuantity > 0)
       const availability = (product) => product ? getFoodAvailableVehicleQuantity(detail, stopId, slot.id, product.id) : 0
       let product = planogramChange?.fullSwap ? primary : selectedExplicitly ? selected : primary
       let desired = getFoodRouteAllocatedQuantity(detail, stopId, slot, product, localDesired)
-      if (!planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) < desired) {
+      if (!planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) <= 0) {
         const alternative = options
           .filter((candidate) => String(candidate.id) !== String(primary?.id || ''))
           .map((candidate) => ({ product: candidate, available: availability(candidate) }))
@@ -10530,14 +10539,16 @@
         const canConfirmNoStock = !optionalMode && desired > 0 && !draft.picked && confirmQuantity <= 0 && !noStockResolved
         const substitute = Boolean(suggestion?.isSubstitute)
         const displayProductName = planogramChange?.productChanged
-          ? (suggestion?.product?.name || planogramChange.nextName || planogramChange.nextSku || 'Nový produkt')
+          ? (suggestion?.product?.name || (planogramChange.fullSwap ? planogramChange.nextName : slot.product_name) || planogramChange.nextSku || 'Produkt')
           : substitute ? suggestion.product?.name : (slot.product_name || product?.name || 'Produkt')
         const rowDetail = optionalMode
           ? `V automatu ${slot.current_units || 0}/${slot.capacity_units || 0} ks · v autě ${availableInVehicle} ks`
           : planogramChange?.fullSwap
             ? `Kompletní výměna za ${slot.product_name || slot.product_sku || 'původní produkt'} · vezmi ${suggestion?.quantity || 0} ks · v autě ${availableInVehicle} ks`
           : planogramChange?.productChanged
-            ? `Řízená změna z ${slot.product_name || slot.product_sku || 'původního produktu'} · nový produkt ${planogramChange.nextName || planogramChange.nextSku} · v autě ${availableInVehicle} ks`
+            ? String(suggestion?.product?.sku || '') === String(slot.product_sku || '')
+              ? `Doprodej ze stejného auta · ${slot.product_name || slot.product_sku || 'původní produkt'} má přednost · potom ${planogramChange.nextName || planogramChange.nextSku} · v autě ${availableInVehicle} ks`
+              : `Původní produkt už v tomto autě není · přechod na ${planogramChange.nextName || planogramChange.nextSku} · v autě ${availableInVehicle} ks`
           : Number(suggestion?.desired || 0) < Number(suggestion?.localDesired || 0)
             ? `Rozděleno pro zbývající trasu · zde ${suggestion?.desired || 0} z lokální potřeby ${suggestion?.localDesired || 0} ks · v autě ${availableInVehicle} ks`
           : substitute
@@ -12276,6 +12287,9 @@
       renderStockRequests()
       if (type === 'vehicle_writeoff') {
         loadPendingRouteWaste().catch(handleError)
+      }
+      if (type === 'vehicle_unload') {
+        loadWholeVehicleForUnload({ prefillStaleChangeovers: true, silent: true }).catch(handleError)
       }
       if (type === 'vehicle_load' && !state.manualVehicleLoad) {
         els.stockRequestDetails.open = true
@@ -17000,7 +17014,7 @@
       closeStockDetail()
     }
 
-    async function loadWholeVehicleForUnload() {
+    async function loadWholeVehicleForUnload(options = {}) {
       const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
       if (!vehicleId) {
         showMessage('Nejdřív vyber vozidlo pro vykládku.', 'error')
@@ -17021,7 +17035,7 @@
       }
       const { data: balances, error: balancesError } = await supabase
         .from('stock_location_balances')
-        .select('product_id, quantity_on_hand')
+        .select('product_id, batch_id, quantity_on_hand')
         .eq('stock_location_id', location.id)
         .gt('quantity_on_hand', 0)
       if (balancesError) throw balancesError
@@ -17031,6 +17045,25 @@
         return
       }
       const productIds = rows.map((row) => String(row.product_id))
+      const { data: vehicleMovements, error: movementError } = await supabase
+        .from('stock_movements_v13')
+        .select('product_id,batch_id,from_stock_location_id,to_stock_location_id,movement_type,reference_id,created_at')
+        .or(`from_stock_location_id.eq.${location.id},to_stock_location_id.eq.${location.id}`)
+        .in('product_id', productIds)
+        .order('created_at', { ascending: false })
+        .limit(5000)
+      if (movementError) throw movementError
+      const changeoverKeys = new Set()
+      const latestActivityByKey = new Map()
+      ;(vehicleMovements || []).forEach((movement) => {
+        const key = `${movement.product_id}:${movement.batch_id || 'none'}`
+        if (!latestActivityByKey.has(key)) latestActivityByKey.set(key, movement.created_at || '')
+        if (/route_visit_.*_full_swap_return_/i.test(String(movement.reference_id || ''))
+          && String(movement.to_stock_location_id || '') === String(location.id)) {
+          changeoverKeys.add(key)
+        }
+      })
+      const staleCutoff = Date.now() - 10 * 86400000
       const knownProducts = new Map(state.products.map((product) => [String(product.id), product]))
       const missingIds = productIds.filter((id) => !knownProducts.has(id))
       if (missingIds.length) {
@@ -17045,13 +17078,44 @@
         })
         renderProducts()
       }
-      state.vehicleUnloadBalances = rows.map((row) => ({ ...row, product: knownProducts.get(String(row.product_id)) })).filter((row) => row.product)
+      state.vehicleUnloadBalances = rows.map((row) => {
+        const key = `${row.product_id}:${row.batch_id || 'none'}`
+        const lastActivity = latestActivityByKey.get(key) || ''
+        const lastActivityAt = lastActivity ? new Date(lastActivity).getTime() : Number.NaN
+        const staleChangeover = changeoverKeys.has(key) && Number.isFinite(lastActivityAt) && lastActivityAt <= staleCutoff
+        return {
+          ...row,
+          product: knownProducts.get(String(row.product_id)),
+          stale_changeover: staleChangeover,
+          changeover_idle_days: staleChangeover ? Math.max(10, Math.floor((Date.now() - lastActivityAt) / 86400000)) : 0
+        }
+      }).filter((row) => row.product)
+      if (options.prefillStaleChangeovers && !state.stockDraftItems.length) {
+        state.stockDraftItems = state.vehicleUnloadBalances
+          .filter((row) => row.stale_changeover && Number(row.quantity_on_hand || 0) > 0)
+          .map((row) => ({
+            product_id: row.product.id,
+            product_name: row.product.name,
+            sku: row.product.sku || null,
+            unit: row.product.base_unit || 'ks',
+            quantity: Number(row.quantity_on_hand || 0),
+            stock_quantity_base_units: Number(row.quantity_on_hand || 0),
+            max_quantity: Number(row.quantity_on_hand || 0),
+            note: `Staženo při změně sortimentu · ${row.changeover_idle_days} dní bez využití na trasách tohoto auta · doporučeno vrátit do skladu`,
+            batch_id: row.batch_id || null,
+            expiry_date: null,
+            batch_code: null
+          }))
+      }
       if (els.stockManualEntryPanel) els.stockManualEntryPanel.hidden = false
       els.stockProductInput.value = ''
       els.stockProductSearchPanel.hidden = true
       renderStockDraft()
-      showMessage('Zásoby vozidla jsou načtené. Vyhledej produkt, který skutečně vracíš.', 'info', { scroll: false })
-      window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 30)
+      const staleCount = state.stockDraftItems.filter((item) => String(item.note || '').includes('bez využití na trasách tohoto auta')).length
+      showMessage(staleCount
+        ? `${staleCount} ${staleCount === 1 ? 'položka je' : staleCount < 5 ? 'položky jsou' : 'položek je'} po 10 dnech bez využití předvybráno k vrácení do skladu.`
+        : 'Zásoby vozidla jsou načtené. Vyhledej produkt, který skutečně vracíš.', 'info', { scroll: false })
+      if (!options.silent) window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 30)
     }
 
     async function saveVehicleLog({ noteOnly = false } = {}) {
