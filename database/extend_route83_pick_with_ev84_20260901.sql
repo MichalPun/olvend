@@ -67,7 +67,7 @@ begin
     confirmed_quantity,
     note
   ) values
-    (372, 64, 'Hello Perlive malinovy perlivy napoj 330ml plech', '259', 'ks', 1, 1, null, 'EV84 Marius Pedersen · chybi 1 ks po zapocteni zasoby Vivara'),
+    (372, 64, 'Hello Perlivé malinový perlivý nápoj 330ml plech', '259', 'ks', 1, 1, null, 'EV84 Marius Pedersen · chybi 1 ks po zapocteni zasoby Vivara'),
     (372, 49, 'Doritos Tortillas Chipsy nachos cheese 44g', '210', 'ks', 5, 5, null, 'EV84 Marius Pedersen · chybi 5 ks po zapocteni zasoby Vivara'),
     (372, 81, 'Kinder Bueno Oplatky 43g', '28', 'ks', 4, 4, null, 'EV84 Marius Pedersen · chybi 4 ks po zapocteni zasoby Vivara'),
     (372, 84, 'Knoppers Oplatka 25g', '165', 'ks', 1, 1, null, 'EV84 Marius Pedersen · chybi 1 ks po zapocteni zasoby Vivara'),
