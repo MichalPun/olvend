@@ -13,12 +13,14 @@ function parseInlineScripts(path, html) {
 
 const technician = read('technician-mobile.html')
 const overview = read('technical-overview.html')
+const technicalJobs = read('technical-jobs.html')
 const index = read('index.html')
 const operator = read('mobile.html')
 const migration = read('database/technician_mobile_v45.sql')
 
 parseInlineScripts('technician-mobile.html', technician)
 parseInlineScripts('technical-overview.html', overview)
+parseInlineScripts('technical-jobs.html', technicalJobs)
 parseInlineScripts('index.html', index)
 
 for (const required of [
@@ -34,11 +36,27 @@ for (const required of [
   "event_type:'break_end'"
 ]) assert.ok(technician.includes(required), `Technický mobil postrádá ${required}`)
 
+for (const required of [
+  'renderTechnicalInstructions',
+  'technical_job_material_availability_v29',
+  'Zásobníky a suroviny',
+  'Volby a ceny',
+  'Fotky a přílohy'
+]) assert.ok(technician.includes(required), `Mobil technika neukazuje úplné zadání: ${required}`)
+
 assert.match(index, /technik.*technician-mobile\.html/s, 'Technik musí po přihlášení vstoupit do samostatného mobilu')
 assert.match(index, /return 'mobile\.html'/, 'Operátorské role musí dál vstupovat do původního mobilu')
 
 assert.ok(overview.includes('service_requests') && overview.includes('technical_jobs'), 'PC přehled musí spojovat oba zdroje práce')
 assert.ok(overview.includes('service-requests.html') && overview.includes('technical-jobs.html'), 'PC přehled musí zachovat vstup do plných modulů')
+
+for (const required of [
+  'PŘENOS DO MOBILU TECHNIKA',
+  'NEPŘENÁŠÍ SE',
+  'saveMobileAssignment',
+  'renderConfigurationTables',
+  'Stejné strukturované údaje se zobrazí technikovi v mobilu'
+]) assert.ok(technicalJobs.includes(required), `PC karta neobjasňuje přenos do mobilu: ${required}`)
 
 assert.ok(migration.includes('unique (plan_date, employee_id, source_type, source_id)'), 'Denní plán nesmí duplikovat stejnou zakázku')
 assert.ok(migration.includes('apply_stock_movements_v13'), 'Spotřeba dílu musí použít stávající atomický skladový pohyb')
