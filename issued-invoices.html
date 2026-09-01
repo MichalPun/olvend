@@ -283,16 +283,30 @@
               <select id="partnerBillingLocation" required></select>
             </div>
             <div class="field">
-              <label for="partnerBillingContact">Odběratel faktury</label>
+              <label for="partnerBillingContact" id="partnerBillingContactLabel">Odběratel faktury</label>
               <select id="partnerBillingContact" required></select>
+            </div>
+            <div class="field">
+              <label for="partnerBillingDirection">Směr vyúčtování</label>
+              <select id="partnerBillingDirection">
+                <option value="from_partner">Partner platí nám</option>
+                <option value="to_partner">Partner fakturuje nám</option>
+              </select>
             </div>
             <div class="field">
               <label for="partnerBillingDevice">Označení zařízení</label>
               <input id="partnerBillingDevice" placeholder="Např. X2 E" required />
             </div>
             <div class="field">
-              <label for="partnerBillingRate">Sazba bez DPH / jednotku</label>
+              <label for="partnerBillingRate" id="partnerBillingRateLabel">Sazba bez DPH / jednotku</label>
               <input id="partnerBillingRate" type="number" min="0" step="0.01" />
+            </div>
+            <div class="field">
+              <label for="partnerBillingRateMode">Zadání sazby</label>
+              <select id="partnerBillingRateMode">
+                <option value="net">Bez DPH</option>
+                <option value="gross">Včetně DPH</option>
+              </select>
             </div>
             <div class="field">
               <label for="partnerBillingVat">DPH za jednotky %</label>
@@ -633,8 +647,12 @@
     const partnerBillingMonth = document.getElementById('partnerBillingMonth')
     const partnerBillingLocation = document.getElementById('partnerBillingLocation')
     const partnerBillingContact = document.getElementById('partnerBillingContact')
+    const partnerBillingContactLabel = document.getElementById('partnerBillingContactLabel')
+    const partnerBillingDirection = document.getElementById('partnerBillingDirection')
     const partnerBillingDevice = document.getElementById('partnerBillingDevice')
     const partnerBillingRate = document.getElementById('partnerBillingRate')
+    const partnerBillingRateLabel = document.getElementById('partnerBillingRateLabel')
+    const partnerBillingRateMode = document.getElementById('partnerBillingRateMode')
     const partnerBillingVat = document.getElementById('partnerBillingVat')
     const partnerBillingScope = document.getElementById('partnerBillingScope')
     const partnerBillingSourceFileField = document.getElementById('partnerBillingSourceFileField')
@@ -760,6 +778,7 @@
     let partnerBillingRules = []
     let partnerBillingContacts = []
     let partnerBillingMachines = []
+    let partnerSettlementReports = []
     let currentPartnerBilling = null
     let pendingPartnerBillingMeta = null
     let partnerBillingSourceFile = null
@@ -1463,9 +1482,10 @@
         email_recipient: existing.email_recipient || contact?.email || ''
       })
     }
-    function partnerRuleForLocation(locationId, range = partnerMonthRange()) {
+    function partnerRuleForLocation(locationId, range = partnerMonthRange(), direction = '') {
       return partnerBillingRules
         .filter((rule) => String(rule.location_id) === String(locationId))
+        .filter((rule) => !direction || rule.direction === direction)
         .filter((rule) => !rule.valid_from || rule.valid_from <= range.toDate)
         .filter((rule) => !rule.valid_to || rule.valid_to >= range.fromDate)
         .sort((a, b) => String(b.valid_from || '').localeCompare(String(a.valid_from || '')))[0] || null
@@ -1528,7 +1548,12 @@
       return `podklad-vyuctovani-${partner || 'partner'}-${period}.pdf`
     }
     function renderPartnerBillingContacts(selectedId = '') {
-      partnerBillingContact.innerHTML = '<option value="">Vyber odběratele</option>' + partnerBillingContacts
+      const direction = partnerBillingDirection.value || 'from_partner'
+      const allowedTypes = direction === 'to_partner' ? new Set(['supplier', 'both']) : new Set(['customer', 'both'])
+      const label = direction === 'to_partner' ? 'Vyber dodavatele' : 'Vyber odběratele'
+      partnerBillingContactLabel.textContent = direction === 'to_partner' ? 'Partner, který nám fakturuje' : 'Odběratel faktury'
+      partnerBillingContact.innerHTML = `<option value="">${label}</option>` + partnerBillingContacts
+        .filter((contact) => allowedTypes.has(contact.contact_type))
         .map((contact) => `<option value="${escapeHtml(String(contact.id))}">${escapeHtml(contact.name || '')}</option>`)
         .join('')
       if (selectedId) partnerBillingContact.value = String(selectedId)
@@ -1555,21 +1580,28 @@
       partnerBillingAttachmentMode.disabled = usesExternalReport
       if (usesExternalReport) partnerBillingAttachmentMode.value = 'automatic'
       downloadPartnerBillingBtn.textContent = usesExternalReport ? 'Stáhnout souhrn' : 'Stáhnout podklad'
+      const direction = partnerBillingDirection.value || 'from_partner'
+      const rateIncludesVat = partnerBillingRateMode.value === 'gross'
+      partnerBillingRateLabel.textContent = `Sazba ${rateIncludesVat ? 'včetně DPH' : 'bez DPH'} / jednotku`
+      preparePartnerInvoiceBtn.textContent = direction === 'to_partner' ? 'Odeslat podklad partnerovi' : 'Připravit fakturu'
     }
     function applyPartnerBillingProfile() {
       const locationId = partnerBillingLocation.value
       const profile = partnerProfileForLocation(locationId)
-      const rule = partnerRuleForLocation(locationId)
+      const profileDirection = profile?.billing_direction || ''
+      const rule = partnerRuleForLocation(locationId, partnerMonthRange(), profileDirection)
       const machines = partnerBillingMachines.filter((machine) => String(machine.location_id) === String(locationId))
       partnerBillingSourceFile = null
       partnerBillingSourceFileInput.value = ''
       partnerBillingSourceFileHint.textContent = profile?.external_report_required
         ? `Nahraj měsíční XLSX od ${profile.external_report_provider || 'poskytovatele'}. Soubor se použije jen pro výpočet a kontrolu; partnerovi se odešle PDF podklad.`
         : 'Nahraj zdrojový měsíční report.'
+      partnerBillingDirection.value = profile?.billing_direction || rule?.direction || 'from_partner'
       renderPartnerBillingContacts(profile?.business_contact_id || '')
       partnerBillingDevice.value = profile?.device_label || (machines.length === 1 ? (machines[0].model || machines[0].name || '') : '')
       partnerBillingRate.value = profile?.rate ?? rule?.amount ?? ''
       partnerBillingVat.value = profile?.unit_vat_rate ?? profile?.vat_rate ?? 21
+      partnerBillingRateMode.value = profile?.rate_includes_vat ? 'gross' : 'net'
       partnerBillingScope.value = profile?.billing_scope || 'all_sales'
       partnerBillingUnitDescription.value = partnerInvoiceDescription(profile || {})
       partnerBillingFixedAmount.value = Number(profile?.fixed_monthly_amount || 0)
@@ -1582,13 +1614,14 @@
       partnerBillingEmail.value = profile?.email_recipient || contact?.email || ''
     }
     async function loadPartnerBillingSetup() {
-      const [profilesResult, locationsResult, rulesResult, contactsResult, machinesResult, aveDocumentsResult] = await Promise.all([
+      const [profilesResult, locationsResult, rulesResult, contactsResult, machinesResult, aveDocumentsResult, reportsResult] = await Promise.all([
         supabase.from('partner_billing_profiles').select('*').eq('active', true),
         supabase.from('locations').select('id, name, city, address, active').eq('active', true).order('name', { ascending:true }),
-        supabase.from('location_financial_rules').select('*').eq('direction', 'from_partner').in('settlement_type', ['subsidy', 'per_unit']),
-        supabase.from(BUSINESS_CONTACTS_TABLE).select('id, contact_type, name, company_id, tax_id, contact_name, email, phone, billing_address, delivery_address, default_due_days, note, active').in('contact_type', ['customer', 'both']).eq('active', true).order('name', { ascending:true }),
+        supabase.from('location_financial_rules').select('*').in('direction', ['from_partner', 'to_partner']).in('settlement_type', ['subsidy', 'per_unit']),
+        supabase.from(BUSINESS_CONTACTS_TABLE).select('id, contact_type, name, company_id, tax_id, contact_name, email, phone, billing_address, delivery_address, default_due_days, note, active').in('contact_type', ['customer', 'supplier', 'both']).eq('active', true).order('name', { ascending:true }),
         supabase.from('machines').select('id, location_id, name, model, machine_type, evidence_number, active').order('evidence_number', { ascending:true, nullsFirst:false }),
-        supabase.from('sales_documents').select('id, customer_name, issued_at, note').ilike('customer_name', 'AVE%').order('issued_at', { ascending:false }).limit(12)
+        supabase.from('sales_documents').select('id, customer_name, issued_at, note').ilike('customer_name', 'AVE%').order('issued_at', { ascending:false }).limit(12),
+        supabase.from('partner_settlement_reports').select('*').order('period_month', { ascending:false })
       ])
       const fatalError = profilesResult.error || locationsResult.error || rulesResult.error || contactsResult.error || machinesResult.error
       if (fatalError) throw fatalError
@@ -1607,6 +1640,7 @@
       partnerBillingRules = rulesResult.data || []
       partnerBillingContacts = contactsResult.data || []
       partnerBillingMachines = machinesResult.data || []
+      partnerSettlementReports = reportsResult.error ? [] : (reportsResult.data || [])
       const defaultLocationId = partnerProfileForLocation(17)?.location_id || partnerBillingProfiles[0]?.location_id || ''
       renderPartnerBillingLocations(defaultLocationId)
       renderPartnerBillingContacts()
@@ -1914,6 +1948,8 @@
         fromDate: range.fromDate,
         toDate: range.toDate,
         rate: Number(partnerBillingRate.value || 0),
+        billingDirection: partnerBillingDirection.value || 'from_partner',
+        rateIncludesVat: partnerBillingRateMode.value === 'gross',
         vatRate: unitVatRate,
         unitVatRate,
         billingScope,
@@ -1945,9 +1981,9 @@
       const summaryRows = [
         [meta.quantityLabel || 'Vydané porce', `${Number(meta.quantity || 0).toLocaleString('cs-CZ')} ks`, '']
       ]
-      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryRows.push(['Doplatek bez DPH', formatMoney(meta.unitNetAmount), ''])
+      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryRows.push([meta.billingDirection === 'to_partner' ? 'Základ pro fakturu partnera' : 'Doplatek bez DPH', formatMoney(meta.unitNetAmount), ''])
       if (meta.fixedAmount > 0) summaryRows.push(['Měsíční fix bez DPH', formatMoney(meta.fixedNetAmount), ''])
-      summaryRows.push(['K fakturaci', formatMoney(meta.totalAmount), 'total'])
+      summaryRows.push([meta.billingDirection === 'to_partner' ? 'Partner vyfakturuje OLVENDu' : 'K fakturaci', formatMoney(meta.totalAmount), 'total'])
       partnerBillingSummary.innerHTML = summaryRows
         .map(([label, value, className]) => `<div class="partner-billing-card ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
         .join('')
@@ -1972,6 +2008,19 @@
             : Number(row.quantity || 0).toLocaleString('cs-CZ'))}</strong>
         </div>
       `).join('')
+    }
+    function existingPartnerBillingRecord(meta) {
+      if (meta.billingDirection === 'to_partner') {
+        return partnerSettlementReports.find((report) => ['sent', 'invoiced'].includes(report.status)
+          && String(report.location_id) === String(meta.locationId)
+          && String(report.period_month || '').slice(0, 7) === meta.monthValue
+          && report.billing_direction === 'to_partner') || null
+      }
+      return documents.find((row) => {
+        if (row.status === 'cancelled') return false
+        const existing = extractMeta(row).partnerBilling
+        return existing && String(existing.locationId) === String(meta.locationId) && existing.monthValue === meta.monthValue
+      }) || null
     }
     async function refreshExternalPartnerBillingPreview(setup, range, requestId) {
       if (!partnerBillingSourceFile) {
@@ -2120,23 +2169,26 @@
           billingMachineIds: setup.usesItemizedRates ? Array.from(categoryContext.billableMachineIds) : machineIds,
           sourceBreakdown: Array.from(sourceMap.entries()).map(([source, value]) => ({ source, quantity:value }))
         })
+        const simpleRateGrossAmount = !base.usesItemizedRates && base.rateIncludesVat
+          ? roundMoney(quantity * base.rate)
+          : 0
         const unitNetAmount = base.usesItemizedRates
           ? roundMoney(productBreakdown.reduce((sum, row) => sum + Number(row.netAmount || 0), 0))
-          : roundMoney(quantity * base.rate)
+          : (base.rateIncludesVat
+            ? roundMoney(simpleRateGrossAmount / (1 + base.unitVatRate / 100))
+            : roundMoney(quantity * base.rate))
         const unitVatAmount = base.usesItemizedRates
           ? roundMoney(productBreakdown.reduce((sum, row) => sum + roundMoney(Number(row.netAmount || 0) * base.unitVatRate / 100), 0))
-          : roundMoney(unitNetAmount * base.unitVatRate / 100)
+          : (base.rateIncludesVat
+            ? roundMoney(simpleRateGrossAmount - unitNetAmount)
+            : roundMoney(unitNetAmount * base.unitVatRate / 100))
         const fixedNetAmount = roundMoney(base.fixedAmount)
         const fixedVatAmount = roundMoney(fixedNetAmount * base.fixedVatRate / 100)
         const netAmount = roundMoney(unitNetAmount + fixedNetAmount)
         const vatAmount = roundMoney(unitVatAmount + fixedVatAmount)
         const grossBeforeRounding = roundMoney(netAmount + vatAmount)
         const roundingAmount = roundingForTotal(grossBeforeRounding, base.roundingMode)
-        const duplicate = documents.find((row) => {
-          if (row.status === 'cancelled') return false
-          const existing = extractMeta(row).partnerBilling
-          return existing && String(existing.locationId) === String(base.locationId) && existing.monthValue === base.monthValue
-        })
+        const duplicate = existingPartnerBillingRecord(base)
         currentPartnerBilling = {
           ...base,
           unitNetAmount,
@@ -2155,9 +2207,11 @@
         if (!quantity && !base.fixedAmount) setPartnerBillingStatus('Za vybraný měsíc nejsou evidované žádné výdeje a není nastavený fixní poplatek.', 'error')
         else if (quantity && !base.rate && !base.usesItemizedRates) setPartnerBillingStatus('Doplň sazbu za jednotku.', 'error')
         else if (quantity && base.usesItemizedRates && !unitNetAmount) setPartnerBillingStatus('Položkové sazby nevytvořily žádnou částku k fakturaci.', 'error')
-        else if (!base.contactId) setPartnerBillingStatus('Vyber odběratele faktury.', 'error')
+        else if (!base.contactId) setPartnerBillingStatus(base.billingDirection === 'to_partner' ? 'Vyber dodavatele, který nám vystaví fakturu.' : 'Vyber odběratele faktury.', 'error')
         else if (hasIncompleteCoverage) setPartnerBillingStatus(`Období nelze bezpečně vyúčtovat: úplná data jsou až od ${formatDate(base.billingDataCompleteFrom)}. ${base.billingDataNote || ''}`.trim(), 'error')
-        else if (duplicate) setPartnerBillingStatus(`Pozor: vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`, 'error')
+        else if (duplicate) setPartnerBillingStatus(base.billingDirection === 'to_partner'
+          ? 'Pozor: podklad za tento měsíc už byl vytvořen nebo odeslán.'
+          : `Pozor: vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`, 'error')
         else setPartnerBillingStatus(`Hotovo: ${quantity.toLocaleString('cs-CZ')} ${base.quantityUnit}${base.usesItemizedRates ? ` · ${productBreakdown.length} ${base.itemizedGrouping === 'machine' ? 'zařízení' : 'položkových sazeb'}` : ''} · ${base.fixedAmount ? `fix ${formatMoney(base.fixedAmount)} · ` : ''}${base.description}`, 'success')
       } catch (error) {
         if (requestId !== partnerBillingRequestSequence) return
@@ -2168,7 +2222,7 @@
     async function savePartnerBillingSettings({ refresh = true } = {}) {
       const snapshot = partnerBillingSnapshotFromInputs()
       if (!snapshot.locationId) throw new Error('Vyber provozovnu.')
-      if (!snapshot.contactId) throw new Error('Vyber odběratele faktury.')
+      if (!snapshot.contactId) throw new Error(snapshot.billingDirection === 'to_partner' ? 'Vyber dodavatele, který nám vystaví fakturu.' : 'Vyber odběratele faktury.')
       if (!snapshot.deviceLabel) throw new Error('Doplň označení zařízení.')
       if (snapshot.rate <= 0 && snapshot.fixedAmount <= 0 && !snapshot.usesItemizedRates) throw new Error('Doplň sazbu za jednotku nebo fixní měsíční poplatek.')
       if (!snapshot.description && snapshot.rate > 0) throw new Error('Doplň popis položky za jednotky.')
@@ -2182,6 +2236,8 @@
         vat_rate: snapshot.unitVatRate,
         unit_vat_rate: snapshot.unitVatRate,
         billing_scope: snapshot.billingScope,
+        billing_direction: snapshot.billingDirection,
+        rate_includes_vat: snapshot.rateIncludesVat,
         itemized_grouping: existingProfile?.itemized_grouping || snapshot.itemizedGrouping || 'product',
         machine_line_descriptions: existingProfile?.machine_line_descriptions || snapshot.machineLineDescriptions || {},
         billing_data_complete_from: existingProfile?.billing_data_complete_from || snapshot.billingDataCompleteFrom || null,
@@ -2207,12 +2263,12 @@
         partnerBillingProfiles = [...partnerBillingProfiles.filter((profile) => String(profile.location_id) !== String(snapshot.locationId)), localProfile]
         if (snapshot.rate > 0) {
           const localRule = {
-            ...(partnerRuleForLocation(snapshot.locationId, partnerMonthRange()) || {}),
+            ...(partnerRuleForLocation(snapshot.locationId, partnerMonthRange(), snapshot.billingDirection) || {}),
             id:`local-${snapshot.locationId}`,
             location_id:snapshot.locationId,
             scope_type:'location',
             settlement_type:'per_unit',
-            direction:'from_partner',
+            direction:snapshot.billingDirection,
             amount:snapshot.rate,
             currency:'CZK',
             unit:snapshot.billingScope === 'product_category' ? 'bageta' : 'porce',
@@ -2234,14 +2290,14 @@
       if (profileError) throw profileError
       removeLocalPartnerBillingProfile(snapshot.locationId)
       const range = partnerMonthRange()
-      const existingRule = partnerRuleForLocation(snapshot.locationId, range)
+      const existingRule = partnerRuleForLocation(snapshot.locationId, range, snapshot.billingDirection)
       let savedRule = null
       if (snapshot.rate > 0) {
         const rulePayload = {
           location_id: snapshot.locationId,
           scope_type: 'location',
           settlement_type: 'per_unit',
-          direction: 'from_partner',
+          direction: snapshot.billingDirection,
           amount: snapshot.rate,
           currency: 'CZK',
           unit: snapshot.billingScope === 'product_category' ? 'bageta' : 'porce',
@@ -2298,17 +2354,15 @@
       if (currentPartnerBilling.usesExternalReport && currentPartnerBilling.externalReportRequired && (!currentPartnerBilling.sourceAttachment || !partnerBillingSourceFile)) throw new Error('Nahraj a zkontroluj povinný zdrojový report.')
       if (currentPartnerBilling.quantity > 0 && !currentPartnerBilling.description && !currentPartnerBilling.usesItemizedRates) throw new Error('Doplň popis položky za jednotky.')
       if (currentPartnerBilling.fixedAmount > 0 && !currentPartnerBilling.fixedDescription) throw new Error('Doplň popis fixního poplatku.')
-      if (!currentPartnerBilling.contactId) throw new Error('Vyber odběratele faktury.')
+      if (!currentPartnerBilling.contactId) throw new Error(currentPartnerBilling.billingDirection === 'to_partner' ? 'Vyber dodavatele, který nám vystaví fakturu.' : 'Vyber odběratele faktury.')
       if (!currentPartnerBilling.deviceLabel) throw new Error('Doplň označení zařízení.')
       if (currentPartnerBilling.billingDataCompleteFrom && currentPartnerBilling.fromDate < currentPartnerBilling.billingDataCompleteFrom) {
         throw new Error(`Období nelze bezpečně vyúčtovat: úplná data jsou až od ${formatDate(currentPartnerBilling.billingDataCompleteFrom)}. ${currentPartnerBilling.billingDataNote || ''}`.trim())
       }
-      const duplicate = documents.find((row) => {
-        if (row.status === 'cancelled') return false
-        const existing = extractMeta(row).partnerBilling
-        return existing && String(existing.locationId) === String(currentPartnerBilling.locationId) && existing.monthValue === currentPartnerBilling.monthValue
-      })
-      if (duplicate) throw new Error(`Vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`)
+      const duplicate = existingPartnerBillingRecord(currentPartnerBilling)
+      if (duplicate) throw new Error(currentPartnerBilling.billingDirection === 'to_partner'
+        ? 'Podklad za tento měsíc už byl odeslán partnerovi.'
+        : `Vyúčtování za tento měsíc už je u dokladu ${documentNumber(duplicate)}.`)
       return currentPartnerBilling
     }
     async function downloadCurrentPartnerBillingEvidence() {
@@ -3002,6 +3056,58 @@
       }
       syncTravelRoutePanel(row)
       updateLineTotals()
+    }
+    async function sendPartnerPayableEvidence() {
+      const meta = { ...validateCurrentPartnerBilling(), productBreakdown:[...(currentPartnerBilling.productBreakdown || [])], sourceBreakdown:[...(currentPartnerBilling.sourceBreakdown || [])] }
+      if (meta.billingDirection !== 'to_partner') throw new Error('Toto vyúčtování není nastavené jako podklad pro fakturu partnera.')
+      if (!/^\S+@\S+\.\S+$/.test(meta.emailRecipient || '')) throw new Error('Doplň platný e-mail partnera.')
+      await savePartnerBillingSettings({ refresh:false })
+      const attachment = await partnerBillingEvidenceAttachment(meta)
+      const reportPayload = {
+        location_id: meta.locationId,
+        business_contact_id: meta.contactId,
+        billing_direction: 'to_partner',
+        period_month: `${meta.monthValue}-01`,
+        quantity: meta.quantity,
+        unit_gross_rate: meta.rateIncludesVat ? meta.rate : roundMoney(meta.rate * (1 + meta.unitVatRate / 100)),
+        vat_rate: meta.unitVatRate,
+        net_amount: meta.netAmount,
+        vat_amount: meta.vatAmount,
+        gross_amount: meta.totalAmount,
+        recipient_email: meta.emailRecipient,
+        status: 'draft',
+        metadata: { partnerBilling:meta }
+      }
+      const { data: report, error: reportError } = await supabase
+        .from('partner_settlement_reports')
+        .upsert(reportPayload, { onConflict:'location_id,period_month,billing_direction' })
+        .select('*')
+        .single()
+      if (reportError) throw reportError
+      const subject = `Podklad pro fakturaci - ${meta.locationName} - ${meta.periodDisplay}`
+      const html = `<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#111"><h2 style="margin:0 0 16px">OLVEND</h2><p>Dobrý den,</p><p>v příloze zasíláme podklad k vystavení faktury za provoz zařízení <strong>${escapeHtml(meta.deviceLabel)}</strong> za období <strong>${escapeHtml(meta.periodDisplay)}</strong>.</p><p>Celkem: <strong>${escapeHtml(formatMoney(meta.totalAmount))} včetně DPH</strong>.</p><p>Prosíme o vystavení faktury na společnost OLMIKA s.r.o.</p></div>`
+      try {
+        const result = await supabase.functions.invoke('send-issued-invoice-email', { body:{
+          to:meta.emailRecipient,
+          subject,
+          html,
+          pdfBase64:attachment.contentBase64,
+          fileName:attachment.fileName
+        } })
+        if (result.error || !result.data?.ok) throw new Error(result.error?.message || result.data?.error || 'E-mail se nepodařilo odeslat.')
+        const { data:savedReport, error:updateError } = await supabase
+          .from('partner_settlement_reports')
+          .update({ status:'sent', sent_at:new Date().toISOString(), metadata:{ partnerBilling:meta, emailProviderId:result.data.provider_id || null } })
+          .eq('id', report.id)
+          .select('*')
+          .single()
+        if (updateError) throw updateError
+        partnerSettlementReports = [savedReport, ...partnerSettlementReports.filter((item) => item.id !== savedReport.id)]
+        return savedReport
+      } catch (error) {
+        await supabase.from('partner_settlement_reports').update({ status:'failed' }).eq('id', report.id)
+        throw error
+      }
     }
     function addInvoiceLine(source = {}) {
       const key = `line-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -4161,9 +4267,9 @@
       const summaryItems = [
         [meta.quantityLabel || 'Vydané porce', `${quantityText(meta.quantity)} ks`]
       ]
-      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryItems.push(['Doplatek bez DPH', money(meta.unitNetAmount)])
+      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryItems.push([meta.billingDirection === 'to_partner' ? 'Základ faktury partnera' : 'Doplatek bez DPH', money(meta.unitNetAmount)])
       if (meta.fixedAmount > 0) summaryItems.push(['Měsíční fix bez DPH', money(meta.fixedNetAmount)])
-      summaryItems.push(['Fakturovaná částka', money(meta.totalAmount, meta.roundingMode === 'integer' ? 0 : 2)])
+      summaryItems.push([meta.billingDirection === 'to_partner' ? 'Partner fakturuje nám' : 'Fakturovaná částka', money(meta.totalAmount, meta.roundingMode === 'integer' ? 0 : 2)])
       const summaryWidth = contentWidth / summaryItems.length
       summaryItems.forEach(([label, value], index) => {
         const x = margin + (index * summaryWidth)
@@ -4253,10 +4359,10 @@
           [`DPH ${quantityText(meta.unitVatRate)} % z doplatku`, money(meta.unitVatAmount)]
         )
       } else if (meta.quantity > 0 && meta.rate > 0) {
-        calcRows.push(
-          [`${quantityText(meta.quantity)} × ${money(meta.rate)}`, money(meta.unitNetAmount)],
-          [`DPH ${quantityText(meta.unitVatRate)} % z doplatku`, money(meta.unitVatAmount)]
-        )
+        calcRows.push(meta.rateIncludesVat
+          ? [`${quantityText(meta.quantity)} × ${money(meta.rate)} včetně DPH`, money(meta.unitNetAmount + meta.unitVatAmount)]
+          : [`${quantityText(meta.quantity)} × ${money(meta.rate)} bez DPH`, money(meta.unitNetAmount)])
+        calcRows.push([`z toho DPH ${quantityText(meta.unitVatRate)} %`, money(meta.unitVatAmount)])
       }
       if (meta.fixedAmount > 0) {
         calcRows.push(
@@ -4296,8 +4402,9 @@
           ? `Sazba bez DPH: ${rates.join(' a ')} podle vyúčtovaného zařízení.`
           : `Položkové sazby bez DPH: ${rates.join(' a ')} podle druhu nápoje.`)
       } else if (meta.quantity > 0 && meta.rate > 0) {
-        noteParts.push(`Sazba činí ${money(meta.rate)} bez DPH za jednu ${meta.billingScope === 'product_category' ? 'prodanou bagetu' : 'vydanou porci'}.`)
+        noteParts.push(`Sazba činí ${money(meta.rate)} ${meta.rateIncludesVat ? 'včetně' : 'bez'} DPH za jednu ${meta.billingScope === 'product_category' ? 'prodanou bagetu' : 'vydanou porci'}.`)
       }
+      if (meta.billingDirection === 'to_partner') noteParts.push('Tento dokument je podklad pro vystavení faktury partnerem společnosti OLMIKA s.r.o.; nejde o fakturu vystavenou společností OLMIKA s.r.o.')
       if (meta.fixedAmount > 0) noteParts.push(`Fixní měsíční poplatek činí ${money(meta.fixedAmount)} bez DPH.`)
       const note = noteParts.join(' ')
       doc.text(doc.splitTextToSize(note, contentWidth), margin, y)
@@ -4865,6 +4972,15 @@
       if (contact?.email) partnerBillingEmail.value = contact.email
       schedulePartnerBillingRefresh()
     })
+    partnerBillingDirection.addEventListener('change', () => {
+      renderPartnerBillingContacts()
+      syncPartnerBillingScopeInputs()
+      schedulePartnerBillingRefresh(0)
+    })
+    partnerBillingRateMode.addEventListener('change', () => {
+      syncPartnerBillingScopeInputs()
+      schedulePartnerBillingRefresh(0)
+    })
     partnerBillingScope.addEventListener('change', syncPartnerBillingScopeInputs)
     partnerBillingSourceFileInput.addEventListener('change', () => {
       partnerBillingSourceFile = partnerBillingSourceFileInput.files?.[0] || null
@@ -4876,6 +4992,8 @@
     ;[
       partnerBillingDevice,
       partnerBillingRate,
+      partnerBillingDirection,
+      partnerBillingRateMode,
       partnerBillingVat,
       partnerBillingScope,
       partnerBillingUnitDescription,
@@ -4917,11 +5035,17 @@
       event.preventDefault()
       try {
         preparePartnerInvoiceBtn.disabled = true
-        setPartnerBillingStatus('Připravuji fakturu...')
-        await preparePartnerInvoiceFromCurrent()
+        if ((currentPartnerBilling?.billingDirection || partnerBillingDirection.value) === 'to_partner') {
+          setPartnerBillingStatus('Vytvářím PDF podklad a odesílám ho partnerovi...')
+          const report = await sendPartnerPayableEvidence()
+          setPartnerBillingStatus(`Podklad byl odeslán na ${report.recipient_email}. Partner nyní vystaví fakturu OLVENDu.`, 'success')
+        } else {
+          setPartnerBillingStatus('Připravuji fakturu...')
+          await preparePartnerInvoiceFromCurrent()
+        }
       } catch (error) {
         console.error(error)
-        setPartnerBillingStatus(`Fakturu se nepodařilo připravit: ${error.message}`, 'error')
+        setPartnerBillingStatus(`Vyúčtování se nepodařilo dokončit: ${error.message}`, 'error')
       } finally {
         preparePartnerInvoiceBtn.disabled = false
       }
