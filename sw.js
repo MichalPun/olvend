@@ -1,8 +1,9 @@
-const CACHE_NAME = 'olvend-v150-route-stock-regressions';
+const CACHE_NAME = 'olvend-v151-technician-mobile';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './technician-mobile.html',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
@@ -30,6 +31,9 @@ const APP_SHELL = [
   './report-invoice-comparison.html',
   './report-attendance.html',
   './operational-requests.html',
+  './technical-overview.html',
+  './technical-jobs.html',
+  './service-requests.html',
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',
