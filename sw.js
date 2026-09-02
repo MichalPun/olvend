@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v155-nestea-substitution';
+const CACHE_NAME = 'olvend-v156-soco-order-pdf';
 const APP_SHELL = [
   './',
   './index.html',
