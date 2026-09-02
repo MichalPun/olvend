@@ -37,8 +37,9 @@ where slot.active is true
   and slot.planned_product_sku = replacement.sku
   and slot.pending_product_sku is null;
 
--- Dokončí pouze pozice, na kterých už je jako aktuální produkt fyzicky/evidenčně
--- zapsaný nový SOCO sortiment. Rozpracovaného doprodeje starého SKU se nedotýká.
+-- U pozic, na kterých už je fyzicky/evidenčně nový SOCO produkt, opraví rodinu.
+-- Cenu nikdy nepotvrdí za operátorku: pokud evidence ještě neodpovídá cílové ceně,
+-- nechá stejný produkt jako price-only plán, který mobil uzavře až po fyzické změně ceny.
 with replacement as (
   select
     product.id,
@@ -72,53 +73,62 @@ update public.machine_planogram_slots slot
 set product_name = replacement.name,
     product_family = replacement.family,
     product_variant = replacement.variant,
-    price_czk = replacement.sale_price,
-    customer_price_czk = replacement.sale_price,
-    dex_price_czk = replacement.sale_price,
     planned_product_sku = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.planned_product_sku
+      when slot.price_czk is not distinct from replacement.sale_price
+       and coalesce(slot.customer_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+       and coalesce(slot.dex_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+        then null
+      else replacement.sku
     end,
     planned_product_name = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.planned_product_name
+      when slot.price_czk is not distinct from replacement.sale_price
+       and coalesce(slot.customer_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+       and coalesce(slot.dex_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+        then null
+      else replacement.name
     end,
     planned_price_czk = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.planned_price_czk
+      when slot.price_czk is not distinct from replacement.sale_price
+       and coalesce(slot.customer_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+       and coalesce(slot.dex_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+        then null
+      else replacement.sale_price
     end,
-    changeover_old_units = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.changeover_old_units
+    operator_instruction = case
+      when slot.price_czk is not distinct from replacement.sale_price
+       and coalesce(slot.customer_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+       and coalesce(slot.dex_price_czk, slot.price_czk) is not distinct from replacement.sale_price
+        then null
+      else format('Ověř cenu pozice na automatu a změň ji z %s Kč na %s Kč. Potvrď až po fyzickém provedení.', coalesce(slot.customer_price_czk, slot.price_czk), replacement.sale_price)
     end,
-    changeover_new_units = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.changeover_new_units
-    end,
-    changeover_started_at = case
-      when slot.planned_product_sku = slot.product_sku then null
-      else slot.changeover_started_at
-    end,
+    changeover_old_units = null,
+    changeover_new_units = null,
+    changeover_started_at = null,
     updated_at = now()
 from replacement
 where slot.active is true
   and slot.product_sku = replacement.sku
-  and slot.pending_product_sku is null;
+  and slot.pending_product_sku is null
+  and (slot.planned_product_sku is null or slot.planned_product_sku = slot.product_sku);
 
 do $$
 declare
-  v_half_applied integer;
-  v_wrong_price integer;
+  v_stale_self_plan integer;
+  v_unprotected_price integer;
   v_unprotected_change integer;
 begin
-  select count(*) into v_half_applied
+  select count(*) into v_stale_self_plan
   from public.machine_planogram_slots slot
+  join public.products product on product.sku = slot.product_sku
   where slot.active is true
     and slot.product_sku like 'SOCO-%'
     and slot.planned_product_sku = slot.product_sku
-    and slot.pending_product_sku is null;
+    and slot.pending_product_sku is null
+    and slot.price_czk is not distinct from product.sale_price
+    and coalesce(slot.customer_price_czk, slot.price_czk) is not distinct from product.sale_price
+    and coalesce(slot.dex_price_czk, slot.price_czk) is not distinct from product.sale_price;
 
-  select count(*) into v_wrong_price
+  select count(*) into v_unprotected_price
   from public.machine_planogram_slots slot
   join public.products product on product.sku = slot.product_sku
   where slot.active is true
@@ -126,8 +136,13 @@ begin
     and slot.pending_product_sku is null
     and (
       slot.price_czk is distinct from product.sale_price
-      or slot.customer_price_czk is distinct from product.sale_price
-      or slot.dex_price_czk is distinct from product.sale_price
+      or coalesce(slot.customer_price_czk, slot.price_czk) is distinct from product.sale_price
+      or coalesce(slot.dex_price_czk, slot.price_czk) is distinct from product.sale_price
+    )
+    and not (
+      slot.planned_product_sku = slot.product_sku
+      and slot.planned_price_czk is not distinct from product.sale_price
+      and nullif(slot.operator_instruction, '') is not null
     );
 
   select count(*) into v_unprotected_change
@@ -137,8 +152,8 @@ begin
     and slot.planned_product_sku like 'SOCO-%'
     and slot.pending_product_sku is null;
 
-  if v_half_applied <> 0 or v_wrong_price <> 0 or v_unprotected_change <> 0 then
-    raise exception 'SOCO cleanup failed: % self-planned slots, % wrong-price slots, % unprotected changes.', v_half_applied, v_wrong_price, v_unprotected_change;
+  if v_stale_self_plan <> 0 or v_unprotected_price <> 0 or v_unprotected_change <> 0 then
+    raise exception 'SOCO cleanup failed: % stale self-plans, % unprotected prices, % unprotected changes.', v_stale_self_plan, v_unprotected_price, v_unprotected_change;
   end if;
 end
 $$;

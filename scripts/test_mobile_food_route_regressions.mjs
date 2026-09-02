@@ -116,8 +116,10 @@ assert.match(html, /Doprodej ze stejného auta/)
 assert.match(html, /staleCutoff = Date\.now\(\) - 10 \* 86400000/)
 assert.match(html, /10 dnech bez využití předvybráno k vrácení do skladu/)
 assert.match(html, /const finalizedReplacement = Boolean\(!fullSwap && replacementProduct && remainingExistingQuantity <= 0\)/)
+assert.match(html, /const priceOnlyChangeRequired = Boolean\(planogramChange\?\.priceChanged && !planogramChange\.productChanged\)/)
+assert.match(html, /replacementBeingInserted \|\| !planogramChange\.productChanged/)
 assert.match(html, /dvě ceny v jedné pozici nejsou bezpečné/)
-assert.match(html, /getFoodProductFamilyPatch\(replacementProduct \|\| planogramChange\?\.nextProduct\)/)
+assert.match(html, /getFoodProductFamilyPatch\(replacementProduct \|\| planogramChange\?\.nextProduct \|\| plannedProduct\)/)
 
 {
   const sandbox = context({

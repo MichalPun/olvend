@@ -10742,7 +10742,8 @@
         const fillProduct = state.products.find((item) => String(item.id) === String(fill.productId))
         return Number(fill.quantity || 0) > 0 && String(fillProduct?.sku || '') === String(planogramChange.nextSku || '')
       }))
-      const requiresMachinePriceConfirmation = Boolean(replacementBeingInserted && planogramChange?.priceChanged)
+      const requiresMachinePriceConfirmation = Boolean(planogramChange?.priceChanged
+        && (replacementBeingInserted || !planogramChange.productChanged))
       const finalQty = Math.max(0, (planogramChange?.fullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal - transferQuantity) + actualAdd)
       const maxActualAdd = Math.max(0, Math.min(draft.preparedQuantity, planogramChange?.fullSwap
         ? capacity - retainedReplacementUnits
@@ -11049,7 +11050,8 @@
                 const fillProduct = state.products.find((item) => String(item.id) === String(fill.productId))
                 return Number(fill.quantity || 0) > 0 && String(fillProduct?.sku || '') === String(planogramChange.nextSku || '')
               }))
-              const requiresMachinePriceConfirmation = Boolean(replacementBeingInserted && planogramChange?.priceChanged)
+              const requiresMachinePriceConfirmation = Boolean(planogramChange?.priceChanged
+                && (replacementBeingInserted || !planogramChange.productChanged))
               const returnedPreparedQuantity = Math.max(0, Number(draft.preparedQuantity || 0) - actualAdd)
               const finalQty = Math.max(0, (planogramChange?.fullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal) + actualAdd)
               const tracksExistingExpiry = tracksExpiry && (!planogramChange?.fullSwap || retainedReplacementUnits > 0)
@@ -14374,14 +14376,17 @@
       const replacementProduct = replacementFill ? selectedProduct : null
       const nextPlanogramSku = planogramChange?.productChanged ? planogramChange.nextSku : null
       const replacementPriceChangeRequired = Boolean(replacementFill && planogramChange?.priceChanged)
+      const priceOnlyChangeRequired = Boolean(planogramChange?.priceChanged && !planogramChange.productChanged)
+      const machinePriceChangeRequired = replacementPriceChangeRequired || priceOnlyChangeRequired
       if (!fullSwap && replacementPriceChangeRequired && remainingExistingQuantity > 0) {
         throw new Error(`Pozice ${slot.slot_code}: nový produkt má jinou cenu, ale uvnitř ještě zbývá ${remainingExistingQuantity} ks původního produktu. Staré kusy nejdřív vrať nebo přesuň a proveď kompletní výměnu; dvě ceny v jedné pozici nejsou bezpečné.`)
       }
-      if (replacementPriceChangeRequired && !draft.machinePriceConfirmed) {
+      if (machinePriceChangeRequired && !draft.machinePriceConfirmed) {
         throw new Error(`Pozice ${slot.slot_code}: nejdřív změň cenu přímo na automatu z ${formatNumber(slot.customer_price_czk ?? slot.price_czk)} Kč na ${formatNumber(planogramChange.nextPrice)} Kč a potvrď provedení.`)
       }
       const mixedChangeover = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity > 0)
       const finalizedReplacement = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity <= 0)
+      const finalizedPriceOnlyChange = Boolean(priceOnlyChangeRequired)
       const physicalMismatchSellThrough = Boolean(
         draft.assortmentMismatch
         && remainingExistingQuantity > 0
@@ -14556,7 +14561,7 @@
         capacity !== storedCapacity ? `Kapacita pozice opravena: ${storedCapacity} ks → ${capacity} ks` : null,
         stockDifference !== 0 ? `Inventurní odchylka: evidence ${systemCurrentQuantity} ks → fyzicky ${actualBefore} ks · rozdíl ${stockDifference > 0 ? '+' : ''}${stockDifference} ks` : null,
         fullSwap ? `Kompletní výměna: ${swapReturnQuantity} ks původního produktu vráceno do vozidla` : null,
-        replacementPriceChangeRequired ? `Cena na automatu potvrzena: ${slot.customer_price_czk ?? slot.price_czk} Kč → ${planogramChange.nextPrice} Kč` : null,
+        machinePriceChangeRequired ? `Cena na automatu potvrzena: ${slot.customer_price_czk ?? slot.price_czk} Kč → ${planogramChange.nextPrice} Kč` : null,
         transferQuantity > 0 ? `Přesun krátké expirace: ${transferQuantity} ks · cíl ${draft.transferRecommendation?.targetTitle || 'další automat'} · EV ${draft.transferRecommendation?.targetEvidence || '—'} · pozice ${draft.transferRecommendation?.targetSlotCode || '—'}` : null,
         returnedPreparedQuantity > 0
           ? `Připraveno ${draft.preparedQuantity} ks, vloženo ${actualAdd} ks, v autě zůstává ${returnedPreparedQuantity} ks · ${notInsertedReasonLabel}`
@@ -14589,7 +14594,7 @@
         actual_product_id: recordedActualProduct?.id || null,
         actual_product_sku: recordedActualProduct?.sku || null,
         actual_product_name: recordedActualProduct?.name || null,
-        sale_price_czk: replacementPriceChangeRequired ? planogramChange.nextPrice : (slot.customer_price_czk ?? slot.price_czk ?? null),
+        sale_price_czk: machinePriceChangeRequired ? planogramChange.nextPrice : (slot.customer_price_czk ?? slot.price_czk ?? null),
         system_current_quantity: systemCurrentQuantity,
         actual_before_quantity: actualBefore,
         suggested_add_quantity: getFoodRequiredFillQuantity(slot, detail),
@@ -14686,10 +14691,10 @@
       const { error: slotError } = await supabase
         .from('machine_planogram_slots')
         .update({
-          ...((fullSwap && nextPlanogramSku) || finalizedReplacement ? {
-            product_sku: nextPlanogramSku,
-            product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name,
-            ...getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct),
+          ...((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange ? {
+            product_sku: nextPlanogramSku || slot.product_sku,
+            product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))?.name || planogramChange?.nextName || slot.product_name,
+            ...getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct || plannedProduct),
             price_czk: planogramChange?.nextPrice ?? slot.price_czk,
             customer_price_czk: planogramChange?.nextPrice ?? slot.customer_price_czk ?? slot.price_czk,
             dex_price_czk: planogramChange?.nextPrice ?? slot.dex_price_czk ?? slot.price_czk,
@@ -14722,7 +14727,7 @@
             planned_product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name
           } : {}),
           ...compositionPatch,
-          ...(replacementPriceChangeRequired && !fullSwap && !finalizedReplacement ? {
+          ...(replacementPriceChangeRequired && !fullSwap && !finalizedReplacement && !finalizedPriceOnlyChange ? {
             price_czk: planogramChange.nextPrice,
             customer_price_czk: planogramChange.nextPrice,
             dex_price_czk: planogramChange.nextPrice,
@@ -14750,7 +14755,7 @@
       slot.desired_units = nextDesiredQuantity
       slot.expiry_date = nextExpiryDate
       Object.assign(slot, compositionPatch)
-      if (replacementPriceChangeRequired) {
+      if (machinePriceChangeRequired) {
         slot.price_czk = planogramChange.nextPrice
         slot.customer_price_czk = planogramChange.nextPrice
         slot.dex_price_czk = planogramChange.nextPrice
@@ -14761,10 +14766,10 @@
       slot.pending_price_czk = null
       slot.pending_change_effective_date = null
       slot.pending_change_note = null
-      if ((fullSwap && nextPlanogramSku) || finalizedReplacement) {
-        slot.product_sku = nextPlanogramSku
-        slot.product_name = state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name
-        Object.assign(slot, getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct))
+      if ((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange) {
+        slot.product_sku = nextPlanogramSku || slot.product_sku
+        slot.product_name = state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))?.name || planogramChange?.nextName || slot.product_name
+        Object.assign(slot, getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct || plannedProduct))
         slot.planned_product_sku = null
         slot.planned_product_name = null
         slot.changeover_old_units = null
