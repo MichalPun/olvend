@@ -115,6 +115,28 @@ assert.match(html, /planogramChange\?\.fullSwap && changeProductId/)
 assert.match(html, /Doprodej ze stejného auta/)
 assert.match(html, /staleCutoff = Date\.now\(\) - 10 \* 86400000/)
 assert.match(html, /10 dnech bez využití předvybráno k vrácení do skladu/)
+assert.match(html, /const finalizedReplacement = Boolean\(!fullSwap && replacementProduct && remainingExistingQuantity <= 0\)/)
+assert.match(html, /dvě ceny v jedné pozici nejsou bezpečné/)
+assert.match(html, /getFoodProductFamilyPatch\(replacementProduct \|\| planogramChange\?\.nextProduct\)/)
+
+{
+  const sandbox = context({
+    todayIso: '2026-09-02',
+    normalizeText: (value) => String(value || '').toLocaleLowerCase('cs-CZ')
+  })
+  vm.runInContext(extractFunction('normalizeFoodExpiryDate'), sandbox)
+  vm.runInContext(extractFunction('isBagetteProduct'), sandbox)
+  vm.runInContext(extractFunction('getFoodTransferHorizonDays'), sandbox)
+  vm.runInContext(extractFunction('isFoodTransferExpiryInHorizon'), sandbox)
+  assert.equal(sandbox.isFoodTransferExpiryInHorizon('2026-09-03', { name: 'ATM Debrecínská bageta' }), true,
+    'Bagetu musí aplikace nabídnout k přesunu nejpozději zítra')
+  assert.equal(sandbox.isFoodTransferExpiryInHorizon('2026-09-04', { name: 'ATM Debrecínská bageta' }), false,
+    'Bageta nesmí přejít do dlouhého 30denního režimu')
+  assert.equal(sandbox.isFoodTransferExpiryInHorizon('2026-10-02', { name: 'Ice Coffee Ledová káva 350ml' }), true,
+    'Ostatní sledované produkty musí vstoupit do řízeného doprodeje 30 dní před expirací')
+  assert.equal(sandbox.isFoodTransferExpiryInHorizon('2026-10-03', { name: 'Ice Coffee Ledová káva 350ml' }), false,
+    'Produkt mimo 30denní okno se ještě nemá přesouvat')
+}
 
 {
   const oldProduct = { id: 1, sku: 'OLD', name: 'Původní produkt' }

@@ -7646,6 +7646,42 @@
       return Boolean(product?.requires_batch_tracking || (product?.expiry_tracking_mode && product.expiry_tracking_mode !== 'none'))
     }
 
+    function isBagetteProduct(product) {
+      return normalizeText(product?.name || '').includes('baget')
+    }
+
+    function getFoodTransferHorizonDays(product) {
+      return isBagetteProduct(product) ? 1 : 30
+    }
+
+    function isFoodTransferExpiryInHorizon(expiryValue, product) {
+      const expiry = normalizeFoodExpiryDate(expiryValue)
+      if (!expiry) return false
+      const horizon = new Date(`${todayIso}T00:00:00`)
+      horizon.setDate(horizon.getDate() + getFoodTransferHorizonDays(product))
+      return expiry <= horizon.toLocaleDateString('sv-SE')
+    }
+
+    function getFoodProductFamilyPatch(product) {
+      const sku = String(product?.sku || '')
+      if (sku === 'SOCO-BRIGIT-90') return { product_family: 'Brigit', product_variant: null }
+      if (sku.startsWith('SOCO-BONGO-')) {
+        const variant = sku.includes('BANAN') ? 'Banán' : sku.includes('MATA') ? 'Máta' : 'Original'
+        return { product_family: 'Bongo', product_variant: variant }
+      }
+      if (sku.startsWith('SOCO-RAWBAR-')) {
+        const variant = sku.includes('CRANBERRY') ? 'Brusinky a mandle' : sku.includes('APPLE') ? 'Jablko a skořice' : 'Arašídy'
+        return { product_family: 'RawBar', product_variant: variant }
+      }
+      if (sku.startsWith('SOCO-EXTASY-')) {
+        return { product_family: 'Extasy', product_variant: sku.includes('COCONUT') ? 'Kokos' : 'Arašídové máslo' }
+      }
+      if (sku.startsWith('SOCO-PROTEIN-')) {
+        return { product_family: 'Proteinový suk', product_variant: sku.includes('COKOLADA') ? 'Čokoláda' : 'Vanilka' }
+      }
+      return {}
+    }
+
     function normalizeFoodExpiryDate(value) {
       const raw = String(value || '').trim()
       if (!raw) return ''
@@ -10728,8 +10764,10 @@
         && sellableAfterWaste > 0
         && (!normalizeFoodExpiryDate(draft.existingExpiryDate) || isFoodExpiryExpired(draft.existingExpiryDate))
       const verifiedExpiry = normalizeFoodExpiryDate(draft.existingExpiryDate)
-      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1)
-      const shortExpiry = Boolean(verifiedExpiry && verifiedExpiry <= tomorrow.toLocaleDateString('sv-SE'))
+      const transferProduct = draft.assortmentMismatch
+        ? state.products.find((item) => String(item.id) === String(draft.existingProductId || ''))
+        : state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
+      const shortExpiry = isFoodTransferExpiryInHorizon(verifiedExpiry, transferProduct || product)
       const batchLabels = draft.fillItems.filter((fill) => Number(fill.quantity || 0) > 0).map((fill) => `${fill.quantity} ks · ${fill.expiryDate ? formatFoodExpiryDateInput(fill.expiryDate) : 'expirace z FEFO při uložení'}`)
       return `
         <div class="coffee-next-box"><small>Teď udělej · pozice ${escapeHtml(slot.slot_code)}</small><h4>${recordedExpired || expiredWasteQuantity > 0 ? 'Nejdřív vyndej prošlé kusy' : `Doplň ${escapeHtml(product?.name || slot.product_name || 'produkt')}`}</h4><p>Postupujeme přesně opačně než při skládání vozíku: čerstvé zboží, cukrovinky, nápoje. Potvrď skutečný stav pozice.</p></div>
@@ -10745,7 +10783,7 @@
           <div class="coffee-instruction"><strong>${actualAdd > 0 ? `Vlož nyní ${escapeHtml(actualAdd)} ks` : 'Bez plánovaného doplnění'}</strong><span>${batchLabels.length ? `${escapeHtml(batchLabels.join(' · '))} · po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks` : `Po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Případné další kusy systém odebere FEFO ze zásoby auta.`}</span></div>
           ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(displayPrice))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>. OLVEND cenu na tomto automatu neumí zapsat na dálku.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''}> Potvrzuji, že jsem cenu pozice na automatu změnil(a) na ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</label></div>` : ''}
           ${missingQuantity || extraVehicleQuantity ? `<div class="food-extra-decision ${extraVehicleQuantity ? 'confirmed' : ''}"><strong>${extraVehicleQuantity ? `✓ Navíc z auta přidáno ${escapeHtml(extraVehicleQuantity)} ks` : 'Doplnit pozici do plna?'}</strong><span>${extraVehicleQuantity ? `Celkem vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.` : `Bez této volby vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.`}</span><button type="button" data-food-action="machine-take-from-vehicle" data-food-extra-stock data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${extraVehicleQuantity ? `Zrušit dodatečných ${escapeHtml(extraVehicleQuantity)} ks` : `+ Přidat ${escapeHtml(pendingExtraQuantity)} ks z auta`}</button></div>` : ''}
-          ${isFoodExpiryTracked(product) && draft.actualBefore > 0 && (shortExpiry || recordedExpired) ? (!draft.expiryVerified ? `<div class="coffee-info-strip"><span>!</span><span><b>Evidence ukazuje krátkou nebo prošlou expiraci.</b> Nejdřív fyzicky zkontroluj počet a datum výše. Teprve potom lze vyhodnotit přesun.</span></div><button class="food-transfer-action" type="button" data-food-action="guided-food-evaluate-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Ověřit stav a vyhodnotit přesun →</button>` : draft.transferRecommendation?.available ? `<div class="recommendation-card"><strong>Doporučený přesun po fyzické kontrole</strong><span>${escapeHtml(draft.transferRecommendation.quantity)} ks → ${escapeHtml(draft.transferRecommendation.targetTitle)} · EV ${escapeHtml(draft.transferRecommendation.targetEvidence)} · pozice ${escapeHtml(draft.transferRecommendation.targetSlotCode)}. Cíl prodává přibližně ${escapeHtml(draft.transferRecommendation.dailySales)} ks denně a má volné místo.</span></div><button class="food-transfer-action ${transferQuantity ? 'ready' : ''}" type="button" data-food-action="guided-food-accept-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${transferQuantity ? `✓ Přesun ${escapeHtml(transferQuantity)} ks je připravený` : `Připravit přesun ${escapeHtml(draft.transferRecommendation.quantity)} ks →`}</button>` : `<div class="coffee-rule-box"><strong>Přesun se nenabízí</strong>${escapeHtml(draft.transferRecommendation?.reason || 'Ověřená data neukazují vhodný cíl.')}</div>`) : ''}
+          ${isFoodExpiryTracked(transferProduct || product) && draft.actualBefore > 0 && (shortExpiry || recordedExpired) ? (!draft.expiryVerified ? `<div class="coffee-info-strip"><span>!</span><span><b>${isBagetteProduct(transferProduct || product) ? 'Bageta musí být vyřešená nejpozději zítra.' : 'Produkt vstoupil do 30denního řízeného doprodeje.'}</b> Nejdřív fyzicky zkontroluj počet a datum výše. Potom aplikace vybere silnější automat na zbývající trase.</span></div><button class="food-transfer-action" type="button" data-food-action="guided-food-evaluate-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Ověřit stav a vyhodnotit přesun →</button>` : draft.transferRecommendation?.available ? `<div class="recommendation-card"><strong>Doporučený přesun po fyzické kontrole</strong><span>${escapeHtml(draft.transferRecommendation.quantity)} ks → ${escapeHtml(draft.transferRecommendation.targetTitle)} · EV ${escapeHtml(draft.transferRecommendation.targetEvidence)} · pozice ${escapeHtml(draft.transferRecommendation.targetSlotCode)}. Cíl prodává přibližně ${escapeHtml(draft.transferRecommendation.dailySales)} ks denně a má volné místo.</span></div><button class="food-transfer-action ${transferQuantity ? 'ready' : ''}" type="button" data-food-action="guided-food-accept-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${transferQuantity ? `✓ Přesun ${escapeHtml(transferQuantity)} ks je připravený` : `Připravit přesun ${escapeHtml(draft.transferRecommendation.quantity)} ks →`}</button>` : `<div class="coffee-rule-box"><strong>Přesun se nenabízí</strong>${escapeHtml(draft.transferRecommendation?.reason || 'Ověřená data neukazují vhodný cíl.')}</div>`) : ''}
           ${transferQuantity > 0 ? `<div class="coffee-info-strip"><span>→</span><span><b>${escapeHtml(transferQuantity)} ks vyndej jako prodejné zboží pro přesun.</b> Po potvrzení se vrátí do zásoby vozidla a zůstanou oddělené od odpisu.</span></div><button class="coffee-guide-more" type="button" data-food-action="guided-food-cancel-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Zrušit doporučený přesun</button>` : ''}
           ${missingQuantity || extraVehicleQuantity ? '' : `<div class="coffee-soft-actions single"><button class="coffee-soft-btn" type="button" data-food-action="machine-take-from-vehicle" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">+ Další z auta</button></div>`}
           <div class="food-special-actions">
@@ -14336,10 +14374,14 @@
       const replacementProduct = replacementFill ? selectedProduct : null
       const nextPlanogramSku = planogramChange?.productChanged ? planogramChange.nextSku : null
       const replacementPriceChangeRequired = Boolean(replacementFill && planogramChange?.priceChanged)
+      if (!fullSwap && replacementPriceChangeRequired && remainingExistingQuantity > 0) {
+        throw new Error(`Pozice ${slot.slot_code}: nový produkt má jinou cenu, ale uvnitř ještě zbývá ${remainingExistingQuantity} ks původního produktu. Staré kusy nejdřív vrať nebo přesuň a proveď kompletní výměnu; dvě ceny v jedné pozici nejsou bezpečné.`)
+      }
       if (replacementPriceChangeRequired && !draft.machinePriceConfirmed) {
         throw new Error(`Pozice ${slot.slot_code}: nejdřív změň cenu přímo na automatu z ${formatNumber(slot.customer_price_czk ?? slot.price_czk)} Kč na ${formatNumber(planogramChange.nextPrice)} Kč a potvrď provedení.`)
       }
       const mixedChangeover = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity > 0)
+      const finalizedReplacement = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity <= 0)
       const physicalMismatchSellThrough = Boolean(
         draft.assortmentMismatch
         && remainingExistingQuantity > 0
@@ -14644,9 +14686,10 @@
       const { error: slotError } = await supabase
         .from('machine_planogram_slots')
         .update({
-          ...(fullSwap && nextPlanogramSku ? {
+          ...((fullSwap && nextPlanogramSku) || finalizedReplacement ? {
             product_sku: nextPlanogramSku,
             product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name,
+            ...getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct),
             price_czk: planogramChange?.nextPrice ?? slot.price_czk,
             customer_price_czk: planogramChange?.nextPrice ?? slot.customer_price_czk ?? slot.price_czk,
             dex_price_czk: planogramChange?.nextPrice ?? slot.dex_price_czk ?? slot.price_czk,
@@ -14679,7 +14722,7 @@
             planned_product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name
           } : {}),
           ...compositionPatch,
-          ...(replacementPriceChangeRequired && !fullSwap ? {
+          ...(replacementPriceChangeRequired && !fullSwap && !finalizedReplacement ? {
             price_czk: planogramChange.nextPrice,
             customer_price_czk: planogramChange.nextPrice,
             dex_price_czk: planogramChange.nextPrice,
@@ -14718,9 +14761,10 @@
       slot.pending_price_czk = null
       slot.pending_change_effective_date = null
       slot.pending_change_note = null
-      if (fullSwap && nextPlanogramSku) {
+      if ((fullSwap && nextPlanogramSku) || finalizedReplacement) {
         slot.product_sku = nextPlanogramSku
         slot.product_name = state.products.find((item) => String(item.sku) === String(nextPlanogramSku))?.name || planogramChange?.nextName || slot.product_name
+        Object.assign(slot, getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct))
         slot.planned_product_sku = null
         slot.planned_product_name = null
         slot.changeover_old_units = null
@@ -14840,11 +14884,12 @@
       const expiry = normalizeFoodExpiryDate(draft.existingExpiryDate)
       if (!expiry) throw new Error(`Pozice ${slot.slot_code}: nejdřív fyzicky ověř a zapiš expiraci z obalu.`)
       if (isFoodExpiryExpired(expiry)) throw new Error(`Pozice ${slot.slot_code}: prošlé zboží se nesmí přesouvat. Přidej je do odpisu.`)
-      const tomorrow = new Date()
-      tomorrow.setDate(tomorrow.getDate() + 1)
-      const tomorrowKey = tomorrow.toLocaleDateString('sv-SE')
-      if (expiry > tomorrowKey) {
-        updateFoodSlotDraft(stopId, slot.id, { expiryVerified: true, transferQuantity: 0, transferRecommendation: { available: false, reason: 'Ověřená expirace není krátká.' } })
+      const existingProduct = draft.assortmentMismatch
+        ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
+        : state.products.find((product) => String(product.sku || '') === String(slot.product_sku || ''))
+      const horizonDays = getFoodTransferHorizonDays(existingProduct)
+      if (!isFoodTransferExpiryInHorizon(expiry, existingProduct)) {
+        updateFoodSlotDraft(stopId, slot.id, { expiryVerified: true, transferQuantity: 0, transferRecommendation: { available: false, reason: `Expirace zatím není v ${horizonDays}denním okně řízeného doprodeje.` } })
         renderRouteMachineScreen()
         return
       }
@@ -14856,9 +14901,6 @@
         renderRouteMachineScreen()
         return
       }
-      const existingProduct = draft.assortmentMismatch
-        ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
-        : state.products.find((product) => String(product.sku || '') === String(slot.product_sku || ''))
       const productSku = existingProduct?.sku || slot.product_sku
       const salesSince = new Date(Date.now() - 7 * 86400000).toISOString()
       const [slotsResult, salesResult] = await Promise.all([
