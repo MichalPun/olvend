@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v154-technician-day-fix';
+const CACHE_NAME = 'olvend-v155-nestea-substitution';
 const APP_SHELL = [
   './',
   './index.html',
