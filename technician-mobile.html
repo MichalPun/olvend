@@ -39,16 +39,16 @@
         <div class="intro"><span class="eyebrow">ZAČÁTEK DNE</span><h1>Jak dnes začínáte?</h1><p>Vyberte dopravu. Kombinovaný den je výchozí a plán lze během směny doplnit.</p></div>
         <div class="section-label">Doprava</div>
         <div class="choice-grid">
-          <button class="choice is-selected" type="button" data-vehicle-mode="car"><i>A</i><span><strong>S autem</strong><small>Servisy a převozy</small></span></button>
+          <button class="choice" type="button" data-vehicle-mode="car"><i>A</i><span><strong>S autem</strong><small>Servisy a převozy</small></span></button>
           <button class="choice" type="button" data-vehicle-mode="none"><i>—</i><span><strong>Bez auta</strong><small>Dílna nebo práce na místě</small></span></button>
         </div>
-        <div class="field-grid" id="vehicleFields"><label class="field">Vozidlo<select id="vehicleSelect"></select></label><label class="field">Počáteční stav km<input id="startKm" inputmode="decimal" /></label></div>
+        <div class="field-grid" id="vehicleFields" hidden><label class="field">Vozidlo<select id="vehicleSelect"></select></label><label class="field">Počáteční stav km<input id="startKm" inputmode="decimal" /></label></div>
         <div class="section-label">Typ dne</div>
         <div class="choice-grid">
           <button class="choice is-selected" type="button" data-work-mode="mixed"><i>K</i><span><strong>Kombinovaný den</strong><small>Výchozí volba</small></span></button>
           <button class="choice" type="button" data-work-mode="field"><i>S</i><span><strong>Servisní výjezdy</strong><small>Práce v terénu</small></span></button>
         </div>
-        <div class="summary"><span>Dnešní režim</span><strong id="startSummary">Auto · kombinovaný den</strong></div>
+        <div class="summary"><span>Dnešní režim</span><strong id="startSummary">Vyberte dopravu · kombinovaný den</strong></div>
         <button class="primary full" id="startShift" type="button">Zahájit směnu</button>
       </section>
 
@@ -89,10 +89,10 @@
 
   <script type="module">
     import { supabase } from './supabase.js'
-    import './pwa.js'
+    import './pwa.js?v=20260902-technician-day-v1'
 
     const today = new Intl.DateTimeFormat('en-CA', { timeZone:'Europe/Prague', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date())
-    const state = { employee:null, attendance:null, events:[], vehicleLog:null, vehicles:[], locations:[], stockLocations:[], machines:[], services:[], jobs:[], plan:[], tasks:[], activeTask:null, vehicleMode:'car', workMode:'mixed', filter:'all', stagedParts:[], stockLocation:null, products:[], balances:[] }
+    const state = { employee:null, attendance:null, events:[], vehicleLog:null, vehicles:[], locations:[], stockLocations:[], machines:[], services:[], jobs:[], plan:[], tasks:[], activeTask:null, vehicleMode:null, workMode:'mixed', filter:'all', stagedParts:[], stockLocation:null, products:[], balances:[] }
     const $ = (selector) => document.querySelector(selector)
     const $$ = (selector) => [...document.querySelectorAll(selector)]
     const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))
@@ -145,15 +145,36 @@
       buildTasks(); renderShell()
     }
 
-    function serviceDone(item){return ['done','cancelled'].includes(String(item.status||''))}
-    function jobDone(item){return ['pending_confirmation','closed','cancelled'].includes(String(item.status||''))}
+    function serviceDone(item){return ['done','cancelled','blocked'].includes(String(item.status||''))}
+    function jobDone(item){return ['pending_confirmation','closed','cancelled','blocked'].includes(String(item.status||''))}
     function happenedToday(value){return value&&new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Prague'}).format(new Date(value))===today}
+    function dateIsToday(value){return Boolean(value&&String(value).slice(0,10)===today)}
+    function isPlannedToday(sourceType,sourceId){
+      return state.plan.some(item=>String(item.source_type||'')===String(sourceType)&&String(item.source_id||'')===String(sourceId))
+    }
+    function serviceBelongsToToday(item){
+      return isPlannedToday('service_request',item.id)
+        || dateIsToday(item.due_date)
+        || happenedToday(item.created_at)
+        || happenedToday(item.service_started_at)
+        || happenedToday(item.service_finished_at||item.resolved_at)
+        || String(item.status||'')==='in_progress'
+    }
+    function jobBelongsToToday(item){
+      return isPlannedToday('technical_job',item.id)
+        || dateIsToday(item.planned_date)
+        || dateIsToday(item.due_at)
+        || happenedToday(item.created_at)
+        || happenedToday(item.started_at)
+        || happenedToday(item.finished_at||item.submitted_at)
+        || ['on_site','in_progress'].includes(String(item.status||''))
+    }
     function buildTasks(){
       const linkedServiceIds=new Set(state.jobs.map(job=>String(job.service_request_id||'')).filter(Boolean))
-      const serviceTasks=state.services.filter(item=>!serviceDone(item)||happenedToday(item.resolved_at||item.service_finished_at)).map(item=>{
+      const serviceTasks=state.services.filter(serviceBelongsToToday).filter(item=>!serviceDone(item)||happenedToday(item.resolved_at||item.service_finished_at)||isPlannedToday('service_request',item.id)).map(item=>{
         const location=locationOf(item.location_id),machine=machineOf(item.machine_id);return{sourceType:'service_request',id:item.id,kind:'service',raw:item,done:serviceDone(item),current:item.status==='in_progress',priority:item.priority,title:location?.name||item.external_service_place||item.title,subtitle:[machine?.evidence_number&&`EV ${machine.evidence_number}`,machine?.machine_type].filter(Boolean).join(' · '),description:item.title||item.description||'Servisní zásah',finishedAt:item.resolved_at||item.service_finished_at,due:item.due_date}
       })
-      const jobTasks=state.jobs.filter(item=>(!item.service_request_id||!state.services.some(service=>String(service.id)===String(item.service_request_id)))&&(!jobDone(item)||happenedToday(item.finished_at||item.submitted_at))).map(item=>{
+      const jobTasks=state.jobs.filter(jobBelongsToToday).filter(item=>(!item.service_request_id||!state.services.some(service=>String(service.id)===String(item.service_request_id)))&&(!jobDone(item)||happenedToday(item.finished_at||item.submitted_at)||isPlannedToday('technical_job',item.id))).map(item=>{
         const source=locationOf(item.source_location_id||item.location_id),target=locationOf(item.target_location_id),machine=machineOf(item.machine_id);const transport=['transfer','deinstallation','delivery','installation'].includes(item.job_type)
         return{sourceType:'technical_job',id:item.id,kind:transport?'transport':item.job_type==='service'?'service':'workshop',raw:item,done:jobDone(item),current:['on_site','in_progress'].includes(item.status),priority:item.priority,title:transport?[source?.name,target?.name||'Dílna'].filter(Boolean).join(' → '):(item.title||source?.name||'Technická práce'),subtitle:[machine?.evidence_number&&`EV ${machine.evidence_number}`,machine?.machine_type].filter(Boolean).join(' · '),description:item.title||item.description||'Technický úkol',finishedAt:item.finished_at||item.submitted_at,due:item.due_at||item.planned_date}
       })
@@ -165,9 +186,9 @@
     }
 
     function taskTypeLabel(task){if(task.kind==='service')return 'SERVIS';if(task.kind==='transport')return task.raw.job_type==='deinstallation'?'SVOZ NA DÍLNU':'PŘEVOZ';return 'DÍLNA'}
-    function taskCard(task,index){const stateClass=task.done?'done':task.current?'current':task.priority==='critical'||task.priority==='high'?'urgent':'';const status=task.done?`DOKONČENO ${localTime(task.finishedAt)}`:task.current?'NYNÍ':task.due?`PLÁN ${String(task.due).slice(0,16).replace('T',' ')}`:'PŘIDĚLENO';return`<button class="task ${stateClass}" type="button" data-task="${esc(taskKey(task.sourceType,task.id))}"><b>${task.done?'✓':index+1}</b><span><em>${esc(taskTypeLabel(task))} · ${esc(status)}</em><strong>${esc(task.title)}</strong><small>${esc([task.subtitle,task.description].filter(Boolean).join(' · '))}</small></span><i>›</i></button>`}
+    function taskCard(task,index){const handedOff=String(task.raw.status||'')==='blocked';const stateClass=task.done?'done':task.current?'current':task.priority==='critical'||task.priority==='high'?'urgent':'';const status=handedOff?'PŘEDÁNO VEDOUCÍMU':task.done?`DOKONČENO ${localTime(task.finishedAt)}`:task.current?'NYNÍ':task.due?`PLÁN ${String(task.due).slice(0,16).replace('T',' ')}`:'PŘIDĚLENO';return`<button class="task ${stateClass}" type="button" data-task="${esc(taskKey(task.sourceType,task.id))}"><b>${task.done?'✓':index+1}</b><span><em>${esc(taskTypeLabel(task))} · ${esc(status)}</em><strong>${esc(task.title)}</strong><small>${esc([task.subtitle,task.description].filter(Boolean).join(' · '))}</small></span><i>›</i></button>`}
     function renderShell(){
-      $('#vehicleSelect').innerHTML=state.vehicles.map(v=>`<option value="${esc(v.id)}">${esc([v.name,v.plate].filter(Boolean).join(' · '))}</option>`).join('');const selected=vehicleOf(state.attendance?.vehicle_id)||state.vehicles[0];if(selected){$('#vehicleSelect').value=selected.id;$('#startKm').value=selected.current_odometer_km??''}
+      $('#vehicleSelect').innerHTML='<option value="">— Vyberte vozidlo —</option>'+state.vehicles.map(v=>`<option value="${esc(v.id)}">${esc([v.name,v.plate].filter(Boolean).join(' · '))}</option>`).join('');const selected=vehicleOf(state.attendance?.vehicle_id);if(selected){$('#vehicleSelect').value=selected.id;$('#startKm').value=selected.current_odometer_km??''}else{$('#vehicleSelect').value='';$('#startKm').value=''}
       if(isShiftRunning()||state.attendance?.actual_end){show('today');renderToday()}else show('start')
       renderTasks();renderEnd()
     }
@@ -178,7 +199,7 @@
       $('#todayTaskList').innerHTML=state.tasks.length?state.tasks.map(taskCard).join(''):'<div class="empty">Na dnešek nejsou přiřazené žádné technické úkoly.</div>'
     }
     function renderTasks(){const filtered=state.tasks.filter(task=>state.filter==='all'||state.filter==='done'&&task.done||state.filter==='service'&&task.kind==='service'||state.filter==='transport'&&task.kind==='transport');$('#taskCount').textContent=String(filtered.length);$('#allTaskList').innerHTML=filtered.length?filtered.map(taskCard).join(''):'<div class="empty">V tomto filtru nejsou žádné úkoly.</div>'}
-    function renderEnd(){const open=state.tasks.filter(task=>!task.done);$('#endSummary').textContent=open.length?`${open.length} úkolů ještě není dokončeno. Rozpracovaný úkol musí být nejdřív uzavřen nebo předán.`:'Všechny dnešní úkoly jsou dokončené.';const withVehicle=Boolean(state.attendance?.vehicle_id);$('#endKmField').hidden=!withVehicle;if(state.vehicleLog?.end_odometer_km!=null)$('#endKm').value=state.vehicleLog.end_odometer_km}
+    function renderEnd(){const open=state.tasks.filter(task=>!task.done);$('#endSummary').textContent=open.length?`${open.length} dnešních úkolů ještě není dokončeno. Směnu však blokuje jen práce, která je právě skutečně rozpracovaná.`:'Všechny dnešní úkoly jsou dokončené nebo předané vedoucímu.';const withVehicle=Boolean(state.attendance?.vehicle_id);$('#endKmField').hidden=!withVehicle;if(withVehicle&&!$('#endKm').value){const vehicle=vehicleOf(state.attendance.vehicle_id);$('#endKm').value=state.vehicleLog?.end_odometer_km??vehicle?.current_odometer_km??state.vehicleLog?.start_odometer_km??''}}
 
     function renderTechnicalInstructions(raw){
       const configuration=json(raw.configuration_payload,{}),ingredients=Array.isArray(configuration.ingredients)?configuration.ingredients:[],planogram=Array.isArray(configuration.planogram_rows)?configuration.planogram_rows:[],materials=raw._materials||[],attachments=raw._attachments||[]
@@ -238,18 +259,43 @@
     async function openParts(){if(!state.activeTask){message('Díly přidávejte z otevřeného servisu nebo technické práce.','error');return}await loadParts();$('#partsSheet').hidden=false}
     function stagePart(balanceId){const balance=state.balances.find(item=>String(item.id)===String(balanceId)),product=state.products.find(item=>String(item.id)===String(balance?.product_id));if(!balance||!product)return;const existing=state.stagedParts.find(item=>String(item.balanceId)===String(balanceId));if(existing)existing.quantity+=1;else state.stagedParts.push({balanceId:balance.id,productId:product.id,batchId:balance.batch_id||null,name:product.name,unit:product.base_unit||'ks',quantity:1});$('#partsSheet').hidden=true;const target=$('#stagedParts');if(target)target.innerHTML=renderStagedParts();message('Díl je připravený k odpisu po uložení práce.','success')}
 
-    async function startShift(){const vehicleId=state.vehicleMode==='car'?$('#vehicleSelect').value:null,startKm=vehicleId?number($('#startKm').value):null;if(vehicleId&&startKm===null)throw new Error('Doplňte počáteční stav kilometrů.');const selected=vehicleOf(vehicleId),now=new Date().toISOString(),note=`Technik · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'} · ${vehicleId?`vozidlo ${selected?.plate||vehicleId}`:'bez vozidla'}`
+    async function startShift(){if(!state.vehicleMode)throw new Error('Vyberte, zda dnes začínáte s autem, nebo bez auta.');const vehicleId=state.vehicleMode==='car'?$('#vehicleSelect').value:null;if(state.vehicleMode==='car'&&!vehicleId)throw new Error('Vyberte konkrétní vozidlo.');const startKm=vehicleId?number($('#startKm').value):null;if(vehicleId&&startKm===null)throw new Error('Doplňte počáteční stav kilometrů.');const previous=await supabase.from('attendance_days').select('id,attendance_date').eq('employee_id',state.employee.id).is('actual_end',null).neq('attendance_date',today).order('attendance_date',{ascending:false}).limit(1);if(previous.error)throw previous.error;if(previous.data?.length)throw new Error(`Předchozí směna z ${new Date(`${previous.data[0].attendance_date}T12:00:00`).toLocaleDateString('cs-CZ')} zůstala otevřená. Nejdřív ji musí opravit vedoucí.`);const selected=vehicleOf(vehicleId),now=new Date().toISOString(),note=`Technik · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'} · ${vehicleId?`vozidlo ${selected?.plate||vehicleId}`:'bez vozidla'}`
       const {data,error}=await supabase.from('attendance_days').upsert({employee_id:state.employee.id,attendance_date:today,status:'open',actual_start:now,vehicle_id:vehicleId,start_warehouse_id:selected?.warehouse_id||state.employee.warehouse_id||null,note},{onConflict:'employee_id,attendance_date'}).select('*').single();if(error)throw error
       const event=await supabase.from('attendance_events').insert({attendance_day_id:data.id,employee_id:state.employee.id,event_type:'shift_start',event_time:now,note,created_by:state.employee.id});if(event.error)throw event.error
       if(vehicleId){const log=await supabase.from('vehicle_operation_logs').insert({vehicle_id:vehicleId,employee_id:state.employee.id,attendance_day_id:data.id,log_date:today,started_at:now,start_odometer_km:startKm,status:'open'});if(log.error)throw log.error}
       await loadData();message('Směna technika byla zahájena.','success')
     }
     async function toggleBreak(){if(!isShiftRunning())throw new Error('Pauzu lze použít jen během směny.');const open=getBreakState(),now=new Date().toISOString();if(!open){const {error}=await supabase.from('attendance_events').insert({attendance_day_id:state.attendance.id,employee_id:state.employee.id,event_type:'break_start',event_time:now,note:'Pauza technika',created_by:state.employee.id});if(error)throw error}else{const diff=Math.max(0,Math.round((new Date(now)-new Date(open.event_time))/60000)),total=Number(state.attendance.break_minutes||0)+diff;const update=await supabase.from('attendance_days').update({break_minutes:total}).eq('id',state.attendance.id);if(update.error)throw update.error;const {error}=await supabase.from('attendance_events').insert({attendance_day_id:state.attendance.id,employee_id:state.employee.id,event_type:'break_end',event_time:now,note:`Pauza ${diff} min`,created_by:state.employee.id});if(error)throw error}await loadData();message(open?'Pauza byla ukončena.':'Pauza byla zahájena.','success')}
-    async function endShift(){if(!isShiftRunning())throw new Error('Směna už neběží.');const inProgress=state.tasks.filter(task=>!task.done&&(task.current||task.raw.status==='in_progress'));if(inProgress.length)throw new Error(`Nejdřív uzavřete nebo předejte rozpracovaný úkol: ${inProgress[0].title}.`);const endKm=state.attendance.vehicle_id?number($('#endKm').value):null;if(state.attendance.vehicle_id&&endKm===null)throw new Error('Doplňte konečný stav kilometrů.');if(state.vehicleLog?.start_odometer_km!=null&&endKm<Number(state.vehicleLog.start_odometer_km))throw new Error('Konečný stav km nesmí být menší než počáteční.');const now=new Date().toISOString(),openBreak=getBreakState();if(openBreak)await toggleBreak();const payable=Math.max(0,Math.round((new Date(now)-new Date(state.attendance.actual_start))/60000)-Number(state.attendance.break_minutes||0));const {error}=await supabase.from('attendance_days').update({status:'closed',actual_end:now,payable_minutes:payable,note:$('#endNote').value.trim()||state.attendance.note||null}).eq('id',state.attendance.id).is('actual_end',null);if(error)throw error;await supabase.from('attendance_events').insert({attendance_day_id:state.attendance.id,employee_id:state.employee.id,event_type:'shift_end',event_time:now,created_by:state.employee.id});if(state.vehicleLog?.id)await supabase.from('vehicle_operation_logs').update({ended_at:now,end_odometer_km:endKm,status:'closed'}).eq('id',state.vehicleLog.id);if(state.attendance.vehicle_id)await supabase.from('vehicles').update({current_odometer_km:endKm}).eq('id',state.attendance.vehicle_id);await loadData();message('Směna byla ukončena a uložena.','success')}
+    async function endShift(){
+      if(!isShiftRunning())throw new Error('Směna už neběží.')
+      const inProgress=state.tasks.filter(task=>!task.done&&['on_site','in_progress'].includes(String(task.raw.status||'')))
+      if(inProgress.length)throw new Error(`Nejdřív dokončete nebo předejte vedoucímu právě rozpracovaný úkol: ${inProgress[0].title}.`)
+      const endKm=state.attendance.vehicle_id?number($('#endKm').value):null
+      if(state.attendance.vehicle_id&&endKm===null)throw new Error('Doplňte konečný stav kilometrů.')
+      if(state.vehicleLog?.start_odometer_km!=null&&endKm<Number(state.vehicleLog.start_odometer_km))throw new Error('Konečný stav km nesmí být menší než počáteční.')
+      const now=new Date().toISOString()
+      let breakMinutes=Number(state.attendance.break_minutes||0)
+      const openBreak=getBreakState()
+      if(openBreak){
+        const diff=Math.max(0,Math.round((new Date(now)-new Date(openBreak.event_time))/60000))
+        breakMinutes+=diff
+        const breakEvent=await supabase.from('attendance_events').insert({attendance_day_id:state.attendance.id,employee_id:state.employee.id,event_type:'break_end',event_time:now,note:`Pauza automaticky ukončena se směnou · ${diff} min`,created_by:state.employee.id})
+        if(breakEvent.error)throw breakEvent.error
+      }
+      const payable=Math.max(0,Math.round((new Date(now)-new Date(state.attendance.actual_start))/60000)-breakMinutes)
+      const closed=await supabase.from('attendance_days').update({status:'closed',actual_end:now,break_minutes:breakMinutes,payable_minutes:payable,note:$('#endNote').value.trim()||state.attendance.note||null}).eq('id',state.attendance.id).is('actual_end',null).select('id').maybeSingle()
+      if(closed.error)throw closed.error
+      if(!closed.data)throw new Error('Směnu se nepodařilo uzavřít, protože už byla mezitím změněna. Obnovte stránku.')
+      const endEvent=await supabase.from('attendance_events').insert({attendance_day_id:state.attendance.id,employee_id:state.employee.id,event_type:'shift_end',event_time:now,created_by:state.employee.id})
+      if(endEvent.error)throw endEvent.error
+      if(state.vehicleLog?.id){const log=await supabase.from('vehicle_operation_logs').update({ended_at:now,end_odometer_km:endKm,status:'closed'}).eq('id',state.vehicleLog.id);if(log.error)throw log.error}
+      if(state.attendance.vehicle_id){const vehicle=await supabase.from('vehicles').update({current_odometer_km:endKm}).eq('id',state.attendance.vehicle_id);if(vehicle.error)throw vehicle.error}
+      await loadData();message('Směna byla ukončena a uložena.','success')
+    }
 
     document.addEventListener('click',async event=>{try{
-      const vehicleMode=event.target.closest('[data-vehicle-mode]');if(vehicleMode){state.vehicleMode=vehicleMode.dataset.vehicleMode;$$('[data-vehicle-mode]').forEach(item=>item.classList.toggle('is-selected',item===vehicleMode));$('#vehicleFields').hidden=state.vehicleMode!=='car';$('#startSummary').textContent=`${state.vehicleMode==='car'?'Auto':'Bez auta'} · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'}`;return}
-      const workMode=event.target.closest('[data-work-mode]');if(workMode){state.workMode=workMode.dataset.workMode;$$('[data-work-mode]').forEach(item=>item.classList.toggle('is-selected',item===workMode));$('#startSummary').textContent=`${state.vehicleMode==='car'?'Auto':'Bez auta'} · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'}`;return}
+      const vehicleMode=event.target.closest('[data-vehicle-mode]');if(vehicleMode){state.vehicleMode=vehicleMode.dataset.vehicleMode;$$('[data-vehicle-mode]').forEach(item=>item.classList.toggle('is-selected',item===vehicleMode));$('#vehicleFields').hidden=state.vehicleMode!=='car';$('#startSummary').textContent=`${state.vehicleMode==='car'?'Auto':state.vehicleMode==='none'?'Bez auta':'Vyberte dopravu'} · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'}`;return}
+      const workMode=event.target.closest('[data-work-mode]');if(workMode){state.workMode=workMode.dataset.workMode;$$('[data-work-mode]').forEach(item=>item.classList.toggle('is-selected',item===workMode));$('#startSummary').textContent=`${state.vehicleMode==='car'?'Auto':state.vehicleMode==='none'?'Bez auta':'Vyberte dopravu'} · ${state.workMode==='mixed'?'kombinovaný den':'servisní výjezdy'}`;return}
       const nav=event.target.closest('[data-nav]');if(nav){show(nav.dataset.nav);if(nav.dataset.nav==='today')renderToday();if(nav.dataset.nav==='tasks')renderTasks();if(nav.dataset.nav==='end')renderEnd();return}
       const task=event.target.closest('[data-task]');if(task){await openTask(task.dataset.task);return}
       if(event.target.closest('[data-open-all]')){show('tasks');renderTasks();return}

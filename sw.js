@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v153-food-price-confirmation';
+const CACHE_NAME = 'olvend-v154-technician-day-fix';
 const APP_SHELL = [
   './',
   './index.html',
