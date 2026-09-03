@@ -700,6 +700,9 @@
     html[data-olvend-theme="light"] .technical-detail-modal .section-title { background:#edf0f4; }
     html[data-olvend-theme="light"] .technical-detail-modal,html[data-olvend-theme="light"] .job-editor-modal { background:#fff; }
     .technical-detail-modal { width:min(96vw,1540px); }
+    .technical-detail-modal.service-request-host { width:min(97vw,1580px);height:min(94vh,980px); }
+    .technical-detail-modal.service-request-host .modal-body { padding:0;overflow:hidden; }
+    .service-request-frame { display:block;width:100%;height:calc(min(94vh,980px) - 54px);border:0;background:#eef2f6; }
     .technical-detail-modal .modal-body { padding:18px 20px 24px;font-size:13px; }
     .technical-detail-modal .detail-sheet-head { padding:2px 2px 14px; }
     .technical-detail-modal .detail-sheet-head h2 { font-size:23px; }
@@ -885,7 +888,7 @@
             </div>
             <div class="actions">
               <button class="btn" type="button" data-action="create-service-job">+ Nová servisní karta</button>
-              <a class="btn secondary" href="service-requests.html">Otevřít úplný seznam</a>
+              <button class="btn secondary" type="button" data-action="open-service-list">Otevřít servisní požadavky</button>
             </div>
           </div>
           <div class="panel-body">
@@ -1562,7 +1565,7 @@
         <button class="btn secondary" id="closeDetailBtn" type="button">Zavřít</button>
       </div>
       <div class="modal-body" id="detailBody"></div>
-      <div class="modal-footer">
+      <div class="modal-footer" id="detailFooter">
         <button type="button" class="btn secondary" id="detailEditBtn">Upravit kartu</button>
         <button type="button" class="btn secondary hidden" id="detailEmailBtn">Odeslat e-mail zaměstnanci</button>
         <button type="button" class="btn secondary hidden" id="detailEmailPreviewBtn">Poslat náhled mně</button>
@@ -1796,6 +1799,7 @@
     const detailBackdrop = document.getElementById('detailBackdrop')
     const detailTitle = document.getElementById('detailTitle')
     const detailBody = document.getElementById('detailBody')
+    const detailFooter = document.getElementById('detailFooter')
     const closeDetailBtn = document.getElementById('closeDetailBtn')
     const detailEditBtn = document.getElementById('detailEditBtn')
     const detailEmailBtn = document.getElementById('detailEmailBtn')
@@ -1851,6 +1855,7 @@
     let attachments = []
     let activeTab = 'overview'
     let activeDetailId = null
+    let activeDetailKind = null
     let drawingSignature = false
     let lastSignaturePoint = null
     const QUERY_TIMEOUT_MS = 12000
@@ -2436,7 +2441,7 @@
               <span class="subtext">${escapeHtml(getPriorityLabel(item.priority))} · ${escapeHtml(getLocationLabel(item.location_id))}</span>
               <div class="action-row">
                 <button class="btn secondary" type="button" data-action="bridge-service-request" data-id="${item.id}">Převzít do technické karty</button>
-                <a class="btn ghost" href="service-requests.html">Otevřít servis</a>
+                <button class="btn ghost" type="button" data-action="bridge-service-request" data-id="${item.id}">Otevřít servis</button>
               </div>
             </article>
           `).join('')
@@ -2820,10 +2825,32 @@
     function openWorkItem(item) {
       if (!item) return
       if (item._sourceKind === 'service_request') {
-        window.location.href = `service-requests.html?request=${encodeURIComponent(item.id)}`
+        renderServiceRequestWorkspace(item.id)
         return
       }
       renderDetail(item.id)
+    }
+
+    function renderServiceRequestWorkspace(requestId = '', action = '') {
+      activeDetailId = requestId ? Number(requestId) : null
+      activeDetailKind = 'service_request'
+      const request = serviceRequests.find((item) => String(item.id) === String(requestId))
+      detailTitle.textContent = request
+        ? `SR-${String(request.id).padStart(4, '0')} · ${request.title || 'Servisní požadavek'}`
+        : action === 'new' ? 'Nový servisní požadavek' : 'Servisní požadavky'
+      const params = new URLSearchParams({ embedded: '1' })
+      if (requestId) params.set('request', String(requestId))
+      if (action) params.set('action', action)
+      detailBody.innerHTML = `<iframe class="service-request-frame" title="${escapeHtml(detailTitle.textContent)}" src="service-requests.html?${params.toString()}"></iframe>`
+      detailFooter.classList.add('hidden')
+      detailBackdrop.querySelector('.technical-detail-modal')?.classList.add('service-request-host')
+      const url = new URL(window.location.href)
+      url.searchParams.delete('job')
+      url.searchParams.delete('action')
+      if (requestId) url.searchParams.set('request', String(requestId))
+      else if (action) url.searchParams.set('action', action)
+      window.history.replaceState({}, '', url)
+      openDetailModal()
     }
 
     function updateJobSortHeaders() {
@@ -3161,9 +3188,7 @@
 
     async function openCreateJob(type = 'installation', serviceRequestId = '') {
       if (type === 'service') {
-        window.location.href = serviceRequestId
-          ? `service-requests.html?request=${encodeURIComponent(serviceRequestId)}`
-          : 'service-requests.html?action=new'
+        renderServiceRequestWorkspace(serviceRequestId, serviceRequestId ? '' : 'new')
         return
       }
       await refreshJobDirectories()
@@ -3617,6 +3642,13 @@
 
     function closeDetailModal() {
       detailBackdrop.classList.remove('show')
+      if (activeDetailKind === 'service_request') {
+        const url = new URL(window.location.href)
+        url.searchParams.delete('request')
+        url.searchParams.delete('action')
+        window.history.replaceState({}, '', url)
+      }
+      activeDetailKind = null
     }
 
     function openSignatureModal() {
@@ -5148,6 +5180,9 @@
       const job = jobs.find((item) => String(item.id) === String(jobIdValue))
       if (!job) return
       activeDetailId = job.id
+      activeDetailKind = 'technical_job'
+      detailFooter.classList.remove('hidden')
+      detailBackdrop.querySelector('.technical-detail-modal')?.classList.remove('service-request-host')
       const checklist = getChecklistForJob(job.id)
       const signature = getSignatureForJob(job.id)
       const protocol = getProtocolForJob(job.id)
@@ -5694,12 +5729,12 @@
       printJobsBtn.addEventListener('click', () => window.print())
       openCreateBtn.addEventListener('click', () => {
         if (activeTab === 'service') {
-          window.location.href = 'service-requests.html?action=new'
+          renderServiceRequestWorkspace('', 'new')
           return
         }
         openCreateJob(JOB_TYPES[activeTab] ? activeTab : 'installation')
       })
-      openCreateServiceBtn.addEventListener('click', () => { window.location.href = 'service-requests.html?action=new' })
+      openCreateServiceBtn.addEventListener('click', () => { renderServiceRequestWorkspace('', 'new') })
       toggleAdvancedJobFields.addEventListener('click', () => {
         const open = jobEditorModal.classList.toggle('advanced-open')
         toggleAdvancedJobFields.textContent = open ? 'Skrýt volitelné podklady' : 'Volitelné podklady'
@@ -5851,12 +5886,16 @@
       serviceBridgeList.addEventListener('click', (event) => {
         const bridgeButton = event.target.closest('[data-action="bridge-service-request"]')
         if (!bridgeButton) return
-        window.location.href = `service-requests.html?request=${encodeURIComponent(bridgeButton.dataset.id)}`
+        renderServiceRequestWorkspace(bridgeButton.dataset.id)
       })
       servicePanel.addEventListener('click', (event) => {
         const createServiceButton = event.target.closest('[data-action="create-service-job"]')
-        if (!createServiceButton) return
-        window.location.href = 'service-requests.html?action=new'
+        const openServiceListButton = event.target.closest('[data-action="open-service-list"]')
+        if (createServiceButton) renderServiceRequestWorkspace('', 'new')
+        if (openServiceListButton) {
+          activeTab = 'service'
+          renderActiveTab()
+        }
       })
       overviewWorkTableBody.addEventListener('click', (event) => {
         const button = event.target.closest('button[data-action="detail"]')
@@ -6002,7 +6041,18 @@
           if (!ok) return
           buildMobileNav()
           await loadData()
-          const requestedJobId = new URLSearchParams(window.location.search).get('job')
+          const startupParams = new URLSearchParams(window.location.search)
+          const requestedJobId = startupParams.get('job')
+          const requestedServiceId = startupParams.get('request')
+          const requestedAction = startupParams.get('action')
+          if (requestedServiceId) {
+            renderServiceRequestWorkspace(requestedServiceId)
+            return
+          }
+          if (requestedAction === 'new') {
+            renderServiceRequestWorkspace('', 'new')
+            return
+          }
           if (requestedJobId && jobs.some((item) => String(item.id) === String(requestedJobId))) {
             renderDetail(requestedJobId)
           }

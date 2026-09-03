@@ -85,7 +85,7 @@ begin
       '',
       nullif(v_request.description, '')
     ),
-    'service-requests.html?request=' || v_request.id,
+    'technical-jobs.html?request=' || v_request.id,
     v_payload || jsonb_build_object('dedupe_key', v_dedupe_key)
   )
   on conflict do nothing
