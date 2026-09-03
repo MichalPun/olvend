@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v159-technical-cards-unified';
+const CACHE_NAME = 'olvend-v160-telemetry-aggregate-payment';
 const APP_SHELL = [
   './',
   './index.html',
