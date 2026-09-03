@@ -133,14 +133,14 @@
       versionNote: ""
     },
     "service-requests.html": {
-      currentLabel: "Servisní požadavky",
-      activeKey: "service-requests",
+      currentLabel: "Detailní technické karty · Servis",
+      activeKey: "technical-jobs",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
     },
     "technical-jobs.html": {
-      currentLabel: "Technické zásahy",
+      currentLabel: "Detailní technické karty",
       activeKey: "technical-jobs",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
@@ -420,7 +420,6 @@
           children: [
             { key: "technical-overview", href: "technical-overview.html", label: "Přehled práce" },
             { key: "technical-jobs", href: "technical-jobs.html", label: "Detailní technické karty" },
-            { key: "service-requests", href: "service-requests.html", label: "Servisní požadavky" },
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
         }

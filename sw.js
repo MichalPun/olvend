@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v158-mobile-service-compact';
+const CACHE_NAME = 'olvend-v159-technical-cards-unified';
 const APP_SHELL = [
   './',
   './index.html',
