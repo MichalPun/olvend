@@ -7102,8 +7102,72 @@
         p_compare_elapsed_ms: range.compareElapsedMs == null ? null : Math.round(range.compareElapsedMs)
       });
       if (!error && data) return data;
-      if (error && !/get_dashboard_telemetry_profit_v49|schema cache|could not find the function/i.test(String(error.message || ""))) throw error;
+      if (error) console.warn("Dashboard profit RPC is unavailable; using direct calculation.", error.message || error);
       return null;
+    }
+
+    async function loadDashboardTelemetryProfitFallback(range) {
+      const fetchStart = new Date(Math.min(range.start.getTime(), range.compareStart.getTime()));
+      const fetchEnd = new Date(Math.max(range.end.getTime(), range.compareEnd.getTime()));
+      const [salesRows, productRows] = await Promise.all([
+        fetchSupabaseRowsPaged(() => supabase
+          .from("telemetry_sales_events")
+          .select("id, provider, machine_id, selection_code, product_name, product_sku, quantity, total_amount_czk, source_event_at")
+          .gte("source_event_at", fetchStart.toISOString())
+          .lt("source_event_at", fetchEnd.toISOString())
+          .order("source_event_at", { ascending: false })),
+        fetchSupabaseRowsPaged(() => supabase
+          .from("products")
+          .select("id, sku, name, purchase_price, vat_rate, active")
+          .order("active", { ascending: false })
+          .order("id", { ascending: true }))
+      ]);
+      const productsBySku = new Map();
+      const productsByName = new Map();
+      productRows.forEach((product) => {
+        const sku = String(product.sku || "").trim();
+        const name = String(product.name || "").trim().toLocaleLowerCase("cs-CZ");
+        if (sku && !productsBySku.has(sku)) productsBySku.set(sku, product);
+        if (name && !productsByName.has(name)) productsByName.set(name, product);
+      });
+      const rows = dedupeTelemetryRows(salesRows || []);
+      const isPeriodRow = (row) => {
+        const date = new Date(row.source_event_at);
+        return date >= range.start && date < range.end;
+      };
+      const isCompareRow = (row) => {
+        const date = new Date(row.source_event_at);
+        if (range.compareMode === "weekday_average") {
+          if (!range.compareDateKeys.includes(getDateKey(date))) return false;
+          if (range.compareElapsedMs != null) {
+            const localDayStart = new Date(date);
+            localDayStart.setHours(0, 0, 0, 0);
+            if (date.getTime() - localDayStart.getTime() > range.compareElapsedMs) return false;
+          }
+          return true;
+        }
+        return date >= range.compareStart && date < range.compareEnd;
+      };
+      const calculate = (sourceRows) => sourceRows.reduce((total, row) => {
+        const sku = String(row.product_sku || "").trim();
+        const name = String(row.product_name || "").trim().toLocaleLowerCase("cs-CZ");
+        const product = (sku && productsBySku.get(sku)) || (!sku && name ? productsByName.get(name) : null);
+        const quantity = Number(row.quantity || 0);
+        const revenueGross = Number(row.total_amount_czk || 0);
+        const purchasePrice = Number(product?.purchase_price || 0);
+        const vatRate = Number(product?.vat_rate ?? 21);
+        const revenueNet = revenueGross / (1 + vatRate / 100);
+        const cost = quantity * purchasePrice;
+        total.revenue_net += revenueNet;
+        total.cost += cost;
+        total.profit += revenueNet - cost;
+        if (quantity > 0 && (!product || purchasePrice <= 0)) total.missing_cost_count += 1;
+        return total;
+      }, { revenue_net: 0, cost: 0, profit: 0, missing_cost_count: 0 });
+      return {
+        period: calculate(rows.filter(isPeriodRow)),
+        compare: calculate(rows.filter(isCompareRow))
+      };
     }
 
     async function loadTelemetrySalesDashboard() {
@@ -7115,7 +7179,7 @@
       const trendStart = new Date(todayStart);
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
-      const [recentResult, telemetryAggregate, telemetryProfit, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult] = await Promise.all([
+      const [recentResult, telemetryAggregate, telemetryProfitResult, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
@@ -7158,6 +7222,7 @@
           .order("planning_date", { ascending: true })
           .limit(200)
       ]);
+      const telemetryProfit = telemetryProfitResult || await loadDashboardTelemetryProfitFallback(range);
 
       if (recentResult.error) throw recentResult.error;
       if (coffeeContainersResult.error) throw coffeeContainersResult.error;

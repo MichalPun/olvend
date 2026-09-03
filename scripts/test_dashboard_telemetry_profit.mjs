@@ -11,6 +11,9 @@ for (const match of dashboard.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>
 }
 
 assert.match(dashboard, /get_dashboard_telemetry_profit_v49/)
+assert.match(dashboard, /loadDashboardTelemetryProfitFallback/)
+assert.match(dashboard, /telemetryProfitResult \|\| await loadDashboardTelemetryProfitFallback\(range\)/)
+assert.match(dashboard, /purchase_price, vat_rate, active/)
 assert.match(dashboard, /data-telemetry-key="profit"/)
 assert.match(dashboard, /<span>Zisk<\/span>/)
 assert.match(dashboard, /hrubý bez DPH · marže/)
