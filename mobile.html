@@ -10320,6 +10320,7 @@
         manualProductChoice: Boolean(draft.manualProductChoice),
         pickConfirmed: Boolean(draft.pickConfirmed),
         machinePriceConfirmed: Boolean(draft.machinePriceConfirmed),
+        deferFullSwap: Boolean(draft.deferFullSwap),
         cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
         note: draft.note || '',
         accepted: Boolean(draft.accepted)
@@ -10735,7 +10736,9 @@
       const capacityChanged = capacity !== storedCapacity
       const wasteTotal = draft.wasteItems.reduce((sum,item) => sum + Math.max(0,Number(item.quantity || 0)),0)
       const planogramChange = getFoodPlanogramChange(slot)
-      const retainedReplacementUnits = planogramChange?.fullSwap
+      const deferredFullSwap = Boolean(planogramChange?.fullSwap && draft.deferFullSwap)
+      const activeFullSwap = Boolean(planogramChange?.fullSwap && !deferredFullSwap)
+      const retainedReplacementUnits = activeFullSwap
         ? Math.max(0, Math.min(draft.actualBefore, Number(slot.changeover_new_units || 0)))
         : 0
       const transferQuantity = Math.max(0, Math.min(draft.actualBefore - wasteTotal, Number(draft.transferQuantity || 0)))
@@ -10745,9 +10748,10 @@
         return Number(fill.quantity || 0) > 0 && String(fillProduct?.sku || '') === String(planogramChange.nextSku || '')
       }))
       const requiresMachinePriceConfirmation = Boolean(planogramChange?.priceChanged
+        && !deferredFullSwap
         && (replacementBeingInserted || !planogramChange.productChanged))
-      const finalQty = Math.max(0, (planogramChange?.fullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal - transferQuantity) + actualAdd)
-      const maxActualAdd = Math.max(0, Math.min(draft.preparedQuantity, planogramChange?.fullSwap
+      const finalQty = Math.max(0, (activeFullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal - transferQuantity) + actualAdd)
+      const maxActualAdd = Math.max(0, Math.min(draft.preparedQuantity, activeFullSwap
         ? capacity - retainedReplacementUnits
         : capacity - draft.actualBefore + wasteTotal + transferQuantity))
       const invalidActualAdd = actualAdd > maxActualAdd
@@ -10784,6 +10788,7 @@
           ${returnedPreparedQuantity > 0 ? `<div class="attention-box"><strong>${escapeHtml(returnedPreparedQuantity)} ks zůstane evidovaných ve vozidle</strong><span>Z vozidla se odečte jen skutečně vložené množství.</span><label>Proč připravené zboží nevkládáš?<select data-food-field="not-inserted-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber důvod</option><option value="not_needed" ${draft.notInsertedReason === 'not_needed' ? 'selected' : ''}>Po kontrole se nevejde / není potřeba</option><option value="cooling_failure" ${draft.notInsertedReason === 'cooling_failure' ? 'selected' : ''}>Automat nechladí</option><option value="product_unavailable" ${draft.notInsertedReason === 'product_unavailable' ? 'selected' : ''}>Zboží není k dispozici</option><option value="other" ${draft.notInsertedReason === 'other' ? 'selected' : ''}>Jiný důvod</option></select></label></div>` : ''}
           <div class="food-stock-mismatch" data-food-stock-mismatch ${stockDifference ? '' : 'hidden'}><strong data-food-stock-mismatch-title>${stockDifference < 0 ? `Evidence nesedí: uvnitř chybí ${escapeHtml(Math.abs(stockDifference))} ks` : `Evidence nesedí: uvnitř je navíc ${escapeHtml(stockDifference)} ks`}</strong><span data-food-stock-mismatch-copy>Změna skutečného stavu sama nezvyšuje doplnění. Při potvrzení se pouze uloží evidence ${escapeHtml(systemCurrent)} ks → skutečnost ${escapeHtml(draft.actualBefore)} ks, operátorka, čas a inventurní pohyb.</span></div>
           <div class="coffee-instruction"><strong>${actualAdd > 0 ? `Vlož nyní ${escapeHtml(actualAdd)} ks` : 'Bez plánovaného doplnění'}</strong><span>${batchLabels.length ? `${escapeHtml(batchLabels.join(' · '))} · po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks` : `Po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Případné další kusy systém odebere FEFO ze zásoby auta.`}</span></div>
+          ${planogramChange?.fullSwap && actualAdd <= 0 ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nemáš nový produkt pro kompletní výměnu?'}</strong><span>${deferredFullSwap ? 'Ulož skutečný stav původního produktu a pokračuj. Nový produkt zůstane povinně naplánovaný na další návštěvu.' : 'Nepotvrzuj vložení, které neproběhlo. Odlož pouze výměnu; plán ani cílová cena se nesmažou.'}</span><button class="coffee-guide-more extra" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená · můžeš potvrdit pozici' : 'Nový produkt nemám · odložit výměnu a pokračovat'}</button></div>` : ''}
           ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(displayPrice))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>. OLVEND cenu na tomto automatu neumí zapsat na dálku.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''}> Potvrzuji, že jsem cenu pozice na automatu změnil(a) na ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</label></div>` : ''}
           ${missingQuantity || extraVehicleQuantity ? `<div class="food-extra-decision ${extraVehicleQuantity ? 'confirmed' : ''}"><strong>${extraVehicleQuantity ? `✓ Navíc z auta přidáno ${escapeHtml(extraVehicleQuantity)} ks` : 'Doplnit pozici do plna?'}</strong><span>${extraVehicleQuantity ? `Celkem vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.` : `Bez této volby vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.`}</span><button type="button" data-food-action="machine-take-from-vehicle" data-food-extra-stock data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${extraVehicleQuantity ? `Zrušit dodatečných ${escapeHtml(extraVehicleQuantity)} ks` : `+ Přidat ${escapeHtml(pendingExtraQuantity)} ks z auta`}</button></div>` : ''}
           ${isFoodExpiryTracked(transferProduct || product) && draft.actualBefore > 0 && (shortExpiry || recordedExpired) ? (!draft.expiryVerified ? `<div class="coffee-info-strip"><span>!</span><span><b>${isBagetteProduct(transferProduct || product) ? 'Bageta musí být vyřešená nejpozději zítra.' : 'Produkt vstoupil do 30denního řízeného doprodeje.'}</b> Nejdřív fyzicky zkontroluj počet a datum výše. Potom aplikace vybere silnější automat na zbývající trase.</span></div><button class="food-transfer-action" type="button" data-food-action="guided-food-evaluate-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Ověřit stav a vyhodnotit přesun →</button>` : draft.transferRecommendation?.available ? `<div class="recommendation-card"><strong>Doporučený přesun po fyzické kontrole</strong><span>${escapeHtml(draft.transferRecommendation.quantity)} ks → ${escapeHtml(draft.transferRecommendation.targetTitle)} · EV ${escapeHtml(draft.transferRecommendation.targetEvidence)} · pozice ${escapeHtml(draft.transferRecommendation.targetSlotCode)}. Cíl prodává přibližně ${escapeHtml(draft.transferRecommendation.dailySales)} ks denně a má volné místo.</span></div><button class="food-transfer-action ${transferQuantity ? 'ready' : ''}" type="button" data-food-action="guided-food-accept-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${transferQuantity ? `✓ Přesun ${escapeHtml(transferQuantity)} ks je připravený` : `Připravit přesun ${escapeHtml(draft.transferRecommendation.quantity)} ks →`}</button>` : `<div class="coffee-rule-box"><strong>Přesun se nenabízí</strong>${escapeHtml(draft.transferRecommendation?.reason || 'Ověřená data neukazují vhodný cíl.')}</div>`) : ''}
@@ -11034,16 +11039,18 @@
               const tracksExpiry = isFoodExpiryTracked(existingProduct || product || plannedProduct)
               const recordedExpired = Number(slot.current_units || 0) > 0 && isFoodExpiryExpired(slot.expiry_date)
               const planogramChange = getFoodPlanogramChange(slot)
+              const deferredFullSwap = Boolean(planogramChange?.fullSwap && draft.deferFullSwap)
+              const activeFullSwap = Boolean(planogramChange?.fullSwap && !deferredFullSwap)
               const wasteTotal = draft.wasteItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0)
-              const retainedReplacementUnits = planogramChange?.fullSwap
+              const retainedReplacementUnits = activeFullSwap
                 ? Math.max(0, Math.min(draft.actualBefore, Number(slot.changeover_new_units || 0)))
                 : 0
-              const swapReturnUnits = planogramChange?.fullSwap
+              const swapReturnUnits = activeFullSwap
                 ? Math.max(0, draft.actualBefore - retainedReplacementUnits - wasteTotal)
                 : 0
               const maxAdd = Math.max(0, Math.min(
                 draft.pickedQuantity,
-                planogramChange?.fullSwap
+                activeFullSwap
                   ? Number(slot.capacity_units || 0) - retainedReplacementUnits
                   : Number(slot.capacity_units || 0) - draft.actualBefore + wasteTotal
               ))
@@ -11053,10 +11060,11 @@
                 return Number(fill.quantity || 0) > 0 && String(fillProduct?.sku || '') === String(planogramChange.nextSku || '')
               }))
               const requiresMachinePriceConfirmation = Boolean(planogramChange?.priceChanged
+                && !deferredFullSwap
                 && (replacementBeingInserted || !planogramChange.productChanged))
               const returnedPreparedQuantity = Math.max(0, Number(draft.preparedQuantity || 0) - actualAdd)
-              const finalQty = Math.max(0, (planogramChange?.fullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal) + actualAdd)
-              const tracksExistingExpiry = tracksExpiry && (!planogramChange?.fullSwap || retainedReplacementUnits > 0)
+              const finalQty = Math.max(0, (activeFullSwap ? retainedReplacementUnits : draft.actualBefore - wasteTotal) + actualAdd)
+              const tracksExistingExpiry = tracksExpiry && (!activeFullSwap || retainedReplacementUnits > 0)
               return `
                 <details class="coffee-visit-row food-machine-card ${draft.accepted ? 'ready' : ''} ${recordedExpired && !draft.accepted ? 'expired-alert' : ''}" data-food-machine-card data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${(draft.pickedQuantity > 0 || recordedExpired) && !draft.accepted ? 'open' : ''}>
                   <summary>
@@ -11084,6 +11092,7 @@
                       ${planogramChange.instruction ? `<span><b>Kam se starým zbožím:</b> ${escapeHtml(planogramChange.instruction)}</span>` : ''}
                     </div>
                   ` : ''}
+                  ${planogramChange?.fullSwap && actualAdd <= 0 && !readOnly && !draft.accepted ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nový produkt není ve vozidle?'}</strong><span>${deferredFullSwap ? 'Potvrď skutečný stav. Povinná výměna zůstane připravená na další návštěvu.' : 'Odlož výměnu bez falešného vložení a pokračuj v návštěvě.'}</span><button class="secondary-btn" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená' : 'Nový produkt nemám · odložit výměnu'}</button></div>` : ''}
                   ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(slot.customer_price_czk ?? slot.price_czk))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''} ${readOnly || draft.accepted ? 'disabled' : ''}> Cena je na automatu skutečně změněná</label></div>` : ''}
                   <section class="food-machine-step">
                     <strong>1. Zkontroluj počet v automatu</strong>
@@ -14017,10 +14026,13 @@
       const resetPickConfirmation = Object.prototype.hasOwnProperty.call(patch, 'fillItems')
         || Object.prototype.hasOwnProperty.call(patch, 'pickedQuantity')
         || Object.prototype.hasOwnProperty.call(patch, 'selectedProductId')
+      const resumesDeferredSwap = Array.isArray(patch.fillItems)
+        && patch.fillItems.some((fill) => Number(fill?.quantity || 0) > 0)
       detail.draft.slots[String(slot.id)] = {
         ...(detail.draft.slots[String(slot.id)] || {}),
         ...currentDraft,
         ...(resetPickConfirmation ? { pickConfirmed: false, machinePriceConfirmed: false } : {}),
+        ...(resumesDeferredSwap ? { deferFullSwap: false } : {}),
         ...patch
       }
       persistMobileSnapshot()
@@ -14139,6 +14151,7 @@
           transferRecommendation: draft.transferRecommendation || null,
           manualProductChoice: Boolean(draft.manualProductChoice),
           pickConfirmed: Boolean(draft.pickConfirmed),
+          deferFullSwap: Boolean(draft.deferFullSwap),
           cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
           note: draft.note || ''
         }]
@@ -14251,10 +14264,12 @@
         .filter((item) => item.quantity > 0 && (item.reason || requestedTransferQuantity <= 0))
       if (wasteItems.some((item) => !item.reason)) throw new Error(`Pozice ${slot.slot_code}: u každého odpisu vyber důvod.`)
       const wasteQuantity = wasteItems.reduce((sum, item) => sum + item.quantity, 0)
-      const planogramChange = getFoodPlanogramChange(slot)
+      const requestedPlanogramChange = getFoodPlanogramChange(slot)
+      const deferredFullSwap = Boolean(requestedPlanogramChange?.fullSwap && draft.deferFullSwap)
+      const planogramChange = deferredFullSwap ? null : requestedPlanogramChange
       const fullSwap = Boolean(planogramChange?.fullSwap)
       if (fullSwap && Number(draft.transferQuantity || 0) > 0) throw new Error(`Pozice ${slot.slot_code}: doporučený přesun nelze kombinovat s kompletní výměnou sortimentu.`)
-      const desiredTargetProduct = planogramChange?.nextProduct || plannedProduct
+      const desiredTargetProduct = requestedPlanogramChange?.nextProduct || plannedProduct
       const existingProduct = draft.assortmentMismatch
         ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
         : plannedProduct
@@ -14545,7 +14560,9 @@
         : remainingExistingQuantity > 0
           ? (existingProduct || plannedProduct || selectedProduct)
           : selectedProduct
-      const issueType = draft.skipReason === 'not_in_vehicle'
+      const issueType = deferredFullSwap
+        ? 'missing_stock'
+        : draft.skipReason === 'not_in_vehicle'
         ? 'missing_stock'
         : returnedPreparedQuantity > 0
         ? (draft.notInsertedReason === 'product_unavailable' ? 'missing_stock' : 'other')
@@ -14562,6 +14579,7 @@
       const operatorNote = [
         capacity !== storedCapacity ? `Kapacita pozice opravena: ${storedCapacity} ks → ${capacity} ks` : null,
         stockDifference !== 0 ? `Inventurní odchylka: evidence ${systemCurrentQuantity} ks → fyzicky ${actualBefore} ks · rozdíl ${stockDifference > 0 ? '+' : ''}${stockDifference} ks` : null,
+        deferredFullSwap ? `Povinná výměna odložená: nový produkt ${requestedPlanogramChange?.nextName || requestedPlanogramChange?.nextSku || ''} nebyl ve vozidle; plán zůstává aktivní pro další návštěvu` : null,
         fullSwap ? `Kompletní výměna: ${swapReturnQuantity} ks původního produktu vráceno do vozidla` : null,
         machinePriceChangeRequired ? `Cena na automatu potvrzena: ${slot.customer_price_czk ?? slot.price_czk} Kč → ${planogramChange.nextPrice} Kč` : null,
         transferQuantity > 0 ? `Přesun krátké expirace: ${transferQuantity} ks · cíl ${draft.transferRecommendation?.targetTitle || 'další automat'} · EV ${draft.transferRecommendation?.targetEvidence || '—'} · pozice ${draft.transferRecommendation?.targetSlotCode || '—'}` : null,
@@ -14606,7 +14624,9 @@
         capacity_quantity: capacity,
         unit: 'ks',
         issue_type: issueType,
-        substitution_reason: fullSwap
+        substitution_reason: deferredFullSwap
+          ? 'Povinná výměna odložená, protože nový produkt nebyl ve vozidle'
+          : fullSwap
           ? 'Kompletní výměna sortimentu bez doprodeje původních kusů'
           : draft.assortmentMismatch
           ? 'Fyzicky nalezen jiný prodejný sortiment; ponechán do expirace jako řízený doprodej'
@@ -14741,13 +14761,15 @@
           desired_units: nextDesiredQuantity,
           fill_percent: capacity > 0 ? Math.round((finalQuantity / capacity) * 10000) / 100 : 0,
           expiry_date: nextExpiryDate,
-          pending_product_id: null,
-          pending_product_sku: null,
-          pending_product_name: null,
-          pending_price_czk: null,
-          pending_change_effective_date: null,
-          pending_change_note: null,
-          pending_change_mode: 'sell_through'
+          ...(deferredFullSwap ? {} : {
+            pending_product_id: null,
+            pending_product_sku: null,
+            pending_product_name: null,
+            pending_price_czk: null,
+            pending_change_effective_date: null,
+            pending_change_note: null,
+            pending_change_mode: 'sell_through'
+          })
         })
         .eq('id', slot.id)
       if (slotError) throw slotError
@@ -14762,12 +14784,14 @@
         slot.customer_price_czk = planogramChange.nextPrice
         slot.dex_price_czk = planogramChange.nextPrice
       }
-      slot.pending_product_id = null
-      slot.pending_product_sku = null
-      slot.pending_product_name = null
-      slot.pending_price_czk = null
-      slot.pending_change_effective_date = null
-      slot.pending_change_note = null
+      if (!deferredFullSwap) {
+        slot.pending_product_id = null
+        slot.pending_product_sku = null
+        slot.pending_product_name = null
+        slot.pending_price_czk = null
+        slot.pending_change_effective_date = null
+        slot.pending_change_note = null
+      }
       if ((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange) {
         slot.product_sku = nextPlanogramSku || slot.product_sku
         slot.product_name = state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))?.name || planogramChange?.nextName || slot.product_name
@@ -15167,6 +15191,33 @@
       if (action === 'guided-food-cancel-transfer' && slot) {
         updateFoodSlotDraft(stopId, slot.id, { transferQuantity: 0, transferRecommendation: null, expiryVerified: false, accepted: false })
         renderRouteMachineScreen()
+        return
+      }
+      if (action === 'defer-full-swap' && slot) {
+        const draft = getFoodSlotDraft(stopId, slot)
+        const planogramChange = getFoodPlanogramChange(slot)
+        if (!planogramChange?.fullSwap) throw new Error(`Pozice ${slot.slot_code}: kompletní výměna už není aktivní. Obnov detail automatu.`)
+        const zeroFillItems = draft.fillItems.length
+          ? draft.fillItems.map((fill) => ({ ...fill, quantity: 0, batchId: null, expiryDate: '' }))
+          : [{ productId: draft.selectedProductId || planogramChange.nextProduct?.id || null, quantity: 0, batchId: null, expiryDate: '' }]
+        updateFoodSlotDraft(stopId, slot.id, {
+          fillItems: zeroFillItems,
+          pickedQuantity: 0,
+          preparedQuantity: 0,
+          basePreparedQuantity: 0,
+          extraVehicleQuantity: 0,
+          actualAdd: 0,
+          picked: false,
+          skipped: true,
+          skipReason: 'not_in_vehicle',
+          notInsertedReason: 'product_unavailable',
+          deferFullSwap: true,
+          machinePriceConfirmed: false,
+          accepted: false
+        })
+        renderRouteMachineScreen()
+        scheduleFoodWorkProgressSave(stopId)
+        showMessage(`Pozice ${slot.slot_code}: výměna je odložená. Oprav skutečný stav původního produktu a pozici potvrď.`, 'success', { scroll: false })
         return
       }
       if (action === 'adjust-actual-before' && slot) {

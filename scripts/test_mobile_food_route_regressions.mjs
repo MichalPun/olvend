@@ -126,6 +126,10 @@ assert.match(html, /const priceOnlyChangeRequired = Boolean\(planogramChange\?\.
 assert.match(html, /replacementBeingInserted \|\| !planogramChange\.productChanged/)
 assert.match(html, /dvě ceny v jedné pozici nejsou bezpečné/)
 assert.match(html, /getFoodProductFamilyPatch\(replacementProduct \|\| planogramChange\?\.nextProduct \|\| plannedProduct\)/)
+assert.match(html, /data-food-action="defer-full-swap"/)
+assert.match(html, /const deferredFullSwap = Boolean\(requestedPlanogramChange\?\.fullSwap && draft\.deferFullSwap\)/)
+assert.match(html, /Povinná výměna odložená: nový produkt/)
+assert.match(html, /\.\.\.\(deferredFullSwap \? \{\} : \{/)
 
 {
   const sandbox = context({
