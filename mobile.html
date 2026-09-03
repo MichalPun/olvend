@@ -5277,6 +5277,7 @@
     let activeNavigationTarget = null
     let routeMachineLiveRefreshTimer = null
     let routeMachineLiveRefreshBusy = false
+    const foodActionLocks = new Set()
     const coffeeActionLocks = new Set()
     let activeSkipStopId = null
     let routeSkipApprovalTimer = null
@@ -10327,6 +10328,25 @@
       }
     }
 
+    function canBulkConfirmFoodSlot(stopId, slot) {
+      const draft = getFoodSlotDraft(stopId, slot)
+      const storedCapacity = Math.max(1, Math.round(Number(slot?.capacity_units || 1)))
+      const draftCapacity = Math.max(1, Math.round(Number(draft.capacityUnits || storedCapacity)))
+      const recordedExpiry = normalizeFoodExpiryDate(slot?.expiry_date)
+      const draftExpiry = normalizeFoodExpiryDate(draft.existingExpiryDate)
+      return !draft.accepted
+        && draft.pickedQuantity <= 0
+        && draft.actualAdd <= 0
+        && !draft.assortmentMismatch
+        && !draft.deferFullSwap
+        && !getFoodPlanogramChange(slot)?.fullSwap
+        && Math.max(0, Number(draft.actualBefore || 0)) === Math.max(0, Number(slot?.current_units || 0))
+        && draftCapacity === storedCapacity
+        && !(draft.wasteItems || []).some((item) => Number(item.quantity || 0) > 0)
+        && Number(draft.transferQuantity || 0) <= 0
+        && recordedExpiry === draftExpiry
+    }
+
     function getFoodPickSuggestion(detail, stopId, slot) {
       const localDesired = getFoodRequiredFillQuantity(slot, detail)
       const draft = getFoodSlotDraft(stopId, slot)
@@ -10899,14 +10919,8 @@
           return Number(fill.quantity || 0) > 0 && isFoodExpiryTracked(product) && !normalizeFoodExpiryDate(fill.expiryDate)
         })
       })
-      const unchangedPositionCount = slots.filter((slot) => {
-        const draft = getFoodSlotDraft(stop.id, slot)
-        return !draft.accepted && draft.pickedQuantity <= 0 && !draft.assortmentMismatch && !getFoodPlanogramChange(slot)?.fullSwap
-      }).length
-      const changedPositionCount = slots.filter((slot) => {
-        const draft = getFoodSlotDraft(stop.id, slot)
-        return !draft.accepted && (draft.pickedQuantity > 0 || draft.assortmentMismatch || getFoodPlanogramChange(slot)?.fullSwap)
-      }).length
+      const unchangedPositionCount = slots.filter((slot) => canBulkConfirmFoodSlot(stop.id, slot)).length
+      const changedPositionCount = slots.filter((slot) => !getFoodSlotDraft(stop.id, slot).accepted && !canBulkConfirmFoodSlot(stop.id, slot)).length
       const remainingPositionCount = unchangedPositionCount + changedPositionCount
       const finishReady = remainingPositionCount === 0 && missingCheckCount === 0 && cashSaved
       const finishHint = missingFillExpirySlots.length > 0
@@ -14847,29 +14861,22 @@
       if (unresolved) {
         throw new Error(`Pozice ${unresolved.slot_code} potřebuje doplnit. Vyber množství, nebo ulož konkrétní důvod, proč ji nedoplňuješ.`)
       }
-      const exceptionSlots = (detail.slots || []).filter((slot) => {
-        const draft = getFoodSlotDraft(stopId, slot)
-        return !draft.accepted && draft.skipped && Boolean(draft.skipReason)
-      })
-      for (const slot of exceptionSlots) {
-        await confirmFoodSlot(stopId, slot)
-      }
-      const unchanged = (detail.slots || []).filter((slot) => {
-        const draft = getFoodSlotDraft(stopId, slot)
-        return !draft.accepted
-          && !draft.skipped
-          && !draft.skipReason
-          && draft.pickedQuantity <= 0
-          && !draft.assortmentMismatch
-          && !getFoodPlanogramChange(slot)?.fullSwap
-      })
+      // Všechny skutečně nezměněné pozice (včetně potvrzeného „není v autě“)
+      // se ukládají jedním SQL insertem. Původní sekvenční potvrzování po jedné
+      // pozici při každém kroku překreslovalo tlačítko a umožnilo souběžné klikání.
+      const unchanged = (detail.slots || []).filter((slot) => canBulkConfirmFoodSlot(stopId, slot))
       if (!unchanged.length) {
+        const manualCount = (detail.slots || []).filter((slot) => !getFoodSlotDraft(stopId, slot).accepted).length
+        if (manualCount > 0) throw new Error(`${manualCount} pozic obsahuje skutečnou změnu a musí se potvrdit jednotlivě.`)
         showMessage('Všechny pozice bez doplnění už jsou potvrzené.', 'success', { scroll: false })
         return
       }
       const rows = unchanged.map((slot) => {
+        const draft = getFoodSlotDraft(stopId, slot)
         const product = state.products.find((item) => String(item.sku || '') === String(slot.product_sku || ''))
         const current = Math.max(0, Number(slot.current_units || 0))
+        const skippedForMissingStock = draft.skipReason === 'not_in_vehicle'
+        const skippedWithReason = Boolean(draft.skipped && draft.skipReason)
         return {
           visit_id: detail.visitId,
           machine_id: slot.machine_id,
@@ -14886,14 +14893,16 @@
           sale_price_czk: slot.price_czk ?? null,
           system_current_quantity: current,
           actual_before_quantity: current,
-          suggested_add_quantity: 0,
+          suggested_add_quantity: getFoodRequiredFillQuantity(slot, detail),
           actual_add_quantity: 0,
           removed_quantity: 0,
           final_quantity: current,
           capacity_quantity: Number(slot.capacity_units || 0),
           unit: 'ks',
-          issue_type: 'none',
-          operator_note: 'Hromadně potvrzeno: stav pozice sedí, bez doplnění.',
+          issue_type: skippedForMissingStock ? 'missing_stock' : skippedWithReason ? 'other' : 'none',
+          operator_note: skippedWithReason
+            ? `Hromadně potvrzeno bez doplnění · důvod ${draft.skipReason}`
+            : 'Hromadně potvrzeno: stav pozice sedí, bez doplnění.',
           accepted_at: new Date().toISOString()
         }
       })
@@ -18200,20 +18209,31 @@
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
           const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before', 'adjust-actual-add', 'adjust-capacity']
-          if (!['adjust-actual-before', 'adjust-capacity'].includes(foodButton.dataset.foodAction)) {
+          const foodAction = foodButton.dataset.foodAction
+          const foodStopId = String(foodButton.dataset.stopId || '')
+          const locksVisit = !instantActions.includes(foodAction)
+          if (locksVisit && foodActionLocks.has(foodStopId)) {
+            showMessage('Předchozí akce se ještě ukládá. Chvíli počkej.', 'info', { scroll: false })
+            return
+          }
+          if (!['adjust-actual-before', 'adjust-capacity'].includes(foodAction)) {
             rememberFoodMachineRenderAnchor(foodButton, {
-              open: foodButton.dataset.foodAction === 'confirm-slot' ? false : undefined
+              open: foodAction === 'confirm-slot' ? false : undefined
             })
           }
-          const restore = instantActions.includes(foodButton.dataset.foodAction)
+          const restore = instantActions.includes(foodAction)
             ? () => {}
-            : setButtonBusy(foodButton, getBusyLabel(foodButton.dataset.foodAction))
-          handleFoodAction(foodButton.dataset.foodAction, foodButton.dataset.stopId, foodButton)
+            : setButtonBusy(foodButton, getBusyLabel(foodAction))
+          if (locksVisit) foodActionLocks.add(foodStopId)
+          handleFoodAction(foodAction, foodButton.dataset.stopId, foodButton)
             .catch((error) => {
               foodMachineRenderAnchor = null
               handleError(error)
             })
-            .finally(restore)
+            .finally(() => {
+              if (locksVisit) foodActionLocks.delete(foodStopId)
+              restore()
+            })
           return
         }
         const coffeeButton = event.target.closest('[data-coffee-action]')

@@ -130,6 +130,10 @@ assert.match(html, /data-food-action="defer-full-swap"/)
 assert.match(html, /const deferredFullSwap = Boolean\(requestedPlanogramChange\?\.fullSwap && draft\.deferFullSwap\)/)
 assert.match(html, /Povinná výměna odložená: nový produkt/)
 assert.match(html, /\.\.\.\(deferredFullSwap \? \{\} : \{/)
+assert.match(html, /const unchanged = \(detail\.slots \|\| \[\]\)\.filter\(\(slot\) => canBulkConfirmFoodSlot\(stopId, slot\)\)/)
+assert.match(html, /supabase\.from\('route_machine_visit_items'\)\.insert\(newRows\)/)
+assert.doesNotMatch(html, /for \(const slot of exceptionSlots\)/)
+assert.match(html, /const foodActionLocks = new Set\(\)/)
 
 {
   const sandbox = context({
