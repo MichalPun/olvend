@@ -101,7 +101,8 @@ for (const operatorGuard of [
 ]) assert.ok(operator.includes(operatorGuard), `Operátorská funkce ${operatorGuard} nesmí zmizet`)
 
 for (const required of [
-  'Nahlásit závadu na tomto automatu',
+  'data-report-service-stop-id',
+  'Nahlásit závadu',
   'openServiceReportForStop',
   "status: technician ? 'assigned' : 'new'",
   'Závada je nahlášená do fronty techniků.'
