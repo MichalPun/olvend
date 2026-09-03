@@ -695,8 +695,7 @@ async function applyPlanogramDepletion(
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
   const zeroPriceVendQuantity = planned.reduce((sum, item) => {
-    const rawPrice = item.slot.customer_price_czk ?? item.slot.dex_price_czk;
-    return sum + (rawPrice != null && Number(rawPrice) === 0 ? Math.max(0, item.delta) : 0);
+    return sum + (isExplicitFreeVendSlot(item.slot, item.selection) ? Math.max(0, item.delta) : 0);
   }, 0);
   const freeCashQuantity = Math.min(paymentDeltaWithCredit.cashQuantity, zeroPriceVendQuantity);
   const freeCashlessQuantity = Math.min(
@@ -1025,6 +1024,19 @@ function nullableTelemetryPrice(value: unknown) {
   return Number.isFinite(price) && price >= 0 ? price : null;
 }
 
+function isSyntheticAggregateSaleSlot(slot: Record<string, unknown>, selection: string) {
+  const productName = String(slot.product_name || "").trim();
+  return normalizeSelectionCode(selection || slot.slot_code) === "0" &&
+    /^telemetrie prodej k[aá]va(?:\s+new)?$/i.test(productName);
+}
+
+function isExplicitFreeVendSlot(slot: Record<string, unknown>, selection: string) {
+  const rawUnitPrice = slot.customer_price_czk ?? slot.dex_price_czk;
+  const unitPrice = Number(rawUnitPrice);
+  return !isSyntheticAggregateSaleSlot(slot, selection) &&
+    rawUnitPrice != null && Number.isFinite(unitPrice) && unitPrice === 0;
+}
+
 function emptyPaymentAllocation() {
   return { cashDelta: 0, cashlessDelta: 0, freeVendDelta: 0, unknownPaymentDelta: 0, unpaidDispenseDelta: 0 };
 }
@@ -1139,7 +1151,9 @@ function allocatePaymentDeltas(
     const rawUnitPrice = item.slot.customer_price_czk ?? item.slot.dex_price_czk;
     const unitPrice = Number(rawUnitPrice);
     const priceAmount = priceToPaymentAmount(unitPrice);
-    const freeVend = rawUnitPrice != null && Number.isFinite(unitPrice) && unitPrice === 0;
+    // Selection 0 named "Telemetrie prodej káva" is a synthetic aggregate
+    // counter. Its zero price means "drink/price not identified", not a free vend.
+    const freeVend = isExplicitFreeVendSlot(item.slot, item.selection);
     for (let i = 0; i < quantity; i += 1) allSaleUnits.push({ selection: item.selection, priceAmount, freeVend });
     allocations.set(item.selection, emptyPaymentAllocation());
   }
