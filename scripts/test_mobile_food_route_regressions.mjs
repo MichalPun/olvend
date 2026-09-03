@@ -103,10 +103,16 @@ function context(extra = {}) {
   vm.runInContext(extractFunction('getFoodPlanogramChange'), sandbox)
   const change = sandbox.getFoodPlanogramChange({
     product_sku: 'MARGOT', product_name: 'Margot', planned_product_sku: 'NEW',
-    planned_product_name: 'Nový produkt', pending_change_mode: 'full_swap', changeover_new_units: 2
+    planned_product_name: 'Nový produkt', pending_product_sku: 'NEW',
+    pending_change_mode: 'full_swap', changeover_new_units: 2
   })
   assert.equal(change?.nextSku, 'NEW', 'Rozběhnutá směs nesmí schovat cílový produkt')
   assert.equal(change?.fullSwap, true, 'Povinná kompletní změna musí zůstat viditelná')
+  const orphanChange = sandbox.getFoodPlanogramChange({
+    product_sku: 'MARGOT', product_name: 'Margot', planned_product_sku: 'NEW',
+    planned_product_name: 'Nový produkt', pending_change_mode: 'full_swap'
+  })
+  assert.equal(orphanChange?.fullSwap, false, 'Plán bez aktivního pending produktu nesmí zablokovat pozici jako kompletní výměna')
 }
 
 assert.match(html, /Sell-through spotrebovava puvodni produkt z tohoto konkretniho auta/)
