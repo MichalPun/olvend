@@ -938,6 +938,7 @@
                 <option value="pending_confirmation">Čeká na potvrzení</option>
                 <option value="blocked">Blokováno</option>
                 <option value="closed">Uzavřeno</option>
+                <option value="done">Hotovo (servis)</option>
                 <option value="cancelled">Zrušeno</option>
               </select>
               <select id="priorityFilter" aria-label="Filtrovat podle priority">
@@ -1009,6 +1010,7 @@
                     <th><button class="table-sort-button" type="button" data-sort="task" title="Seřadit podle úkolu">Co se má udělat</button></th>
                     <th><button class="table-sort-button" type="button" data-sort="employee" title="Seřadit podle odpovědné osoby">Odpovědný</button></th>
                     <th>Chystání / materiál</th>
+                    <th>Akce</th>
                   </tr>
                 </thead>
                 <tbody id="jobsTableBody"></tbody>
@@ -1815,7 +1817,7 @@
     const signatureContext = signatureCanvas?.getContext ? signatureCanvas.getContext('2d') : null
 
     const JOB_TYPES = {
-      service: { label: 'Servis', subtitle: 'Technická servisní karta mimo klasický servisní požadavek.' },
+      service: { label: 'Servis', subtitle: 'Servisní požadavky SR i navázané technické práce na jednom místě.' },
       installation: { label: 'Instalace', subtitle: 'Nové instalace a uvedení automatu do provozu.' },
       deinstallation: { label: 'Odvoz', subtitle: 'Stažení stroje z lokality a návrat na dílnu nebo jinam.' },
       transfer: { label: 'Přesun', subtitle: 'Přesun stroje z místa na místo.' },
@@ -1995,6 +1997,8 @@
         in_progress: 'Rozpracováno',
         pending_confirmation: 'Čeká na potvrzení',
         closed: 'Uzavřeno',
+        done: 'Hotovo',
+        return_with_part: 'Vrátit se s dílem',
         blocked: 'Blokováno',
         postponed: 'Odloženo',
         cancelled: 'Zrušeno'
@@ -2781,6 +2785,47 @@
       return getLocationLabel(item.location_id)
     }
 
+    function isHistoryWorkItem(item) {
+      return item?._sourceKind === 'service_request'
+        ? ['done', 'cancelled'].includes(String(item.status || ''))
+        : HISTORY_STATUSES.includes(String(item.status || ''))
+    }
+
+    function getUnifiedWorkItems() {
+      const loadedServiceRequestIds = new Set(serviceRequests.map((item) => String(item.id)))
+      const technicalItems = jobs
+        .filter((item) => !(item.job_type === 'service' && item.service_request_id && loadedServiceRequestIds.has(String(item.service_request_id))))
+        .map((item) => ({ ...item, _sourceKind: 'technical_job' }))
+      const serviceItems = serviceRequests.map((item) => ({
+        ...item,
+        _sourceKind: 'service_request',
+        job_type: 'service',
+        planned_date: item.due_date || null,
+        due_at: null,
+        customer_id: item.customer_id || getLocationRecord(item.location_id)?.customer_id || null,
+        source_location_id: null,
+        target_location_id: null,
+        source_stock_location_id: null,
+        target_stock_location_id: null,
+        workshop_ready: true
+      }))
+      return [...technicalItems, ...serviceItems]
+    }
+
+    function getWorkItemCode(item) {
+      const prefix = item?._sourceKind === 'service_request' ? 'SR' : 'TZ'
+      return `${prefix}-${String(item?.id || '').padStart(4, '0')}`
+    }
+
+    function openWorkItem(item) {
+      if (!item) return
+      if (item._sourceKind === 'service_request') {
+        window.location.href = `service-requests.html?request=${encodeURIComponent(item.id)}`
+        return
+      }
+      renderDetail(item.id)
+    }
+
     function updateJobSortHeaders() {
       const currentSort = String(sortFilter.value || 'number_desc')
       jobsTableHead.querySelectorAll('.table-sort-button').forEach((button) => {
@@ -2803,13 +2848,13 @@
       const term = termFilter.value
       const sort = sortFilter.value
 
-      let filtered = [...jobs]
+      let filtered = getUnifiedWorkItems()
       if (activeTab === 'history') {
-        filtered = filtered.filter((item) => HISTORY_STATUSES.includes(String(item.status || '')))
+        filtered = filtered.filter(isHistoryWorkItem)
       } else if (JOB_TYPES[activeTab]) {
-        filtered = filtered.filter((item) => String(item.job_type || '') === String(activeTab))
+        filtered = filtered.filter((item) => String(item.job_type || '') === String(activeTab) && !isHistoryWorkItem(item))
       } else {
-        filtered = filtered.filter((item) => !HISTORY_STATUSES.includes(String(item.status || '')))
+        filtered = filtered.filter((item) => !isHistoryWorkItem(item))
       }
 
       if (type) filtered = filtered.filter((item) => String(item.job_type || '') === type)
@@ -2863,7 +2908,7 @@
           if (!dateKey) return false
           if (term === 'today') return dateKey === todayKey
           if (term === 'next7') return dateKey >= todayKey && dateKey <= nextSevenKey
-          if (term === 'overdue') return dateKey < todayKey && !HISTORY_STATUSES.includes(String(item.status || ''))
+          if (term === 'overdue') return dateKey < todayKey && !isHistoryWorkItem(item)
           return true
         })
       }
@@ -2902,7 +2947,7 @@
     function renderJobsTable() {
       const filtered = getFilteredJobs()
       updateJobSortHeaders()
-      jobsCount.textContent = `Zobrazeno ${filtered.length} zásahů · Kliknutím na řádek otevřeš kartu`
+      jobsCount.textContent = `Zobrazeno ${filtered.length} položek · SR i TZ v jednom seznamu`
       jobsTableBody.innerHTML = ''
       if (!filtered.length) {
         jobsEmptyState.classList.remove('hidden')
@@ -2911,20 +2956,22 @@
       jobsEmptyState.classList.add('hidden')
 
       filtered.forEach((item) => {
-        const materials = getMaterialsForJob(item.id)
+        const isServiceRequest = item._sourceKind === 'service_request'
+        const materials = isServiceRequest ? [] : getMaterialsForJob(item.id)
         const fromLabel = getJobSourceLabel(item)
         const toLabel = getJobTargetLabel(item)
         const materialText = materials.length
           ? materials.slice(0, 2).map((material) => `${material.product_name || getProductLabel(material.product_id)} ${Number(material.requested_quantity || 0).toLocaleString('cs-CZ')} ${material.unit || 'ks'}`).join(' · ')
-          : item.workshop_ready ? 'Připraveno' : 'Bez položek'
+          : isServiceRequest ? 'Servisní požadavek' : item.workshop_ready ? 'Připraveno' : 'Bez položek'
         const tr = document.createElement('tr')
         tr.className = 'job-row-clickable'
         tr.dataset.jobId = String(item.id)
+        tr.dataset.sourceKind = item._sourceKind
         tr.tabIndex = 0
         tr.setAttribute('role', 'button')
-        tr.setAttribute('aria-label', `Otevřít TZ-${String(item.id).padStart(4, '0')} ${item.title || getJobTypeLabel(item.job_type)}`)
+        tr.setAttribute('aria-label', `Otevřít ${getWorkItemCode(item)} ${item.title || getJobTypeLabel(item.job_type)}`)
         tr.innerHTML = `
-          <td data-label="#" class="job-number">TZ-${escapeHtml(String(item.id).padStart(4, '0'))}</td>
+          <td data-label="#" class="job-number">${escapeHtml(getWorkItemCode(item))}</td>
           <td data-label="Typ">
             <span class="badge ${escapeHtml(String(item.job_type || 'service'))}">${escapeHtml(getJobTypeLabel(item.job_type))}</span>
           </td>
@@ -2949,6 +2996,13 @@
           <td data-label="Chystání / materiál">
             <strong>${escapeHtml(materialText)}</strong>
           </td>
+          <td data-label="Akce" class="cell-actions">
+            <div class="action-row">
+              <button class="btn secondary" type="button" data-action="detail" data-id="${item.id}" data-source-kind="${item._sourceKind}">Otevřít</button>
+              ${isServiceRequest && item.assigned_employee_id ? `<button class="btn secondary" type="button" data-action="email-service" data-id="${item.id}">E-mail technikovi</button>` : ''}
+              ${isServiceRequest && !item.assigned_employee_id ? '<span class="subtext">Nejdřív přiřadit</span>' : ''}
+            </div>
+          </td>
         `
         jobsTableBody.appendChild(tr)
       })
@@ -2957,9 +3011,9 @@
     function exportJobsCsv() {
       const header = ['Číslo', 'Typ', 'Stav', 'Termín', 'Priorita', 'Odkud', 'Kam / lokalita', 'Stroj', 'Úkol', 'Odpovědný', 'Materiál']
       const rows = getFilteredJobs().map((item) => {
-        const materials = getMaterialsForJob(item.id).map((material) => `${material.product_name || getProductLabel(material.product_id)} ${material.requested_quantity} ${material.unit || 'ks'}`).join(' | ')
+        const materials = item._sourceKind === 'service_request' ? '' : getMaterialsForJob(item.id).map((material) => `${material.product_name || getProductLabel(material.product_id)} ${material.requested_quantity} ${material.unit || 'ks'}`).join(' | ')
         return [
-          `TZ-${String(item.id).padStart(4, '0')}`,
+          getWorkItemCode(item),
           getJobTypeLabel(item.job_type),
           getStatusLabel(item.status),
           item.due_at ? formatDateTime(item.due_at) : formatDate(item.planned_date),
@@ -2983,6 +3037,7 @@
 
     function renderActiveTab() {
       const tabLabels = { overview: 'Vše', transfer: 'Přesuny', deinstallation: 'Odvozy', workshop_prep: 'Chystání', service: 'Servis', installation: 'Instalace', delivery: 'Závozy', general: 'Všeobecné', revision: 'Revize', history: 'Historie' }
+      const unifiedItems = getUnifiedWorkItems()
       if (JOB_TYPES[activeTab]) {
         typeFilter.value = activeTab
         typeFilter.disabled = true
@@ -2994,10 +3049,10 @@
         button.classList.toggle('active', button.dataset.tab === activeTab)
         const tab = button.dataset.tab
         const count = tab === 'overview'
-          ? jobs.filter((item) => !HISTORY_STATUSES.includes(String(item.status || ''))).length
+          ? unifiedItems.filter((item) => !isHistoryWorkItem(item)).length
           : tab === 'history'
-            ? jobs.filter((item) => HISTORY_STATUSES.includes(String(item.status || ''))).length
-            : jobs.filter((item) => String(item.job_type || '') === String(tab) && !HISTORY_STATUSES.includes(String(item.status || ''))).length
+            ? unifiedItems.filter(isHistoryWorkItem).length
+            : unifiedItems.filter((item) => String(item.job_type || '') === String(tab) && !isHistoryWorkItem(item)).length
         button.innerHTML = `${escapeHtml(tabLabels[tab] || getJobTypeLabel(tab))} <span>${count}</span>`
       })
 
@@ -3005,12 +3060,12 @@
       servicePanel.classList.add('hidden')
       jobsPanel.classList.remove('hidden')
       jobsPanelTitle.textContent = activeTab === 'overview'
-        ? 'Všechny technické zásahy'
+        ? 'Všechny technické karty a servisy'
         : activeTab === 'history'
           ? 'Historie technických zásahů'
           : getJobTypeLabel(activeTab)
       jobsPanelSubtitle.textContent = activeTab === 'overview'
-        ? 'Jedna pracovní tabulka pro přesuny, odvozy, chystání, servis, instalace, závozy i běžné požadavky.'
+        ? 'Jedna pracovní tabulka pro servisní požadavky SR, technické karty TZ, přesuny, instalace a další práce.'
         : activeTab === 'history'
           ? 'Uzavřené a zrušené zásahy v kompaktním přehledu.'
           : JOB_TYPES[activeTab]?.subtitle || 'Technické zásahy'
@@ -3820,7 +3875,7 @@
         runTimedQuery('skladové stavy', () => supabase.from('stock_location_balances').select('product_id, stock_location_id, quantity_on_hand, reserved_quantity')),
         runTimedQuery('zaměstnanci', () => supabase.from('employees').select('id, name, surname, role, email, active').eq('active', true).order('surname', { ascending: true })),
         runTimedQuery('automaty', () => supabase.from('machines').select('id, location_id, name, machine_type, serial_number, evidence_number, qr_token, status, active').eq('active', true).order('evidence_number', { ascending: true, nullsFirst: false })),
-        runTimedQuery('servisní požadavky', () => supabase.from('service_requests').select('id, title, description, priority, status, assigned_employee_id, location_id, machine_id, created_at').order('created_at', { ascending: false })),
+        runTimedQuery('servisní požadavky', () => supabase.from('service_requests').select('*').order('created_at', { ascending: false })),
         runTimedQuery('produkty', () => supabase.from('products').select('id, name, sku, product_category, usage_type, base_unit, purchase_price, sale_price, active, note').eq('active', true).order('name', { ascending: true })),
         runTimedQuery('balení produktů', () => supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false })),
         runTimedQuery('zásobníky automatů', () => supabase.from('machine_coffee_containers').select('id, machine_id, container_code, product_id, product_sku, product_name, capacity_quantity, current_quantity, unit, sort_order, active').eq('active', true).order('sort_order', { ascending: true })),
@@ -4058,6 +4113,22 @@
       const { data, error } = await supabase.rpc('queue_technical_job_assignment_notification', {
         p_technical_job_id: Number(technicalJobId),
         p_force_update: Boolean(forceUpdate)
+      })
+      if (error) throw error
+      if (data?.queued) {
+        const { data: delivery, error: sendError } = await supabase.functions.invoke('send-email-notifications', {
+          body: { queue_id: data.queue_id, limit: 1 }
+        })
+        if (sendError) throw sendError
+        return { ...data, delivery }
+      }
+      return data
+    }
+
+    async function queueServiceRequestEmail(serviceRequestId) {
+      const { data, error } = await supabase.rpc('queue_service_request_assignment_notification', {
+        p_service_request_id: Number(serviceRequestId),
+        p_force_update: true
       })
       if (error) throw error
       if (data?.queued) {
@@ -5796,7 +5867,18 @@
         const button = event.target.closest('button[data-action]')
         if (button) {
           const id = button.dataset.id
-          if (button.dataset.action === 'detail') renderDetail(id)
+          const item = getUnifiedWorkItems().find((row) => String(row.id) === String(id) && row._sourceKind === (button.dataset.sourceKind || 'technical_job'))
+          if (button.dataset.action === 'detail') openWorkItem(item)
+          if (button.dataset.action === 'email-service') {
+            button.disabled = true
+            queueServiceRequestEmail(id).then((result) => {
+              if (result?.delivery?.failed) throw new Error('Poskytovatel e-mailu zprávu nepřijal.')
+              if (!result?.queued && result?.reason === 'employee_email_missing') throw new Error('Technik nemá vyplněný e-mail.')
+              setStatus('E-mail byl odeslán přiřazenému technikovi.', 'success')
+            }).catch((error) => {
+              setStatus(`E-mail se nepodařilo odeslat: ${error.message}`, 'error')
+            }).finally(() => { button.disabled = false })
+          }
           if (button.dataset.action === 'edit') {
             const job = jobs.find((item) => String(item.id) === String(id))
             if (!job) return
@@ -5807,14 +5889,14 @@
         }
         if (event.target.closest('a, input, select, textarea, label')) return
         const row = event.target.closest('tr[data-job-id]')
-        if (row) renderDetail(row.dataset.jobId)
+        if (row) openWorkItem(getUnifiedWorkItems().find((item) => String(item.id) === String(row.dataset.jobId) && item._sourceKind === row.dataset.sourceKind))
       })
       jobsTableBody.addEventListener('keydown', (event) => {
         if (!['Enter', ' '].includes(event.key)) return
         const row = event.target.closest('tr[data-job-id]')
         if (!row) return
         event.preventDefault()
-        renderDetail(row.dataset.jobId)
+        openWorkItem(getUnifiedWorkItems().find((item) => String(item.id) === String(row.dataset.jobId) && item._sourceKind === row.dataset.sourceKind))
       })
 
       detailEditBtn.addEventListener('click', () => {

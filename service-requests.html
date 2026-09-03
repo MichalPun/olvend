@@ -1111,6 +1111,7 @@
       <div class="modal-body" id="detailBody"></div>
       <div class="modal-footer">
         <button type="button" class="btn secondary" id="detailEditBtn">Upravit požadavek</button>
+        <button type="button" class="btn secondary" id="detailEmailBtn">Odeslat technikovi</button>
         <button type="button" class="btn secondary" id="detailLogBtn">Zapsat zásah</button>
         <button type="button" class="btn secondary" id="detailSignatureBtn">Podpis zákazníka</button>
         <button type="button" class="btn secondary" id="detailProtocolBtn">Tisk protokolu</button>
@@ -1272,6 +1273,7 @@
     const detailBody = document.getElementById('detailBody')
     const closeDetailBtn = document.getElementById('closeDetailBtn')
     const detailEditBtn = document.getElementById('detailEditBtn')
+    const detailEmailBtn = document.getElementById('detailEmailBtn')
     const detailLogBtn = document.getElementById('detailLogBtn')
     const detailSignatureBtn = document.getElementById('detailSignatureBtn')
     const detailProtocolBtn = document.getElementById('detailProtocolBtn')
@@ -1895,6 +1897,7 @@
             <div class="action-row">
               <button class="btn secondary" type="button" data-action="detail" data-id="${item.id}">Detail</button>
               <button class="btn secondary" type="button" data-action="edit" data-id="${item.id}">Upravit</button>
+              ${item.assigned_employee_id ? `<button class="btn secondary" type="button" data-action="email" data-id="${item.id}">E-mail technikovi</button>` : ''}
               ${item.status !== 'done' ? `<button class="btn secondary" type="button" data-action="done" data-id="${item.id}">Hotovo</button>` : ''}
             </div>
           </td>
@@ -2203,7 +2206,27 @@
         </div>
       `
       detailDoneBtn.style.display = item.status === 'done' ? 'none' : 'inline-flex'
+      const assignedEmployee = employees.find((employee) => String(employee.id) === String(item.assigned_employee_id))
+      detailEmailBtn.style.display = item.assigned_employee_id ? 'inline-flex' : 'none'
+      detailEmailBtn.disabled = !assignedEmployee?.email
+      detailEmailBtn.title = assignedEmployee?.email ? `Odeslat na ${assignedEmployee.email}` : 'Technik nemá vyplněný e-mail'
       openDetailModal()
+    }
+
+    async function queueServiceRequestEmail(serviceRequestId) {
+      const { data, error } = await supabase.rpc('queue_service_request_assignment_notification', {
+        p_service_request_id: Number(serviceRequestId),
+        p_force_update: true
+      })
+      if (error) throw error
+      if (data?.queued) {
+        const { data: delivery, error: sendError } = await supabase.functions.invoke('send-email-notifications', {
+          body: { queue_id: data.queue_id, limit: 1 }
+        })
+        if (sendError) throw sendError
+        return { ...data, delivery }
+      }
+      return data
     }
 
     function openDoneFormForItem(item) {
@@ -2874,6 +2897,18 @@
           openDoneFormForItem(item)
           return
         }
+        if (button.dataset.action === 'email') {
+          button.disabled = true
+          try {
+            const result = await queueServiceRequestEmail(item.id)
+            if (result?.delivery?.failed) throw new Error('Poskytovatel e-mailu zprávu nepřijal.')
+            if (!result?.queued && result?.reason === 'employee_email_missing') throw new Error('Technik nemá vyplněný e-mail.')
+            setStatus('E-mail byl odeslán přiřazenému technikovi.', 'success')
+          } finally {
+            button.disabled = false
+          }
+          return
+        }
       } catch (error) {
         console.error(error)
         setStatus(`Nepodařilo se upravit požadavek: ${error.message}.${getServiceCompatibilityHint(error)}`, 'error')
@@ -2924,6 +2959,21 @@
       if (!item) return
       closeDetailModal()
       fillForm(item)
+    })
+
+    detailEmailBtn.addEventListener('click', async () => {
+      if (!activeDetailRequestId) return
+      detailEmailBtn.disabled = true
+      try {
+        const result = await queueServiceRequestEmail(activeDetailRequestId)
+        if (result?.delivery?.failed) throw new Error('Poskytovatel e-mailu zprávu nepřijal.')
+        if (!result?.queued && result?.reason === 'employee_email_missing') throw new Error('Technik nemá vyplněný e-mail.')
+        setStatus('E-mail byl odeslán přiřazenému technikovi.', 'success')
+      } catch (error) {
+        setStatus(`E-mail se nepodařilo odeslat: ${error.message}`, 'error')
+      } finally {
+        detailEmailBtn.disabled = false
+      }
     })
 
     detailLogBtn.addEventListener('click', () => {
