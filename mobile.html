@@ -9046,7 +9046,11 @@
       const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return 0
       const missing = Math.max(0, capacity - current)
-      return Math.floor(missing / packageQuantity)
+      // Pod 10 % je evidence už jen orientační zbytek. Operátorce nabídneme
+      // celé pytle potřebné k plnému zásobníku, ne o jeden pytel méně.
+      return current <= capacity * 0.1 + 0.0001
+        ? Math.ceil(missing / packageQuantity)
+        : Math.floor(missing / packageQuantity)
     }
 
     function getCoffeeActualBeforeQuantity(stopId, container) {
@@ -9084,7 +9088,10 @@
         : Number(existing?.system_current_quantity ?? container?.current_quantity ?? 0)
       const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return Number.POSITIVE_INFINITY
-      return Math.max(0, Math.floor((capacity - current) / packageQuantity))
+      const missing = Math.max(0, capacity - current)
+      return Math.max(0, current <= capacity * 0.1 + 0.0001
+        ? Math.ceil(missing / packageQuantity)
+        : Math.floor(missing / packageQuantity))
     }
 
     function getCoffeeActualPackages(stopId, container) {
@@ -9170,7 +9177,11 @@
       const current = getCoffeeActualBeforeQuantity(stopId, container)
       const capacity = Number(container?.capacity_quantity || 0)
       const next = current + getCoffeeAddedQuantity(stopId, container)
-      return capacity ? Math.min(capacity, next) : next
+      const packageQuantity = getCoffeeRefillPackageQuantity(container)
+      const wholePackageTolerance = capacity && current <= capacity * 0.1 + 0.0001
+        ? packageQuantity
+        : 0
+      return capacity && next > capacity + wholePackageTolerance + 0.0001 ? capacity : next
     }
 
     function getCoffeeCalibrationQuantity(stopId, container) {
@@ -12916,8 +12927,9 @@
           const limitedPackages = Math.max(0, Math.min(Number(draft.packages || 0), Number(availablePackages || 0)))
           draft.packages = limitedPackages
           if (limitedPackages <= 0) {
-            draft.picked = true
-            draft.accepted = true
+            // Chybějící zásoba se nesmí sama tvářit jako hotová práce. Operátor
+            // musí vidět odchylku a vědomě potvrdit, že surovina na autě není.
+            draft.stockShortage = true
           }
         }
 
@@ -13802,7 +13814,10 @@
       const actualBefore = Math.max(0, Number(payload.actual_before_quantity ?? getCoffeeActualBeforeQuantity(stopId, container)))
       const capacity = Number(container.capacity_quantity || 0)
       const finalQty = actualBefore + addedQty
-      if (capacity && finalQty > capacity + 0.0001) {
+      const wholePackageTolerance = capacity && actualBefore <= capacity * 0.1 + 0.0001
+        ? getCoffeeRefillPackageQuantity(container)
+        : 0
+      if (capacity && finalQty > capacity + wholePackageTolerance + 0.0001) {
         throw new Error(`Skutečný stav a doplnění přesahují kapacitu zásobníku (${formatNumber(capacity)} ${container.unit || 'g'}).`)
       }
       const row = {
@@ -14453,6 +14468,14 @@
       const mixedChangeover = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity > 0)
       const finalizedReplacement = Boolean(!fullSwap && replacementProduct && remainingExistingQuantity <= 0)
       const finalizedPriceOnlyChange = Boolean(priceOnlyChangeRequired)
+      const finalizedProduct = finalizedReplacement
+        ? replacementProduct
+        : state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))
+          || planogramChange?.nextProduct
+          || plannedProduct
+      const finalizedProductSku = finalizedReplacement
+        ? replacementProduct?.sku
+        : (nextPlanogramSku || slot.product_sku)
       const physicalMismatchSellThrough = Boolean(
         draft.assortmentMismatch
         && remainingExistingQuantity > 0
@@ -14763,9 +14786,9 @@
         .from('machine_planogram_slots')
         .update({
           ...((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange ? {
-            product_sku: nextPlanogramSku || slot.product_sku,
-            product_name: state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))?.name || planogramChange?.nextName || slot.product_name,
-            ...getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct || plannedProduct),
+            product_sku: finalizedProductSku,
+            product_name: finalizedProduct?.name || planogramChange?.nextName || slot.product_name,
+            ...getFoodProductFamilyPatch(finalizedProduct),
             price_czk: planogramChange?.nextPrice ?? slot.price_czk,
             customer_price_czk: planogramChange?.nextPrice ?? slot.customer_price_czk ?? slot.price_czk,
             dex_price_czk: planogramChange?.nextPrice ?? slot.dex_price_czk ?? slot.price_czk,
@@ -14842,9 +14865,9 @@
         slot.pending_change_note = null
       }
       if ((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange) {
-        slot.product_sku = nextPlanogramSku || slot.product_sku
-        slot.product_name = state.products.find((item) => String(item.sku) === String(nextPlanogramSku || slot.product_sku))?.name || planogramChange?.nextName || slot.product_name
-        Object.assign(slot, getFoodProductFamilyPatch(replacementProduct || planogramChange?.nextProduct || plannedProduct))
+        slot.product_sku = finalizedProductSku
+        slot.product_name = finalizedProduct?.name || planogramChange?.nextName || slot.product_name
+        Object.assign(slot, getFoodProductFamilyPatch(finalizedProduct))
         slot.planned_product_sku = null
         slot.planned_product_name = null
         slot.changeover_old_units = null

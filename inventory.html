@@ -2385,6 +2385,7 @@
     let autoLoadRouteNeeds = new Map()
     let autoLoadRouteForecasts = new Map()
     let autoLoadExactProductIds = new Set()
+    let autoLoadCoffeeProductIds = new Set()
     const AUTO_LOAD_DEFAULT_RESERVE_RATIO = 0.15
     const AUTO_LOAD_WEEKLY_AUDIT_MARKER = 'AUTO_WEEKLY_RANDOM_AUDIT'
     const AUTO_LOAD_WEEKLY_AUDIT_MAX_ITEMS = 12
@@ -5531,7 +5532,7 @@
       salesFrom.setDate(salesFrom.getDate() - 28)
       const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }, { data: serviceRules, error: serviceRulesError }] = await Promise.all([
         supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, target_units, pending_change_mode, pending_change_effective_date, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_old_units, changeover_new_units, active').in('machine_id', machineIds).eq('active', true),
-        supabase.from('machine_coffee_containers').select('machine_id, product_sku, product_name, capacity_quantity, current_quantity, unit, active').in('machine_id', machineIds).eq('active', true),
+        supabase.from('machine_coffee_containers').select('machine_id, product_id, product_sku, product_name, capacity_quantity, current_quantity, unit, refill_package_quantity, refill_package_unit, min_refill_quantity, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString()),
         supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true),
         supabase.from('machine_service_rules').select('machine_id, stock_critical_percent, max_visit_interval_days').in('machine_id', machineIds)
@@ -5544,6 +5545,7 @@
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
       autoLoadExactProductIds = new Set()
+      autoLoadCoffeeProductIds = new Set()
       const routeStart = new Date(`${route.planning_date}T${String(route.planned_departure_time || '07:00').slice(0, 5)}:00`)
       const totalDriveMinutes = Number(route.estimated_drive_minutes || 0)
       const drivePerStop = routeStops.length ? totalDriveMinutes / routeStops.length : 0
@@ -5725,6 +5727,7 @@
         const product = productsV13.find((candidate) => sku && normalizeText(candidate.sku || '') === sku)
           || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(productName))
         if (!product) return
+        if (item.capacity_quantity != null) autoLoadCoffeeProductIds.add(String(product.id))
         if (productChanged) autoLoadExactProductIds.add(String(product.id))
         const sourceUnit = item.unit || product.base_unit
         const capacity = Number(convertRecipeQuantityToBase(
@@ -5734,6 +5737,11 @@
         ).toFixed(3))
         const current = Number(convertRecipeQuantityToBase(
           Number(productChanged ? (item.changeover_new_units || 0) : (item.current_units ?? item.current_quantity ?? 0)),
+          sourceUnit,
+          product.base_unit || sourceUnit
+        ).toFixed(3))
+        const minRefillThreshold = Number(convertRecipeQuantityToBase(
+          Number(item.min_refill_quantity || 0),
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
@@ -5757,12 +5765,14 @@
           current: 0,
           fullSwap: false,
           sellThrough: false,
+          minRefillThreshold: 0,
           transitionSegments: []
         }
         pool.capacity = Number((pool.capacity + capacity).toFixed(3))
         pool.current = Number((pool.current + current).toFixed(3))
         pool.fullSwap = pool.fullSwap || fullSwap
         pool.sellThrough = pool.sellThrough || sellThrough
+        pool.minRefillThreshold = Number((pool.minRefillThreshold + minRefillThreshold).toFixed(3))
         if (sellThrough) {
           pool.transitionSegments.push({
             oldProductId: oldProduct?.id || null,
@@ -5774,7 +5784,7 @@
       })
       const now = new Date()
       planogramPoolsByMachineProduct.forEach((pool) => {
-        const { machineId, product, capacity, current, fullSwap, sellThrough, transitionSegments } = pool
+        const { machineId, product, capacity, current, fullSwap, sellThrough, minRefillThreshold, transitionSegments } = pool
         const arrival = arrivalByMachine.get(String(machineId)) || routeStart
         const arrivalForecast = estimateConfirmedSalesBetween(machineId, product.id, now, arrival)
         const forecastSales = Math.max(0, Math.min(current, arrivalForecast.quantity))
@@ -5818,7 +5828,10 @@
         const nextVisitForecast = estimateConfirmedSalesBetween(machineId, product.id, arrival, nextVisit)
         const reliableForecast = nextVisitForecast.sampleDays >= 7
         const coverageNeed = Number((nextVisitForecast.quantity * (1 + AUTO_LOAD_DEFAULT_RESERVE_RATIO)).toFixed(3))
-        const criticalQuantity = Number((capacity * criticalPercent / 100).toFixed(3))
+        const criticalQuantity = Math.max(
+          Number((capacity * criticalPercent / 100).toFixed(3)),
+          Number(minRefillThreshold || 0)
+        )
         const alwaysFillToCapacity = isAutoLoadWaterStockoutCandidate(product)
         const refillNow = alwaysFillToCapacity
           || fullSwap
@@ -6284,7 +6297,10 @@
           const deferredQty = 0
           const sameTargetDeferredQty = 0
           const tripDemandQty = Number(estimate.expected.toFixed(3))
-          const fixedSafetyQty = Math.max(0, Number(profile.safety_stock_quantity || 0))
+          const coffeeSafetyQty = autoLoadCoffeeProductIds.has(String(product.id))
+            ? Math.max(0, Number(convertRecipeQuantityToBase(2, 'kg', product.base_unit || 'kg').toFixed(3)))
+            : 0
+          const fixedSafetyQty = Math.max(0, Number(profile.safety_stock_quantity || 0), coffeeSafetyQty)
           // Potřeba trasy už vzniká po posouzení zásoby až do příští návštěvy.
           // Další obecná rezerva by znovu nafoukla množství nad stav „doplnit do plna“.
           const dynamicSafetyQty = 0
@@ -6300,6 +6316,26 @@
           let stockoutOverride = false
           let routeCoverageOverride = false
           let changeoverPackageOverride = false
+          let coffeeSafetyOverride = false
+          if (coffeeSafetyQty > 0.0001 && requiredFromNew > Number(packagePlan.approvedQty || 0) + 0.0001) {
+            coffeeSafetyOverride = true
+            const safetyPackageCount = packageQty > 0 ? Math.ceil((requiredFromNew - 0.0001) / packageQty) : 0
+            const safetyLoadQty = packageQty > 0
+              ? Number((safetyPackageCount * packageQty).toFixed(3))
+              : normalizeAutoLoadSuggestedQuantity(product, requiredFromNew)
+            packagePlan = {
+              ...packagePlan,
+              packageCount: safetyPackageCount,
+              suggestedQty: safetyLoadQty,
+              approvedPackageCount: safetyPackageCount,
+              approvedQty: safetyLoadQty,
+              usageRatio: Math.min(1, Number((requiredFromNew / Math.max(safetyLoadQty, 0.0001)).toFixed(3))),
+              deferredAfterLoadQty: 0,
+              blockedPackageCount: 0,
+              blockedQty: 0,
+              blockedUsageRatio: 0
+            }
+          }
           if (routeForecast.changeoverMachines > 0 && requiredFromNew > 0.0001 && packageQty > 0) {
             changeoverPackageOverride = true
             const changeoverPackageCount = Math.max(1, Math.ceil((requiredFromNew - 0.0001) / packageQty))
@@ -6423,6 +6459,9 @@
           }
           if (changeoverPackageOverride) {
             reasons.push('první zásoba nového sortimentu se vydává v celém balení')
+          }
+          if (coffeeSafetyOverride) {
+            reasons.push('na autě zůstává minimálně 2 kg kávové suroviny jako provozní rezerva')
           }
           if (stockoutBonusQty > 0.0001) {
             reasons.push(`balení navíc, po minulé jízdě zůstalo auto na 0`)
@@ -6824,6 +6863,32 @@
       if (!request?.id || savedItems.length !== itemRows.length) {
         throw new Error('Vychystávací doklad se nevytvořil kompletně. Zkus předání skladu znovu.')
       }
+      const calculationSnapshot = {
+        created_at: new Date().toISOString(),
+        route_plan_id: route.id,
+        vehicle_id: vehicleId,
+        warehouse_id: warehouseId,
+        requested_for_date: requestedDate,
+        rows: autoLoadRows.map((row) => ({
+          product_id: row.product?.id || null,
+          sku: row.product?.sku || null,
+          product_name: row.product?.name || null,
+          unit: row.product?.base_unit || 'ks',
+          vehicle_before: Number(row.currentVehicleQty || 0),
+          route_need: Number(row.routeNeed || 0),
+          safety_stock: Number(row.safetyQty || 0),
+          calculated_required: Number(row.requiredFromNew || 0),
+          suggested_quantity: Number(row.autoSuggestedQty || 0),
+          approved_quantity: Number(row.approvedQty || 0),
+          status: row.status || null,
+          reasons: row.reasons || []
+        }))
+      }
+      const { error: auditError } = await supabase
+        .from('mobile_stock_requests')
+        .update({ calculation_snapshot: calculationSnapshot })
+        .eq('id', request.id)
+      if (auditError) console.warn('Auto-load calculation audit was not saved:', auditError)
       mobilePickRequestsCollapsed = false
       await loadMobilePickRequests()
       autoLoadStatus.className = 'status-line success'
@@ -13395,6 +13460,8 @@
       autoLoadRows = []
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
+      autoLoadExactProductIds = new Set()
+      autoLoadCoffeeProductIds = new Set()
       renderAutoLoadRows()
       renderAutoLoadWeeklyAuditPreview()
       await loadAutoLoadRoutes()
@@ -13405,6 +13472,8 @@
       autoLoadRows = []
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
+      autoLoadExactProductIds = new Set()
+      autoLoadCoffeeProductIds = new Set()
       syncAutoLoadContextFromRoute()
       renderAutoLoadRows()
       renderAutoLoadWeeklyAuditPreview()

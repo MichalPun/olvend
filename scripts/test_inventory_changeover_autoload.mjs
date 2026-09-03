@@ -11,6 +11,14 @@ for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/scri
 }
 
 assert.match(html, /changeover_old_units, changeover_new_units, active/)
+assert.match(html, /min_refill_quantity/)
+assert.match(html, /Math\.max\(\s*Number\(\(capacity \* criticalPercent \/ 100\)/)
+assert.match(html, /autoLoadCoffeeProductIds\.has\(String\(product\.id\)\)/)
+assert.match(html, /convertRecipeQuantityToBase\(2, 'kg'/)
+assert.match(html, /coffeeSafetyOverride/)
+assert.match(html, /na autě zůstává minimálně 2 kg/)
+assert.match(html, /calculation_snapshot: calculationSnapshot/)
+assert.match(html, /rows: autoLoadRows\.map/)
 assert.match(html, /const productChanged = Boolean\(pendingSku && String\(item\.product_sku \|\| ''\) !== pendingSku\)/)
 assert.match(html, /if \(productChanged\) autoLoadExactProductIds\.add\(String\(product\.id\)\)/)
 assert.match(html, /const sellThrough = productChanged && !fullSwap/)
