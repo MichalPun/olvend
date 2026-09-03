@@ -43,6 +43,16 @@ for (const required of [
 ]) assert.ok(technician.includes(required), `Technický mobil postrádá ${required}`)
 
 for (const required of [
+  'data-screen="new-service"',
+  'Založit a převzít servis',
+  'async function createService()',
+  "supabase.from('service_requests').insert",
+  'assigned_employee_id:state.employee.id',
+  'assigned_employee_id.is.null',
+  'Hlášení bylo převzato a servis zahájen.'
+]) assert.ok(technician.includes(required), `Technik nemůže založit vlastní servis: ${required}`)
+
+for (const required of [
   'renderTechnicalInstructions',
   'technical_job_material_availability_v29',
   'Zásobníky a suroviny',
@@ -89,5 +99,12 @@ for (const operatorGuard of [
   'renderAssignedRoute',
   'handleServiceAction'
 ]) assert.ok(operator.includes(operatorGuard), `Operátorská funkce ${operatorGuard} nesmí zmizet`)
+
+for (const required of [
+  'Nahlásit závadu na tomto automatu',
+  'openServiceReportForStop',
+  "status: technician ? 'assigned' : 'new'",
+  'Závada je nahlášená do fronty techniků.'
+]) assert.ok(operator.includes(required), `Operátorka nemá funkční hlášení servisu: ${required}`)
 
 console.log('OK: technický mobil, jednotný plán, PC přehled a ochranné body operátorského workflow')

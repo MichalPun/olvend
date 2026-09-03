@@ -26,6 +26,13 @@ assert.match(html, /picking_extra_machine_ids/)
 assert.match(html, /getAutoLoadPreferredWarehouseProduct/)
 assert.match(html, /wholePackageQuantity/)
 assert.match(html, /Lemon -12 ks versus Peach \+36 ks/)
+assert.match(html, /productName\.includes\('kelimek'\)/)
+assert.match(html, /if \(stickPackage\) return stickPackage/)
+
+const cupSafetyMigration = fs.readFileSync(new URL('../database/coffee_vehicle_cup_safety_stock_v47.sql', import.meta.url), 'utf8')
+assert.match(cupSafetyMigration, /safety_stock_quantity/)
+assert.match(cupSafetyMigration, /50/)
+assert.match(cupSafetyMigration, /units_per_package = 50/)
 
 const calculateTransitionNeed = ({ capacity, oldCurrent, oldVehicle = 0, newCurrent, expectedOldSales }) => {
   const oldAtArrival = Math.max(0, oldCurrent - expectedOldSales)

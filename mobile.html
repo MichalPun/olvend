@@ -1255,6 +1255,11 @@
       gap: 10px;
       margin-top: 10px;
     }
+    .route-service-report {
+      width:100%; margin:10px 0 14px; padding:13px 16px; border:1px solid #fda29b;
+      border-radius:14px; color:#b42318; background:#fff; font:inherit; font-weight:800;
+      text-align:left; cursor:pointer;
+    }
 
     .signature-pad {
       display: grid;
@@ -4577,7 +4582,7 @@
         </div>
         <details class="mobile-panel" id="createServicePanel">
           <summary>
-            <span>Založit servis</span>
+            <span id="createServicePanelTitle">Nahlásit servis</span>
             <span class="badge green">Nový</span>
           </summary>
           <div class="details-body">
@@ -4611,7 +4616,7 @@
                   <option value="low">Nízká</option>
                 </select>
               </label>
-              <button class="primary-btn" id="createServiceButton" type="button">Založit servis</button>
+              <button class="primary-btn" id="createServiceButton" type="button">Nahlásit servis</button>
             </div>
           </div>
         </details>
@@ -5361,6 +5366,7 @@
       serviceCount: document.getElementById('serviceCount'),
       servicePreviewNotice: document.getElementById('servicePreviewNotice'),
       createServicePanel: document.getElementById('createServicePanel'),
+      createServicePanelTitle: document.getElementById('createServicePanelTitle'),
       newServiceLocationSelect: document.getElementById('newServiceLocationSelect'),
       newServiceMachineSelect: document.getElementById('newServiceMachineSelect'),
       newServiceTitleInput: document.getElementById('newServiceTitleInput'),
@@ -5870,6 +5876,41 @@
 
     function getServiceSignature(serviceId) {
       return state.serviceSignatures.find((item) => String(item.service_request_id) === String(serviceId)) || null
+    }
+
+    function isTechnicianEmployee() {
+      const role = String(state.employee?.role || '').toLowerCase()
+      return role.includes('technician') || role.includes('technik')
+    }
+
+    function renderServiceCreationMode() {
+      const technician = isTechnicianEmployee()
+      if (els.createServicePanelTitle) els.createServicePanelTitle.textContent = technician ? 'Založit vlastní servis' : 'Nahlásit závadu technikovi'
+      if (els.createServiceButton) els.createServiceButton.textContent = technician ? 'Založit a převzít servis' : 'Odeslat hlášení servisu'
+    }
+
+    function renderRouteServiceReportButton(stop) {
+      if (!stop || state.routeMachineReadOnly) return ''
+      return `<button class="route-service-report" type="button" data-report-service-stop-id="${escapeHtml(String(stop.id))}">+ Nahlásit závadu na tomto automatu</button>`
+    }
+
+    function openServiceReportForStop(stopId) {
+      const { stop } = findRouteStop(stopId)
+      if (!stop) throw new Error('Automat se nepodařilo načíst.')
+      const machine = getRouteStopMachine(stop)
+      const locationId = String(machine?.location_id || stop.location_id || '')
+      if (els.newServiceLocationSelect) els.newServiceLocationSelect.value = locationId
+      renderNewServiceOptions()
+      if (els.newServiceMachineSelect && machine?.id) els.newServiceMachineSelect.value = String(machine.id)
+      if (els.newServiceTitleInput) els.newServiceTitleInput.value = ''
+      if (els.newServiceDescriptionInput) els.newServiceDescriptionInput.value = ''
+      if (els.newServicePrioritySelect) els.newServicePrioritySelect.value = 'normal'
+      if (els.createServicePanel) els.createServicePanel.open = true
+      openScreen('service')
+      window.requestAnimationFrame(() => {
+        els.createServicePanel?.scrollIntoView({ behavior:'smooth', block:'start' })
+        els.newServiceTitleInput?.focus()
+      })
     }
 
     function resetServiceSignatureCanvas(canvas) {
@@ -6630,6 +6671,8 @@
     }
 
     function renderServices() {
+      renderServiceCreationMode()
+      const technician = isTechnicianEmployee()
       const openServices = state.services.filter((item) => item.status !== 'done' && item.status !== 'cancelled')
       els.serviceCount.textContent = `${openServices.length}`
       if (els.servicePreviewNotice) {
@@ -6637,7 +6680,9 @@
       }
 
       if (!openServices.length) {
-        els.serviceList.innerHTML = '<div class="empty">Nemáš přiřazený žádný otevřený servis.</div>'
+        els.serviceList.innerHTML = technician
+          ? '<div class="empty">Nemáš přiřazený servis a ve frontě není žádné nové hlášení.</div>'
+          : '<div class="empty">Nemáš žádné otevřené hlášení servisu.</div>'
         return
       }
 
@@ -6654,7 +6699,7 @@
               </div>
               <span class="badge ${old ? (delayText ? 'yellow' : 'red') : (item.priority === 'high' || item.priority === 'critical' ? 'yellow' : 'blue')}">${escapeHtml(old ? (delayText ? 'Čeká' : 'Doplnit') : (item.priority || 'normal'))}</span>
             </div>
-            ${old ? `
+            ${old && technician ? `
               <div class="attention-box">
                 <strong>${delayText ? 'Uložený důvod prodlení' : 'Důvod prodlení'}</strong>
                 <span>${escapeHtml(delayText || 'Napiš konkrétně, proč zásah stále není hotový.')}</span>
@@ -6667,8 +6712,8 @@
                 <button class="primary-btn" data-service-action="followup" data-id="${item.id}" type="button">Uložit důvod</button>
               </div>
             ` : ''}
-            <div class="card-actions">
-              <button class="primary-btn wide-action" data-service-action="start" data-id="${item.id}" type="button">Zahájit zásah</button>
+            ${technician ? `<div class="card-actions">
+              <button class="primary-btn wide-action" data-service-action="start" data-id="${item.id}" type="button">${item.assigned_employee_id ? 'Zahájit zásah' : 'Převzít a zahájit'}</button>
               <button class="secondary-btn" data-service-action="replace" data-id="${item.id}" type="button">Předat</button>
             </div>
             <details class="mobile-panel">
@@ -6729,7 +6774,7 @@
                 ` : ''}
                 <button class="primary-btn" data-service-action="save-result" data-id="${item.id}" type="button">Uložit výsledek</button>
               </div>
-            </details>
+            </details>` : `<div class="attention-box"><strong>Hlášení čeká na technika</strong><span>Jakmile technik požadavek převezme, stav se tady aktualizuje.</span></div>`}
           </article>
         `
       }).join('')
@@ -9400,7 +9445,7 @@
         : stage === 'cash' ? renderCoffeeGuidedCash(stop, detail)
         : ['check','finish'].includes(stage) ? renderCoffeeGuidedQuality(stop, detail)
         : `<div class="coffee-next-box"><small>Automat dokončen</small><h4>Práce je uložená</h4><p>Zobrazuješ pouze náhled dokončené návštěvy.</p></div>`
-      return `<div class="coffee-visit-detail coffee-guided"><header class="coffee-guided-head"><button class="coffee-guided-back" type="button" data-coffee-action="guided-back-route" data-stop-id="${escapeHtml(stop.id)}">‹ Zpět na trasu</button><div class="coffee-guided-title"><div><h3>${escapeHtml(location?.name || getRouteStopTitle(stop))}</h3><p>EV ${escapeHtml(machine?.evidence_number || machine?.id || '—')} · ${escapeHtml(machine?.brand || 'Rheavendors')} ${escapeHtml(machine?.model || machine?.name || 'Luce X2')}${visit?.arrived_at ? ` · otevřen ${formatCoffeeClock(visit.arrived_at)}` : ''}</p></div><span class="coffee-guided-badge">${readOnly ? 'Hotovo' : 'Podle plánu'}</span></div>${renderCoffeeStageNav(stage)}</header>${content}</div>`
+      return `<div class="coffee-visit-detail coffee-guided"><header class="coffee-guided-head"><button class="coffee-guided-back" type="button" data-coffee-action="guided-back-route" data-stop-id="${escapeHtml(stop.id)}">‹ Zpět na trasu</button><div class="coffee-guided-title"><div><h3>${escapeHtml(location?.name || getRouteStopTitle(stop))}</h3><p>EV ${escapeHtml(machine?.evidence_number || machine?.id || '—')} · ${escapeHtml(machine?.brand || 'Rheavendors')} ${escapeHtml(machine?.model || machine?.name || 'Luce X2')}${visit?.arrived_at ? ` · otevřen ${formatCoffeeClock(visit.arrived_at)}` : ''}</p></div><span class="coffee-guided-badge">${readOnly ? 'Hotovo' : 'Podle plánu'}</span></div>${renderCoffeeStageNav(stage)}</header>${renderRouteServiceReportButton(stop)}${content}</div>`
     }
 
     function renderCoffeeVisitDetail(stop, visit) {
@@ -10874,7 +10919,7 @@
         : renderFoodGuidedFinish(stop, detail, readOnly)
       const machine = getRouteStopMachine(stop)
       const location = state.locations.find((item) => String(item.id) === String(machine?.location_id))
-      return `<div class="coffee-visit-detail coffee-guided"><header class="coffee-guided-head"><button class="coffee-guided-back" type="button" data-food-action="guided-food-back-route" data-stop-id="${escapeHtml(stop.id)}">‹ Zpět na trasu</button><div class="coffee-guided-title"><div><h3>${escapeHtml(location?.name || getRouteStopTitle(stop))}</h3><p>EV ${escapeHtml(machine?.evidence_number || machine?.id || '—')} · ${escapeHtml(machine?.brand || 'Potravinový automat')}${visit?.arrived_at ? ` · otevřen ${formatCoffeeClock(visit.arrived_at)}` : ''}</p></div><span class="coffee-guided-badge">${readOnly ? 'Hotovo' : 'Podle plánu'}</span></div>${renderCoffeeStageNav(stage)}</header>${content}</div>`
+      return `<div class="coffee-visit-detail coffee-guided"><header class="coffee-guided-head"><button class="coffee-guided-back" type="button" data-food-action="guided-food-back-route" data-stop-id="${escapeHtml(stop.id)}">‹ Zpět na trasu</button><div class="coffee-guided-title"><div><h3>${escapeHtml(location?.name || getRouteStopTitle(stop))}</h3><p>EV ${escapeHtml(machine?.evidence_number || machine?.id || '—')} · ${escapeHtml(machine?.brand || 'Potravinový automat')}${visit?.arrived_at ? ` · otevřen ${formatCoffeeClock(visit.arrived_at)}` : ''}</p></div><span class="coffee-guided-badge">${readOnly ? 'Hotovo' : 'Podle plánu'}</span></div>${renderCoffeeStageNav(stage)}</header>${renderRouteServiceReportButton(stop)}${content}</div>`
     }
 
     function renderFoodVisitDetail(stop, visit) {
@@ -11925,30 +11970,19 @@
     async function loadServices() {
       const legacyServiceSelect = 'id, title, description, priority, status, due_date, created_at, location_id, machine_id, assigned_employee_id, service_result, work_performed, used_parts, next_recommendation, internal_service_note'
       const baseSelect = `${legacyServiceSelect}, actual_duration_minutes, service_scope, external_service_place, external_service_address, external_customer_name, external_customer_contact, external_order_number, billable, billing_status, service_onsite_minutes, travel_distance_km, billable_work_minutes, billable_travel_minutes, billable_materials_summary, customer_visible_note`
-      let result = await supabase
-        .from('service_requests')
-        .select(`${baseSelect}, delay_reason, delay_note`)
-        .eq('assigned_employee_id', state.employee.id)
-        .neq('status', 'cancelled')
-        .order('created_at', { ascending: false })
-        .limit(30)
+      const buildQuery = (columns) => {
+        let query = supabase.from('service_requests').select(columns)
+        query = isTechnicianEmployee()
+          ? query.or(`assigned_employee_id.eq.${state.employee.id},assigned_employee_id.is.null`)
+          : query.or(`assigned_employee_id.eq.${state.employee.id},created_by.eq.${state.employee.id}`)
+        return query.neq('status', 'cancelled').order('created_at', { ascending: false }).limit(30)
+      }
+      let result = await buildQuery(`${baseSelect}, delay_reason, delay_note`)
       if (result.error && String(result.error.message || '').toLowerCase().includes('delay_')) {
-        result = await supabase
-          .from('service_requests')
-          .select(baseSelect)
-          .eq('assigned_employee_id', state.employee.id)
-          .neq('status', 'cancelled')
-          .order('created_at', { ascending: false })
-          .limit(30)
+        result = await buildQuery(baseSelect)
       }
       if (result.error && ['service_scope', 'external_service', 'external_customer', 'service_onsite_minutes', 'travel_distance_km', 'billable', 'billing_status', 'customer_visible_note', 'actual_duration_minutes'].some((column) => String(result.error.message || '').toLowerCase().includes(column))) {
-        result = await supabase
-          .from('service_requests')
-          .select(legacyServiceSelect)
-          .eq('assigned_employee_id', state.employee.id)
-          .neq('status', 'cancelled')
-          .order('created_at', { ascending: false })
-          .limit(30)
+        result = await buildQuery(legacyServiceSelect)
       }
       if (result.error) {
         state.services = []
@@ -17781,8 +17815,11 @@
 
     async function handleServiceAction(action, id) {
       if (action === 'start') {
+        if (!isTechnicianEmployee()) throw new Error('Servis může převzít a zahájit pouze technik.')
         const { error } = await supabase.from('service_requests').update({
           status: 'in_progress',
+          assigned_employee_id: state.employee.id,
+          assigned_at: new Date().toISOString(),
           service_started_at: new Date().toISOString()
         }).eq('id', id)
         if (error) throw error
@@ -17937,6 +17974,7 @@
 
       if (!locationId) throw new Error('Vyber lokalitu nebo automat.')
       if (!title) throw new Error('Doplň, co je potřeba řešit.')
+      const technician = isTechnicianEmployee()
       state.creatingServiceRequest = true
       if (els.createServiceButton) {
         els.createServiceButton.disabled = true
@@ -17949,10 +17987,10 @@
         title,
         description: description || null,
         priority: els.newServicePrioritySelect?.value || 'normal',
-        status: 'assigned',
+        status: technician ? 'assigned' : 'new',
         due_date: todayIso,
-        assigned_employee_id: state.employee?.id || null,
-        assigned_at: new Date().toISOString(),
+        assigned_employee_id: technician ? (state.employee?.id || null) : null,
+        assigned_at: technician ? new Date().toISOString() : null,
         created_by: state.employee?.id || null
       }
       const attempts = [
@@ -18001,7 +18039,7 @@
             await loadServices()
             renderServices()
             renderImportant()
-            showMessage('Servis je založený a vidíš ho v seznamu.', 'success')
+            showMessage(technician ? 'Servis je založený a přiřazený tobě.' : 'Závada je nahlášená do fronty techniků.', 'success')
             return
           }
           lastError = error
@@ -18012,7 +18050,7 @@
         state.creatingServiceRequest = false
         if (els.createServiceButton) {
           els.createServiceButton.disabled = false
-          els.createServiceButton.textContent = 'Založit servis'
+          renderServiceCreationMode()
         }
       }
     }
@@ -18196,6 +18234,11 @@
           .finally(restore)
       })
       els.routeMachineContent?.addEventListener('click', (event) => {
+        const serviceReportButton = event.target.closest('[data-report-service-stop-id]')
+        if (serviceReportButton) {
+          openServiceReportForStop(serviceReportButton.dataset.reportServiceStopId)
+          return
+        }
         const routeButton = event.target.closest('[data-route-action]')
         if (routeButton) {
           if (routeButton.disabled || routeButton.classList.contains('is-busy')) return
