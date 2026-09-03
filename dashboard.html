@@ -6930,7 +6930,8 @@
       const revenue = Number(totals.revenue || 0);
       const cashAmount = Number(totals.cashAmount || 0);
       const cashlessAmount = Number(totals.cashlessAmount || 0);
-      const machineCount = Number(totals.machineCount || 0);
+      const profit = Number(totals.profit || 0);
+      const margin = Number(totals.revenueNet || 0) > 0 ? (profit / Number(totals.revenueNet)) * 100 : 0;
       const lastSeen = totals.lastSeen ? formatRelativeMinutes(totals.lastSeen) : "zatím nic";
       const compare = totals.compare || {};
       const periodLabel = totals.periodLabel || "Vybrané období";
@@ -6950,7 +6951,7 @@
         { key: "revenue", html: `<div class="summary-cell" data-telemetry-key="revenue"><span>Potvrzená tržba</span><strong>${escapeHtml(formatMoney(revenue))}</strong>${telemetryTrendBadge(revenue, compare.revenue, compareLabel)}${Number(totals.pendingAmount || 0) > 0 ? `<span class="summary-trend">${escapeHtml(`+ odhad ${formatMoney(totals.pendingAmount)} čeká na DEX`)}</span>` : ""}</div>` },
         { key: "cash", html: `<div class="summary-cell" data-telemetry-key="cash"><span>Hotově</span><strong>${escapeHtml(formatMoney(cashAmount))}</strong>${telemetryTrendBadge(cashAmount, compare.cashAmount, compareLabel)}</div>` },
         { key: "cashless", html: `<div class="summary-cell" data-telemetry-key="cashless"><span>Kartou</span><strong>${escapeHtml(formatMoney(cashlessAmount))}</strong>${telemetryTrendBadge(cashlessAmount, compare.cashlessAmount, compareLabel)}</div>` },
-        { key: "machines", html: `<div class="summary-cell" data-telemetry-key="machines"><span>Automaty</span><strong>${escapeHtml(String(machineCount))}</strong><span class="summary-trend">${escapeHtml(`${lowStock.length} nízký stav · ${expiryRows.length} blízká expirace${initialInventory.length ? ` · ${initialInventory.length} prvotní inventura kávy` : ""}`)}</span></div>` },
+        { key: "profit", html: `<div class="summary-cell" data-telemetry-key="profit"><span>Zisk</span><strong>${escapeHtml(formatMoney(profit))}</strong>${telemetryTrendBadge(profit, compare.profit, compareLabel)}<span class="summary-trend">${escapeHtml(`hrubý bez DPH · marže ${margin.toFixed(1).replace(".", ",")} %${Number(totals.missingCostCount || 0) ? ` · ${totals.missingCostCount} prodejů bez nákupní ceny` : ""}`)}</span></div>` },
         { key: "last-sale", html: `<div class="summary-cell" data-telemetry-key="last-sale"><span>Poslední prodej</span><strong>${escapeHtml(lastSeen)}</strong><span class="summary-trend">${escapeHtml(rows[0] ? [rows[0].machine_name, rows[0].location_name].filter(Boolean).join(" · ") : "čekám na data")}</span></div>` }
       ]);
 
@@ -7091,6 +7092,20 @@
       return { summary: null, rawRows };
     }
 
+    async function loadDashboardTelemetryProfit(range) {
+      const { data, error } = await supabase.rpc("get_dashboard_telemetry_profit_v49", {
+        p_period_start: range.start.toISOString(),
+        p_period_end: range.end.toISOString(),
+        p_compare_start: range.compareStart.toISOString(),
+        p_compare_end: range.compareEnd.toISOString(),
+        p_compare_date_keys: range.compareDateKeys || [],
+        p_compare_elapsed_ms: range.compareElapsedMs == null ? null : Math.round(range.compareElapsedMs)
+      });
+      if (!error && data) return data;
+      if (error && !/get_dashboard_telemetry_profit_v49|schema cache|could not find the function/i.test(String(error.message || ""))) throw error;
+      return null;
+    }
+
     async function loadTelemetrySalesDashboard() {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
@@ -7100,13 +7115,14 @@
       const trendStart = new Date(todayStart);
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
-      const [recentResult, telemetryAggregate, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult] = await Promise.all([
+      const [recentResult, telemetryAggregate, telemetryProfit, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
           .order("source_event_at", { ascending: false })
           .limit(100),
         loadDashboardTelemetryAggregate(range, fetchStart, trendStart, tomorrowStart),
+        loadDashboardTelemetryProfit(range),
         fetchSupabaseRowsPaged(() => supabase
           .from("machine_planogram_slots")
           .select("id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, desired_units, fill_percent, expiry_date, active, settlement_type, settlement_amount_czk, settlement_billing_enabled")
@@ -7359,6 +7375,10 @@
 
       const totals = {
         ...(telemetrySummary?.period_totals || getTotalsForRows(periodRows)),
+        profit: Number(telemetryProfit?.period?.profit || 0),
+        revenueNet: Number(telemetryProfit?.period?.revenue_net || 0),
+        cost: Number(telemetryProfit?.period?.cost || 0),
+        missingCostCount: Number(telemetryProfit?.period?.missing_cost_count || 0),
         machineCount: telemetrySummary
           ? Number(telemetrySummary.period_totals?.machineCount || 0)
           : new Set(periodRows.map((row) => String(row.machine_id || "")).filter(Boolean)).size,
@@ -7369,6 +7389,7 @@
           : range.compareLabel,
         periodLabel: range.label
       };
+      totals.compare.profit = Number(telemetryProfit?.compare?.profit || 0) / compareDivisor;
 
       const dayRows = telemetrySummary?.day_rows || buildTelemetryDayRows(enrichedTrendRows, 14);
       const topProducts = telemetrySummary?.top_products || aggregateTelemetryRows(enrichedPeriodRows, (row) => row.product_name || row.product_sku || "Bez produktu");
