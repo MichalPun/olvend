@@ -16,7 +16,7 @@ assert.match(dashboard, /telemetryProfitResult \|\| await loadDashboardTelemetry
 assert.match(dashboard, /purchase_price, vat_rate, active/)
 assert.match(dashboard, /data-telemetry-key="profit"/)
 assert.match(dashboard, /<span>Zisk<\/span>/)
-assert.match(dashboard, /hrubý bez DPH · marže/)
+assert.doesNotMatch(dashboard, /hrubý bez DPH · marže/)
 assert.doesNotMatch(dashboard, /data-telemetry-key="machines"/)
 
 assert.match(migration, /security invoker/i)
