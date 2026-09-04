@@ -664,6 +664,7 @@ async function applyPlanogramDepletion(
     slot: Record<string, unknown>;
     counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string };
     previous: Record<string, unknown> | null;
+    isManualBaseline: boolean;
     isInitialCounter: boolean;
     selection: string;
     previousTotal: number;
@@ -690,7 +691,7 @@ async function applyPlanogramDepletion(
     const isInitialCounter = !previous || isManualBaseline;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
     const delta = isInitialCounter ? 0 : Math.max(0, counter.totalCount - previousTotal);
-    planned.push({ slot, counter, previous, isInitialCounter, selection, previousTotal, delta });
+    planned.push({ slot, counter, previous, isManualBaseline, isInitialCounter, selection, previousTotal, delta });
   }
 
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
@@ -737,7 +738,7 @@ async function applyPlanogramDepletion(
   const applied: Record<string, unknown>[] = [];
 
   for (const item of planned) {
-    const { slot, counter, previous, isInitialCounter, previousTotal, delta, selection } = item;
+    const { slot, counter, previous, isManualBaseline, isInitialCounter, previousTotal, delta, selection } = item;
     const { cashDelta, cashlessDelta, freeVendDelta, unknownPaymentDelta, unpaidDispenseDelta } = paymentAllocations.get(selection) ||
       { cashDelta: 0, cashlessDelta: 0, freeVendDelta: 0, unknownPaymentDelta: delta, unpaidDispenseDelta: 0 };
 
