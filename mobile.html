@@ -7729,6 +7729,15 @@
       return {}
     }
 
+    function getFoodProductFamily(product) {
+      return String(product?.product_family || getFoodProductFamilyPatch(product).product_family || '').trim()
+    }
+
+    function isFoodProductFamilyAlternative(product, targetProduct) {
+      const family = getFoodProductFamily(product)
+      return Boolean(family && family === getFoodProductFamily(targetProduct))
+    }
+
     function normalizeFoodExpiryDate(value) {
       const raw = String(value || '').trim()
       if (!raw) return ''
@@ -9842,6 +9851,12 @@
           .filter((product) => product.active !== false && normalizeText(product.name).startsWith('atm'))
           .forEach((product) => skus.push(product.sku))
       }
+      const configuredFamily = String(slot?.product_family || getFoodProductFamily(primaryProduct) || '').trim()
+      if (configuredFamily) {
+        state.products
+          .filter((product) => product.active !== false && getFoodProductFamily(product) === configuredFamily)
+          .forEach((product) => skus.push(product.sku))
+      }
       return [...new Set(skus.filter(Boolean))]
         .map((sku) => state.products.find((product) => String(product.sku || '') === String(sku)))
         .filter(Boolean)
@@ -10325,10 +10340,18 @@
           ? Math.max(0, Math.min(desired, Number(draft.pickedQuantity ?? 0)))
           : 0)
       const hasWrongFullSwapProduct = Boolean(planogramChange?.fullSwap && changeProductId && rawFillItems.some((item) => (
-        Number(item.quantity || 0) > 0 && String(item.productId) !== String(changeProductId)
+        Number(item.quantity || 0) > 0
+        && String(item.productId) !== String(changeProductId)
+        && !isFoodProductFamilyAlternative(
+          state.products.find((product) => String(product.id) === String(item.productId)),
+          planogramChange.nextProduct
+        )
       )))
       if (planogramChange?.fullSwap && changeProductId && (
-        (!draft.picked && rawFillItems.every((item) => String(item.productId) !== String(changeProductId)))
+        (!draft.picked && rawFillItems.every((item) => {
+          const product = state.products.find((candidate) => String(candidate.id) === String(item.productId))
+          return String(item.productId) !== String(changeProductId) && !isFoodProductFamilyAlternative(product, planogramChange.nextProduct)
+        }))
         || (!draft.accepted && hasWrongFullSwapProduct)
       )) {
         rawFillItems = allocateFoodFillFromVehicleBatches(detail, changeProductId, desired)
@@ -10422,6 +10445,14 @@
       const availability = (product) => product ? getFoodAvailableVehicleQuantity(detail, stopId, slot.id, product.id) : 0
       let product = planogramChange?.fullSwap ? primary : selectedExplicitly ? selected : primary
       let desired = getFoodRouteAllocatedQuantity(detail, stopId, slot, product, localDesired)
+      if (planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) <= 0) {
+        const alternative = options
+          .filter((candidate) => isFoodProductFamilyAlternative(candidate, replacementProduct))
+          .map((candidate) => ({ product: candidate, available: availability(candidate) }))
+          .filter((candidate) => candidate.available > 0)
+          .sort((a,b) => Number(b.available >= desired) - Number(a.available >= desired) || b.available - a.available)[0]
+        if (alternative) product = alternative.product
+      }
       if (!planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) <= 0) {
         const alternative = options
           .filter((candidate) => String(candidate.id) !== String(primary?.id || ''))
@@ -10640,7 +10671,7 @@
         const suggestion = optionalMode ? null : getFoodPickSuggestion(detail, stop.id, slot)
         const planogramChange = suggestion?.change || getFoodPlanogramChange(slot)
         const selectableOptions = planogramChange?.fullSwap
-          ? options.filter((option) => String(option.sku || '') === String(planogramChange.nextSku || ''))
+          ? options.filter((option) => String(option.sku || '') === String(planogramChange.nextSku || '') || isFoodProductFamilyAlternative(option, planogramChange.nextProduct))
           : options
         const product = suggestion?.product || state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
         const selectedProductId = product?.id || draft.fillItems[0]?.productId || draft.selectedProductId
@@ -14333,7 +14364,10 @@
       const planogramChange = deferredFullSwap ? null : requestedPlanogramChange
       const fullSwap = Boolean(planogramChange?.fullSwap)
       if (fullSwap && Number(draft.transferQuantity || 0) > 0) throw new Error(`Pozice ${slot.slot_code}: doporučený přesun nelze kombinovat s kompletní výměnou sortimentu.`)
-      const desiredTargetProduct = requestedPlanogramChange?.nextProduct || plannedProduct
+      const configuredTargetProduct = requestedPlanogramChange?.nextProduct || plannedProduct
+      const desiredTargetProduct = fullSwap && isFoodProductFamilyAlternative(selectedProduct, configuredTargetProduct)
+        ? selectedProduct
+        : configuredTargetProduct
       const existingProduct = draft.assortmentMismatch
         ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
         : plannedProduct
@@ -14423,8 +14457,9 @@
       if (fullSwap && fillItems.some((fill) => {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
         return String(product?.sku || '') !== String(planogramChange.nextSku || '')
+          && !isFoodProductFamilyAlternative(product, planogramChange.nextProduct)
       })) {
-        throw new Error(`Pozice ${slot.slot_code}: kompletní výměna vyžaduje nový produkt ${planogramChange.nextName || planogramChange.nextSku}.`)
+        throw new Error(`Pozice ${slot.slot_code}: kompletní výměna vyžaduje produkt z rodiny ${getFoodProductFamily(planogramChange.nextProduct) || planogramChange.nextName || planogramChange.nextSku}.`)
       }
       const maxAdd = fullSwap
         ? Math.max(0, capacity - retainedReplacementUnits)
@@ -14455,7 +14490,9 @@
           return String(product?.sku || '') !== String(slot.product_sku || '')
         })
       const replacementProduct = replacementFill ? selectedProduct : null
-      const nextPlanogramSku = planogramChange?.productChanged ? planogramChange.nextSku : null
+      const nextPlanogramSku = planogramChange?.productChanged
+        ? (fullSwap && isFoodProductFamilyAlternative(selectedProduct, planogramChange.nextProduct) ? selectedProduct.sku : planogramChange.nextSku)
+        : null
       const replacementPriceChangeRequired = Boolean(replacementFill && planogramChange?.priceChanged)
       const priceOnlyChangeRequired = Boolean(planogramChange?.priceChanged && !planogramChange.productChanged)
       const machinePriceChangeRequired = replacementPriceChangeRequired || priceOnlyChangeRequired
