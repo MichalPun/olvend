@@ -91,15 +91,16 @@ export async function loadStockOutlookReport({ supabase, fetchPaged }) {
   const historyStart = new Date(today);
   historyStart.setDate(historyStart.getDate() - 13);
 
-  const [slotsResult, containersResult, linksResult, statesResult, inventoriedResult, productsResult, routesResult] = await Promise.all([
+  const [slots, containers, linksResult, statesResult, inventoriedResult, productsResult, routesResult] = await Promise.all([
     fetchPaged(() => supabase
       .from('machine_planogram_slots')
       .select('id, machine_id, slot_code, product_name, product_sku, current_units, capacity_units, desired_units, fill_percent, active')
       .eq('active', true)),
-    supabase
+    fetchPaged(() => supabase
       .from('machine_coffee_containers')
       .select('id, machine_id, container_code, product_name, product_sku, current_quantity, capacity_quantity, min_refill_quantity, unit, active')
-      .eq('active', true),
+      .eq('active', true)
+      .order('id', { ascending: true })),
     supabase
       .from('machine_external_links')
       .select('machine_id, provider, telemetry_enabled')
@@ -121,12 +122,10 @@ export async function loadStockOutlookReport({ supabase, fetchPaged }) {
       .neq('execution_status', 'cancelled')
   ]);
 
-  [slotsResult, containersResult, linksResult, statesResult, inventoriedResult, productsResult, routesResult].forEach((result) => {
+  [linksResult, statesResult, inventoriedResult, productsResult, routesResult].forEach((result) => {
     if (result.error) throw result.error;
   });
 
-  const slots = slotsResult.data || [];
-  const containers = containersResult.data || [];
   const states = statesResult.data || [];
   const links = linksResult.data || [];
   const routes = routesResult.data || [];
