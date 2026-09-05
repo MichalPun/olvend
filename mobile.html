@@ -12891,21 +12891,38 @@
           const existingPackages = existing?.actual_add_quantity != null
             ? Math.round(Number(existing.actual_add_quantity || 0) / Math.max(1, getCoffeeRefillPackageQuantity(container)))
             : suggestedPackages
-          const expectedMovedQuantity = getCoffeeVehicleStockQuantity(container, existingPackages)
+          const movementPrefix = `route_visit_${visitId}_container_${container.id}`
+          const hasRecordedStockMovement = stockMovements.some((row) => (
+            String(row.product_id || '') === String(container.product_id || '')
+            && (String(row.reference_id || '') === movementPrefix || String(row.reference_id || '').startsWith(`${movementPrefix}_`))
+          ))
           const movedQuantity = getCoffeeNetMovedQuantity(stockMovements, visitId, container)
-          const stockInSync = Math.abs(movedQuantity - expectedMovedQuantity) <= 0.0001
+          const packageBaseQuantity = getCoffeePackageBaseQuantity(container)
+          const movedPackages = packageBaseQuantity > 0 ? movedQuantity / packageBaseQuantity : 0
           const currentDraft = draftContainers[String(container.id)] || {}
+          const restoredPackages = existing?.actual_add_quantity != null
+            ? existingPackages
+            : currentDraft.packagesManuallyAdjusted && currentDraft.packages != null
+              ? Number(currentDraft.packages || 0)
+              : hasRecordedStockMovement
+                ? Math.max(0, movedPackages)
+                : currentDraft.packages != null
+                  ? Number(currentDraft.packages || 0)
+                  : suggestedPackages
+          const expectedMovedQuantity = getCoffeeVehicleStockQuantity(container, restoredPackages)
+          const stockInSync = Math.abs(movedQuantity - expectedMovedQuantity) <= 0.0001
           draftContainers[String(container.id)] = {
-            packages: currentDraft.packages != null ? currentDraft.packages : existingPackages,
-            picked: currentDraft.picked != null
-              ? currentDraft.picked
-              : suggestedPackages <= 0 || Boolean(existing?.accepted_at) || (expectedMovedQuantity > 0 && movedQuantity + 0.0001 >= expectedMovedQuantity),
+            ...currentDraft,
+            packages: restoredPackages,
+            picked: Boolean(existing?.accepted_at) || hasRecordedStockMovement
+              ? true
+              : currentDraft.picked != null
+                ? currentDraft.picked
+                : suggestedPackages <= 0,
             accepted: existing?.accepted_at
               ? stockInSync
               : (currentDraft.accepted != null ? currentDraft.accepted : (!manualCounterMode && suggestedPackages <= 0)),
-            movedPackages: getCoffeePackageBaseQuantity(container)
-              ? movedQuantity / getCoffeePackageBaseQuantity(container)
-              : 0,
+            movedPackages,
             stockMismatch: Boolean(existing?.accepted_at) && !stockInSync
           }
         }
@@ -13294,7 +13311,9 @@
             container.capacity_quantity = live.capacity_quantity == null ? container.capacity_quantity : Number(live.capacity_quantity)
             container.updated_at = live.updated_at || container.updated_at
             const draft = detail.draft?.containers?.[String(container.id)]
-            if (draft && !draft.picked && !draft.accepted) draft.packages = getCoffeeSuggestedPackages(container)
+            if (draft && !draft.picked && !draft.accepted && !draft.packagesManuallyAdjusted) {
+              draft.packages = getCoffeeSuggestedPackages(container)
+            }
           }
         }
 
@@ -15999,6 +16018,7 @@
         detail.draft.containers[String(container.id)] = {
           ...(detail.draft.containers[String(container.id)] || {}),
           packages: next,
+          packagesManuallyAdjusted: true,
           picked: next <= 0,
           accepted: next <= 0
         }
