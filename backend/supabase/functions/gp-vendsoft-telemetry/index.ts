@@ -626,7 +626,11 @@ async function applyPlanogramDepletion(
     const cashlessCount = numericCounter(counter.count_cashless);
     const explicitTotalCount = numericCounter(counter.count_total);
     const totalCount = explicitTotalCount > 0 ? explicitTotalCount : cashCount + cashlessCount;
-    if (totalCount <= 0) return;
+    // Keep configured zero counters as well. They are the authoritative
+    // baseline for a newly linked machine. Dropping them meant that the first
+    // real vend (0 -> 1) was mistaken for an initial baseline and disappeared
+    // from sales reporting.
+    if (totalCount < 0) return;
     const current = selectionTotals.get(selection);
     if (!current || totalCount > current.totalCount) {
       selectionTotals.set(selection, {
