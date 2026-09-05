@@ -7069,7 +7069,7 @@
     }
 
     async function loadDashboardTelemetryAggregate(range, fetchStart, trendStart, trendEnd) {
-      const { data, error } = await supabase.rpc("get_dashboard_telemetry_summary_v27", {
+      const { data, error } = await supabase.rpc("get_dashboard_telemetry_summary_v50", {
         p_period_start: range.start.toISOString(),
         p_period_end: range.end.toISOString(),
         p_compare_start: range.compareStart.toISOString(),
@@ -7080,7 +7080,7 @@
         p_trend_end: trendEnd.toISOString()
       });
       if (!error && data) return { summary: data, rawRows: [] };
-      if (error && !/get_dashboard_telemetry_summary_v27|schema cache|could not find the function/i.test(String(error.message || ""))) {
+      if (error && !/get_dashboard_telemetry_summary_v50|schema cache|could not find the function/i.test(String(error.message || ""))) {
         throw error;
       }
       const rawRows = await fetchSupabaseRowsPaged(() => supabase
@@ -7298,6 +7298,7 @@
 
       let machineMap = new Map();
       let locationMap = new Map();
+      let transfersByMachine = new Map();
       if (machineIds.length) {
         const { data: machines, error: machinesError } = await supabase
           .from("machines")
@@ -7306,7 +7307,23 @@
         if (machinesError) throw machinesError;
         machineMap = new Map((machines || []).map((machine) => [String(machine.id), machine]));
 
-        const locationIds = [...new Set((machines || []).map((machine) => machine.location_id))]
+        const { data: transfers, error: transfersError } = await supabase
+          .from("machine_transfers")
+          .select("id, machine_id, from_location_id, to_location_id, transferred_at")
+          .in("machine_id", machineIds)
+          .order("transferred_at", { ascending: true });
+        if (transfersError) throw transfersError;
+        (transfers || []).forEach((transfer) => {
+          const key = String(transfer.machine_id);
+          if (!transfersByMachine.has(key)) transfersByMachine.set(key, []);
+          transfersByMachine.get(key).push(transfer);
+        });
+
+        const locationIds = [...new Set([
+          ...(machines || []).map((machine) => machine.location_id),
+          ...(transfers || []).map((transfer) => transfer.from_location_id),
+          ...(transfers || []).map((transfer) => transfer.to_location_id)
+        ])]
           .map(Number)
           .filter(Boolean);
         if (locationIds.length) {
@@ -7363,7 +7380,13 @@
 
       const enrichTelemetryRow = (row) => {
         const machine = machineMap.get(String(row.machine_id));
-        const location = machine?.location_id ? locationMap.get(String(machine.location_id)) : null;
+        const eventTime = new Date(row.source_event_at || row.created_at || 0).getTime();
+        const nextTransfer = Number.isFinite(eventTime)
+          ? (transfersByMachine.get(String(row.machine_id)) || [])
+              .find((transfer) => new Date(transfer.transferred_at).getTime() > eventTime)
+          : null;
+        const historicalLocationId = nextTransfer ? nextTransfer.from_location_id : machine?.location_id;
+        const location = historicalLocationId ? locationMap.get(String(historicalLocationId)) : null;
         const planogramSlot = row.planogram_slot_id ? planogramSlotById.get(String(row.planogram_slot_id)) : null;
         return {
           ...row,
