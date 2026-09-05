@@ -9000,6 +9000,32 @@
       return state.routeCoffeeDetails[String(stopId || '')] || null
     }
 
+    function serializeCoffeePreparation(detail, phase = detail?.machineOpen ? 'machine' : 'picklist') {
+      return {
+        version: 1,
+        phase,
+        containers: { ...(detail?.draft?.containers || {}) },
+        savedAt: new Date().toISOString()
+      }
+    }
+
+    async function saveCoffeePreparation(stopId, phase) {
+      const detail = getCoffeeDetail(stopId)
+      if (!detail?.visitId) return
+      const preparation = serializeCoffeePreparation(detail, phase)
+      persistMobileSnapshot()
+      if (!navigator.onLine) return
+      const { data, error } = await supabase
+        .from('route_machine_visits')
+        .update({ coffee_preparation: preparation, synced_at: new Date().toISOString() })
+        .eq('id', detail.visitId)
+        .select('id, coffee_preparation')
+        .maybeSingle()
+      if (error || !data?.id) throw error || new Error('Kávový picklist se nepodařilo uložit na server.')
+      const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
+      if (currentVisit) currentVisit.coffee_preparation = data.coffee_preparation
+    }
+
     function getFoodDetail(stopId) {
       return state.routeFoodDetails[String(stopId || '')] || null
     }
@@ -9055,11 +9081,9 @@
       const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return 0
       const missing = Math.max(0, capacity - current)
-      // Pod 10 % je evidence už jen orientační zbytek. Operátorce nabídneme
-      // celé pytle potřebné k plnému zásobníku, ne o jeden pytel méně.
-      return current <= capacity * 0.1 + 0.0001
-        ? Math.ceil(missing / packageQuantity)
-        : Math.floor(missing / packageQuantity)
+      // Do zásobníku se nikdy nesmí doporučit více celých balení, než kolik
+      // se do jeho fyzické kapacity skutečně vejde.
+      return Math.floor(missing / packageQuantity)
     }
 
     function getCoffeeActualBeforeQuantity(stopId, container) {
@@ -9098,9 +9122,7 @@
       const packageQuantity = getCoffeeRefillPackageQuantity(container)
       if (!capacity || !packageQuantity) return Number.POSITIVE_INFINITY
       const missing = Math.max(0, capacity - current)
-      return Math.max(0, current <= capacity * 0.1 + 0.0001
-        ? Math.ceil(missing / packageQuantity)
-        : Math.floor(missing / packageQuantity))
+      return Math.max(0, Math.floor(missing / packageQuantity))
     }
 
     function getCoffeeActualPackages(stopId, container) {
@@ -11963,7 +11985,7 @@
 
       const visitsResult = await supabase
         .from('route_machine_visits')
-        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, machine_kind, status, work_phase, food_preparation, arrived_at, completed_at, skipped_at, skip_reason, operator_note, route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, note)')
+        .select('id, route_plan_id, route_plan_stop_id, machine_id, employee_id, vehicle_id, visit_date, machine_kind, status, work_phase, food_preparation, coffee_preparation, arrived_at, completed_at, skipped_at, skip_reason, operator_note, route_machine_cash_reports(id, expected_cash_czk, expected_card_czk, expected_total_czk, operator_bag_label, operator_collected_confirmed, operator_collected_at, note)')
         .in('route_plan_id', routeIds)
         .order('created_at', { ascending: false })
 
@@ -12871,7 +12893,16 @@
         const currentManualCounter = manualCounterResult.data || null
         const previousManualCounter = (manualCountersResult.data || [])
           .find((item) => String(item.id || '') !== String(currentManualCounter?.id || '') && String(item.visit_id || '') !== String(visitId)) || null
-        const draftContainers = { ...(state.routeCoffeeDetails[key]?.draft?.containers || {}) }
+        const savedCoffeePreparation = visit?.coffee_preparation && typeof visit.coffee_preparation === 'object'
+          ? visit.coffee_preparation
+          : {}
+        const savedDraftContainers = savedCoffeePreparation.containers && typeof savedCoffeePreparation.containers === 'object'
+          ? savedCoffeePreparation.containers
+          : {}
+        const localDraftContainers = state.routeCoffeeDetails[key]?.draft?.containers || {}
+        const draftContainers = navigator.onLine
+          ? { ...localDraftContainers, ...savedDraftContainers }
+          : { ...savedDraftContainers, ...localDraftContainers }
         const draftCalibration = { ...(state.routeCoffeeDetails[key]?.draft?.calibration || {}) }
         const calibratedContainers = {}
         const stockMovements = stockMovementsResult.data || []
@@ -13413,14 +13444,15 @@
         throw new Error('Offline není v telefonu uložený žádný stav tohoto automatu. Připoj se a otevři ho poprvé online.')
       }
       const firstPreparation = machineKind === 'food' ? serializeFoodPreparation(stopId, detail) : null
+      const firstCoffeePreparation = machineKind === 'coffee' ? serializeCoffeePreparation(detail, 'machine') : null
       const firstUpdate = machineKind === 'food'
         ? { work_phase: 'machine', food_preparation: firstPreparation, synced_at: new Date().toISOString() }
-        : { work_phase: 'machine', synced_at: new Date().toISOString() }
+        : { work_phase: 'machine', coffee_preparation: firstCoffeePreparation, synced_at: new Date().toISOString() }
       const { data: savedVisit, error: saveError } = await supabase
         .from('route_machine_visits')
         .update(firstUpdate)
         .eq('id', detail.visitId)
-        .select('id, work_phase, food_preparation')
+        .select('id, work_phase, food_preparation, coffee_preparation')
         .maybeSingle()
       if (!openedFromCache && (saveError || !savedVisit?.id || savedVisit.work_phase !== 'machine')) {
         const reason = saveError?.message ? ` (${saveError.message})` : ''
@@ -13439,9 +13471,10 @@
       if (snapshotChanged) {
         applyLiveRows(verifiedRows)
         const verifiedPreparation = machineKind === 'food' ? serializeFoodPreparation(stopId, detail) : null
+        const verifiedCoffeePreparation = machineKind === 'coffee' ? serializeCoffeePreparation(detail, 'machine') : null
         const verifiedUpdate = machineKind === 'food'
           ? { food_preparation: verifiedPreparation, synced_at: new Date().toISOString() }
-          : { synced_at: new Date().toISOString() }
+          : { coffee_preparation: verifiedCoffeePreparation, synced_at: new Date().toISOString() }
         const { error: verifySaveError } = await supabase
           .from('route_machine_visits')
           .update(verifiedUpdate)
@@ -13462,6 +13495,7 @@
       if (currentVisit) {
         currentVisit.work_phase = 'machine'
         if (machineKind === 'food') currentVisit.food_preparation = serializeFoodPreparation(stopId, detail)
+        if (machineKind === 'coffee') currentVisit.coffee_preparation = serializeCoffeePreparation(detail, 'machine')
       }
       persistMobileSnapshot()
       return { work_phase: 'machine', live_rows: verifiedRows, snapshot_changed: snapshotChanged }
@@ -15796,6 +15830,7 @@
             movedPackages: packages
           }
         }
+        await saveCoffeePreparation(stopId, 'picklist')
         persistMobileSnapshot()
         await openRouteMachineWithLiveState(stopId, detail, 'coffee')
         renderRouteMachineScreen()
@@ -16022,6 +16057,7 @@
           picked: next <= 0,
           accepted: next <= 0
         }
+        await saveCoffeePreparation(stopId)
         renderRouteMachineScreen()
         return
       }
@@ -16036,6 +16072,7 @@
           movedPackages: 0,
           stockMismatch: false
         }
+        await saveCoffeePreparation(stopId)
         if (detail.machineOpen) {
           await saveCoffeeContainerVisitItem(stopId, container, {
             actual_before_quantity: Number(container.current_quantity || 0),
@@ -16057,6 +16094,7 @@
           picked: true,
           movedPackages: packages
         }
+        await saveCoffeePreparation(stopId, 'picklist')
         persistMobileSnapshot()
         showMessage(packages > 0 ? 'Surovina je vzatá k automatu a odečtená z auta.' : 'Položka je automaticky vyřízená bez doplnění.', 'success', { scroll: false })
         renderRouteMachineScreen()
@@ -16086,9 +16124,10 @@
         detail.machineOpen = false
         persistMobileSnapshot()
         renderRouteMachineScreen()
+        const preparation = serializeCoffeePreparation(detail, 'picklist')
         const { data: savedPhase, error: phaseError } = await supabase
           .from('route_machine_visits')
-          .update({ work_phase: 'picklist', synced_at: new Date().toISOString() })
+          .update({ work_phase: 'picklist', coffee_preparation: preparation, synced_at: new Date().toISOString() })
           .eq('id', detail.visitId)
           .select('id, work_phase')
           .maybeSingle()
