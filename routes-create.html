@@ -1950,6 +1950,8 @@
     .route-planner-shell[data-wizard-step="2"] .modern-route-scroll { max-height:calc(100vh - 315px); }
     .route-card-title-line { display:flex;align-items:center;gap:7px;min-width:0; }
     .route-card-title-line > strong { min-width:0;overflow-wrap:anywhere; }
+    .route-service-duration { display:inline-flex;align-items:center;justify-content:flex-end;gap:4px;color:var(--muted);font-size:10px;white-space:nowrap; }
+    .route-service-minutes { width:52px!important;min-height:28px!important;padding:4px 5px!important;text-align:center;font-size:12px!important;font-weight:850; }
 
     .route-planner-shell[data-wizard-step="3"] .territory-strip,
     .route-planner-shell[data-wizard-step="3"] .other-territory-panel,
@@ -3134,7 +3136,7 @@
       const validStops = plan.orderedStops.filter((stop) => stop?.latitude != null && stop?.longitude != null)
       if (!validStops.length) return null
 
-      const points = validStops.map((stop) => `${stop.latitude},${stop.longitude}`)
+      const points = [...new Set(validStops.map((stop) => `${stop.latitude},${stop.longitude}`))]
       const origin = `${plan.startPoint.latitude},${plan.startPoint.longitude}`
       const destination = plan.returnToStart
         ? origin
@@ -3796,8 +3798,8 @@
           ? state.employees.find((employee) => String(employee.id) === String(assignment.primary_employee_id || ''))
           : null
         const ownerNote = owner ? ` · rajón ${getEmployeeDisplayName(owner)}` : ''
-        const machineIdLabel = candidate.machineId != null
-          ? `<span class="candidate-machine-id">EV ${escapeHtml(String(candidate.machineId))}</span>`
+        const machineIdLabel = candidate.evidenceNumber != null && candidate.evidenceNumber !== ''
+          ? `<span class="candidate-machine-id">EV ${escapeHtml(String(candidate.evidenceNumber))}</span>`
           : ''
         const locationLabel = candidate.parentLocationName
           ? `${escapeHtml(candidate.parentLocationName)}${candidate.city ? ` · ${escapeHtml(candidate.city)}` : ''}`
@@ -3817,7 +3819,7 @@
                 <a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(candidate))}" target="_blank" rel="noopener noreferrer">Mapa ↗</a>
               </div>
             </div>
-            <button class="candidate-add" type="button" data-select-key="${escapeHtml(candidate.key)}" title="${checked ? 'Odebrat z trasy' : 'Přidat do trasy'}" aria-label="${checked ? 'Odebrat' : 'Přidat'} ${candidate.machineId != null ? `EV ${escapeHtml(String(candidate.machineId))} ` : ''}${escapeHtml(candidate.name)}">${checked ? '✓' : '+'}</button>
+            <button class="candidate-add" type="button" data-select-key="${escapeHtml(candidate.key)}" title="${checked ? 'Odebrat z trasy' : 'Přidat do trasy'}" aria-label="${checked ? 'Odebrat' : 'Přidat'} ${candidate.evidenceNumber != null && candidate.evidenceNumber !== '' ? `EV ${escapeHtml(String(candidate.evidenceNumber))} ` : ''}${escapeHtml(candidate.name)}">${checked ? '✓' : '+'}</button>
             ${stockDetailOpen ? `<div class="candidate-detail-slot">${renderCandidateStockDetail(candidate)}</div>` : ''}
           </article>
         `
@@ -3890,7 +3892,7 @@
 
       const scheduledPlan = applyRouteSchedule(plan)
       const rows = scheduledPlan.orderedStops.map((stop, index) => {
-        const routeMachineId = stop.machineId ?? stop.machine_id ?? null
+        const routeNumber = stop.evidenceNumber ?? stop.evidence_number ?? null
         const distanceText = `${formatNumber(stop.distanceFromPreviousKm, 1)} km · ${formatDuration(stop.driveMinutesFromPrevious)}`
         const arrival = stop.estimatedArrivalAt ? new Date(stop.estimatedArrivalAt) : null
         const openingBadge = stop.openingStatus === 'closed'
@@ -3911,13 +3913,19 @@
             <span class="route-card-index" title="Přetáhnout zastávku">${formatNumber(index + 1)}</span>
             <div class="route-card-main">
               <span class="route-card-title-line">
-                ${routeMachineId != null ? `<span class="candidate-machine-id">EV ${escapeHtml(String(routeMachineId))}</span>` : ''}
+                ${routeNumber != null && routeNumber !== '' ? `<span class="candidate-machine-id">EV ${escapeHtml(String(routeNumber))}</span>` : ''}
                 <strong>${escapeHtml(stop.name)}</strong>
               </span>
               <span>${stop.parentLocationName ? `${escapeHtml(stop.parentLocationName)} · ` : ''}${escapeHtml(stop.city || 'Bez města')} · ${escapeHtml(distanceText)}</span>
               <span>${escapeHtml(stop.serviceWindow || 'otevírací dobu ověřit')} ${openingBadge} ${expiryText}</span>
             </div>
-            <div class="route-card-time"><strong>${escapeHtml(formatTimeOfDay(arrival))}</strong><span>${formatNumber(stop.estimatedServiceMinutes)} min</span></div>
+            <div class="route-card-time">
+              <strong>${escapeHtml(formatTimeOfDay(arrival))}</strong>
+              <label class="route-service-duration">
+                <input class="route-service-minutes" type="number" min="1" max="120" step="1" inputmode="numeric" value="${escapeHtml(String(Math.max(1, Math.round(Number(stop.estimatedServiceMinutes) || 20))))}" data-route-service-index="${index}" aria-label="Délka zastávky ${index + 1} v minutách" />
+                <span>min</span>
+              </label>
+            </div>
             <div class="route-card-controls">
               <a class="sheet-link" href="${escapeHtml(buildMapSearchUrl(stop))}" target="_blank" rel="noopener noreferrer">Mapa</a>
               <button class="route-move-btn" type="button" data-route-move="${index}" data-route-direction="-1" aria-label="Posunout zastávku ${index + 1} nahoru" title="Posunout nahoru" ${index === 0 ? 'disabled' : ''}>↑</button>
@@ -3928,6 +3936,35 @@
       }).join('')
 
       routeList.innerHTML = rows
+
+      routeList.querySelectorAll('input[data-route-service-index]').forEach((input) => {
+        const commitServiceMinutes = (event) => {
+          const index = Number(event.target.dataset.routeServiceIndex)
+          const stops = [...(state.currentPlan?.orderedStops || [])]
+          if (!Number.isInteger(index) || !stops[index]) return
+          const minutes = Math.min(120, Math.max(1, Math.round(Number(event.target.value) || 20)))
+          const machineId = stops[index].machineId ?? stops[index].machine_id ?? null
+          if (machineId != null) state.machineServiceMinuteOverrides.set(String(machineId), minutes)
+          stops[index] = { ...stops[index], estimatedServiceMinutes: minutes }
+          state.currentPlan = {
+            ...state.currentPlan,
+            orderedStops: stops,
+            estimatedServiceMinutes: stops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0),
+            manuallyAdjustedServiceTime: true,
+          }
+          renderRouteSummary(state.currentPlan)
+          renderRouteList(state.currentPlan)
+          renderSummary()
+          setStatus(`Délku zastávky jsem upravil na ${minutes} min a přepočítal časový plán.`, 'success')
+        }
+        input.addEventListener('change', commitServiceMinutes)
+        input.addEventListener('blur', commitServiceMinutes)
+        input.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          commitServiceMinutes(event)
+        })
+      })
 
       routeList.querySelectorAll('[data-route-move]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -4588,6 +4625,7 @@
             id: machine.id,
             locationId: location.id,
             machineId: machine.id,
+            evidenceNumber: machine.evidence_number ?? null,
             stopKind: relatedRequests.length ? 'service_request' : 'manual',
             name: machine.name || `${location.name} · stroj`,
             machineLabel: machine.name || '',
@@ -5067,20 +5105,22 @@
         }
         const data = await invokeGoogleRoutePlanner(payload, accessToken)
         if (revision !== state.manualRouteRecalcRevision || !state.currentPlan) return
+        const googleTiming = getGoogleDriveTiming(data?.route)
 
         const exactStops = plan.orderedStops.map((stop, index) => {
           const googleStop = data?.orderedStops?.[index] || {}
           return {
             ...stop,
             distanceFromPreviousKm: Number(googleStop.googleLegDistanceMeters || 0) / 1000,
-            driveMinutesFromPrevious: Math.round(Number(googleStop.googleLegDurationSeconds || 0) / 60),
+            driveMinutesFromPrevious: Math.round((Number(googleStop.googleLegDurationSeconds || 0) / 60) * googleTiming.legScale),
           }
         })
         state.currentPlan = {
           ...state.currentPlan,
           orderedStops: exactStops,
           estimatedDistanceKm: Number(data?.route?.distanceMeters || 0) / 1000,
-          estimatedDriveMinutes: Math.round(Number(data?.route?.durationSeconds || 0) / 60),
+          estimatedDriveMinutes: googleTiming.preferredMinutes,
+          trafficEstimatedDriveMinutes: googleTiming.trafficMinutes,
           provider: 'google_routes_manual',
           google: data,
           manuallyReordered: true,
@@ -5090,7 +5130,7 @@
         renderRouteSummary(state.currentPlan)
         renderRouteList(state.currentPlan)
         renderMap(state.currentPlan)
-        setStatus('Pořadí je uložené v návrhu a čas na cestě je přepočítaný přes Google.', 'success')
+        setStatus('Pořadí je uložené a standardní čas jízdy je přepočítaný přes Google.', 'success')
       } catch (error) {
         console.warn('Manual route time recalculation failed:', error)
         if (revision !== state.manualRouteRecalcRevision) return
@@ -5203,6 +5243,17 @@
       return data
     }
 
+    function getGoogleDriveTiming(route = {}) {
+      const trafficSeconds = Math.max(0, Number(route?.durationSeconds || 0))
+      const standardSeconds = Math.max(0, Number(route?.staticDurationSeconds || 0))
+      const preferredSeconds = standardSeconds || trafficSeconds
+      return {
+        preferredMinutes: Math.round(preferredSeconds / 60),
+        trafficMinutes: Math.round(trafficSeconds / 60),
+        legScale: trafficSeconds > 0 && preferredSeconds > 0 ? preferredSeconds / trafficSeconds : 1,
+      }
+    }
+
     async function optimizeStopsWithGoogle() {
       if (!state.googleRoutesAvailable) {
         throw new Error('Google Routes edge function zatím není dostupná.')
@@ -5253,6 +5304,8 @@
         throw new Error(`Google edge function není dostupná: ${error.message || error}`)
       }
 
+      const googleTiming = getGoogleDriveTiming(data?.route)
+
       const orderedStops = (data?.orderedStops || []).map((stop, orderedIndex) => {
         const originalIndex = stop && typeof stop === 'object' && stop.originalIndex != null ? Number(stop.originalIndex) : orderedIndex
         const fallbackCandidate = selectedStops[Number.isFinite(originalIndex) ? originalIndex : orderedIndex] || selectedStops[orderedIndex] || null
@@ -5261,7 +5314,7 @@
         return {
           ...enrichedStop,
           distanceFromPreviousKm: Number(sourceStop.googleLegDistanceMeters || 0) / 1000,
-          driveMinutesFromPrevious: Math.round(Number(sourceStop.googleLegDurationSeconds || 0) / 60),
+          driveMinutesFromPrevious: Math.round((Number(sourceStop.googleLegDurationSeconds || 0) / 60) * googleTiming.legScale),
           estimatedServiceMinutes: estimateServiceMinutes(enrichedStop),
         }
       })
@@ -5271,7 +5324,8 @@
         startPoint,
         returnToStart: true,
         estimatedDistanceKm: Number(data?.route?.distanceMeters || 0) / 1000,
-        estimatedDriveMinutes: Math.round(Number(data?.route?.durationSeconds || 0) / 60),
+        estimatedDriveMinutes: googleTiming.preferredMinutes,
+        trafficEstimatedDriveMinutes: googleTiming.trafficMinutes,
         estimatedServiceMinutes: orderedStops.reduce((sum, stop) => sum + stop.estimatedServiceMinutes, 0),
         provider: 'google_routes',
         createdAt: new Date().toISOString(),
@@ -5885,7 +5939,7 @@
     async function loadMachines() {
       const { data, error } = await supabase
         .from('machines')
-        .select('id, location_id, name, machine_type, status, note, serial_number, active')
+        .select('id, location_id, name, machine_type, evidence_number, status, note, serial_number, active')
         .eq('active', true)
         .order('name', { ascending: true })
 
@@ -6507,8 +6561,8 @@
           engineBadge.className = 'route-badge live'
           const timing = getRouteTiming(plan)
           setStatus(timing.remainingMinutes < 0
-            ? `Pořadí je spočítané přes Google. Trasa překračuje limit směny o ${formatDuration(Math.abs(timing.remainingMinutes))}; uprav výběr nebo limit podle výsledného plánu.`
-            : 'Pořadí je spočítané přes Google.', timing.remainingMinutes < 0 ? 'warning' : 'success')
+            ? `Pořadí i standardní čas jízdy jsou spočítané přes Google. Trasa překračuje limit směny o ${formatDuration(Math.abs(timing.remainingMinutes))}; uprav výběr nebo limit podle výsledného plánu.`
+            : 'Pořadí je spočítané přes Google; čas jízdy je uveden bez proměnlivé dopravní prognózy.', timing.remainingMinutes < 0 ? 'warning' : 'success')
         } catch (googleError) {
           console.warn('Google Routes fallback:', googleError)
           const message = String(googleError?.message || googleError || '')
