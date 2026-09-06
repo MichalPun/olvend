@@ -1931,13 +1931,18 @@
     .route-planner-shell[data-wizard-step="1"] .candidate-list .modern-candidate-card.selected { border-left-color:var(--accent); }
     .route-planner-shell[data-wizard-step="1"] .route-sheet-grid { display:none; }
 
-    .route-planner-shell[data-wizard-step="2"] .setup-column,
+    .route-planner-shell[data-wizard-step="2"] .setup-column > .panel > .panel-header,
+    .route-planner-shell[data-wizard-step="2"] .setup-column .planner-setup-strip,
+    .route-planner-shell[data-wizard-step="2"] .setup-column .territory-strip,
+    .route-planner-shell[data-wizard-step="2"] .setup-column .other-territory-panel,
+    .route-planner-shell[data-wizard-step="2"] .setup-column .plan-metrics,
     .route-planner-shell[data-wizard-step="2"] .selection-summary,
     .route-planner-shell[data-wizard-step="2"] .sheet-toolbar,
     .route-planner-shell[data-wizard-step="2"] .planning-mode-switch,
     .route-planner-shell[data-wizard-step="2"] .quick-filter-row,
     .route-planner-shell[data-wizard-step="2"] .sheet-table-wrap.tall { display:none; }
     .route-planner-shell[data-wizard-step="2"] .modern-planning-sheet { border-top:0; }
+    .route-planner-shell[data-wizard-step="2"] .setup-column .route-time-check { display:block;margin:12px 14px 0; }
     .route-planner-shell[data-wizard-step="2"] .modern-planning-sheet > .panel-body.sheet-panel {
       grid-template-columns:minmax(480px,1.35fr) minmax(340px,.85fr);
       grid-template-rows:minmax(560px,auto) auto;
@@ -1950,6 +1955,7 @@
     .route-planner-shell[data-wizard-step="2"] .modern-route-scroll { max-height:calc(100vh - 315px); }
     .route-card-title-line { display:flex;align-items:center;gap:7px;min-width:0; }
     .route-card-title-line > strong { min-width:0;overflow-wrap:anywhere; }
+    .route-service-note { display:block!important;margin-top:3px;color:#b54708!important;font-size:10px!important;font-weight:750;line-height:1.35; }
     .route-service-duration { display:inline-flex;align-items:center;justify-content:flex-end;gap:4px;color:var(--muted);font-size:10px;white-space:nowrap; }
     .route-service-minutes { width:52px!important;min-height:28px!important;padding:4px 5px!important;text-align:center;font-size:12px!important;font-weight:850; }
 
@@ -3182,6 +3188,10 @@
     }
 
     function estimateServiceMinutes(stop) {
+      if (stop.machineId) {
+        const override = state.machineServiceMinuteOverrides.get(String(stop.machineId))
+        if (Number(override) > 0) return Number(override)
+      }
       if (Number(stop.estimatedServiceMinutes) > 0) return Number(stop.estimatedServiceMinutes)
       if (stop.machineId) {
         const machine = state.machines.find((item) => String(item.id) === String(stop.machineId))
@@ -3893,6 +3903,7 @@
       const scheduledPlan = applyRouteSchedule(plan)
       const rows = scheduledPlan.orderedStops.map((stop, index) => {
         const routeNumber = stop.evidenceNumber ?? stop.evidence_number ?? null
+        const serviceDescription = String(stop.serviceDescription || '').trim()
         const distanceText = `${formatNumber(stop.distanceFromPreviousKm, 1)} km · ${formatDuration(stop.driveMinutesFromPrevious)}`
         const arrival = stop.estimatedArrivalAt ? new Date(stop.estimatedArrivalAt) : null
         const openingBadge = stop.openingStatus === 'closed'
@@ -3916,6 +3927,7 @@
                 ${routeNumber != null && routeNumber !== '' ? `<span class="candidate-machine-id">EV ${escapeHtml(String(routeNumber))}</span>` : ''}
                 <strong>${escapeHtml(stop.name)}</strong>
               </span>
+              ${serviceDescription && normalizeText(serviceDescription) !== normalizeText(stop.name) ? `<span class="route-service-note">Servis: ${escapeHtml(serviceDescription)}</span>` : ''}
               <span>${stop.parentLocationName ? `${escapeHtml(stop.parentLocationName)} · ` : ''}${escapeHtml(stop.city || 'Bez města')} · ${escapeHtml(distanceText)}</span>
               <span>${escapeHtml(stop.serviceWindow || 'otevírací dobu ověřit')} ${openingBadge} ${expiryText}</span>
             </div>
@@ -4209,19 +4221,32 @@
         const requests = machineId
           ? state.requests.filter((request) => String(request.machine_id || '') === String(machineId) && !['done', 'cancelled'].includes(request.status))
           : state.requests.filter((request) => String(request.location_id || '') === String(locationId || '') && !['done', 'cancelled'].includes(request.status))
+        const linkedRequest = stop.service_request_id
+          ? state.requests.find((request) => String(request.id) === String(stop.service_request_id))
+          : requests.find((request) => normalizeText(request.title) === normalizeText(stop.title))
+        const savedServiceDescription = linkedRequest?.title || (
+          stop.stop_kind === 'service_request' || stop.stopKind === 'service_request'
+            ? stop.title || requests[0]?.title || ''
+            : stop.serviceDescription || ''
+        )
+        const displayName = machine?.name || location?.name || stop.name || stop.title || `Zastávka ${index + 1}`
 
         return {
           ...stop,
           locationId,
           machineId,
-          name: stop.name || stop.title || machine?.name || location?.name || `Zastávka ${index + 1}`,
-          title: stop.title || stop.name || machine?.name || location?.name || `Zastávka ${index + 1}`,
+          evidenceNumber: stop.evidenceNumber ?? stop.evidence_number ?? machine?.evidence_number ?? null,
+          name: displayName,
+          title: displayName,
+          serviceDescription: savedServiceDescription,
           address: stop.address || stop.address_snapshot || location?.address || '',
           city: stop.city || stop.city_snapshot || location?.city || '',
           latitude: stop.latitude != null ? Number(stop.latitude) : (location?.latitude != null ? Number(location.latitude) : null),
           longitude: stop.longitude != null ? Number(stop.longitude) : (location?.longitude != null ? Number(location.longitude) : null),
           estimatedServiceMinutes: Number(stop.estimatedServiceMinutes ?? stop.estimated_service_minutes ?? 0),
-          distanceFromPreviousKm: Number(stop.distanceFromPreviousKm ?? 0),
+          distanceFromPreviousKm: Number(stop.distanceFromPreviousKm ?? stop.distance_from_previous_km ?? 0),
+          driveMinutesFromPrevious: Number(stop.driveMinutesFromPrevious ?? stop.drive_minutes_from_previous ?? 0),
+          routeLegMissing: stop.distanceFromPreviousKm == null && stop.distance_from_previous_km == null,
           parentLocationName: stop.parentLocationName || (machine ? location?.name || '' : ''),
           machineLabel: stop.machineLabel || (machine ? machine.name || getMachineLabel(machine.id) : ''),
           machineType: stop.machineType || machine?.machine_type || '',
@@ -4264,13 +4289,16 @@
         provider: payload.provider || plan.provider || 'heuristic',
         manuallyReordered: Boolean(payload.manually_reordered || payload.manuallyReordered),
         estimatedDistanceKm: Number(plan.estimated_distance_km ?? payload.estimatedDistanceKm ?? 0),
-        estimatedDriveMinutes: Number(plan.estimated_drive_minutes ?? payload.estimatedDriveMinutes ?? 0),
+        estimatedDriveMinutes: getGoogleDriveTiming(payload.google?.route).preferredMinutes || Number(plan.estimated_drive_minutes ?? payload.estimatedDriveMinutes ?? 0),
+        trafficEstimatedDriveMinutes: getGoogleDriveTiming(payload.google?.route).trafficMinutes || Number(payload.trafficEstimatedDriveMinutes || 0),
         estimatedServiceMinutes: Number(payload.estimatedServiceMinutes ?? orderedStops.reduce((sum, stop) => sum + Number(stop.estimatedServiceMinutes || 0), 0)),
         telemetryRevenue: payload.telemetryRevenue || plan.telemetryRevenue || null,
       }
-      const hasMissingLegs = orderedStops.some((stop) => !(Number(stop.distanceFromPreviousKm) > 0))
+      const hasMissingLegs = orderedStops.some((stop) => stop.routeLegMissing)
       return hasMissingLegs && builtPlan.startPoint
-        ? recalculatePlanLegs(builtPlan, orderedStops)
+        ? Number(builtPlan.estimatedDriveMinutes) > 0 && Number(builtPlan.estimatedDistanceKm) > 0
+          ? applyRouteSchedule(restoreSavedPlanLegs(builtPlan, orderedStops))
+          : recalculatePlanLegs(builtPlan, orderedStops)
         : applyRouteSchedule(builtPlan)
     }
 
@@ -4984,6 +5012,31 @@
       })
     }
 
+    function restoreSavedPlanLegs(plan, orderedStops) {
+      const startPoint = plan?.startPoint
+      let current = startPoint
+      const legs = orderedStops.map((stop) => {
+        const airKm = current ? haversineKm(current, stop) : 0
+        current = stop
+        return Number.isFinite(airKm) ? airKm : 0
+      })
+      const returnAirKm = plan?.returnToStart && startPoint && current
+        ? Math.max(0, Number(haversineKm(current, startPoint)) || 0)
+        : 0
+      const totalAirKm = legs.reduce((sum, value) => sum + value, 0) + returnAirKm
+      if (!(totalAirKm > 0)) return plan
+
+      return {
+        ...plan,
+        orderedStops: orderedStops.map((stop, index) => ({
+          ...stop,
+          routeLegMissing: false,
+          distanceFromPreviousKm: legs[index] / totalAirKm * Number(plan.estimatedDistanceKm || 0),
+          driveMinutesFromPrevious: Math.round(legs[index] / totalAirKm * Number(plan.estimatedDriveMinutes || 0)),
+        })),
+      }
+    }
+
     function recalculatePlanLegs(plan, orderedStops) {
       const startPoint = plan?.startPoint
       let current = startPoint
@@ -5536,9 +5589,9 @@
         machine_id: target.machineId || null,
         stop_order: stopOrder,
         stop_kind: stopKind,
-        title: targetRequest?.title || (multipleMachines && target.name
+        title: multipleMachines && target.name
           ? `${stop.name} · ${target.name}`
-          : stop.name),
+          : target.name || stop.name,
         address_snapshot: stop.address,
         city_snapshot: stop.city,
         latitude: stop.latitude,
@@ -5803,7 +5856,7 @@
 
         const primary = await supabase
           .from('route_plans')
-          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, start_latitude, start_longitude, end_latitude, end_longitude, return_to_start, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, warehouse_id, start_latitude, start_longitude, end_latitude, end_longitude, return_to_start, optimization_provider, provider_status, execution_status, assigned_at, started_at, completed_at, stop_count, estimated_distance_km, estimated_drive_minutes, route_payload, created_at, route_plan_stops(id, location_id, machine_id, service_request_id, stop_kind, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
           .order('planning_date', { ascending: false })
           .order('created_at', { ascending: false })
           .limit(12)
