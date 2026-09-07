@@ -381,6 +381,67 @@
     :root[data-olvend-theme="light"] .route-row-menu button:hover,
     :root[data-olvend-theme="light"] .route-row-menu a:hover { background:#f2f4f7; }
 
+    .crew-modal-backdrop {
+      position:fixed;
+      inset:0;
+      z-index:1400;
+      display:grid;
+      place-items:center;
+      padding:20px;
+      background:rgba(3,5,9,0.72);
+      backdrop-filter:blur(5px);
+    }
+
+    .crew-modal-backdrop[hidden] { display:none; }
+    .crew-modal {
+      width:min(100%, 560px);
+      overflow:hidden;
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:var(--panel);
+      box-shadow:0 28px 80px rgba(0,0,0,0.5);
+    }
+
+    .crew-modal-header,
+    .crew-modal-footer {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:16px 18px;
+    }
+
+    .crew-modal-header { border-bottom:1px solid var(--border); }
+    .crew-modal-header h2 { margin:0; font-size:19px; }
+    .crew-modal-close {
+      width:34px;
+      height:34px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:var(--panel-soft);
+      color:var(--text);
+      cursor:pointer;
+      font-size:21px;
+      line-height:1;
+    }
+
+    .crew-modal-body { display:grid; gap:14px; padding:18px; }
+    .crew-route-summary {
+      padding:12px 14px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:var(--panel-soft);
+    }
+
+    .crew-route-summary strong { display:block; font-size:14px; }
+    .crew-route-summary span { display:block; margin-top:4px; color:var(--muted); font-size:12px; }
+    .crew-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .crew-field { display:grid; gap:6px; }
+    .crew-field label { color:var(--muted); font-size:12px; font-weight:800; }
+    .crew-modal-status { min-height:18px; margin:0; color:var(--muted); font-size:12px; }
+    .crew-modal-status.error { color:var(--danger); }
+    .crew-modal-footer { justify-content:flex-end; border-top:1px solid var(--border); }
+
     .mini-grid {
       display:grid;
       grid-template-columns:repeat(3,minmax(0,1fr));
@@ -429,6 +490,7 @@
       .mini-grid { grid-template-columns:1fr; }
       .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .summary-box:nth-child(2n) { border-right:0; }
+      .crew-fields { grid-template-columns:1fr; }
       table { min-width:980px; }
     }
   </style>
@@ -581,6 +643,36 @@
     </main>
   </div>
 
+  <div class="crew-modal-backdrop" id="crewModalBackdrop" hidden>
+    <section class="crew-modal" role="dialog" aria-modal="true" aria-labelledby="crewModalTitle">
+      <header class="crew-modal-header">
+        <h2 id="crewModalTitle">Změnit operátora a vozidlo</h2>
+        <button class="crew-modal-close" id="crewModalCloseBtn" type="button" aria-label="Zavřít">×</button>
+      </header>
+      <div class="crew-modal-body">
+        <div class="crew-route-summary">
+          <strong id="crewRouteName">Trasa</strong>
+          <span id="crewRouteMeta">Zastávky, pořadí a časy zůstanou beze změny.</span>
+        </div>
+        <div class="crew-fields">
+          <div class="crew-field">
+            <label for="crewEmployeeSelect">Operátor</label>
+            <select id="crewEmployeeSelect"></select>
+          </div>
+          <div class="crew-field">
+            <label for="crewVehicleSelect">Vozidlo</label>
+            <select id="crewVehicleSelect"></select>
+          </div>
+        </div>
+        <p class="crew-modal-status" id="crewModalStatus">Změní se pouze přiřazení této trasy.</p>
+      </div>
+      <footer class="crew-modal-footer">
+        <button class="btn secondary" id="crewCancelBtn" type="button">Zrušit</button>
+        <button class="btn" id="crewSaveBtn" type="button">Uložit přiřazení</button>
+      </footer>
+    </section>
+  </div>
+
   <script src="./sidebar.js?v=20260712routesmenu"></script>
   <script type="module">
     import { supabase } from './supabase.js'
@@ -598,7 +690,17 @@
     const showAllRoutesMiniBtn = document.getElementById('showAllRoutesMiniBtn')
     const recentRoutesBox = document.getElementById('recentRoutesBox')
     const routeRowMenu = document.getElementById('routeRowMenu')
+    const crewModalBackdrop = document.getElementById('crewModalBackdrop')
+    const crewModalCloseBtn = document.getElementById('crewModalCloseBtn')
+    const crewCancelBtn = document.getElementById('crewCancelBtn')
+    const crewSaveBtn = document.getElementById('crewSaveBtn')
+    const crewEmployeeSelect = document.getElementById('crewEmployeeSelect')
+    const crewVehicleSelect = document.getElementById('crewVehicleSelect')
+    const crewRouteName = document.getElementById('crewRouteName')
+    const crewRouteMeta = document.getElementById('crewRouteMeta')
+    const crewModalStatus = document.getElementById('crewModalStatus')
     let activeRouteMenuButton = null
+    let crewEditingPlan = null
 
     const state = {
       plans: [],
@@ -789,6 +891,7 @@
       const planKey = String(plan.id || '')
 
       routeRowMenu.innerHTML = `
+        ${canEdit ? `<button role="menuitem" type="button" data-reassign-route="${escapeHtml(planKey)}">Změnit operátora a vozidlo</button>` : ''}
         ${canEdit ? `<a role="menuitem" href="routes-create.html?edit=${encodeURIComponent(planKey)}">Upravit trasu</a>` : ''}
         ${canDelete ? `<button role="menuitem" class="danger-action" type="button" data-delete-route="${escapeHtml(planKey)}">Smazat trasu</button>` : ''}
         ${canCancel ? `<button role="menuitem" class="danger-action" type="button" data-cancel-route="${escapeHtml(planKey)}">Zrušit trasu</button>` : ''}
@@ -810,6 +913,100 @@
       const top = Math.min(window.innerHeight - menuHeight - 10, rect.bottom + 6)
       routeRowMenu.style.left = `${left}px`
       routeRowMenu.style.top = `${top}px`
+    }
+
+    function openCrewModal(plan) {
+      if (!plan) return
+      const effectiveStatus = getEffectiveExecutionStatus(plan)
+      if (!['draft', 'assigned'].includes(effectiveStatus) || plan.started_at || plan.completed_at) {
+        window.alert('Operátora a vozidlo lze změnit jen u trasy, která ještě nezačala.')
+        return
+      }
+
+      crewEditingPlan = plan
+      crewEmployeeSelect.innerHTML = '<option value="">Vyber operátora</option>' + state.employees
+        .map((employee) => {
+          const label = [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || `Zaměstnanec ${employee.id}`
+          return `<option value="${escapeHtml(employee.id)}">${escapeHtml(label)}</option>`
+        })
+        .join('')
+      crewVehicleSelect.innerHTML = '<option value="">Vyber vozidlo</option>' + state.vehicles
+        .map((vehicle) => {
+          const label = [vehicle.plate, vehicle.brand, vehicle.model, vehicle.name].filter(Boolean).join(' · ') || `Vozidlo ${vehicle.id}`
+          return `<option value="${escapeHtml(vehicle.id)}">${escapeHtml(label)}</option>`
+        })
+        .join('')
+
+      crewEmployeeSelect.value = String(plan.planned_employee_id || '')
+      crewVehicleSelect.value = String(plan.vehicle_id || '')
+      crewRouteName.textContent = plan.title || `Trasa ${formatDateLabel(plan.planning_date)}`
+      crewRouteMeta.textContent = `${formatDateLabel(plan.planning_date)} · ${formatNumber(plan.stop_count || routeStops(plan).length || 0)} zastávek · pořadí a časy zůstanou beze změny`
+      crewModalStatus.textContent = 'Změní se pouze přiřazení této trasy.'
+      crewModalStatus.classList.remove('error')
+      crewSaveBtn.disabled = false
+      crewModalBackdrop.hidden = false
+      document.body.style.overflow = 'hidden'
+      window.setTimeout(() => crewEmployeeSelect.focus(), 0)
+    }
+
+    function closeCrewModal() {
+      crewModalBackdrop.hidden = true
+      document.body.style.overflow = ''
+      crewEditingPlan = null
+    }
+
+    async function saveCrewAssignment() {
+      const plan = crewEditingPlan
+      if (!plan) return
+      const employeeId = crewEmployeeSelect.value || null
+      const vehicleId = crewVehicleSelect.value || null
+      if (!employeeId || !vehicleId) {
+        crewModalStatus.textContent = 'Vyber operátora i vozidlo.'
+        crewModalStatus.classList.add('error')
+        return
+      }
+
+      const employee = state.employees.find((item) => String(item.id) === String(employeeId))
+      const employeeName = employee
+        ? [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || ''
+        : ''
+      crewSaveBtn.disabled = true
+      crewModalStatus.textContent = 'Ukládám nové přiřazení…'
+      crewModalStatus.classList.remove('error')
+
+      try {
+        const routePayload = {
+          ...(plan.route_payload && typeof plan.route_payload === 'object' ? plan.route_payload : {}),
+          planned_employee_id: employeeId,
+          planned_employee_name: employeeName,
+          vehicle_id: vehicleId,
+        }
+        const { data, error } = await supabase
+          .from('route_plans')
+          .update({
+            planned_employee_id: employeeId,
+            vehicle_id: vehicleId,
+            execution_status: 'assigned',
+            assigned_at: plan.assigned_at || new Date().toISOString(),
+            route_payload: routePayload,
+          })
+          .eq('id', plan.id)
+          .in('execution_status', ['draft', 'assigned'])
+          .is('started_at', null)
+          .is('completed_at', null)
+          .select('id')
+
+        if (error) throw error
+        if (!data?.length) throw new Error('Trasa už mezitím začala nebo změnila stav. Obnov přehled a zkus to znovu.')
+        closeCrewModal()
+        await loadRoutes()
+        routeLoadStatus.textContent = 'Operátor a vozidlo změněni'
+      } catch (error) {
+        console.error(error)
+        crewModalStatus.textContent = error.message || String(error)
+        crewModalStatus.classList.add('error')
+        crewSaveBtn.disabled = false
+      }
     }
 
     async function cancelRoute(planKey) {
@@ -965,6 +1162,15 @@
     })
 
     routeRowMenu.addEventListener('click', async (event) => {
+      const reassignButton = event.target.closest('[data-reassign-route]')
+      if (reassignButton) {
+        event.stopPropagation()
+        const plan = state.plans.find((item) => String(item.id || '') === String(reassignButton.dataset.reassignRoute || ''))
+        closeRouteRowMenu()
+        openCrewModal(plan)
+        return
+      }
+
       const deleteButton = event.target.closest('[data-delete-route]')
       if (deleteButton) {
         event.stopPropagation()
@@ -1001,6 +1207,15 @@
 
     window.addEventListener('resize', closeRouteRowMenu)
     window.addEventListener('scroll', closeRouteRowMenu, true)
+    crewModalCloseBtn.addEventListener('click', closeCrewModal)
+    crewCancelBtn.addEventListener('click', closeCrewModal)
+    crewSaveBtn.addEventListener('click', saveCrewAssignment)
+    crewModalBackdrop.addEventListener('click', (event) => {
+      if (event.target === crewModalBackdrop) closeCrewModal()
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !crewModalBackdrop.hidden) closeCrewModal()
+    })
 
     routesSearch.addEventListener('input', renderPlans)
     routesStatusFilter.addEventListener('change', refreshRoutes)
