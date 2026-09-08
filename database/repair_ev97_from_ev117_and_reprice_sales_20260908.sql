@@ -56,7 +56,12 @@ where machine_id = 77
 create temporary table ev97_stock_before_repaired_sales on commit drop as
 select
   container.product_sku,
-  max(container.current_quantity) + coalesce(sum(depletion.quantity), 0) as quantity_before_sales
+  case
+    -- A zero balance may already have been clamped at zero during depletion.
+    -- Do not manufacture stock by adding the recorded usage back to it.
+    when max(container.current_quantity) <= 0 then 0
+    else max(container.current_quantity) + coalesce(sum(depletion.quantity), 0)
+  end as quantity_before_sales
 from public.machine_coffee_containers container
 left join public.telemetry_coffee_recipe_depletions depletion
   on depletion.coffee_container_id = container.id
