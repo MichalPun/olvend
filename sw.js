@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v160-telemetry-aggregate-payment';
+const CACHE_NAME = 'olvend-v161-inventory-cancel';
 const APP_SHELL = [
   './',
   './index.html',

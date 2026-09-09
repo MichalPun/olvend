@@ -1255,7 +1255,7 @@
               <div class="inventory-case-filters">
                 <input id="inventoryCaseSearch" type="search" placeholder="Hledat číslo, vozidlo, zaměstnance nebo sklad…" />
                 <select id="inventoryCaseTypeFilter"><option value="">Všechny typy</option><option value="vehicle">Vozidlo</option><option value="warehouse">Sklad</option></select>
-                <select id="inventoryCaseStatusFilter"><option value="">Všechny stavy</option><option value="warehouse_check">Kontrola skladu</option><option value="manager_review">Rozhodnutí</option><option value="sent">Odesláno</option><option value="closed">Uzavřeno</option></select>
+                <select id="inventoryCaseStatusFilter"><option value="">Všechny stavy</option><option value="warehouse_check">Kontrola skladu</option><option value="manager_review">Rozhodnutí</option><option value="sent">Odesláno</option><option value="closed">Uzavřeno</option><option value="cancelled">Zrušeno</option></select>
                 <select id="inventoryCaseEmployeeFilter"><option value="">Všichni zaměstnanci</option></select>
                 <input id="inventoryCaseDateFilter" type="date" />
                 <button class="btn secondary" type="button" id="inventoryCaseClearFilters">Vyčistit</button>
@@ -7345,6 +7345,7 @@
       )) || null
     }
     function getInventoryCaseStage(audit) {
+      if (audit.status === 'cancelled') return { key: 'cancelled', label: 'Zrušeno', badge: 'bad' }
       if (audit.status === 'closed') return { key: 'closed', label: 'Uzavřeno', badge: 'good' }
       if (audit.resolution_status === 'sent' || audit.resolution_sent_at) return { key: 'manager_review', label: 'Odesláno · nedorovnáno', badge: 'warn' }
       const control = getInventoryControlAudit(audit.id)
@@ -7449,6 +7450,7 @@
             </div>
             <div class="action-row">
               <span class="badge ${escapeHtml(stage.badge)}">${escapeHtml(stage.label)}</span>
+              ${canCancelVehicleInventoryAudit(audit) ? `<button class="btn secondary" type="button" data-detail-action="cancel-audit" data-audit-id="${escapeHtml(String(audit.id))}">Zrušit inventuru</button>` : ''}
               ${audit.status === 'assigned' ? `<button class="btn" type="button" data-detail-action="count-audit-desktop" data-audit-id="${escapeHtml(String(audit.id))}">Spočítat na PC</button>` : ''}
             </div>
           </section>
@@ -8105,12 +8107,45 @@
                 ${['counted', 'transfer_ready', 'evaluated', 'closed'].includes(audit.status) ? `<button class="btn secondary" type="button" data-vehicle-audit-action="edit-counts" data-audit-id="${escapeHtml(String(audit.id))}">Opravit počty</button>` : ''}
                 ${canEvaluate ? `<button class="btn secondary" type="button" data-vehicle-audit-action="evaluate" data-audit-id="${escapeHtml(String(audit.id))}">Vyhodnotit inventuru</button>` : ''}
                 ${canClose ? `<button class="btn" type="button" data-vehicle-audit-action="close" data-audit-id="${escapeHtml(String(audit.id))}">Dorovnat a uzavřít</button>` : ''}
+                ${canCancelVehicleInventoryAudit(audit) ? `<button class="btn secondary" type="button" data-vehicle-audit-action="cancel" data-audit-id="${escapeHtml(String(audit.id))}">Zrušit inventuru</button>` : ''}
                 ${canPrint ? `<button class="btn secondary" type="button" data-vehicle-audit-action="print" data-audit-id="${escapeHtml(String(audit.id))}">Protokol</button>` : ''}
               </div></details>
             </td>
           </tr>
         `
       }).join('')
+    }
+    function canCancelVehicleInventoryAudit(audit) {
+      return Boolean(audit && ['draft', 'assigned'].includes(audit.status) && !audit.parent_audit_id)
+    }
+    async function cancelVehicleInventoryAudit(auditId) {
+      const audit = vehicleInventoryAudits.find((item) => String(item.id) === String(auditId))
+      if (!canCancelVehicleInventoryAudit(audit)) throw new Error('Zrušit lze pouze nově založenou inventuru před odesláním počtů.')
+      if (!window.confirm(`Zrušit inventuru #${audit.id}? Zůstane v historii jako zrušená. Skladové zásoby se nezmění.`)) return false
+      const { data, error } = await supabase.from('inventory_audits')
+        .update({ status: 'cancelled' })
+        .eq('id', audit.id).eq('status', audit.status)
+        .select('id').maybeSingle()
+      if (error) throw error
+      if (!data) throw new Error('Stav inventury se mezitím změnil. Obnov seznam a zkus to znovu.')
+      audit.status = 'cancelled'
+      let instructionError = null
+      if (audit.instruction_id) {
+        try {
+          const result = await supabase.from('daily_instructions')
+            .update({ is_active: false }).eq('id', audit.instruction_id)
+          instructionError = result.error
+        } catch (error) {
+          instructionError = error
+        }
+      }
+      await loadInventoryV13Overview()
+      hideAuditResult()
+      auditStatus.textContent = instructionError
+        ? `Inventura #${audit.id} je zrušená, ale denní pokyn se nepodařilo deaktivovat. Vypni ho v Pokynech dne.`
+        : `Inventura #${audit.id} je zrušená. Skladové zásoby se nezměnily.`
+      auditStatus.className = instructionError ? 'status-line error' : 'status-line success'
+      return true
     }
     async function createVehicleInventoryAudit() {
       const scope = getAuditTargetScope()
@@ -13312,6 +13347,10 @@
           printAuditProtocol(vehicleAuditProtocol(button.dataset.auditId))
           return
         }
+        if (button.dataset.vehicleAuditAction === 'cancel') {
+          await cancelVehicleInventoryAudit(button.dataset.auditId)
+          return
+        }
         if (button.dataset.vehicleAuditAction === 'evaluate') {
           await evaluateVehicleInventoryAudit(button.dataset.auditId)
           showAuditResult(vehicleAuditProtocol(button.dataset.auditId))
@@ -14050,6 +14089,18 @@
       if (!button || !currentDetailContext) return
       if (button.dataset.detailAction === 'open-audit') {
         openVehicleAuditDetail(button.dataset.auditId)
+        return
+      }
+      if (button.dataset.detailAction === 'cancel-audit') {
+        try {
+          button.disabled = true
+          if (await cancelVehicleInventoryAudit(button.dataset.auditId)) openVehicleAuditDetail(button.dataset.auditId)
+        } catch (error) {
+          console.error(error)
+          window.alert(error.message || 'Inventuru se nepodařilo zrušit.')
+        } finally {
+          button.disabled = false
+        }
         return
       }
       if (button.dataset.detailAction === 'count-audit-desktop') {
