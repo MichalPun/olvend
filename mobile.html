@@ -6413,6 +6413,7 @@
     }
 
     function getRouteKmComparison(plan = getAssignedRoutePlan()) {
+      if (String(plan?.vehicle_id) !== String(state.vehicleLog?.vehicle_id)) return null
       if (plan?.estimated_distance_km == null || state.vehicleLog?.start_odometer_km == null || state.vehicleLog?.end_odometer_km == null) return null
       const plannedKm = Number(plan?.estimated_distance_km)
       const startKm = Number(state.vehicleLog?.start_odometer_km)
@@ -11987,7 +11988,7 @@
     }
 
     async function loadVehicleLog() {
-      if (!state.attendanceDay?.id) {
+      if (!state.attendanceDay?.id || !state.attendanceDay.vehicle_id) {
         state.vehicleLog = null
         return
       }
@@ -11995,11 +11996,25 @@
         .from('vehicle_operation_logs')
         .select('*')
         .eq('attendance_day_id', state.attendanceDay.id)
+        .eq('vehicle_id', state.attendanceDay.vehicle_id)
+        .not('start_odometer_km', 'is', null)
         .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1)
         .maybeSingle()
       if (error && error.code !== 'PGRST116') throw error
       state.vehicleLog = data || null
+    }
+
+    async function verifyCurrentShiftVehicle() {
+      if (!state.attendanceDay?.id) return
+      const { data: day, error } = await supabase.from('attendance_days')
+        .select('vehicle_id, actual_end').eq('id', state.attendanceDay.id).single()
+      if (error) throw error
+      if (String(day.vehicle_id) !== String(state.attendanceDay.vehicle_id)) {
+        await reloadData()
+        throw new Error('Vedení změnilo auto ve směně. Nové auto je načtené; zkontroluj jeho údaje a pokračuj.')
+      }
     }
 
     async function loadAttendanceEvents() {
@@ -17216,6 +17231,7 @@
       state.endingShift = true
       renderShiftState()
       try {
+        await verifyCurrentShiftVehicle()
         const endAt = new Date().toISOString()
         const savedEndKm = state.vehicleLog?.end_odometer_km != null ? Number(state.vehicleLog.end_odometer_km) : null
         const enteredEndKm = parseNumber(els.endOdometerInput.value)
@@ -17246,11 +17262,12 @@
           .update(update)
           .eq('id', state.attendanceDay.id)
           .is('actual_end', null)
+          .filter('vehicle_id', state.attendanceDay.vehicle_id == null ? 'is' : 'eq', state.attendanceDay.vehicle_id)
           .select('id')
           .maybeSingle()
         if (error) throw error
         if (!updatedDay) {
-          showMessage('Směna už byla ukončená. Znovu ji neukončujeme.', 'error')
+          showMessage('Směna nebo přiřazené auto se změnily. Načítám aktuální stav.', 'error')
           await reloadData()
           openScreen('today')
           return
@@ -17622,6 +17639,7 @@
     }
 
     async function saveVehicleLog({ noteOnly = false } = {}) {
+      await verifyCurrentShiftVehicle()
       if (!state.vehicleLog?.id) {
         showMessage('Nejdřív zahaj směnu s vozidlem.', 'error')
         return
@@ -17657,6 +17675,7 @@
     }
 
     async function saveEndOdometer() {
+      await verifyCurrentShiftVehicle()
       if (!state.attendanceDay?.vehicle_id || !state.vehicleLog?.id) {
         showMessage('Směna je bez vozidla, konečné km není potřeba zapisovat.', 'error')
         return
@@ -17666,10 +17685,14 @@
       if (endKm === null) throw new Error('Doplň konečný stav km.')
       if (startKm !== null && endKm < startKm) throw new Error('Konečný stav km nesmí být menší než počáteční.')
 
-      const { error } = await supabase.from('vehicle_operation_logs').update({
+      const { data: savedLog, error } = await supabase.from('vehicle_operation_logs').update({
         end_odometer_km: endKm
-      }).eq('id', state.vehicleLog.id)
+      }).eq('id', state.vehicleLog.id).eq('status', 'open').is('ended_at', null).select('id').maybeSingle()
       if (error) throw error
+      if (!savedLog) {
+        await reloadData()
+        throw new Error('Výjezd už byl uzavřen nebo vyměněn. Načetl se aktuální stav.')
+      }
       if (state.attendanceDay.vehicle_id) {
         const { error: vehicleError } = await supabase.from('vehicles').update({ current_odometer_km: endKm }).eq('id', state.attendanceDay.vehicle_id)
         if (vehicleError) throw vehicleError

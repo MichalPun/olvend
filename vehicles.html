@@ -2509,6 +2509,17 @@
   <script src="./sidebar.js?v=20260712lightfix2"></script>
   <script type="module">
     import { supabase } from './supabase.js'
+    import { createVehicleShiftSwitch } from './vehicle-shift-switch.js'
+
+    let canSwitchShiftVehicle = false
+    const vehicleShiftSwitch = createVehicleShiftSwitch({
+      supabase,
+      onSaved: async () => {
+        await loadOperationalState()
+        await loadVehicles()
+        setStatus('Výjezd je uzavřený a nové auto přiřazené. Směna pokračuje; zaměstnanec si obnoví mobilní aplikaci.', 'success')
+      }
+    })
 
     const statusLine = document.getElementById('statusLine')
     const vehiclesTableBody = document.getElementById('vehiclesTableBody')
@@ -2890,6 +2901,7 @@
       const reviewActionHref = vehicleReviewActionMap.get(String(vehicle.id)) || ''
       rowMenu.innerHTML = `
         <button type="button" data-menu-action="detail" data-id="${escapeHtml(String(vehicle.id))}">Detail vozidla</button>
+        ${canSwitchShiftVehicle && getVehicleOperationalState(vehicle.id)?.isOpen ? `<button type="button" data-menu-action="switch-shift" data-id="${escapeHtml(String(vehicle.id))}">Vyměnit auto ve směně</button>` : ''}
         <button type="button" data-menu-action="fuel" data-id="${escapeHtml(String(vehicle.id))}">Zapsat tankování</button>
         <button type="button" data-menu-action="expense" data-id="${escapeHtml(String(vehicle.id))}">Přidat náklad</button>
         <button type="button" data-menu-action="edit" data-id="${escapeHtml(String(vehicle.id))}">Upravit vozidlo</button>
@@ -3436,7 +3448,16 @@
     }
 
     function getVehicleOperationalState(vehicleId) {
-      return vehicleOperationalMap.get(String(vehicleId)) || null
+      const current = vehicleOperationalMap.get(String(vehicleId))
+      if (current?.isOpen) return current
+      const log = (vehicleLogsMap.get(String(vehicleId)) || []).find((item) =>
+        item.log_date === getTodayDateString() && item.start_odometer_km != null)
+      if (log) return {
+        employeeLabel: log.employeeLabel,
+        locationLabel: 'Výjezd',
+        isOpen: log.status === 'open' && !log.ended_at
+      }
+      return current || null
     }
 
     function getOperationalBadge(state) {
@@ -4184,9 +4205,10 @@
       const [logsResult, expensesResult] = await Promise.all([
         supabase
           .from('vehicle_operation_logs')
-          .select('id, attendance_day_id, vehicle_id, employee_id, log_date, distance_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_receipt_url, fuel_note, start_odometer_km, end_odometer_km, status, trip_note')
+          .select('id, attendance_day_id, vehicle_id, employee_id, log_date, ended_at, distance_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_receipt_url, fuel_note, start_odometer_km, end_odometer_km, status, trip_note')
           .in('vehicle_id', vehicleIds)
-          .order('log_date', { ascending: false }),
+          .order('log_date', { ascending: false })
+          .order('id', { ascending: false }),
         supabase
           .from('vehicle_expenses')
           .select('id, vehicle_id, expense_date, category, amount, vendor, note')
@@ -5033,6 +5055,12 @@
 
       closeRowMenu()
 
+      if (action === 'switch-shift') {
+        try { await vehicleShiftSwitch.open(vehicle) }
+        catch (error) { setStatus(error.message || 'Výměnu auta se nepodařilo otevřít.', 'error') }
+        return
+      }
+
       if (action === 'edit') {
         fillForm(vehicle)
         return
@@ -5198,6 +5226,12 @@
     })
 
     updateVehicleDetailAvailabilityNotice()
+    const { data: switchAuth } = await supabase.auth.getUser()
+    if (switchAuth?.user) {
+      const { data: actor } = await supabase.from('employees').select('role, active')
+        .eq('auth_user_id', switchAuth.user.id).maybeSingle()
+      canSwitchShiftVehicle = actor?.active === true && ['admin', 'manager'].includes(String(actor.role).toLowerCase())
+    }
     await loadWarehouses()
     await loadEmployees()
     await loadOperationalState()

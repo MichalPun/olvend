@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v161-inventory-cancel';
+const CACHE_NAME = 'olvend-v162-vehicle-switch';
 const APP_SHELL = [
   './',
   './index.html',
@@ -15,6 +15,7 @@ const APP_SHELL = [
   './settings.html',
   './employees.html',
   './vehicles.html',
+  './vehicle-shift-switch.js',
   './warehouses.html',
   './company.html',
   './budget.html',
