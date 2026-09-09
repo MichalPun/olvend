@@ -93,6 +93,7 @@ export function createVehicleShiftSwitch({ supabase, onSaved }) {
       const { data: days, error: dayError } = await supabase.from('attendance_days')
         .select('id, employee_id, attendance_date, vehicle_id, actual_start, actual_end, status')
         .eq('vehicle_id', vehicle.id).is('actual_end', null).not('actual_start', 'is', null)
+        .eq('attendance_date', new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Prague' }))
       if (dayError) throw dayError
       if (days?.length !== 1) throw new Error('Pro auto musí existovat právě jedna otevřená směna.')
       const day = days[0]

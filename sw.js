@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v162-vehicle-switch';
+const CACHE_NAME = 'olvend-v163-vehicle-switch-today';
 const APP_SHELL = [
   './',
   './index.html',
