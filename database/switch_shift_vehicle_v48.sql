@@ -68,9 +68,11 @@ begin
   if exists (select 1 from public.attendance_days
     where vehicle_id = p_vehicle_id and id <> v_day.id
       and actual_start is not null and actual_end is null)
-    or exists (select 1 from public.vehicle_operation_logs
-    where vehicle_id = p_vehicle_id and status = 'open' and ended_at is null
-      and start_odometer_km is not null) then
+    or exists (select 1 from public.vehicle_operation_logs target_log
+    where target_log.vehicle_id = p_vehicle_id and target_log.status = 'open' and target_log.ended_at is null
+      and target_log.start_odometer_km is not null
+      and not exists (select 1 from public.attendance_days closed_day
+        where closed_day.id = target_log.attendance_day_id and closed_day.actual_end is not null)) then
     raise exception 'Nové vozidlo má otevřený výjezd nebo směnu.';
   end if;
   if p_start_odometer_km is null or p_start_odometer_km < 0
