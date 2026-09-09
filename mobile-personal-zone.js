@@ -94,7 +94,7 @@ async function loadTerritory() {
   const { data: employee, error: employeeError } = await supabase.from('employees').select('id').eq('auth_user_id', user.id).maybeSingle()
   if (employeeError) throw employeeError
   if (!employee?.id) return
-  const { data: assignments, error: assignmentError } = await supabase.from('operator_territory_assignments').select('*').or(`primary_employee_id.eq.${employee.id},backup_employee_id.eq.${employee.id}`).order('effective_from', { ascending:false })
+  const { data: assignments, error: assignmentError } = await supabase.rpc('get_operator_territories_v51', {p_date:new Intl.DateTimeFormat('en-CA', {timeZone:'Europe/Prague',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}).or(`primary_employee_id.eq.${employee.id},backup_employee_id.eq.${employee.id}`).order('effective_from', { ascending:false })
   if (assignmentError) throw assignmentError
   const locationIds = [...new Set((assignments || []).map(row => row.location_id).filter(Boolean))]
   if (!locationIds.length) { state.territoryRows = []; renderTerritory(); return }

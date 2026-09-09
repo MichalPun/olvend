@@ -1,3 +1,4 @@
+import { openTerritoryTransfer } from './operator-territory-transfer.js?v=51';
 import { supabase } from './supabase.js';
 
 const palette = ['#df111c', '#246db6', '#16834b', '#7656a8', '#b46b00', '#00838f', '#9b3659'];
@@ -287,7 +288,7 @@ function filterRows() {
   const owner = $('ownerFilter').value, status = $('statusFilter').value, type = $('typeFilter').value;
   let count = 0;
   document.querySelectorAll('#rows tr').forEach((row) => {
-    const visible = (!q || row.dataset.search.includes(q)) && (!owner || row.dataset.owner === owner) && (!status || row.dataset.status === status) && (!type || row.dataset.type === type);
+    const visible = (!q || row.dataset.search.includes(q)) && (!owner || (owner === '__none' ? !row.dataset.owner : row.dataset.owner === owner)) && (!status || row.dataset.status === status) && (!type || row.dataset.type === type);
     row.hidden = !visible;
     state.markers.get(String(row.dataset.id))?.setOpacity(visible ? 1 : .12);
     if (visible) count += 1;
@@ -296,19 +297,21 @@ function filterRows() {
 }
 
 function renderAll() {
+  const owner = $('ownerFilter').value;
   renderLegend(); renderMap(); renderOperators(); renderRows(); renderSummary();
   $('ownerFilter').innerHTML = `<option value="">Všichni operátoři</option>${state.employees.map((employee) => `<option value="${employee.id}">${esc(employeeName(employee))}</option>`).join('')}<option value="__none">Bez operátora</option>`;
+  $('ownerFilter').value = owner; filterRows();
   if (state.selectedId) selectLocation(state.selectedId, false);
 }
 
 async function load() {
   await requireManager();
-  $('effectiveFrom').value = '2026-08-31';
+  if (!$('effectiveFrom').value) $('effectiveFrom').value = new Intl.DateTimeFormat('en-CA', {timeZone:'Europe/Prague',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const [employees, locations, machines, assignments, settings] = await Promise.all([
     supabase.from('employees').select('id,name,surname,role,active,bonus_eligible').eq('active', true).order('surname'),
     supabase.from('locations').select('id,name,city,address,latitude,longitude,active').eq('active', true).order('name'),
     supabase.from('machines').select('id,location_id,evidence_number,name,machine_type,active,status').eq('active', true),
-    supabase.from('operator_territory_assignments').select('*'),
+    supabase.rpc('get_operator_territories_v51', {p_date: $('effectiveFrom').value}),
     supabase.from('operator_territory_settings').select('*').eq('id', true).maybeSingle()
   ]);
   const failed = [employees, locations, machines, assignments, settings].find((result) => result.error);
@@ -365,3 +368,6 @@ $('saveRules').onclick = async () => {
 };
 
 load().catch((error) => { console.error(error); say(`Data nelze načíst: ${error.message || error}`, true); });
+
+$('transfer').onclick = () => openTerritoryTransfer({...state, onSaved: async date => { $('effectiveFrom').value=date; await load(); say('Předání bylo uloženo. Rozdělení zobrazuji k datu předání.'); }});
+$('effectiveFrom').onchange = () => load().catch(error => say(error.message,true));
