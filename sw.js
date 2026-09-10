@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v165-territory-transfers';
+const CACHE_NAME = 'olvend-v166-family-price-confirmation';
 const APP_SHELL = [
   './',
   './index.html',
