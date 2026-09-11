@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v167-warehouse-issue-source';
+const CACHE_NAME = 'olvend-v168-invoice-negative-lines';
 const APP_SHELL = [
   './',
   './index.html',
