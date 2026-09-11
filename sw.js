@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v166-family-price-confirmation';
+const CACHE_NAME = 'olvend-v167-warehouse-issue-source';
 const APP_SHELL = [
   './',
   './index.html',
