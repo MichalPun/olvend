@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v169-customer-tax-id';
+const CACHE_NAME = 'olvend-v170-modern-planogram';
 const APP_SHELL = [
   './',
   './index.html',
@@ -9,6 +9,8 @@ const APP_SHELL = [
   './vendor/leaflet/leaflet.js',
   './route-skip-approval.html',
   './supabase.js',
+  './machines-planogram.css?v=20260913',
+  './machines-planogram-ui.js?v=20260913',
   './dashboard.html',
   './attendance.html',
   './hr.html',

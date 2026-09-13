@@ -588,6 +588,7 @@
       .modal-footer .btn { width: 100%; }
     }
   </style>
+  <link rel="stylesheet" href="./machines-planogram.css?v=20260913" />
 </head>
 <body>
   <div class="layout">
@@ -958,6 +959,7 @@
           </div>
           <div class="helper-line">Tady spojuješ stroj, slot a produkt. Je to základ pro planogram, doplnění i telemetrii.</div>
         </div>
+        <p id="planogramCardError" role="alert" style="color:#b42318;padding:0 22px;margin:0"></p>
         <datalist id="productCatalogList"></datalist>
         <div class="modal-footer">
           <button type="button" class="btn secondary" id="cancelPlanogramBtn">Zrušit</button>
@@ -1059,6 +1061,7 @@
   <script src="./sidebar.js?v=20260712lightfix2"></script>
   <script type="module">
     import { supabase } from './supabase.js'
+    import { initPlanogramCard, planogramReplacementLabel, bulkPlanogramCandidates } from './machines-planogram-ui.js?v=20260913'
 
     const statusLine = document.getElementById('statusLine')
     const TELEMETRY_FRESHNESS_HOURS = 48
@@ -1569,6 +1572,61 @@
       ]
     }
 
+    function renderPlanogramBulk(slots, machine) {
+      const families = [...new Set(slots.filter(slot => slot.product_family && bulkPlanogramCandidates([slot], slot.product_family).length).map(slot => slot.product_family))].sort((a,b) => a.localeCompare(b, 'cs'))
+      if (!families.length) return ''
+      return `<details class="planogram-bulk" data-planogram-bulk data-machine-id="${machine.id}">
+        <summary>Hromadná úprava náhrad</summary>
+        <div class="form-grid"><div class="field"><label>Skupina produktu</label><select data-bulk-family><option value="">Vyber skupinu</option>${families.map(family => `<option value="${escapeHtml(family)}">${escapeHtml(family)}</option>`).join('')}</select></div>
+        <div class="field"><label>Náhrady</label><select data-bulk-policy><option value="same_family">Povolit příchutě stejné skupiny</option><option value="exact">Jen konkrétní produkt</option></select></div></div>
+        <div class="planogram-bulk-preview" data-bulk-preview aria-live="polite">Vyber skupinu pro zobrazení dotčených pozic. Pozice s plánovanou výměnou se neupravují.</div>
+        <button class="mini-btn" type="button" data-planogram-bulk-save disabled>Uložit náhrady</button>
+      </details>`
+    }
+
+    detailModalBody.addEventListener('change', event => {
+      if (!event.target.matches('[data-bulk-family], [data-bulk-policy]')) return
+      const panel = event.target.closest('[data-planogram-bulk]')
+      const slots = bulkPlanogramCandidates(getMachinePlanogram(panel.dataset.machineId), panel.querySelector('[data-bulk-family]').value)
+      panel.querySelector('[data-bulk-preview]').textContent = slots.length
+        ? `Upravit ${slots.length} pozic: ${slots.map(slot => `${slot.slot_code} · ${slot.product_name}`).join('; ')}. Pozice s plánovanou výměnou se neupravují.`
+        : 'Žádné odpovídající pozice.'
+      panel.querySelector('[data-planogram-bulk-save]').disabled = !slots.length
+    })
+
+    async function savePlanogramBulk(button) {
+      const panel = button.closest('[data-planogram-bulk]')
+      const machineId = panel.dataset.machineId
+      const family = panel.querySelector('[data-bulk-family]').value
+      const policy = panel.querySelector('[data-bulk-policy]').value
+      const slots = bulkPlanogramCandidates(getMachinePlanogram(machineId), family)
+      if (!slots.length || !['same_family', 'exact'].includes(policy)) return
+      const preview = panel.querySelector('[data-bulk-preview]')
+      try {
+        button.disabled = true
+        button.textContent = 'Ukládám…'
+        // One statement; do not overwrite quantities, prices, SKU lists or planned changes.
+        const { data, error } = await supabase.from('machine_planogram_slots')
+          .update({ substitution_policy: policy }).eq('machine_id', Number(machineId))
+          .eq('product_family', family).in('id', slots.map(slot => slot.id))
+          .or('planned_product_name.is.null,planned_product_name.eq.')
+          .or('planned_product_sku.is.null,planned_product_sku.eq.')
+          .or('pending_product_sku.is.null,pending_product_sku.eq.')
+          .select('id')
+        if (error) throw error
+        machineDetailCache.delete(String(machineId))
+        await loadMachines()
+        const machine = machines.find(item => String(item.id) === String(machineId))
+        if (machine) await openDetailModal(machine, { forceReload: true })
+        setStatus(`Náhrady byly upraveny u ${(data || []).length} pozic.`, 'success')
+      } catch (error) {
+        preview.textContent = `Náhrady se nepodařilo uložit: ${error.message}`
+      } finally {
+        button.disabled = false
+        button.textContent = 'Uložit náhrady'
+      }
+    }
+
     function renderPlanogramCabinet(slots, machine) {
       if (!slots.length) {
         return '<div class="history-item"><div class="history-item-title">Zatím bez slotů</div><div class="history-item-note">Přidej první volbu, produkt, cenu a kapacitu. Tím vznikne základ planogramu i pro budoucí telemetrii.</div></div>'
@@ -1589,9 +1647,22 @@
       }
       const cabinetColumns = Math.max(1, ...shelves.map((shelf) => shelf.length))
       return `
-        <div class="cabinet-shell">
+        <div class="modern-planogram" data-modern-planogram data-machine-id="${machine.id}">
+          <div class="planogram-tabs" aria-label="Zobrazení plánogramu">
+            <button type="button" data-planogram-view="layout" aria-pressed="true">Rozložení automatu</button>
+            <button type="button" data-planogram-view="changes" aria-pressed="false">Plánované změny · ${slots.filter(slot => slot.planned_product_name).length}</button>
+          </div>
+          ${renderPlanogramBulk(slots, machine)}
+          <div class="planogram-change-list" data-planogram-changes hidden>
+            ${slots.filter(slot => slot.planned_product_name).map(slot => `
+              <div class="planogram-change-item"><div><strong>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(slot.product_name)} → ${escapeHtml(slot.planned_product_name)}</strong><small>${slot.pending_change_mode === 'full_swap' ? 'Kompletní výměna · staré kusy do vozidla' : 'Řízený doprodej'}${slot.planned_price_czk != null ? ` · nová cena ${Number(slot.planned_price_czk).toLocaleString('cs-CZ')} Kč` : ''}</small></div>
+              <button type="button" class="mini-btn" data-planogram-action="edit" data-card-tab="plan" data-slot-id="${slot.id}" data-machine-id="${machine.id}">Upravit plán</button></div>
+            `).join('') || '<div class="history-item-note">Žádné plánované změny.</div>'}
+          </div>
+        <div class="cabinet-shell" data-planogram-layout>
           <div class="cabinet-frame" style="--cabinet-min-width:${cabinetColumns * 128}px">
-            ${shelves.map((shelf) => `
+            ${shelves.map((shelf, rowIndex) => `
+              <section><div class="planogram-row-label"><span>${rowIndex + 1}. řada</span><span>${shelf.length} pozic</span></div>
               <div class="cabinet-shelf" style="--slot-count:${shelf.length}">
                 ${shelf.map((code) => {
                   const slot = slotsByCode.get(String(code))
@@ -1626,7 +1697,7 @@
                   return `
                     <button class="cabinet-slot ${escapeHtml(status.cls)}" type="button" data-planogram-action="edit" data-slot-id="${slot.id}" data-machine-id="${machine.id}">
                       <span class="cabinet-slot-head">
-                        <span class="cabinet-slot-code">Pozice ${escapeHtml(code)}</span>
+                        <span class="cabinet-slot-code">${escapeHtml(code)}</span>
                         <span class="cabinet-slot-price">${customerPrice != null ? `${Number(customerPrice).toFixed(0)} Kč` : '-'}</span>
                       </span>
                       <span class="cabinet-product">
@@ -1643,15 +1714,16 @@
                         ${settlementAmount > 0 && settlementLabel ? `<span class="cabinet-money-note">${escapeHtml(settlementLabel)}</span>` : ''}
                         <span class="cabinet-expiry-note ${escapeHtml(expiryStatus.cls)}">${escapeHtml(expiryStatus.label)}</span>
                         <span class="cabinet-bar"><span style="width:${percent}%"></span></span>
+                        <span class="cabinet-replacements">${escapeHtml(planogramReplacementLabel(slot))}</span>
                       </span>
                     </button>
                   `
                 }).join('')}
-              </div>
+              </div></section>
             `).join('')}
           </div>
-          <div class="cabinet-footer-note">Kliknutím na obsazenou pozici upravíš produkt, cenu, kapacitu a doplnění.</div>
-        </div>
+          <div class="cabinet-footer-note">Kliknutím na pozici otevřeš její kartu.</div>
+        </div></div>
       `
     }
 
@@ -1937,7 +2009,8 @@
     function openModal() { modalBackdrop.classList.add('show') }
     function closeModal() { modalBackdrop.classList.remove('show'); resetForm() }
     function closeDetailModal() { detailModalBackdrop.classList.remove('show') }
-    function openPlanogramModal() { planogramModalBackdrop.classList.add('show') }
+    const planogramCard = initPlanogramCard(planogramForm)
+    function openPlanogramModal(tab = 'position') { document.getElementById('planogramCardError').textContent = ''; planogramCard.open(tab); planogramModalBackdrop.classList.add('show') }
     function closePlanogramModal() { planogramModalBackdrop.classList.remove('show'); resetPlanogramForm() }
     function openCopyPlanogramModal() { copyPlanogramModalBackdrop.classList.add('show') }
     function closeCopyPlanogramModal() { copyPlanogramModalBackdrop.classList.remove('show'); resetCopyPlanogramForm() }
@@ -3158,6 +3231,20 @@
         }
         return
       }
+      const viewButton = event.target.closest('[data-planogram-view]')
+      if (viewButton) {
+        const panel = viewButton.closest('[data-modern-planogram]')
+        const changes = viewButton.dataset.planogramView === 'changes'
+        panel.querySelector('[data-planogram-layout]').hidden = changes
+        panel.querySelector('[data-planogram-changes]').hidden = !changes
+        panel.querySelectorAll('[data-planogram-view]').forEach(item => item.setAttribute('aria-pressed', String(item === viewButton)))
+        return
+      }
+      const bulkButton = event.target.closest('[data-planogram-bulk-save]')
+      if (bulkButton) {
+        await savePlanogramBulk(bulkButton)
+        return
+      }
       const button = event.target.closest('[data-planogram-action]')
       if (!button) return
       const machineId = button.dataset.machineId
@@ -3204,7 +3291,7 @@
         const slot = planogramSlots.find((item) => String(item.id) === String(button.dataset.slotId))
         if (!slot) return
         fillPlanogramForm(slot)
-        openPlanogramModal()
+        openPlanogramModal(button.dataset.cardTab || 'position')
       }
     })
 
@@ -3244,6 +3331,7 @@
         setStatus(wasCoffeeContainer ? 'Zásobník byl upraven.' : (wasCoffeeButton ? 'Volba kávy byla upravena.' : (wasEdit ? 'Slot byl upraven.' : 'Slot byl přidán.')), 'success')
       } catch (error) {
         console.error(error)
+        document.getElementById('planogramCardError').textContent = `Nepodařilo se uložit: ${error.message}`
         setStatus(`Nepodařilo se uložit slot: ${error.message}`, 'error')
       } finally {
         savePlanogramBtn.disabled = false
