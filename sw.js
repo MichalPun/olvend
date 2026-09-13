@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v173-compact-machine-detail';
+const CACHE_NAME = 'olvend-v174-black-service-labels';
 const APP_SHELL = [
   './',
   './index.html',
