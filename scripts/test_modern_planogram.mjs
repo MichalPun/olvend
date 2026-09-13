@@ -10,7 +10,7 @@ const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].repla
 new vm.Script(ui + script)
 const fixture = { id:901, machine_id:58, slot_code:'25', product_name:'Bongo máta', product_sku:'SOCO-BONGO-MATA-40', product_family:'Bongo', product_variant:'Máta', price_czk:16, customer_price_czk:16, capacity_units:13, current_units:7, fill_percent:53.85, active:true, substitution_policy:'same_family', allowed_substitutes:'SKU SOCO-BONGO-MATA-40, SKU SOCO-BONGO-ORIGINAL-40', planned_product_name:null, planned_product_sku:null, note:'Zachovat poznámku', settlement_type:'subsidy_receivable', settlement_amount_czk:2, settlement_partner:'Škola', settlement_billing_enabled:true, settlement_note:'Smlouva' }
 const machine = {id:58,name:'Aria L',machine_type:'snack',evidence_number:'78'}
-const harness = html.replace(/<script[\s\S]*?<\/script>/g,'').replace('</body>', `<script type="module">${ui}\nconst supabase = {};\n${script}\nwindow.pgTest={fillPlanogramForm,openPlanogramModal,closePlanogramModal,getPlanogramPayload,fillCoffeeContainerForm,getCoffeeContainerPayload,bulkPlanogramCandidates,hasPlanogramChange,getPlanogramStatus,renderPlanogramCabinet, setSlots: slots => {planogramSlots=slots}, render: (slots,machine)=>{detailModalBody.innerHTML=renderPlanogramCabinet(slots,machine);detailModalBackdrop.classList.add('show')}};</script></body>`)
+const harness = html.replace(/<script[\s\S]*?<\/script>/g,'').replace('</body>', `<script type="module">${ui}\nconst supabase = {}; const initMachineVisits = () => {};\n${script}\nwindow.pgTest={openFull: (machine,detail)=>{machineDetailCache.set(String(machine.id),detail);serviceRules=[{machine_id:machine.id,route_planning_paused_until:'2026-10-01',route_planning_excluded_months:[7,8]}];return openDetailModal(machine)},fillPlanogramForm,openPlanogramModal,closePlanogramModal,getPlanogramPayload,fillCoffeeContainerForm,getCoffeeContainerPayload,bulkPlanogramCandidates,hasPlanogramChange,getPlanogramStatus,renderPlanogramCabinet, setSlots: slots => {planogramSlots=slots}, render: (slots,machine)=>{detailModalBody.innerHTML=renderPlanogramCabinet(slots,machine);detailModalBackdrop.classList.add('show')}};</script></body>`)
 const browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE || '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'})
 try {
   const page=await browser.newPage({viewport:{width:1440,height:1000}})
@@ -76,6 +76,24 @@ try {
   }
   await page.setViewportSize({width:1440,height:1000})
   await page.screenshot({path:'/tmp/planogram-wrapping.png'})
+  await page.evaluate(async ({machine,fixture})=>pgTest.openFull(machine,{planogram:[fixture],planogramAvailable:true,history:[{title:'Oprava chlazení',resolution_note:'Vyměněn ventilátor',updated_at:'2026-09-10T12:00:00Z',status:'ok'}],transfers:[],transferHistoryAvailable:true}),{machine,fixture})
+  assert.equal(await page.locator('.machine-settings').getAttribute('open'),null)
+  assert.equal(await page.locator('#detailTelemetryId').isVisible(),false)
+  assert.equal(await page.locator('.modern-planogram').isVisible(),true)
+  assert.equal(await page.evaluate(()=>Boolean(document.querySelector('.modern-planogram').compareDocumentPosition(document.querySelector('[data-machine-visits]')) & Node.DOCUMENT_POSITION_FOLLOWING)),true,'visits follow planogram')
+  await page.locator('.machine-settings > summary').click()
+  assert.equal(await page.locator('#detailRoutePlanningPausedUntil').inputValue(),'2026-10-01')
+  assert.equal(await page.locator('#detailPlanningMonth7').isChecked(),true)
+  await page.locator('#detailRoutePlanningNote').fill('Prázdniny')
+  await page.locator('.machine-settings > summary').click()
+  await page.locator('.machine-settings > summary').click()
+  assert.equal(await page.locator('#detailRoutePlanningNote').inputValue(),'Prázdniny','collapsing preserves pending settings')
+  await page.locator('.machine-settings > summary').click()
+  assert.equal(await page.locator('.machine-history-entry .history-item-note').isVisible(),false)
+  await page.locator('.machine-history-entry summary').click()
+  assert.match(await page.locator('.machine-history-entry').innerText(),/Vyměněn ventilátor/)
+  await page.locator('#detailModalBody').evaluate(n=>n.scrollTop=0)
+  await page.screenshot({path:'/tmp/compact-machine-detail.png'})
   const visitsModule=readFileSync(new URL('../machine-visits.js',import.meta.url),'utf8').replaceAll('export function','function')
   await page.addScriptTag({content:`(()=>{${visitsModule};window.visitsTest={initMachineVisits,renderVisitDetails}})()`})
   await page.evaluate(async()=>{
