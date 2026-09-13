@@ -66,6 +66,40 @@ try {
   assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({current_units:13,capacity_units:13,fill_percent:0}).label),'OK')
   assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({current_units:0,capacity_units:13,fill_percent:100}).label),'Doplnit')
   assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({fill_percent:100}).label),'OK')
+  await page.evaluate(({fixture,machine})=>{
+    pgTest.closePlanogramModal()
+    pgTest.render(Array.from({length:7},(_,i)=>({...fixture,id:910+i,slot_code:String(45+i),product_name:'Corny Big Tyčinka banány v mléčné čokoládě 50g',planned_product_name:'Corny Big Tyčinka banány v mléčné čokoládě velmi dlouhý název produktu',planned_product_sku:'OTHER'})),{...machine,name:'Europa Snack'})
+  },{fixture,machine})
+  for (const width of [1440,1024,390]) {
+    await page.setViewportSize({width,height:1000})
+    assert.equal(await page.locator('.cabinet-slot').evaluateAll(cards=>cards.every(card=>card.scrollWidth<=card.clientWidth+1)),true,`long product and planned replacement fit every card at ${width}px`)
+  }
+  await page.setViewportSize({width:1440,height:1000})
+  await page.screenshot({path:'/tmp/planogram-wrapping.png'})
+  const visitsModule=readFileSync(new URL('../machine-visits.js',import.meta.url),'utf8').replaceAll('export function','function')
+  await page.addScriptTag({content:`(()=>{${visitsModule};window.visitsTest={initMachineVisits,renderVisitDetails}})()`})
+  await page.evaluate(async()=>{
+    document.body.replaceChildren()
+    const container=document.createElement('div');container.id='visits';document.body.append(container)
+    window.visitQueries=[]
+    const summaries=Array.from({length:6},(_,i)=>({id:i+1,employee_id:'operator1',route_plan_id:99,status:'completed',completed_at:'2026-09-13T10:00:00Z'}))
+    const api={from(table){const query={table};const builder={select(value){query.select=value;return this},eq(key,value){query[key]=value;return this},order(){return this},range(from,to){query.range=[from,to];return this},in(){return this},single(){query.single=true;return this},then(resolve){window.visitQueries.push(query);return Promise.resolve(resolve({data:table==='employees'?[{id:'operator1',name:'Kristýna',surname:'Dvořáková'}]:query.single?{...summaries[0],operator_note:'<img src=x onerror=alert(1)>',route_machine_visit_items:[{id:11,physical_position_label:'25',actual_product_name:'Bongo',actual_before_quantity:0,actual_add_quantity:7,removed_quantity:0,final_quantity:7,unit:'ks'}],route_machine_cash_reports:[{operator_collected_confirmed:true,supervisor_counted_cash_czk:0}],route_machine_visit_checks:[{label:'Vyčistit',status:'completed'}]}:summaries.slice(query.range[0],query.range[1]+1),error:null}))}};return builder}}
+    await visitsTest.initMachineVisits(container,api,58)
+  })
+  assert.equal(await page.locator('.machine-visit').count(),5)
+  assert.equal(await page.evaluate(()=>visitQueries.some(q=>q.single)),false,'details are loaded only after expansion')
+  await page.locator('.machine-visit summary').first().click()
+  await page.waitForFunction(()=>document.querySelector('.machine-visit-body').textContent.includes('Doplněno: 7'))
+  assert.match(await page.locator('.machine-visit-body').first().innerText(),/Před: 0 ks/)
+  assert.equal(await page.locator('.machine-visit-body img').count(),0,'operator notes are text, not HTML')
+  assert.equal(await page.locator('.machine-visit-body a').first().getAttribute('href'),'./routes-detail.html?id=99')
+  await page.locator('.machine-visit summary').first().click()
+  await page.locator('.machine-visit summary').first().click()
+  assert.equal(await page.evaluate(()=>visitQueries.filter(q=>q.single).length),1,'reopening uses loaded visit')
+  await page.locator('.machine-visits-more').click()
+  await page.waitForFunction(()=>document.querySelectorAll('.machine-visit').length===6)
+  assert.equal(await page.locator('.machine-visits-more').isVisible(),false)
+  assert.equal(await page.evaluate(()=>visitQueries.filter(q=>q.table==='route_machine_visits').every(q=>q.machine_id===58)),true,'history and detail queries are scoped to this machine')
   assert.deepEqual(errors,[])
   console.log('PASS: real form payload preserved; price-only edit; native validation across tabs; planned-change navigation; mixed stock; coffee container; bulk eligibility; desktop/mobile layout.')
 } finally { await browser.close() }
