@@ -116,3 +116,13 @@ export function planogramReplacementLabel(slot) {
 export function bulkPlanogramCandidates(slots, family) {
   return slots.filter(slot => slot.active !== false && slot.product_family === family && !slot.planned_product_name && !slot.planned_product_sku && !slot.pending_product_sku)
 }
+
+export function hasPlanogramChange(slot) {
+  const nextName = String(slot.planned_product_name || '').trim()
+  const nextSku = String(slot.planned_product_sku || '').trim()
+  if (!nextName && !nextSku) return false
+  const currentSku = String(slot.product_sku || '').trim()
+  const differentProduct = nextSku && currentSku ? nextSku !== currentSku : nextName !== String(slot.product_name || '').trim()
+  const differentPrice = slot.planned_price_czk != null && slot.price_czk != null && Number(slot.planned_price_czk) !== Number(slot.price_czk)
+  return Boolean(differentProduct || differentPrice || Number(slot.changeover_new_units || 0) > 0)
+}

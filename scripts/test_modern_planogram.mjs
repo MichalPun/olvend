@@ -10,7 +10,7 @@ const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].repla
 new vm.Script(ui + script)
 const fixture = { id:901, machine_id:58, slot_code:'25', product_name:'Bongo máta', product_sku:'SOCO-BONGO-MATA-40', product_family:'Bongo', product_variant:'Máta', price_czk:16, customer_price_czk:16, capacity_units:13, current_units:7, fill_percent:53.85, active:true, substitution_policy:'same_family', allowed_substitutes:'SKU SOCO-BONGO-MATA-40, SKU SOCO-BONGO-ORIGINAL-40', planned_product_name:null, planned_product_sku:null, note:'Zachovat poznámku', settlement_type:'subsidy_receivable', settlement_amount_czk:2, settlement_partner:'Škola', settlement_billing_enabled:true, settlement_note:'Smlouva' }
 const machine = {id:58,name:'Aria L',machine_type:'snack',evidence_number:'78'}
-const harness = html.replace(/<script[\s\S]*?<\/script>/g,'').replace('</body>', `<script type="module">${ui}\nconst supabase = {};\n${script}\nwindow.pgTest={fillPlanogramForm,openPlanogramModal,closePlanogramModal,getPlanogramPayload,fillCoffeeContainerForm,getCoffeeContainerPayload,bulkPlanogramCandidates,renderPlanogramCabinet, setSlots: slots => {planogramSlots=slots}, render: (slots,machine)=>{detailModalBody.innerHTML=renderPlanogramCabinet(slots,machine);detailModalBackdrop.classList.add('show')}};</script></body>`)
+const harness = html.replace(/<script[\s\S]*?<\/script>/g,'').replace('</body>', `<script type="module">${ui}\nconst supabase = {};\n${script}\nwindow.pgTest={fillPlanogramForm,openPlanogramModal,closePlanogramModal,getPlanogramPayload,fillCoffeeContainerForm,getCoffeeContainerPayload,bulkPlanogramCandidates,hasPlanogramChange,getPlanogramStatus,renderPlanogramCabinet, setSlots: slots => {planogramSlots=slots}, render: (slots,machine)=>{detailModalBody.innerHTML=renderPlanogramCabinet(slots,machine);detailModalBackdrop.classList.add('show')}};</script></body>`)
 const browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE || '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'})
 try {
   const page=await browser.newPage({viewport:{width:1440,height:1000}})
@@ -61,6 +61,11 @@ try {
   assert.equal(await page.locator('#slotContainerUnit').isVisible(),true)
   assert.equal((await page.evaluate(()=>pgTest.getCoffeeContainerPayload())).current_quantity,1500)
   assert.equal(await page.evaluate(slots=>pgTest.bulkPlanogramCandidates([...slots,{...slots[0],id:903,pending_product_sku:'NEXT'},{...slots[0],id:904,active:false}],'Bongo').length,slots),1,'bulk excludes planned, pending and inactive positions')
+  assert.equal(await page.evaluate(slot=>pgTest.hasPlanogramChange({...slot,planned_product_name:slot.product_name,planned_product_sku:slot.product_sku,planned_price_czk:slot.price_czk}),fixture),false)
+  assert.equal(await page.evaluate(slot=>pgTest.hasPlanogramChange({...slot,planned_product_name:slot.product_name,planned_product_sku:slot.product_sku,planned_price_czk:19}),fixture),true)
+  assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({current_units:13,capacity_units:13,fill_percent:0}).label),'OK')
+  assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({current_units:0,capacity_units:13,fill_percent:100}).label),'Doplnit')
+  assert.equal(await page.evaluate(()=>pgTest.getPlanogramStatus({fill_percent:100}).label),'OK')
   assert.deepEqual(errors,[])
   console.log('PASS: real form payload preserved; price-only edit; native validation across tabs; planned-change navigation; mixed stock; coffee container; bulk eligibility; desktop/mobile layout.')
 } finally { await browser.close() }
