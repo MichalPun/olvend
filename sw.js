@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v175-telemetry-list-refresh';
+const CACHE_NAME = 'olvend-v176-compact-machine-summary';
 const APP_SHELL = [
   './',
   './index.html',
