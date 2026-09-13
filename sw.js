@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v174-black-service-labels';
+const CACHE_NAME = 'olvend-v175-telemetry-list-refresh';
 const APP_SHELL = [
   './',
   './index.html',
