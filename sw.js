@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v177-month-to-date-comparison';
+const CACHE_NAME = 'olvend-v178-loose-stock-loading';
 const APP_SHELL = [
   './',
   './index.html',
