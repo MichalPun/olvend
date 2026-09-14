@@ -601,6 +601,8 @@ async function applyPlanogramDepletion(
     provider: string;
     machineId: number;
     ingestId: number | null;
+    deviceId: string;
+    resetDeviceBaseline?: boolean;
     counters: Record<string, unknown>[];
     eventAt: string;
     paymentCounters?: Record<string, unknown> | null;
@@ -610,7 +612,7 @@ async function applyPlanogramDepletion(
 ) {
   const rawPaymentDelta = getPaymentDelta(params.previousPaymentCounters, params.paymentCounters);
   const carriedPaymentCredit = readPendingPaymentCredit(params.previousPaymentCredit, params.eventAt);
-  const paymentDeltaWithCredit = {
+  let paymentDeltaWithCredit = {
     cashQuantity: rawPaymentDelta.cashQuantity + carriedPaymentCredit.cashQuantity,
     cashlessQuantity: rawPaymentDelta.cashlessQuantity + carriedPaymentCredit.cashlessQuantity,
     cashAmount: rawPaymentDelta.cashAmount + carriedPaymentCredit.cashAmount,
@@ -675,6 +677,8 @@ async function applyPlanogramDepletion(
     delta: number;
   }> = [];
 
+  const previousDevices = new Map<number, string>();
+  let deviceBaselineReset = Boolean(params.resetDeviceBaseline);
   for (const slot of slots) {
     const selection = normalizeSelectionCode(slot.slot_code);
     const counter = selectionTotals.get(selection);
@@ -691,13 +695,34 @@ async function applyPlanogramDepletion(
 
     if (previousError) throw previousError;
 
+    // Compare immutable ingest device IDs, even if an earlier failed attempt
+    // already updated machine_telemetry_state to the new device.
+    let changedDevice = Boolean(params.resetDeviceBaseline);
+    if (previous?.last_ingest_id) {
+      const previousIngestId = Number(previous.last_ingest_id);
+      if (!previousDevices.has(previousIngestId)) {
+        const { data: previousIngest, error: ingestError } = await adminClient
+          .from("telemetry_dex_ingests").select("device_id")
+          .eq("id", previousIngestId).maybeSingle();
+        if (ingestError) throw ingestError;
+        previousDevices.set(previousIngestId, String(previousIngest?.device_id || ""));
+      }
+      const previousDevice = previousDevices.get(previousIngestId);
+      changedDevice = changedDevice || Boolean(previousDevice && previousDevice !== params.deviceId);
+    }
+    deviceBaselineReset = deviceBaselineReset || changedDevice;
     const isManualBaseline = Boolean(previous) && !previous?.last_ingest_id;
-    const isInitialCounter = !previous || isManualBaseline;
+    const isInitialCounter = !previous || isManualBaseline || changedDevice;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
     const delta = isInitialCounter ? 0 : Math.max(0, counter.totalCount - previousTotal);
     planned.push({ slot, counter, previous, isManualBaseline, isInitialCounter, selection, previousTotal, delta });
   }
 
+  if (deviceBaselineReset) {
+    // The first report establishes both product and payment baselines. Payment
+    // differences/credits from the previous terminal must not become new sales.
+    paymentDeltaWithCredit = { cashQuantity: 0, cashlessQuantity: 0, cashAmount: 0, cashlessAmount: 0, totalQuantity: 0 };
+  }
   const totalVendDelta = planned.reduce((sum, item) => sum + (item.isInitialCounter ? 0 : item.delta), 0);
   const zeroPriceVendQuantity = planned.reduce((sum, item) => {
     return sum + (isExplicitFreeVendSlot(item.slot, item.selection) ? Math.max(0, item.delta) : 0);
@@ -1437,6 +1462,8 @@ Deno.serve(async (req) => {
       if (previousStateError) throw previousStateError;
 
       const previousCountersPayload = previousState?.counters_payload as Record<string, unknown> | null | undefined;
+      const resetDeviceBaseline = Boolean(previousCountersPayload?.device_id
+        && String(previousCountersPayload.device_id) !== deviceId);
       const previousAllocatedPaymentCounters = previousCountersPayload?.allocated_payment_counters as Record<string, unknown> | null | undefined;
       const previousPaymentCredit = previousCountersPayload?.pending_payment_credit as Record<string, unknown> | null | undefined;
       const nextCountersPayload = {
@@ -1470,6 +1497,8 @@ Deno.serve(async (req) => {
         provider,
         machineId: Number(machineId),
         ingestId: ingest?.id ?? null,
+        deviceId,
+        resetDeviceBaseline,
         counters: parsedDex.product_counters as Record<string, unknown>[],
         eventAt,
         paymentCounters: parsedDex.payment_counters as Record<string, unknown>,
