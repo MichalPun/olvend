@@ -59,7 +59,8 @@ function context(extra = {}) {
     isFoodExpiryExpired: () => false,
     getFoodDailySales: (_detail, slot) => Number(slot.dailySales || 0),
     getFoodDemandTargetQuantity: (_slot, _detail, _sku) => Number(_slot.target_units || _slot.capacity_units || 0),
-    getFoodTransferReservedByBatch: () => new Map()
+    getFoodTransferReservedByBatch: () => new Map(),
+    getFoodSlotProductOptions: (slot) => [slot.product_sku, slot.pending_product_sku, slot.planned_product_sku].filter(Boolean).map(sku => ({sku}))
   })
   vm.runInContext(extractFunction('getFoodRouteAllocatedQuantity'), sandbox)
 
@@ -125,10 +126,10 @@ assert.match(html, /const finalizedReplacement = Boolean\(!fullSwap && replaceme
 assert.match(html, /const finalizedProductSku = finalizedReplacement/)
 assert.match(html, /product_sku: finalizedProductSku/)
 assert.match(html, /current <= capacity \* 0\.1/)
-assert.match(html, /Math\.ceil\(missing \/ packageQuantity\)/)
+assert.match(html, /Math\.floor\(missing \/ packageQuantity\)/)
 assert.doesNotMatch(html, /limitedPackages <= 0\) \{\s*draft\.picked = true\s*draft\.accepted = true/)
 assert.match(html, /const priceOnlyChangeRequired = Boolean\(planogramChange\?\.priceChanged && !planogramChange\.productChanged\)/)
-assert.match(html, /replacementBeingInserted \|\| !planogramChange\.productChanged/)
+assert.match(html, /function foodMachinePriceConfirmationRequired/)
 assert.match(html, /dvě ceny v jedné pozici nejsou bezpečné/)
 assert.match(html, /getFoodProductFamilyPatch\(finalizedProduct\)/)
 assert.match(html, /data-food-action="defer-full-swap"/)

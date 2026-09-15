@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v180-technician-open-services';
+const CACHE_NAME = 'olvend-v181-substitution-allocation';
 const APP_SHELL = [
   './',
   './index.html',

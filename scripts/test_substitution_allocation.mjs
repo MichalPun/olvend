@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const mobile=fs.readFileSync('mobile.html','utf8');
+const inventory=fs.readFileSync('inventory.html','utf8');
+for(const [name,html] of [['mobile',mobile],['inventory',inventory]])for(const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new vm.SourceTextModule(m[1],{identifier:name});
+const products=[{id:1,sku:'SOCO-BONGO-ORIGINAL-40',active:true},{id:2,sku:'SOCO-BONGO-MATA-40',active:true},{id:3,sku:'SOCO-RAWBAR-APPLE',active:true}];
+const slot={id:10,machine_id:1,product_sku:products[0].sku,product_family:'Bongo',substitution_policy:'same_family',capacity_units:6,current_units:0};
+const ctx=vm.createContext({state:{products},normalizeText:x=>String(x).toLowerCase(),getFoodPlanogramChange:()=>null,getFoodRequiredFillQuantity:()=>6,getFoodSlotDraft:()=>({fillItems:[],pickedQuantity:0}),getFoodAvailableVehicleQuantity:(detail,stop,slot,id)=>detail.vehicleStock[id]||0,isFoodExpiryExpired:()=>false,getFoodDemandTargetQuantity:()=>6,getFoodDailySales:()=>1,getFoodTransferReservedByBatch:()=>new Map()});
+for(const [start,end] of [['getFoodProductFamilyPatch','normalizeFoodExpiryDate'],['getFoodSlotProductOptions','getFoodSlotComposition'],['getFoodRouteAllocatedQuantity','getRouteStopUrgency'],['getFoodPickSuggestion','prefillFoodRecommendedPicks']]) {
+ const from=mobile.indexOf('    function '+start+'('),to=mobile.indexOf('    '+(end==='getRouteStopUrgency'?'async ':'')+'function '+end+'(',from);assert.ok(from>=0&&to>from);vm.runInContext(mobile.slice(from,to),ctx);
+}
+const detail={vehicleStock:{1:0,2:6},routePlanningContext:{loaded:true,routeSlots:[slot,{...slot,id:20,machine_id:2}],stopOrderByMachine:new Map([['1',0],['2',1]])}};
+let result=ctx.getFoodPickSuggestion(detail,1,slot);
+assert.equal(result.product.id,2,'Select mint when original has zero stock with route planning loaded');
+assert.equal(result.quantity,3,'Split available replacement across two remaining machines');
+assert.equal(ctx.getFoodRouteAllocatedQuantity(detail,2,{...slot,id:20,machine_id:2},products[1],6),3);
+assert.equal(ctx.getFoodSlotProductOptions(slot).some(p=>p.id===3),false,'Do not mix Bongo and RawBar');
+result=ctx.getFoodPickSuggestion({...detail,vehicleStock:{1:0,2:0}},1,slot);assert.equal(result.quantity,0);
+result=ctx.getFoodPickSuggestion({...detail,vehicleStock:{1:6,2:6}},1,slot);assert.equal(result.product.id,1,'Keep available original');
+result=ctx.getFoodPickSuggestion({...detail,routePlanningContext:null},1,slot);assert.equal(result.product.id,2);assert.equal(result.quantity,6);
+ctx.getFoodPlanogramChange=()=>({fullSwap:true,productChanged:true,nextSku:products[0].sku,nextProduct:products[0]});
+ctx.getFoodSlotDraft=()=>({fillItems:[{productId:2}],manualProductChoice:true,pickedQuantity:3});
+result=ctx.getFoodPickSuggestion(detail,1,slot);assert.equal(result.product.id,2,'Preserve manually chosen approved flavour during full swap');
+const load=vm.createContext({productsV13:products,getAutoLoadFlavorGroup:p=>p.sku.startsWith('SOCO-BONGO-')?{matches:p=>p.sku.startsWith('SOCO-BONGO-')}:null});
+vm.runInContext(inventory.slice(inventory.indexOf('    function isAutoLoadApprovedFlavorChange('),inventory.indexOf('    function getAutoLoadGroupMembers(')),load);
+const change={substitution_policy:'approved_list',allowed_substitutes:'SKU SOCO-BONGO-ORIGINAL-40, SKU SOCO-BONGO-MATA-40'};
+assert.equal(load.isAutoLoadApprovedFlavorChange(change,products[0]),true);
+assert.equal(load.isAutoLoadApprovedFlavorChange({...change,substitution_policy:'exact'},products[0]),false);
+assert.equal(load.isAutoLoadApprovedFlavorChange({...change,allowed_substitutes:''},products[0]),false);
+assert.match(inventory,/!isAutoLoadApprovedFlavorChange/);
+assert.equal(ctx.getFoodSlotProductOptions({...slot,substitution_policy:'exact'}).length,1,'Exact policy must not silently expand family');
+assert.equal(ctx.getFoodSlotProductOptions({...slot,substitution_policy:'approved_list',allowed_substitutes:'SKU SOCO-BONGO-MATA-40'}).length,2);
+console.log('PASS: empty original, correct family, route-wide replacement allocation, no stock, original preference, changeover flavour permissions, module syntax');

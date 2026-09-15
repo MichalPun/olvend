@@ -8677,7 +8677,7 @@
       const since = new Date(Date.now() - 28 * 86400000).toISOString()
       const [slotsResult, salesResult] = await Promise.all([
         supabase.from('machine_planogram_slots')
-          .select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,target_units,replenishment_mode,expiry_date,pending_product_sku,pending_product_name,pending_change_mode,pending_change_effective_date,planned_product_sku,planned_product_name,changeover_old_units,changeover_new_units,active')
+          .select('id,machine_id,slot_code,product_sku,product_name,current_units,capacity_units,target_units,replenishment_mode,expiry_date,pending_product_sku,pending_product_name,pending_change_mode,pending_change_effective_date,planned_product_sku,planned_product_name,changeover_old_units,changeover_new_units,product_family,substitution_policy,allowed_substitutes,active')
           .in('machine_id', machineIds)
           .eq('active', true),
         loadRouteSalesSummary(machineIds, since)
@@ -8734,8 +8734,8 @@
       if (!requested || !context?.loaded || !product?.id || getFoodPlanogramChange(slot)?.fullSwap) return requested
       const sku = String(product.sku || slot?.product_sku || '')
       const candidates = context.routeSlots
-        .filter((candidate) => [candidate.product_sku, candidate.pending_product_sku, candidate.planned_product_sku]
-          .some((candidateSku) => String(candidateSku || '') === sku))
+        .filter((candidate) => getFoodSlotProductOptions(candidate)
+          .some((option) => String(option.sku || '') === sku))
         .map((candidate) => {
           const current = isFoodExpiryExpired(candidate.expiry_date) ? 0 : Math.max(0, Number(candidate.current_units || 0))
           const capacity = Math.max(0, Number(candidate.capacity_units || 0))
@@ -10050,11 +10050,13 @@
     }
 
     function getFoodSlotProductOptions(slot) {
-      const skus = [slot?.product_sku, slot?.pending_product_sku, slot?.planned_product_sku, ...(slot?._familyAlternativeSkus || [])]
+      const familyAllowed = ['same_family', 'operator_choice'].includes(slot?.substitution_policy)
+      const listAllowed = familyAllowed || slot?.substitution_policy === 'approved_list'
+      const skus = [slot?.product_sku, slot?.pending_product_sku, slot?.planned_product_sku, ...(familyAllowed ? slot?._familyAlternativeSkus || [] : [])]
       const allowed = String(slot?.allowed_substitutes || '')
-      for (const match of allowed.matchAll(/SKU\s*([A-Za-z0-9_-]+)/gi)) skus.push(match[1])
+      if (listAllowed) for (const match of allowed.matchAll(/SKU\s*([A-Za-z0-9_-]+)/gi)) skus.push(match[1])
       const familyLabel = normalizeText([slot?.product_family, slot?.product_name, slot?.planned_product_name].filter(Boolean).join(' '))
-      if (familyLabel.includes('nestea')) {
+      if (familyAllowed && familyLabel.includes('nestea')) {
         state.products
           .filter((product) => product.active !== false && normalizeText(product.name).includes('nestea'))
           .forEach((product) => skus.push(product.sku))
@@ -10062,13 +10064,13 @@
       const primaryProduct = state.products.find((product) => String(product.sku || '') === String(slot?.product_sku || ''))
       const isAtmSlot = [slot?.product_name, slot?.planned_product_name, primaryProduct?.name]
         .some((name) => normalizeText(name).startsWith('atm'))
-      if (isAtmSlot) {
+      if (familyAllowed && isAtmSlot) {
         state.products
           .filter((product) => product.active !== false && normalizeText(product.name).startsWith('atm'))
           .forEach((product) => skus.push(product.sku))
       }
       const configuredFamily = String(slot?.product_family || getFoodProductFamily(primaryProduct) || '').trim()
-      if (configuredFamily) {
+      if (familyAllowed && configuredFamily) {
         state.products
           .filter((product) => product.active !== false && getFoodProductFamily(product) === configuredFamily)
           .forEach((product) => skus.push(product.sku))
@@ -10670,20 +10672,20 @@
       const selected = options.find((product) => String(product.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId || '')) || primary
       const selectedExplicitly = Boolean(draft.manualProductChoice || draft.pickedQuantity > 0)
       const availability = (product) => product ? getFoodAvailableVehicleQuantity(detail, stopId, slot.id, product.id) : 0
-      let product = planogramChange?.fullSwap ? primary : selectedExplicitly ? selected : primary
+      let product = selectedExplicitly && (!planogramChange?.fullSwap || isFoodProductFamilyAlternative(selected, replacementProduct)) ? selected : primary
       let desired = getFoodRouteAllocatedQuantity(detail, stopId, slot, product, localDesired)
       if (planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) <= 0) {
         const alternative = options
           .filter((candidate) => isFoodProductFamilyAlternative(candidate, replacementProduct))
-          .map((candidate) => ({ product: candidate, available: availability(candidate) }))
+          .map((candidate) => ({ product: candidate, available: Math.min(availability(candidate), getFoodRouteAllocatedQuantity(detail, stopId, slot, candidate, localDesired)) }))
           .filter((candidate) => candidate.available > 0)
           .sort((a,b) => Number(b.available >= desired) - Number(a.available >= desired) || b.available - a.available)[0]
         if (alternative) product = alternative.product
       }
-      if (!planogramChange?.fullSwap && !selectedExplicitly && desired > 0 && availability(product) <= 0) {
+      if (!planogramChange?.fullSwap && !selectedExplicitly && localDesired > 0 && availability(product) <= 0) {
         const alternative = options
           .filter((candidate) => String(candidate.id) !== String(primary?.id || ''))
-          .map((candidate) => ({ product: candidate, available: availability(candidate) }))
+          .map((candidate) => ({ product: candidate, available: Math.min(availability(candidate), getFoodRouteAllocatedQuantity(detail, stopId, slot, candidate, localDesired)) }))
           .filter((candidate) => candidate.available > 0)
           .sort((a,b) => Number(b.available >= desired) - Number(a.available >= desired) || b.available - a.available)[0]
         if (alternative && alternative.available > availability(product)) product = alternative.product
