@@ -3268,10 +3268,20 @@
       quickSocoOrderStatus.textContent = `${selected.length} z ${rows.length} produktů · ${cartons} kartonů · ${pieces} ks. Ceny jsou orientační podle nákupních karet; před odesláním je zkontroluj.`
       quickSocoOrderStatus.className = `status-line ${selected.length ? 'success' : 'error'}`
     }
-    function openQuickSocoOrderModal() {
-      buildQuickSocoOrderRows({ reset: true })
-      renderQuickSocoOrder()
-      quickSocoOrderModalBackdrop.classList.add('show')
+    async function openQuickSocoOrderModal() {
+      quickSocoOrderBtn.disabled = true
+      try {
+        const result = await loadAllWarehouseBalances()
+        if (result.error) throw result.error
+        setWarehouseBalances(result.data)
+        buildQuickSocoOrderRows({ reset: true })
+        renderQuickSocoOrder()
+        quickSocoOrderModalBackdrop.classList.add('show')
+      } catch (error) {
+        setStatus(`Stav skladu pro SOCO se nepodařilo načíst: ${error.message}`, 'error')
+      } finally {
+        quickSocoOrderBtn.disabled = false
+      }
     }
     function closeQuickSocoOrderModal() {
       quickSocoOrderModalBackdrop.classList.remove('show')
@@ -4563,6 +4573,35 @@
       }
       return createdCount
     }
+    function setWarehouseBalances(balanceRows) {
+      const warehouseMap = new Map(warehouses.map((item) => [String(item.id), item]))
+      const stockLocationMap = new Map(stockLocations.map((item) => [String(item.id), item]))
+      warehouseBalancesByProduct = new Map()
+      ;balanceRows.forEach((balance) => {
+        const location = stockLocationMap.get(String(balance.stock_location_id))
+        const warehouse = warehouseMap.get(String(location?.warehouse_id))
+        if (!location || location.active === false || warehouse?.active === false) return
+        if (normalizeText(warehouse?.code || '') === 'automaty' || normalizeText(location.name || '') === 'automaty') return
+        const productKey = String(balance.product_id)
+        warehouseBalancesByProduct.set(productKey, Number(warehouseBalancesByProduct.get(productKey) || 0) + Number(balance.quantity_on_hand || 0))
+      })
+    }
+    async function loadAllWarehouseBalances() {
+      const data = []
+      const pageSize = 500
+      for (let from = 0; ; from += pageSize) {
+        const result = await supabase.from('stock_location_balances')
+          .select('id, stock_location_id, product_id, quantity_on_hand, stock_locations!inner(location_type)')
+          .eq('stock_locations.location_type', 'warehouse')
+          .neq('quantity_on_hand', 0)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (result.error) return { data: null, error: result.error }
+        const page = result.data || []
+        data.push(...page)
+        if (page.length < pageSize) return { data, error: null }
+      }
+    }
     async function loadAllPurchaseOrderItems() {
       const pageSize = 1000
       const data = []
@@ -4596,7 +4635,7 @@
           supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, purchase_price, sale_price, vat_rate, expiry_tracking_mode, requires_batch_tracking, active, note').eq('active', true).order('name', { ascending: true }),
           supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
           supabase.from('supplier_order_rules').select('*'),
-          supabase.from('stock_location_balances').select('stock_location_id, product_id, quantity_on_hand'),
+          loadAllWarehouseBalances(),
           supabase.from('app_settings').select('key, value').eq('key', 'company_profile').maybeSingle()
         ])
         if (recommendationsResult.error || recurringOrdersResult.error || recurringItemsResult.error || purchaseProfilesResult.error || suppliersResult.error || ordersResult.error || itemsResult.error || warehousesResult.error || stockLocationsResult.error || productsResult.error || productPackagesResult.error || stockBalancesResult.error) {
@@ -4617,17 +4656,7 @@
         stockLocations = stockLocationsResult.data || []
         products = productsResult.data || []
         companyProfile = companyProfileResult.error ? {} : (companyProfileResult.data?.value || {})
-        const warehouseMap = new Map(warehouses.map((item) => [String(item.id), item]))
-        const stockLocationMap = new Map(stockLocations.map((item) => [String(item.id), item]))
-        warehouseBalancesByProduct = new Map()
-        ;(stockBalancesResult.data || []).forEach((balance) => {
-          const location = stockLocationMap.get(String(balance.stock_location_id))
-          const warehouse = warehouseMap.get(String(location?.warehouse_id))
-          if (!location || location.active === false || warehouse?.active === false) return
-          if (normalizeText(warehouse?.code || '') === 'automaty' || normalizeText(location.name || '') === 'automaty') return
-          const productKey = String(balance.product_id)
-          warehouseBalancesByProduct.set(productKey, Number(warehouseBalancesByProduct.get(productKey) || 0) + Number(balance.quantity_on_hand || 0))
-        })
+        setWarehouseBalances(stockBalancesResult.data || [])
         productPackagesByProduct = new Map()
         ;(productPackagesResult.data || []).forEach((pack) => {
           const key = String(pack.product_id)
