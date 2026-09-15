@@ -50,6 +50,7 @@
         </div>
         <div class="summary"><span>Dnešní režim</span><strong id="startSummary">Vyberte dopravu · kombinovaný den</strong></div>
         <button class="primary full" id="startShift" type="button">Zahájit směnu</button>
+        <button class="secondary full" style="margin-top:12px" data-nav="new-service" type="button">+ Nový servis bez zahájení směny</button>
       </section>
 
       <section class="screen" data-screen="today">
@@ -67,6 +68,7 @@
       </section>
 
       <section class="screen" data-screen="new-service">
+        <button class="back" data-nav="today" type="button">← Zpět</button>
         <div class="intro"><span class="eyebrow">NOVÝ SERVIS</span><h1>Založit servis</h1><p>Servis se uloží do stejné evidence jako PC požadavky a rovnou se přiřadí vám.</p></div>
         <div class="field-grid">
           <label class="field">Lokalita<select id="newServiceLocation"><option value="">— Vyberte lokalitu —</option></select></label>
@@ -122,7 +124,7 @@
     const taskKey = (type,id) => `${type}:${id}`
 
     function message(text, tone='') { const toast=$('#toast'); toast.textContent=text; toast.className=`toast ${tone}`; toast.hidden=false; clearTimeout(message.timer); message.timer=setTimeout(()=>toast.hidden=true,3600) }
-    function show(screen) { $$('.screen').forEach(item=>item.classList.toggle('active',item.dataset.screen===screen)); $('#headerTitle').textContent={loading:'Načítám',start:'Zahájení směny',today:'Dnes',tasks:'Úkoly','new-service':'Nový servis',detail:'Detail úkolu',end:'Ukončení směny'}[screen]||'Technik'; $('#nav').hidden=['loading','start','detail'].includes(screen); $$('[data-nav]').forEach(item=>item.classList.toggle('active',item.dataset.nav===screen)); window.scrollTo({top:0,behavior:'smooth'}) }
+    function show(screen) { if(['today','end'].includes(screen)&&!state.attendance?.actual_start)screen='start'; $$('.screen').forEach(item=>item.classList.toggle('active',item.dataset.screen===screen)); $('#headerTitle').textContent={loading:'Načítám',start:'Zahájení směny',today:'Dnes',tasks:'Úkoly','new-service':'Nový servis',detail:'Detail úkolu',end:'Ukončení směny'}[screen]||'Technik'; $('#nav').hidden=['loading','start','detail'].includes(screen)||!state.attendance?.actual_start; $$('[data-nav]').forEach(item=>item.classList.toggle('active',item.dataset.nav===screen)); window.scrollTo({top:0,behavior:'smooth'}) }
     function updateClock(){ $('#clock').textContent=new Date().toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'}) }
     function getBreakState(){ let open=null; [...state.events].sort((a,b)=>String(a.event_time).localeCompare(String(b.event_time))).forEach(event=>{if(event.event_type==='break_start')open=event;if(event.event_type==='break_end')open=null});return open }
     function durationMinutes(){ if(!state.attendance?.actual_start)return 0; const end=state.attendance.actual_end?new Date(state.attendance.actual_end):new Date(); return Math.max(0,Math.round((end-new Date(state.attendance.actual_start))/60000)-Number(state.attendance.break_minutes||0)) }
@@ -165,8 +167,12 @@
     function isPlannedToday(sourceType,sourceId){
       return state.plan.some(item=>String(item.source_type||'')===String(sourceType)&&String(item.source_id||'')===String(sourceId))
     }
+    function assignedOpenDue(item,done,date){
+      return !done&&String(item.assigned_employee_id)===String(state.employee.id)&&(!date||String(date).slice(0,10)<=today)
+    }
     function serviceBelongsToToday(item){
-      return isPlannedToday('service_request',item.id)
+      return assignedOpenDue(item,serviceDone(item),item.due_date)
+        || isPlannedToday('service_request',item.id)
         || dateIsToday(item.due_date)
         || happenedToday(item.created_at)
         || happenedToday(item.service_started_at)
@@ -174,7 +180,8 @@
         || String(item.status||'')==='in_progress'
     }
     function jobBelongsToToday(item){
-      return isPlannedToday('technical_job',item.id)
+      return assignedOpenDue(item,jobDone(item),item.planned_date||item.due_at)
+        || isPlannedToday('technical_job',item.id)
         || dateIsToday(item.planned_date)
         || dateIsToday(item.due_at)
         || happenedToday(item.created_at)
@@ -227,7 +234,7 @@
         if(result.error&&/assigned_at/i.test(result.error.message||'')){delete payload.assigned_at;result=await supabase.from('service_requests').insert([payload])}
         if(result.error)throw result.error
         $('#newServiceTitle').value='';$('#newServiceDescription').value='';$('#newServicePriority').value='normal'
-        await loadData();show('today');renderToday();message('Servis je založený, přiřazený vám a viditelný v PC.','success')
+        await loadData();message('Servis je založený, přiřazený vám a viditelný v PC.','success')
       }finally{button.disabled=false;button.textContent='Založit a převzít servis'}
     }
     function renderToday(){

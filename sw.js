@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v179-soco-warehouse-stock';
+const CACHE_NAME = 'olvend-v180-technician-open-services';
 const APP_SHELL = [
   './',
   './index.html',
