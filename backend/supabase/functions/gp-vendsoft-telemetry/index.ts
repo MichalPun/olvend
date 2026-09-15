@@ -198,7 +198,7 @@ function parseDexSummary(rawDex: string, fallbackDeviceId = "", fallbackEventAt:
     if (record.code === "PA2") {
       current.pa2 = record.fields;
       current.count_total = Number(record.fields[0] || record.fields[2] || 0);
-      current.value_total = Number(record.fields[1] || record.fields[3] || 0);
+      current.value_total = nullableTelemetryPrice(record.fields[1] || record.fields[3]);
       current.count_cash = 0;
       current.count_cashless = 0;
     }
@@ -483,7 +483,7 @@ async function reconcilePendingUnpaidDispenses(
 
   const { data: pending, error: pendingError } = await adminClient
     .from("telemetry_sales_events")
-    .select("id,quantity,unit_price_czk,total_amount_czk,cash_quantity,cashless_quantity,unknown_payment_quantity,unpaid_dispense_quantity,cash_amount_czk,cashless_amount_czk,unknown_payment_amount_czk")
+    .select("id,quantity,price_source,unit_price_czk,total_amount_czk,cash_quantity,cashless_quantity,unknown_payment_quantity,unpaid_dispense_quantity,cash_amount_czk,cashless_amount_czk,unknown_payment_amount_czk")
     .eq("provider", params.provider)
     .eq("machine_id", params.machineId)
     .gt("unpaid_dispense_quantity", 0)
@@ -499,7 +499,7 @@ async function reconcilePendingUnpaidDispenses(
     const saleId = Number(sale.id || 0);
     const unpaid = Math.max(0, Math.floor(Number(sale.unpaid_dispense_quantity || 0)));
     const unitPrice = Number(sale.unit_price_czk || 0);
-    if (!saleId || !unpaid || unitPrice <= 0) continue;
+    if (!saleId || !unpaid || unitPrice <= 0 || sale.price_source === 'planogram_estimate') continue;
     pendingById.set(saleId, sale);
     for (let index = 0; index < unpaid && unpaidUnits.length < maximumPendingUnits; index += 1) {
       unpaidUnits.push({ selection: String(saleId), priceAmount: priceToPaymentAmount(unitPrice) });
@@ -619,7 +619,7 @@ async function applyPlanogramDepletion(
     cashlessAmount: rawPaymentDelta.cashlessAmount + carriedPaymentCredit.cashlessAmount,
     totalQuantity: rawPaymentDelta.totalQuantity + carriedPaymentCredit.cashQuantity + carriedPaymentCredit.cashlessQuantity,
   };
-  const selectionTotals = new Map<string, { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string }>();
+  const selectionTotals = new Map<string, { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string; valueTotal: number | null }>();
 
   params.counters.forEach((counter) => {
     const selection = normalizeSelectionCode(counter.selection);
@@ -641,6 +641,7 @@ async function applyPlanogramDepletion(
         cashlessCount,
         totalCount,
         eventAt: String(counter.last_vend_at || params.eventAt),
+        valueTotal: nullableTelemetryPrice(counter.value_total),
       });
     }
   });
@@ -654,7 +655,7 @@ async function applyPlanogramDepletion(
 
   const { data: slots, error: slotsError } = await adminClient
     .from("machine_planogram_slots")
-    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, customer_price_czk, dex_price_czk, planned_product_name, planned_product_sku, planned_price_czk, changeover_old_units, changeover_new_units, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
+    .select("id, slot_code, product_name, product_sku, current_units, capacity_units, price_czk, customer_price_czk, dex_price_czk, planned_product_name, planned_product_sku, planned_price_czk, changeover_old_units, changeover_new_units, settlement_type, settlement_amount_czk, settlement_partner, settlement_billing_enabled, settlement_note, subsidy_amount_czk, subsidy_payer, subsidy_billing_enabled, subsidy_note")
     .eq("machine_id", params.machineId)
     .eq("active", true);
 
@@ -668,7 +669,7 @@ async function applyPlanogramDepletion(
 
   const planned: Array<{
     slot: Record<string, unknown>;
-    counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string };
+    counter: { selection: string; cashCount: number; cashlessCount: number; totalCount: number; eventAt: string; valueTotal: number | null };
     previous: Record<string, unknown> | null;
     isManualBaseline: boolean;
     isInitialCounter: boolean;
@@ -678,6 +679,7 @@ async function applyPlanogramDepletion(
   }> = [];
 
   const previousDevices = new Map<number, string>();
+  const previousProducts = new Map<number, Record<string, unknown>[]>();
   let deviceBaselineReset = Boolean(params.resetDeviceBaseline);
   for (const slot of slots) {
     const selection = normalizeSelectionCode(slot.slot_code);
@@ -702,10 +704,11 @@ async function applyPlanogramDepletion(
       const previousIngestId = Number(previous.last_ingest_id);
       if (!previousDevices.has(previousIngestId)) {
         const { data: previousIngest, error: ingestError } = await adminClient
-          .from("telemetry_dex_ingests").select("device_id")
+          .from("telemetry_dex_ingests").select("device_id,raw_dex")
           .eq("id", previousIngestId).maybeSingle();
         if (ingestError) throw ingestError;
         previousDevices.set(previousIngestId, String(previousIngest?.device_id || ""));
+        previousProducts.set(previousIngestId, parseDexSummary(String(previousIngest?.raw_dex || "")).product_counters);
       }
       const previousDevice = previousDevices.get(previousIngestId);
       changedDevice = changedDevice || Boolean(previousDevice && previousDevice !== params.deviceId);
@@ -715,7 +718,15 @@ async function applyPlanogramDepletion(
     const isInitialCounter = !previous || isManualBaseline || changedDevice;
     const previousTotal = Number(previous?.last_total_count ?? counter.totalCount);
     const delta = isInitialCounter ? 0 : Math.max(0, counter.totalCount - previousTotal);
-    planned.push({ slot, counter, previous, isManualBaseline, isInitialCounter, selection, previousTotal, delta });
+    const oldCounter = (previousProducts.get(Number(previous?.last_ingest_id)) || [])
+      .filter((row) => normalizeSelectionCode(row.selection) === selection && Number(row.count_total) === previousTotal);
+    const terminalPrice = !isInitialCounter && oldCounter.length === 1
+      ? terminalCounterUnitPrice(previousTotal, oldCounter[0].value_total, counter.totalCount, counter.valueTotal)
+      : null;
+    // An ephemeral price override is used by payment allocation only; never overwrite the planogram.
+    const pricedSlot = { ...slot, _planogramPrice: slot.customer_price_czk ?? slot.price_czk ?? slot.dex_price_czk,
+      _terminalPrice: terminalPrice, customer_price_czk: terminalPrice ?? slot.customer_price_czk ?? slot.price_czk ?? slot.dex_price_czk };
+    planned.push({ slot: pricedSlot, counter, previous, isManualBaseline, isInitialCounter, selection, previousTotal, delta });
   }
 
   if (deviceBaselineReset) {
@@ -746,8 +757,8 @@ async function applyPlanogramDepletion(
       paymentDeltaWithCredit.totalQuantity - freeCashQuantity - freeCashlessQuantity,
     ),
   };
-  const availablePaymentAmounts = slots
-    .map((slot) => priceToPaymentAmount(Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0)))
+  const availablePaymentAmounts = planned
+    .map(({slot}) => priceToPaymentAmount(Number(slot.customer_price_czk ?? slot.dex_price_czk ?? 0)))
     .filter((amount) => amount > 0);
   const paymentAllocations = allocatePaymentDeltas(planned, totalVendDelta, paymentDelta, availablePaymentAmounts);
   const allocatedCash = [...paymentAllocations.values()].reduce((sum, allocation) => sum + allocation.cashDelta, 0);
@@ -823,7 +834,7 @@ async function applyPlanogramDepletion(
         cashless_quantity: allocate(cashlessDelta, newSold), free_vend_quantity: allocate(freeVendDelta, newSold),
         unknown_payment_quantity: allocate(unknownPaymentDelta, newSold),
         unpaid_dispense_quantity: allocate(unpaidDispenseDelta, newSold),
-        unit_price_czk: nullableTelemetryPrice(slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk),
+        unit_price_czk: nullableTelemetryPrice(slot._terminalPrice ?? slot.planned_price_czk ?? slot.customer_price_czk ?? slot.dex_price_czk),
       } : null,
     ].filter(Boolean).map((part: any) => ({
         provider: params.provider,
@@ -832,12 +843,15 @@ async function applyPlanogramDepletion(
         planogram_slot_id: slot.id,
         selection_code: selection,
         ...part,
-        total_amount_czk: part.unit_price_czk != null
+        price_source: slot._terminalPrice != null ? 'dex_counter_delta' : 'planogram_estimate',
+        terminal_unit_price_czk: slot._terminalPrice,
+        planogram_unit_price_czk: slot._planogramPrice,
+        total_amount_czk: slot._terminalPrice != null && part.unit_price_czk != null
           ? Math.round((part.cash_quantity + part.cashless_quantity + part.unknown_payment_quantity) * part.unit_price_czk * 100) / 100
           : null,
-        cash_amount_czk: part.unit_price_czk != null ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
-        cashless_amount_czk: part.unit_price_czk != null ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
-        unknown_payment_amount_czk: part.unit_price_czk != null ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
+        cash_amount_czk: slot._terminalPrice != null && part.unit_price_czk != null ? Math.round(part.cash_quantity * part.unit_price_czk * 100) / 100 : null,
+        cashless_amount_czk: slot._terminalPrice != null && part.unit_price_czk != null ? Math.round(part.cashless_quantity * part.unit_price_czk * 100) / 100 : null,
+        unknown_payment_amount_czk: slot._terminalPrice != null && part.unit_price_czk != null ? Math.round(part.unknown_payment_quantity * part.unit_price_czk * 100) / 100 : null,
         source_event_at: counter.eventAt,
       }));
     const { data: savedSaleParts, error: salesEventError } = await adminClient
@@ -1046,6 +1060,16 @@ function buildPendingPaymentCredit(
 
 function priceToPaymentAmount(priceCzk: number) {
   return Number.isFinite(priceCzk) && priceCzk > 0 ? Math.round(priceCzk * 100) : 0;
+}
+
+// IMA monetary counters are in minor currency units. Use adjacent counters from the SAME device.
+// PA1 product_index is not trusted as a price; resets and absent amounts must remain unverified.
+function terminalCounterUnitPrice(oldCount: unknown, oldValue: unknown, newCount: unknown, newValue: unknown) {
+  const values = [oldCount, oldValue, newCount, newValue].map(nullableTelemetryPrice);
+  if (values.some((v) => v == null)) return null;
+  const [oc, ov, nc, nv] = values as number[];
+  if (nc <= oc || nv < ov) return null;
+  return (nv - ov) / (nc - oc) / 100;
 }
 
 function nullableTelemetryPrice(value: unknown) {

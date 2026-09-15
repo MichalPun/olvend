@@ -2298,6 +2298,13 @@
         detail.planogram = planogramData ?? []
       }
 
+      const priceResult = await supabase.from('telemetry_sales_events')
+        .select('selection_code,terminal_unit_price_czk,price_source,source_event_at')
+        .eq('machine_id', machineId).not('price_source', 'is', null)
+        .order('source_event_at', { ascending: false }).limit(500)
+      detail.priceObservations = priceResult.data || []
+      detail.priceCheckUnavailable = Boolean(priceResult.error)
+
       const telemetryError = telemetryLinksError || telemetryStateError
       if (telemetryError) {
         const message = String(telemetryError.message || '').toLowerCase()
@@ -2475,6 +2482,7 @@
                 <small>Poslední DEX: ${escapeHtml(telemetryLastSeen)}</small>
               </div>
             </div>
+            ${renderTerminalPriceChecks(planogram, detailData.priceObservations, detailData.priceCheckUnavailable)}
             <div class="machine-telemetry">
               <div class="machine-telemetry-field">
                 <label for="detailStockCriticalPercent">Kritická zásoba pod (%)</label>
@@ -2802,6 +2810,26 @@
         active: buttonPayload.active,
         note: 'Zrcadlový slot pro telemetrii kávy. Stav surovin se drží v kávových zásobnících.'
       }
+    }
+
+    function renderTerminalPriceChecks(slots, observations, unavailable) {
+      const formatMoney = value => Number(value).toLocaleString('cs-CZ', { style: 'currency', currency: 'CZK' })
+      const latest = new Map()
+      for (const row of observations || []) {
+        const code = String(row.selection_code).replace(/^0+(?=\d)/, '')
+        if (!latest.has(code)) latest.set(code, row)
+      }
+      const checks = slots.filter(slot => slot.active !== false && String(slot.slot_code) !== '0').map(slot => {
+        const row = latest.get(String(slot.slot_code).replace(/^0+(?=\d)/, ''))
+        const planned = slot.customer_price_czk ?? slot.price_czk
+        const actual = row?.terminal_unit_price_czk
+        const known = actual != null && row?.price_source === 'dex_counter_delta'
+        const differs = known && planned != null && Math.abs(Number(actual) - Number(planned)) > 0.01
+        const message = !known ? 'Cenu nelze ověřit' : differs ? 'Rozdílná cena' : 'Cena souhlasí'
+        return { differs, html: `<li style="margin:8px 0;overflow-wrap:anywhere"><strong>${escapeHtml(message)} · pozice ${escapeHtml(slot.slot_code)}</strong> · ${escapeHtml(slot.product_name || '')}<br>Plánogram: ${planned == null ? '—' : escapeHtml(formatMoney(planned))} · Terminál: ${known ? escapeHtml(formatMoney(actual)) : 'neověřeno'}${row?.source_event_at ? `<small> · ${escapeHtml(formatDateTime(row.source_event_at))}</small>` : ''}</li>` }
+      })
+      const count = checks.filter(row => row.differs).length
+      return `<details style="padding:14px;border-top:1px solid #ddd" ${count ? 'open' : ''}><summary><strong>Kontrola cen${count ? ` · ${count} nesouladů` : ''}</strong></summary><p>Cena z terminálu je průměr skutečně vykázané částky na výdej mezi dvěma zprávami. Plánogram se automaticky nepřepisuje. Bez nové zprávy nelze ověřit změnu ceny.</p>${unavailable ? '<p>Kontrola cen není nyní dostupná.</p>' : `<ul>${checks.sort((a,b) => Number(b.differs)-Number(a.differs)).map(row => row.html).join('')}</ul>`}</details>`
     }
 
     async function savePlanogramSlot() {
