@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v182-terminal-prices';
+const CACHE_NAME = 'olvend-v183-technician-route';
 const APP_SHELL = [
   './',
   './index.html',
