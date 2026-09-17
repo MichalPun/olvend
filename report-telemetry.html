@@ -545,7 +545,7 @@
     const FONT_REGULAR_URL = './assets/fonts/Aptos-Narrow.ttf';
     const FONT_BOLD_URL = './assets/fonts/Aptos-Narrow-Bold.ttf';
     let telemetryLoadSequence = 0;
-    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], outlookRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], filteredOutlookRows: [], products: [], machines: [], locations: [], stockLocations: [], outlookMeta: {}, currentOutput: [], compareRange: null, jsPdfPromise:null, fontPromise:null };
+    const state = { activeReport: reports.some((report) => report.key === initialReport) ? initialReport : 'sales-product', rows: [], compareRows: [], fillRows: [], compareFillRows: [], outlookRows: [], filteredRows: [], filteredCompareRows: [], filteredFillRows: [], filteredCompareFillRows: [], filteredOutlookRows: [], products: [], productsBySku: new Map(), productsByName: new Map(), machines: [], locations: [], stockLocations: [], outlookMeta: {}, currentOutput: [], compareRange: null, jsPdfPromise:null, fontPromise:null };
     const els = {
       status: document.getElementById('statusLine'),
       refresh: document.getElementById('refreshBtn'),
@@ -582,12 +582,55 @@
     function normalize(value) {
       return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     }
+    function cleanTelemetryProductName(value) {
+      return String(value ?? '').trim().replace(/\s+/g, ' ').replace(/\s+NEW$/i, '').trim();
+    }
+    function indexProductCatalog(products = []) {
+      const bySku = new Map();
+      const byName = new Map();
+      products.forEach((product) => {
+        const sku = normalize(product?.sku);
+        const name = normalize(cleanTelemetryProductName(product?.name));
+        const prefer = (map, key) => {
+          if (!key) return;
+          const current = map.get(key);
+          if (!current || (product.active && !current.active)) map.set(key, product);
+        };
+        prefer(bySku, sku);
+        prefer(byName, name);
+      });
+      state.productsBySku = bySku;
+      state.productsByName = byName;
+    }
+    function catalogProductForRow(row) {
+      const sku = normalize(row?.product_sku);
+      if (sku && state.productsBySku.has(sku)) return state.productsBySku.get(sku);
+      const name = normalize(cleanTelemetryProductName(row?.product_name));
+      return name ? state.productsByName.get(name) || null : null;
+    }
     function readableTelemetryProductName(row) {
-      const productName = String(row?.product_name || '').trim();
+      const productName = cleanTelemetryProductName(row?.product_name);
       if (String(row?.selection_code || '').trim() === '0' && /^telemetrie prodej kava(?:\s+new)?$/i.test(normalize(productName))) {
         return 'Kávový nápoj – druh neurčen';
       }
       return productName;
+    }
+    function canonicalizeTelemetryRow(row) {
+      const product = catalogProductForRow(row);
+      const productName = readableTelemetryProductName({ ...row, product_name: product?.name || row?.product_name });
+      return {
+        ...row,
+        source_product_name: row?.product_name || '',
+        product_name: productName || cleanTelemetryProductName(row?.product_name) || row?.product_sku || 'Bez produktu',
+        product_sku: product?.sku || row?.product_sku || ''
+      };
+    }
+    function telemetryProductKey(row) {
+      const sku = normalize(row?.product_sku);
+      return sku ? `sku:${sku}` : `name:${normalize(row?.product_name) || 'bez-produktu'}`;
+    }
+    function telemetryProductLabel(row) {
+      return row?.product_name || row?.product_sku || 'Bez produktu';
     }
     function dedupeTelemetryRows(rows = []) {
       const source = [...rows];
@@ -654,9 +697,11 @@
       return `<span class="delta ${cls}">${escapeHtml(`${arrow} ${formatter(value)}${suffix}`)}</span>`;
     }
     function getProductKind(product) {
-      if (product?.product_category && product.product_category !== 'beverage_ready') return product.product_category;
       const match = String(product?.note || '').match(/\[olvend_product_kind:([a-z_]+)\]/);
-      return match?.[1] || product?.product_category || product?.usage_type || '';
+      if (match?.[1]) return match[1];
+      if (/Zdrojový typ:\s*Teplé nápoje/i.test(String(product?.note || ''))) return 'hot_drink';
+      if (product?.product_category && product.product_category !== 'beverage_ready') return product.product_category;
+      return product?.product_category || product?.usage_type || '';
     }
     function getProductTypeLabel(value) {
       return {
@@ -765,9 +810,7 @@
       els.to.value = toInputDate(today);
     }
     function productCost(row) {
-      const keySku = normalize(row.product_sku);
-      const keyName = normalize(row.product_name);
-      const product = state.products.find((item) => (keySku && normalize(item.sku) === keySku) || (keyName && normalize(item.name) === keyName));
+      const product = catalogProductForRow(row);
       const cost = Number(product?.purchase_price || 0);
       const hasVatRate = product?.vat_rate != null && product.vat_rate !== '';
       const vatRate = hasVatRate ? Number(product.vat_rate || 0) : DEFAULT_VAT_RATE;
@@ -1179,7 +1222,7 @@
         `).join('')}</div>` : '<div class="notice">Ve vybraném období zatím nejsou pohyby doplnění do automatů.</div>';
         return;
       }
-      const top = aggregate(rows, (row) => row.product_name || row.product_sku || 'Bez produktu').slice(0, 5);
+      const top = aggregate(rows, telemetryProductKey, (row) => ({ label: telemetryProductLabel(row), sku: row.product_sku || '' })).slice(0, 5);
       const max = Math.max(1, ...top.map((row) => row.revenue));
       els.side.innerHTML = top.length ? `<div class="rank-list">${top.map((row) => `
         <div class="rank-row">
@@ -1206,20 +1249,28 @@
         const parts = [];
         if (byDay) parts.push(dateKey(row.source_event_at));
         if (byWeek) parts.push(weekKey(row.source_event_at));
-        if (byProduct) parts.push(row.product_name || row.product_sku || 'Bez produktu');
+        if (byProduct) parts.push(telemetryProductKey(row));
         if (byMachine) parts.push(row.machine_id || row.machine_name || 'Automat');
         if (byLocation) parts.push(row.location_name || 'Bez lokality');
         return parts.join(' · ');
       };
-      const seedFn = (row) => ({
-        ...(byMachine ? { label: row.machine_name || 'Automat' } : {}),
-        product: row.product_name || row.product_sku || 'Bez produktu',
-        sku: byProduct ? (row.product_sku || '') : '',
-        machineCode: row.machine_code || '',
-        machine: row.machine_name || '',
-        location: row.location_name || '',
-        date: byDay ? dateKey(row.source_event_at) : byWeek ? weekKey(row.source_event_at) : ''
-      });
+      const seedFn = (row) => {
+        const labelParts = [];
+        if (byDay) labelParts.push(dateKey(row.source_event_at));
+        if (byWeek) labelParts.push(weekKey(row.source_event_at));
+        if (byProduct) labelParts.push(telemetryProductLabel(row));
+        if (byMachine) labelParts.push(row.machine_name || 'Automat');
+        if (byLocation) labelParts.push(row.location_name || 'Bez lokality');
+        return {
+          label: labelParts.join(' · '),
+          product: telemetryProductLabel(row),
+          sku: byProduct ? (row.product_sku || '') : '',
+          machineCode: row.machine_code || '',
+          machine: row.machine_name || '',
+          location: row.location_name || '',
+          date: byDay ? dateKey(row.source_event_at) : byWeek ? weekKey(row.source_event_at) : ''
+        };
+      };
       const compareGroupRows = aggregate(state.filteredCompareRows, keyFn, seedFn);
       const baseGroupRows = attachComparison(aggregate(rows, keyFn, seedFn), compareGroupRows);
       const groupRows = byProduct && !byDay && !byWeek ? withProductCategorySubtotals(baseGroupRows) : baseGroupRows;
@@ -1314,8 +1365,8 @@
       table(columns, rows, allRows);
     }
     function renderProfitLoss() {
-      const keyFn = (row) => row.product_name || row.product_sku || 'Bez produktu';
-      const seedFn = (row) => ({ sku: row.product_sku || '' });
+      const keyFn = telemetryProductKey;
+      const seedFn = (row) => ({ label: telemetryProductLabel(row), sku: row.product_sku || '' });
       const rows = attachComparison(aggregate(state.filteredRows, keyFn, seedFn), aggregate(state.filteredCompareRows, keyFn, seedFn));
       table([
         { label: 'Produkt', key: 'label', render: (row) => `<span class="strong">${escapeHtml(row.label)}</span>${row.sku ? `<span class="sub">SKU ${escapeHtml(row.sku)}</span>` : ''}`, csv: (row) => row.label },
@@ -1590,11 +1641,12 @@
         const transfersByMachine = groupTransfers(transfers);
         state.compareRange = compareRange;
         state.products = products;
+        indexProductCatalog(products);
         state.machines = machines;
         state.locations = locations;
         state.stockLocations = stockLocations;
-        state.rows = enrichRows(salesRows, machines, locations, transfersByMachine);
-        state.compareRows = enrichRows(compareRows, machines, locations, transfersByMachine);
+        state.rows = enrichRows(salesRows, machines, locations, transfersByMachine).map(canonicalizeTelemetryRow);
+        state.compareRows = enrichRows(compareRows, machines, locations, transfersByMachine).map(canonicalizeTelemetryRow);
         state.fillRows = enrichFillRows(fillRows, stockLocations, machines, locations, products, transfersByMachine);
         state.compareFillRows = enrichFillRows(compareFillRows, stockLocations, machines, locations, products, transfersByMachine);
         state.outlookRows = outlookData.rows || [];

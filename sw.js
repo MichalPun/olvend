@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v183-technician-route';
+const CACHE_NAME = 'olvend-v184-telemetry-product-canonicalization';
 const APP_SHELL = [
   './',
   './index.html',
