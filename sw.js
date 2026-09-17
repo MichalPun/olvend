@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v185-technician-service-stock';
+const CACHE_NAME = 'olvend-v186-stock-package-defaults';
 const APP_SHELL = [
   './',
   './index.html',
