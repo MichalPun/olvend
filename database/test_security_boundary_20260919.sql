@@ -3,6 +3,14 @@ begin;
 select set_config('test.operator',(select auth_user_id::text from public.employees where active and role='operator' and auth_user_id is not null limit 1),true);
 select set_config('test.manager',(select auth_user_id::text from public.employees where active and role='admin' and auth_user_id is not null limit 1),true);
 select set_config('test.inactive',(select auth_user_id::text from public.employees where active is false and auth_user_id is not null limit 1),true);
+-- Missing fixtures must fail; NULL identities must never silently weaken a test.
+do $$ begin
+ if nullif(current_setting('test.operator',true),'') is null
+ or nullif(current_setting('test.manager',true),'') is null
+ or nullif(current_setting('test.inactive',true),'') is null then
+   raise exception 'Security test requires an active operator, active admin and inactive employee';
+ end if;
+end $$;
 set local role authenticated;
 select set_config('request.jwt.claims',jsonb_build_object('sub',current_setting('test.operator'),'role','authenticated')::text,true);
 do $$ declare n integer; begin

@@ -17,6 +17,13 @@ Zamestnance se nemaji zakladat rucne v Supabase Auth. Frontend OLVEND ma vytvori
 
 Soubor: `database/employees_auth_setup.sql`
 
+Bezpečnostní aktualizace 19. 9. 2026: tento skript vyžaduje již nainstalované
+funkce `has_manager_access()` a `security_active_employee()`. Přímý zápis smí
+provádět pouze vedení, čtení úplných profilů jen příslušný zaměstnanec nebo vedení.
+Anonymní přístup není povolen. Kontrola role v Edge Function sama nestačí:
+stejná pravidla musí vynucovat databáze. Při obnově použít aktuální bezpečnostní
+migrace a postup v `docs/security-release-checks.md`.
+
 Doplni do `employees`:
 
 - `auth_user_id`
