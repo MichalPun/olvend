@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v191-hlucin-regular-sales';
+const CACHE_NAME = 'olvend-v192-security-qr';
 const APP_SHELL = [
   './',
   './index.html',

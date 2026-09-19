@@ -584,35 +584,20 @@
     }
 
     async function loadMachineByQr(qrToken) {
-      const { data: machineData, error: machineError } = await supabase
-        .from('machines')
-        .select('*')
-        .eq('qr_token', qrToken)
-        .maybeSingle()
-
-      if (machineError) throw machineError
-      if (!machineData) throw new Error(`QR token ${qrToken} teď neodpovídá žádnému stroji.`)
-      machine = machineData
-
-      const tasks = [
-        machine.location_id
-          ? supabase.from('locations').select('id, name, city').eq('id', machine.location_id).maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-        supabase
-          .from('service_requests')
+      const { data, error } = await supabase.rpc('get_public_machine_by_qr', { p_qr_token: qrToken })
+      if (error) throw error
+      if (!data?.machine) throw new Error('QR kód neodpovídá žádnému automatu.')
+      machine = data.machine
+      location = data.location || null
+      openRequests = []
+      if (session) {
+        const { data: requests, error: requestsError } = await supabase.from('service_requests')
           .select('id, title, description, status, created_at, updated_at')
-          .eq('machine_id', machine.id)
-          .not('status', 'in', '(done,cancelled)')
+          .eq('machine_id', machine.id).not('status', 'in', '(done,cancelled)')
           .order('updated_at', { ascending: false })
-      ]
-
-      const [{ data: locationData, error: locationError }, { data: requestsData, error: requestsError }] = await Promise.all(tasks)
-
-      if (locationError) throw locationError
-      if (requestsError) throw requestsError
-
-      location = locationData || null
-      openRequests = requestsData || []
+        if (requestsError) throw requestsError
+        openRequests = requests || []
+      }
     }
 
     async function submitPublicRequest(event) {
@@ -635,20 +620,12 @@
         description ? `Popis: ${description}` : ''
       ].filter(Boolean)
 
-      const payload = {
-        location_id: machine.location_id,
-        machine_id: machine.id,
-        title: getIssueTitle(issueType),
-        description: detailParts.join(' · '),
-        priority,
-        status: 'new'
-      }
-
-      const { data: createdRequest, error } = await supabase
-        .from('service_requests')
-        .insert([payload])
-        .select('id')
-        .single()
+      const { data: createdRequest, error } = await supabase.rpc('submit_public_service_request', {
+        p_qr_token: machine.qr_token,
+        p_title: getIssueTitle(issueType),
+        p_description: detailParts.join(' · '),
+        p_priority: priority
+      })
       if (error) throw error
 
       const { error: notificationError } = await supabase.functions.invoke('process-service-request-notifications', {
@@ -675,7 +652,8 @@
         const qrToken = params.get('qr')
         if (!qrToken) throw new Error('V odkazu chybí QR token automatu.')
 
-        await Promise.all([loadSession(), loadMachineByQr(qrToken)])
+        await loadSession()
+        await loadMachineByQr(qrToken)
 
         renderHero()
         renderMachineDetails()
