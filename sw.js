@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v193-security-access';
+const CACHE_NAME = 'olvend-v194-security-verified';
 const APP_SHELL = [
   './',
   './index.html',

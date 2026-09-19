@@ -23,4 +23,15 @@ const start=html.indexOf('async function loadMachineByQr('),end=html.indexOf('as
 const context=vm.createContext({supabase:{rpc:async()=>({data:{machine:{id:58},location:{name:'Test'}}}),from:()=>{throw Error('Anonymous QR must not read tables')}},session:null,machine:null,location:null,openRequests:[]});
 vm.runInContext(html.slice(start,end),context);
 await context.loadMachineByQr('test-token');assert.equal(context.machine.id,58);assert.equal(context.openRequests.length,0);
+for (const test of [{session:null,active:false,redirect:true},{session:{user:{id:'test'}},active:false,redirect:true},{session:{user:{id:'test'}},active:true,redirect:false}]) {
+  let redirect=null;
+  const client={auth:{getSession:async()=>({data:{session:test.session}}),signOut:async()=>({})},rpc:async()=>({data:test.active})};
+  const sandbox=vm.createContext({window:{location:{pathname:'/machines.html',replace:url=>{redirect=url}},setTimeout:()=>{}}});
+  const module=new vm.SourceTextModule(fs.readFileSync('supabase.js','utf8'),{context:sandbox});
+  await module.link(specifier => specifier.includes('supabase-js')
+    ? new vm.SyntheticModule(['createClient'],function(){this.setExport('createClient',()=>client)},{context:sandbox})
+    : new vm.SyntheticModule(['installPrivateFileLinks'],function(){this.setExport('installPrivateFileLinks',()=>{})},{context:sandbox}));
+  if(test.redirect)await assert.rejects(module.evaluate());else await module.evaluate();
+  assert.equal(redirect,test.redirect?'index.html':null);
+}
 console.log('PASS: application syntax, private file origin/path handling and signed links, anonymous QR uses restricted RPC only');
