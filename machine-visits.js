@@ -72,7 +72,7 @@ export function initMachineVisits(container, supabase, machineId) {
       const ids = [...new Set(visits.map(v => v.employee_id).filter(Boolean))]
       let employees = []
       if (ids.length) {
-        const result = await supabase.from('employees').select('id,name,surname').in('id', ids)
+        const result = await supabase.from('employee_directory').select('id,name,surname').in('id', ids)
         if (result.error) throw result.error
         employees = result.data || []
       }

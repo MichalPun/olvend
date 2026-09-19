@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { installPrivateFileLinks } from './secure-files.js'
 
 export const supabaseUrl = 'https://rerjlkrhiytgscjerqgs.supabase.co'
 export const supabaseAnonKey = 'sb_publishable_A8OxCcapdNXAzQLjLsW5iA_XtGvBZ0S'
@@ -104,4 +105,21 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   global: { fetch: offlineAwareFetch }
 })
 
+// UI guard complements database authorization; it is not the security boundary.
+const publicPages = new Set(['', 'index.html', 'machine-qr.html', 'route-skip-approval.html'])
+const pageName = window.location.pathname.split('/').pop()
+if (!publicPages.has(pageName)) {
+  const { data: sessionData } = await supabase.auth.getSession()
+  if (!sessionData?.session) {
+    window.location.replace('index.html')
+    throw new Error('Pro pokračování se přihlaste.')
+  }
+  const { data: active, error } = await supabase.rpc('security_active_employee')
+  if (error || active !== true) {
+    if (!error || error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
+    window.location.replace('index.html')
+    throw new Error('Přístup vyžaduje aktivní zaměstnanecký účet.')
+  }
+}
+installPrivateFileLinks(supabase, supabaseUrl)
 window.setTimeout(() => syncOfflineRequests(), 0)

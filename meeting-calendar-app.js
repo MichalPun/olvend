@@ -32,7 +32,7 @@ async function load() {
   await requireManager()
   const from = key(state.weekStart); const toDate = new Date(state.weekStart); toDate.setDate(toDate.getDate() + 4); const to = key(toDate)
   const [employees, settings, shifts, routes, blocks, meetings] = await Promise.all([
-    supabase.from('employees').select('id,name,surname,role,active').eq('active', true).order('surname'),
+    supabase.from('employee_directory').select('id,name,surname,role,active').eq('active', true).order('surname'),
     supabase.from('meeting_calendar_settings').select('*').eq('id', 1).single(),
     supabase.from('shift_plan_days').select('*').gte('plan_date', from).lte('plan_date', to).eq('status', 'published'),
     supabase.from('route_plans').select('id,planning_date,planned_employee_id,planned_departure_time,estimated_drive_minutes,estimated_service_minutes,execution_status').gte('planning_date', from).lte('planning_date', to),

@@ -104,7 +104,7 @@ export function createVehicleShiftSwitch({ supabase, onSaved }) {
         supabase.from('route_plans').select('id, title, estimated_distance_km')
           .eq('planned_employee_id', day.employee_id).eq('planning_date', day.attendance_date)
           .eq('vehicle_id', vehicle.id).eq('execution_status', 'done'),
-        supabase.from('employees').select('name, surname').eq('id', day.employee_id).single()
+        supabase.from('employee_directory').select('name, surname').eq('id', day.employee_id).single()
       ])
       for (const result of [logs, vehicles, plans, employee]) if (result.error) throw result.error
       const open = logs.data.filter((log) => log.status === 'open' && !log.ended_at)

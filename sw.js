@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v192-security-qr';
+const CACHE_NAME = 'olvend-v193-security-access';
 const APP_SHELL = [
   './',
   './index.html',
@@ -9,6 +9,7 @@ const APP_SHELL = [
   './vendor/leaflet/leaflet.js',
   './route-skip-approval.html',
   './supabase.js',
+  './secure-files.js',
   './machines-planogram.css?v=20260913d',
   './machines-planogram-ui.js?v=20260913b',
   './machine-visits.js?v=20260913',
