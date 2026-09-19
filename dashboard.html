@@ -6935,16 +6935,7 @@
       return changed;
     }
 
-    function renderHlucinTerminalRevenue(data, periodLabel) {
-      const body = data?.error
-        ? `<p>Souhrn terminálu se nepodařilo načíst. ${escapeHtml(data.error)}</p>`
-        : !data || !Number(data.intervals)
-          ? '<p>Pro vybrané období zatím nemáme dvě použitelná odečtení počítadel.</p>'
-          : `<div class="telemetry-sales-summary"><div class="summary-cell"><span>Tržba terminálu</span><strong>${escapeHtml(formatMoney(data.revenue))}</strong></div><div class="summary-cell"><span>Počet prodejů</span><strong>${escapeHtml(data.quantity)} ks</strong></div><div class="summary-cell"><span>Hotově</span><strong>${escapeHtml(formatMoney(data.cash))}</strong></div><div class="summary-cell"><span>Kartou</span><strong>${escapeHtml(formatMoney(data.card))}</strong></div></div>`;
-      return `<section class="telemetry-panel span-2" data-telemetry-key="hlucin-terminal"><div class="telemetry-panel-head"><h3>Hlučín · Aria EV 78 · souhrn terminálu</h3><span>${escapeHtml(periodLabel)}</span></div>${body}<p>Tržba podle rozdílu počítadel terminálu 597848, bez rozpisu produktů. Samostatný přehled; nepřičítá se znovu k položkovým prodejům výše. Zásobu ani zisk z něj neurčujeme.</p>${data?.last_seen?`<p>Poslední odečet: ${escapeHtml(new Date(data.last_seen).toLocaleString("cs-CZ"))}.</p>`:''}${data?.partial?'<p>Část období není pokryta dostupnými odečty. Zobrazen je pouze doložený přírůstek.</p>':''}${Number(data?.skipped)?`<p>${escapeHtml(data.skipped)} intervalů se změnou nebo nesouladem počítadel nebylo započteno.</p>`:''}</section>`;
-    }
-
-    function renderTelemetrySales({ rows = [], coffeeRows = [], foodRows = [], telemetryCoverage = null, terminalRevenue = null, totals = {}, dayRows = [], topProducts = [], topLocations = [], topLocationsByQuantity = [], lowStock = [], expiryRows = [], initialInventory = [], error = "" } = {}) {
+    function renderTelemetrySales({ rows = [], coffeeRows = [], foodRows = [], telemetryCoverage = null, totals = {}, dayRows = [], topProducts = [], topLocations = [], topLocationsByQuantity = [], lowStock = [], expiryRows = [], initialInventory = [], error = "" } = {}) {
       if (!telemetrySalesSummary || !telemetryCommandGrid || !telemetrySalesTable || !telemetryControlGrid || !telemetrySalesNote) return;
       const quantity = Number(totals.quantity || 0);
       const revenue = Number(totals.revenue || 0);
@@ -6975,7 +6966,6 @@
       ]);
 
       const commandGridChanged = patchTelemetryBlocks(telemetryCommandGrid, "command", [
-        { key: "hlucin-terminal", html: renderHlucinTerminalRevenue(terminalRevenue, periodLabel) },
         { key: "trend", html: `<section class="telemetry-panel span-2" data-telemetry-key="trend">
           <div class="telemetry-panel-head"><h3>Trend telemetrických prodejů</h3><span>14 dní · struktura plateb a tržba</span></div>
           ${renderTelemetryTrendBars(dayRows)}
@@ -7171,6 +7161,7 @@
         return date >= range.compareStart && date < range.compareEnd;
       };
       const calculate = (sourceRows) => sourceRows.reduce((total, row) => {
+        if (row.selection_code === "TERMINAL_SUMMARY") return total;
         const sku = String(row.product_sku || "").trim();
         const name = String(row.product_name || "").trim().toLocaleLowerCase("cs-CZ");
         const product = (sku && productsBySku.get(sku)) || (!sku && name ? productsByName.get(name) : null);
@@ -7201,7 +7192,7 @@
       const trendStart = new Date(todayStart);
       trendStart.setDate(todayStart.getDate() - 13);
       const fetchStart = new Date(Math.min(range.compareStart.getTime(), trendStart.getTime()));
-      const [recentResult, telemetryAggregate, telemetryProfitResult, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult, terminalRevenueResult] = await Promise.all([
+      const [recentResult, telemetryAggregate, telemetryProfitResult, lowStockRows, coffeeContainersResult, telemetryLinksResult, telemetryStatesResult, inventoriedItemsResult, productsResult, serviceRulesResult, upcomingRoutesResult] = await Promise.all([
         supabase
           .from("telemetry_sales_events")
           .select("id, provider, machine_id, planogram_slot_id, selection_code, product_name, product_sku, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, price_source, terminal_unit_price_czk, planogram_unit_price_czk, unit_price_czk, total_amount_czk, cash_amount_czk, cashless_amount_czk, unknown_payment_amount_czk, source_event_at, created_at")
@@ -7243,8 +7234,7 @@
           .gte("planning_date", getDateKey(todayStart))
           .neq("execution_status", "cancelled")
           .order("planning_date", { ascending: true })
-          .limit(200),
-        supabase.rpc("get_hlucin_terminal_revenue", { p_start: range.start.toISOString(), p_end: range.end.toISOString() })
+          .limit(200)
       ]);
       const telemetryProfit = telemetryProfitResult || await loadDashboardTelemetryProfitFallback(range);
 
@@ -7701,7 +7691,7 @@
         items: [...problemCoverageItems, ...pausedCoverageItems].sort((a, b) => a.machine_label.localeCompare(b.machine_label, "cs"))
       };
 
-      return { rows: enrichedRows, coffeeRows, foodRows, telemetryCoverage, terminalRevenue: terminalRevenueResult.error ? { error: terminalRevenueResult.error.message } : terminalRevenueResult.data, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, expiryRows, initialInventory };
+      return { rows: enrichedRows, coffeeRows, foodRows, telemetryCoverage, totals, dayRows, topProducts, topLocations, topLocationsByQuantity, lowStock, expiryRows, initialInventory };
     }
 
     async function renderTelemetrySalesDashboard(options = {}) {
@@ -8468,9 +8458,11 @@
       let revenue = 0;
       let cost = 0;
       let movementCount = 0;
-      const addFinanceProductRow = ({ key, name, sku = "", typeKey = "", typeLabel = "", quantity = 0, itemRevenue = 0, itemCost = 0, date = "", rowCount = 1 }) => {
+      let unvaluedRevenue = 0;
+      const addFinanceProductRow = ({ key, name, sku = "", typeKey = "", typeLabel = "", quantity = 0, itemRevenue = 0, itemCost = 0, itemUnvaluedRevenue = 0, date = "", rowCount = 1 }) => {
         revenue += itemRevenue;
         cost += itemCost;
+        unvaluedRevenue += itemUnvaluedRevenue;
         movementCount += Number(rowCount || 0);
         const currentProduct = productRows.get(key) || {
           name,
@@ -8484,6 +8476,7 @@
         currentProduct.quantity += quantity;
         currentProduct.revenue += itemRevenue;
         currentProduct.cost += itemCost;
+        currentProduct.unvaluedRevenue = (currentProduct.unvaluedRevenue || 0) + itemUnvaluedRevenue;
         currentProduct.sku = currentProduct.sku || sku;
         currentProduct.typeKey = currentProduct.typeKey || typeKey;
         currentProduct.typeLabel = currentProduct.typeLabel || typeLabel;
@@ -8493,7 +8486,7 @@
           const currentDay = dailyRows.get(date) || { date, revenue: 0, cost: 0, profit: 0 };
           currentDay.revenue += itemRevenue;
           currentDay.cost += itemCost;
-          currentDay.profit += itemRevenue - itemCost;
+          currentDay.profit += itemRevenue - itemCost - itemUnvaluedRevenue;
           dailyRows.set(date, currentDay);
         }
         const splitKey = typeKey || "other";
@@ -8506,6 +8499,7 @@
         };
         currentType.revenue += itemRevenue;
         currentType.cost += itemCost;
+        currentType.unvaluedRevenue = (currentType.unvaluedRevenue || 0) + itemUnvaluedRevenue;
         currentType.quantity += quantity;
         currentType.label = currentType.label || typeLabel || getProductTypeLabel(splitKey);
         typeRows.set(splitKey, currentType);
@@ -8583,6 +8577,7 @@
           quantity: qty,
           itemRevenue,
           itemCost,
+          itemUnvaluedRevenue: telemetryRow.product_name === "Denní souhrn – bez rozpisu produktu" && !product ? itemRevenue : 0,
           date: String(telemetryRow.sale_date || ""),
           rowCount: Number(telemetryRow.event_count || 0)
         });
@@ -8606,15 +8601,15 @@
         stockSplitMap.set(splitKey, (stockSplitMap.get(splitKey) || 0) + value);
         return sum + value;
       }, 0);
-      const profit = revenue - cost;
+      const profit = revenue - cost - unvaluedRevenue;
       const sortKey = filters.sort || "revenue";
       const sortAccessor = {
         name: (row) => row.name || "",
         revenue: (row) => row.revenue,
         cost: (row) => row.cost,
-        profit: (row) => row.revenue - row.cost,
+        profit: (row) => row.revenue - row.cost - (row.unvaluedRevenue || 0),
         quantity: (row) => row.quantity,
-        margin: (row) => row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0
+        margin: (row) => row.revenue > 0 ? ((row.revenue - row.cost - (row.unvaluedRevenue || 0)) / row.revenue) * 100 : 0
       }[sortKey] || ((row) => row.revenue);
       const compareFinanceProducts = (a, b) => {
         const aValue = sortAccessor(a);
@@ -8641,8 +8636,8 @@
         typeSplit: Array.from(typeRows.values())
           .map((row) => ({
             ...row,
-            profit: row.revenue - row.cost,
-            margin: row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0
+            profit: row.revenue - row.cost - (row.unvaluedRevenue || 0),
+            margin: row.revenue > 0 ? ((row.revenue - row.cost - (row.unvaluedRevenue || 0)) / row.revenue) * 100 : 0
           }))
           .filter((row) => Math.abs(row.revenue) > 0 || Math.abs(row.cost) > 0)
           .sort((a, b) => b.revenue - a.revenue)
@@ -8650,13 +8645,13 @@
         sortKey,
         sortDirection: filters.sortDirection,
         products: Array.from(productRows.values())
-          .map((row) => ({ ...row, profit: row.revenue - row.cost, margin: row.revenue > 0 ? ((row.revenue - row.cost) / row.revenue) * 100 : 0 }))
+          .map((row) => ({ ...row, profit: row.revenue - row.cost - (row.unvaluedRevenue || 0), margin: row.revenue > 0 ? ((row.revenue - row.cost - (row.unvaluedRevenue || 0)) / row.revenue) * 100 : 0 }))
           .filter((row) => !filters.productSearch || normalizeText([row.name, row.sku, row.typeLabel].join(" ")).includes(filters.productSearch))
           .filter((row) => !filters.productType || row.typeKey === filters.productType)
           .filter((row) => Number(row.revenue || 0) >= filters.minRevenue)
           .sort(compareFinanceProducts)
           .slice(0, 25),
-        warning: movementCount ? "" : `Zatím nejsou zapsané prodejky, vystavené doklady ani telemetrické prodeje pro období ${filters.periodLabel}.`
+        warning: unvaluedRevenue > 0 ? "Tržby zahrnují souhrnné prodeje bez rozpisu produktu. Jejich zisk nelze určit a není započten." : movementCount ? "" : `Zatím nejsou zapsané prodejky, vystavené doklady ani telemetrické prodeje pro období ${filters.periodLabel}.`
       };
     }
 
