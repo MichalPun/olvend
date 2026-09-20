@@ -6496,7 +6496,7 @@
             reasons.push('odklad nezakládám, po skutečné jízdě zůstává položka na autě')
           }
           if (deferredAfterLoadQty > 0.0001 && approvedQty > 0) reasons.push(`zbytek ${formatQuantityValue(deferredAfterLoadQty, product.base_unit || 'ks')} zůstane odložený`)
-          if (warehouseLooseLoad) reasons.push(`vychystat jednotlivě ${formatQuantityValue(approvedQty, product.base_unit || 'ks')} z dostupné zásoby; není dost na navržená celá balení`)
+          if (warehouseLooseLoad) reasons.push(`vychystat jednotlivě ${formatQuantityValue(approvedQty, product.base_unit || 'ks')} podle potřeby trasy`)
           if (warehouseShortageQty > 0.0001) {
             reasons.push(`z potřebného množství chybí ${formatQuantityValue(warehouseShortageQty, product.base_unit || 'ks')} · sklad má ${formatQuantityValue(Math.max(0, warehouseQty), product.base_unit || 'ks')}`)
           }
@@ -6573,12 +6573,11 @@
     }
     function limitAutoLoadToWarehouse(product, plannedQuantity, requiredQuantity, warehouseQuantity) {
       const planned = Math.max(0, Number(plannedQuantity || 0))
-      const required = Math.min(planned, Math.max(0, Number(requiredQuantity || 0)))
       const stock = Math.max(0, Number(warehouseQuantity || 0))
       const available = normalizeText(product?.base_unit || 'ks') === 'ks' ? Math.floor(stock + 0.0001) : stock
-      // Celá balení preferujeme jen pokud jsou dostupná. Zbytek skladu může pokrýt trasu po kusech.
-      const quantity = Number((planned <= available + 0.0001 ? Math.min(planned, available) : Math.min(required, available)).toFixed(3))
-      return { quantity, shortage: Math.max(0, Number((required - quantity).toFixed(3))) }
+      // Požadavek trasy se podle účetní zásoby nekrátí; rozdíl je pouze upozornění.
+      const quantity = Number(planned.toFixed(3))
+      return { quantity, shortage: Math.max(0, Number((quantity - available).toFixed(3))) }
     }
     function getAutoLoadApprovedPackageCount(row, quantity) {
       const packageQty = Number(row?.packageQty || 0)
@@ -6602,10 +6601,6 @@
       const row = autoLoadRows.find((item) => String(item.product?.id) === String(productId))
       if (!row) throw new Error('Upravovanou položku už v návrhu nemám. Přepočítej vychystání.')
       const quantity = normalizeAutoLoadApprovedQuantity(row.product, input.value)
-      const availableQty = Math.max(0, Number(row.warehouseQty || 0))
-      if (quantity > availableQty + 0.0001) {
-        throw new Error(`${row.product.name}: sklad může vydat nejvýše ${formatQuantityValue(availableQty, row.product.base_unit || 'ks')}.`)
-      }
       const added = Boolean(row.manualAdded)
       autoLoadManualOverrides.set(String(productId), { quantity, added })
       applyAutoLoadManualQuantity(row, quantity, { added })
@@ -6753,7 +6748,7 @@
             <td data-label="Balení"><strong>${escapeHtml(row.packageQty > 0 ? formatQuantityValue(row.packageQty, unit) : 'není')}</strong><span class="subtext">${escapeHtml(row.package?.package_name || 'Doplň v kartě zásoby')}</span></td>
             <td data-label="Návrh"><strong class="${statusClass}">${escapeHtml(suggestedLabel)}</strong><span class="subtext">${escapeHtml(suggestedNote)} · sklad ${escapeHtml(formatQuantityValue(row.warehouseQty, unit))}</span></td>
             <td data-label="K vychystání"><label class="auto-load-approved-control"><input type="number" min="0" step="${escapeHtml(getAutoLoadOperationalStep(row.product))}" value="${escapeHtml(Number(row.approvedQty || 0))}" data-auto-load-approved data-product-id="${escapeHtml(row.product.id)}" aria-label="Množství k vychystání ${escapeHtml(row.product.name || '')}" /><span>${escapeHtml(unit)}</span></label><span class="subtext">${row.manualOverride ? 'ručně upraveno' : 'lze změnit před odesláním'}</span></td>
-            <td data-label="Celá balení"><strong>${escapeHtml(automaticPackageCount > 0 ? `${automaticPackageCount} bal.` : automaticQty > 0 ? 'jednotlivě' : '-')}</strong><span class="subtext">${escapeHtml(automaticQty > row.requiredFromNew + 0.0001 ? `zbytek ${formatQuantityValue(automaticQty - row.requiredFromNew, unit)} na autě` : automaticQty > 0 ? row.warehouseShortageQty > 0 ? 'část potřeby nepokryta' : 'přesně pokryje potřebu' : 'bez vychystání')}</span></td>
+            <td data-label="Celá balení"><strong>${escapeHtml(automaticPackageCount > 0 ? `${automaticPackageCount} bal.` : automaticQty > 0 ? 'jednotlivě' : '-')}</strong><span class="subtext">${escapeHtml(automaticQty > row.requiredFromNew + 0.0001 ? `zbytek ${formatQuantityValue(automaticQty - row.requiredFromNew, unit)} na autě` : automaticQty > 0 ? row.warehouseShortageQty > 0 ? 'výdej může snížit sklad do minusu' : 'přesně pokryje potřebu' : 'bez vychystání')}</span></td>
             <td data-label="Riziko / důvod"><span class="auto-load-reason">${escapeHtml(row.reasons.join(' · '))}</span></td>
           </tr>
         `
@@ -6803,10 +6798,6 @@
       syncAutoLoadApprovedInputs()
       const rows = autoLoadRows.filter((row) => row.approvedQty > 0)
       if (!rows.length) throw new Error('Není tu žádná položka k vychystání.')
-      const invalidStockRow = rows.find((row) => Number(row.approvedQty || 0) > Math.max(0, Number(row.warehouseQty || 0)) + 0.0001)
-      if (invalidStockRow) {
-        throw new Error(`${invalidStockRow.product.name}: sklad nemá potvrzené množství. Přepočítej vychystání nebo vyber náhradu.`)
-      }
       const vehicleId = Number(autoLoadVehicle?.value || 0)
       const warehouseId = Number(autoLoadWarehouse?.value || 0)
       const employeeId = autoLoadEmployee?.value || ''
@@ -8900,7 +8891,7 @@
       const sourceLocation = getMobilePickSourceLocation(row)
       const product = productsV13.find((candidate) => String(candidate.id) === String(item.product_id))
       // Fyzický odpis je zdroj skutečnosti; chybějící šarže nesmí zablokovat jeho převzetí.
-      const expiryRequired = isAuditExpiryTracked(product) && row?.request_type !== 'vehicle_writeoff'
+      const expiryRequired = isAuditExpiryTracked(product) && !['vehicle_writeoff', 'vehicle_order', 'vehicle_load'].includes(row?.request_type)
       let balances = stockBalancesV13
         .filter((balance) => String(balance.stock_location_id) === String(sourceLocation?.id)
           && String(balance.product_id) === String(item.product_id)
@@ -8953,7 +8944,7 @@
         const dateLabel = expiry ? new Date(expiry).toLocaleDateString('cs-CZ') : 'bez expirace'
         return `${formatQuantityValue(entry.quantity, allocation.unit)} · ${dateLabel}`
       })
-      if (allocation.remaining > 0.0001) parts.push(`CHYBÍ ${formatQuantityValue(allocation.remaining, allocation.unit)}`)
+      if (allocation.remaining > 0.0001) parts.push(`${['vehicle_order', 'vehicle_load'].includes(row?.request_type) ? 'Výdej do minusu' : 'CHYBÍ'} ${formatQuantityValue(allocation.remaining, allocation.unit)}`)
       return {
         ...allocation,
         label: parts.join(' + ') || (allocation.expiryRequired ? 'CHYBÍ ŠARŽE S EXPIRACÍ' : 'Bez dostupné zásoby')
@@ -9316,7 +9307,7 @@
           : flow.readyAction
         const shortages = isHistoricalDocument ? [] : getMobilePickShortages(row)
         const physicalWriteoff = row.request_type === 'vehicle_writeoff'
-        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || (!physicalWriteoff && shortages.length > 0))
+        const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || (!physicalWriteoff && !['vehicle_order', 'vehicle_load'].includes(row.request_type) && shortages.length > 0))
         const requestedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null }), 0)
         const preparedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity(item), 0)
         const checklistItems = row.items.filter((item) => getMobilePickStockQuantity(item) > 0.0001)
@@ -9894,7 +9885,7 @@
           : getMobilePickStockQuantity(item)
         if (!item.product_id || quantity <= 0) continue
         const product = productsV13.find((row) => String(row.id) === String(item.product_id))
-        const allowNegativeLoad = product?.product_category === 'food_ready' || allowPreparedSnapshotShortage
+        const allowNegativeLoad = ['vehicle_order', 'vehicle_load'].includes(request.request_type)
         if (request.request_type === 'vehicle_order' || request.request_type === 'vehicle_load') {
           movements.push(...await moveStockPreservingBatches({
             productId: item.product_id,
@@ -9909,7 +9900,7 @@
             allowNegative: allowNegativeLoad,
             applyBalances: false,
             selectedBatchId: item.batch_selection_mode === 'manual' ? (item.batch_id || null) : null,
-            requireDatedBatches: isAuditExpiryTracked(product)
+            requireDatedBatches: false
           }))
           continue
         }
@@ -10031,7 +10022,7 @@
         if (request) {
           request.items = getMobileRequestItems(requestId)
           const shortages = getMobilePickShortages(request)
-          if (shortages.length) {
+          if (shortages.length && !['vehicle_order', 'vehicle_load'].includes(request.request_type)) {
             const first = shortages[0]
             throw new Error(`Nelze označit vychystané: ${first.product?.name || 'položka'} má skladem ${formatQuantityValue(first.available || 0, first.unit)}, ale je vychystáno ${formatQuantityValue(first.requested, first.unit)}.`)
           }
@@ -12144,7 +12135,7 @@
         remaining = Number((remaining - movedQty).toFixed(3))
       }
       if (remaining > 0.0001) {
-        if (!allowNegative || selectedBatchId || requireDatedBatches) {
+        if (!allowNegative || requireDatedBatches) {
           const product = productsV13.find((item) => String(item.id) === String(productId))
           const available = Number((Number(quantity || 0) - remaining).toFixed(3))
           throw new Error(`Na zdrojovém místě není dost kusů pro ${product?.name || 'položku'} (dostupné ${available.toFixed(3)}, požadováno ${Number(quantity || 0).toFixed(3)}).`)
@@ -12164,7 +12155,7 @@
           reference_type: referenceType,
           reference_id: referenceId,
           allow_negative_source: Boolean(allowNegative),
-          note: [note, 'část bez dohledané šarže'].filter(Boolean).join(' · ') || null
+          note: [note, 'výdej nad evidovanou zásobu bez dohledané šarže'].filter(Boolean).join(' · ') || null
         })
       }
       return movements

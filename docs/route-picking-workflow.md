@@ -66,3 +66,14 @@ V den trasy se operátorce v mobilní směně otevře **Ranní naložení z ledn
 - očekávaného prodeje do příjezdu na každou dnešní zastávku.
 
 Operátorka načte doporučení do ranní nakládky, upraví je podle skutečně převzatých kusů a potvrdí pohyb lednice/sklad → vozidlo.
+
+## Evidovaná zásoba skladu (20. 9. 2026)
+
+Požadavek trasy se nekrátí podle evidované dostupnosti skladu. Skladník dostane
+celé navržené nebo ručně upravené množství. Nedostatek se zobrazuje jako upozornění,
+ale neblokuje přípravu ani potvrzení nakládky. Výdej potvrzených skutečných kusů
+může snížit skladovou zásobu pod nulu. Známé šarže se zachovají; neevidovaný zbytek
+se zaznamená bez vymyšlené expirace. Ranní nakládka čerstvého zboží zůstává oddělená.
+
+Sortiment navázaný na dodavatele JIP má sledování expirací vypnuté. Pravidlo se
+aplikuje také při novém párování produktů na JIP. Historické šarže se nemažou.
