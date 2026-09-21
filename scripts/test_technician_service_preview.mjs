@@ -6,7 +6,7 @@ for(const match of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new vm.So
 const detail={innerHTML:''};
 let stockReads=0;
 const state={attendance:null,tasks:[],activeTask:{sourceType:'service_request',id:152,title:'Telefonní hlášení – dohledat automat',subtitle:'',done:false,raw:{id:152,title:'Telefonní hlášení – dohledat automat',description:'Závada: nevydává nápoj\nZpětný kontakt: 123456789\n<script>bad()</script>',status:'new',created_at:'2026-09-17T07:53:12Z'}}};
-state.tasks=[state.activeTask];
+state.tasks=[state.activeTask];state.allTasks=[state.activeTask];
 const context=vm.createContext({state,Date,console,$:()=>detail,locationOf:()=>null,machineOf:()=>null,taskTypeLabel:()=>'Servis',serviceForm:()=>'<form>Zápis servisu</form>',isShiftRunning:()=>state.attendance?.status==='open',taskKey:(type,id)=>`${type}:${id}`,loadServiceStock:async()=>{stockReads++},show:()=>{},supabase:{from(){throw Error('Unexpected database write/read during preview')}}});
 vm.runInContext(html.split('\n').find(line=>line.includes('const esc =')),context);
 vm.runInContext(html.slice(html.indexOf('function renderServiceReport('),html.indexOf('function serviceForm(')),context);

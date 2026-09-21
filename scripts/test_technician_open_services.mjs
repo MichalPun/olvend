@@ -25,3 +25,28 @@ vm.runInContext(html.slice(html.indexOf('function show(screen)'),html.indexOf('\
 ui.show('new-service');assert.equal(element('#headerTitle').textContent,'Nový servis');assert.equal(element('#nav').hidden,true);
 ui.show('today');assert.equal(element('#headerTitle').textContent,'Zahájení směny');
 console.log('PASS: overdue service/job visibility, terminal statuses, future scheduling, pre-shift creation/navigation, module syntax');
+
+// The complete list must retain rows excluded from the day plan.
+const fixtures=[
+ {...old,id:1,assigned_employee_id:null,due_date:null},
+ {...old,id:2,due_date:'2026-09-20'},
+ {...old,id:3,status:'blocked'},
+ {...old,id:4,status:'done',resolved_at:'2026-09-14T12:00:00Z'},
+ {...old,id:5}
+];
+const output=new Map();const node=key=>{if(!output.has(key))output.set(key,{});return output.get(key)};
+const tasks=vm.createContext({Intl,Date,state:{employee:{id:'tech'},plan:[],services:fixtures,jobs:[{...old,id:7,job_type:'transfer',planned_date:'2026-09-20'}],filter:'all'},today:'2026-09-15',locationOf:()=>null,machineOf:()=>null,taskKey:(type,id)=>`${type}:${id}`,$:node,taskCard:item=>String(item.id)});
+vm.runInContext(html.slice(html.indexOf('function serviceDone('),html.indexOf('function taskTypeLabel(')),tasks);
+tasks.buildTasks();assert.equal(tasks.state.allTasks.length,6);assert.deepEqual(Array.from(tasks.state.tasks,item=>item.id),[5]);
+vm.runInContext(html.slice(html.indexOf('function renderTasks()'),html.indexOf('function renderEnd()')),tasks);
+for(const [filter,count] of [['all',6],['today',1],['service',5],['transport',1],['done',2]]){
+ tasks.state.filter=filter;tasks.renderTasks();assert.equal(node('#taskCount').textContent,String(count),filter);
+}
+// Opening a task outside today's plan must resolve from the full list.
+Object.assign(tasks,{renderDetail:()=>{},show:()=>{},isShiftRunning:()=>false});
+vm.runInContext(html.slice(html.indexOf('async function openTask('),html.indexOf('async function startService(')),tasks);
+await tasks.openTask('service_request:2');assert.equal(tasks.state.activeTask.id,2);
+const paging=vm.createContext({});vm.runInContext(html.slice(html.indexOf('async function loadAllTaskRows('),html.indexOf('async function loadData(')),paging);
+const pages=[];const loaded=await paging.loadAllTaskRows(()=>({range:async(start,end)=>{pages.push([start,end]);return{data:Array.from({length:start===0?500:2},(_,i)=>({id:start+i})),error:null}}}));assert.equal(loaded.data.length,502);assert.deepEqual(pages,[[0,499],[500,999]]);
+const failed=await paging.loadAllTaskRows(()=>({range:async()=>({data:null,error:{message:'denied'}})}));assert.equal(failed.data,null);assert.equal(failed.error.message,'denied');
+console.log('PASS: all/date/type filters, old unassigned/future/blocked/completed tasks, detail opening and pagination');
