@@ -35,3 +35,5 @@ for (const test of [{session:null,active:false,redirect:true},{session:{user:{id
   assert.equal(redirect,test.redirect?'index.html':null);
 }
 console.log('PASS: application syntax, private file origin/path handling and signed links, anonymous QR uses restricted RPC only');
+
+await import('./test_password_recovery.mjs');

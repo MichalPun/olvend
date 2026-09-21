@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v195-jip-full-picking';
+const CACHE_NAME = 'olvend-v196-password-recovery';
 const APP_SHELL = [
   './',
   './index.html',

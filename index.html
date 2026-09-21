@@ -378,7 +378,7 @@
         <p>Přihlas se firemním účtem. OLVEND tě po ověření pošle rovnou do nového mobilního prostředí.</p>
       </div>
 
-      <div id="statusLine" class="status-line">Zadej email a heslo.</div>
+      <div id="statusLine" class="status-line" role="status" aria-live="polite">Načítám přihlášení…</div>
 
       <form id="loginForm" class="form-grid">
         <div class="field">
@@ -398,20 +398,121 @@
           </label>
         </div>
 
-        <button id="loginBtn" class="btn" type="submit">Přihlásit se</button>
+        <button id="loginBtn" class="btn" type="submit" disabled>Připravuji přihlášení…</button>
+        <button id="forgotPasswordBtn" class="btn" type="button" disabled>Zapomenuté heslo</button>
       </form>
 
+      <form id="recoveryForm" class="form-grid" style="display:none">
+        <p>Nastav si nové heslo k účtu <strong id="recoveryEmail"></strong>.</p>
+        <div class="field"><label for="newPassword">Nové heslo</label>
+          <input id="newPassword" type="password" autocomplete="new-password" minlength="8" required /></div>
+        <div class="field"><label for="confirmPassword">Potvrzení nového hesla</label>
+          <input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" required /></div>
+        <button id="savePasswordBtn" class="btn" type="submit" disabled>Uložit nové heslo</button>
+      </form>
+      <noscript>Pro přihlášení musí být v prohlížeči zapnutý JavaScript.</noscript>
       <div class="login-footnote">OLVEND je interní systém společnosti OLMIKA. Přístup je určený pouze pro oprávněné zaměstnance.</div>
     </section>
   </main>
 
-  <script type="module">
-    import { supabase } from './supabase.js'
+  <script>
+  ;(async () => {
+    const initialHash = new URLSearchParams(window.location.hash.slice(1))
+    const initialQuery = new URLSearchParams(window.location.search)
+    let recoveryMode = initialHash.get('type') === 'recovery'
+    const recoveryLinkError = initialHash.has('error') || initialQuery.has('error')
+    const recoveryKey = 'olvendPasswordRecoveryUser'
+    let recoveryUserId = null
+    const bootstrapTimer = window.setTimeout(() => {
+      document.getElementById('statusLine').textContent = 'Přihlášení se nenačetlo. Ověř připojení a obnov stránku v Safari nebo Chrome.'
+    }, 15000)
+    let supabase
+    try {
+      ;({ supabase } = await import('./supabase.js'))
+    } catch (_) {
+      window.clearTimeout(bootstrapTimer)
+      document.getElementById('statusLine').textContent = 'Přihlášení se nepodařilo načíst. Ověř připojení a obnov stránku.'
+      return
+    }
+    window.clearTimeout(bootstrapTimer)
 
     const statusLine = document.getElementById('statusLine')
     const loginForm = document.getElementById('loginForm')
     const loginBtn = document.getElementById('loginBtn')
     const rememberMeInput = document.getElementById('rememberMe')
+    const recoveryForm = document.getElementById('recoveryForm')
+    const forgotPasswordBtn = document.getElementById('forgotPasswordBtn')
+    const savePasswordBtn = document.getElementById('savePasswordBtn')
+    function readRecoveryUser() { try { return sessionStorage.getItem(recoveryKey) } catch (_) { return null } }
+    function rememberRecoveryUser(id) { try { if (id) sessionStorage.setItem(recoveryKey, id); else sessionStorage.removeItem(recoveryKey) } catch (_) {} }
+    if (recoveryMode) rememberRecoveryUser(null)
+    recoveryMode = recoveryMode || !!readRecoveryUser()
+
+    async function showRecovery() {
+      recoveryMode = true
+      loginForm.style.display = 'none'
+      recoveryForm.style.display = 'grid'
+      savePasswordBtn.disabled = true
+      setStatus('Ověřuji odkaz pro obnovu hesla…')
+      const { data, error } = await supabase.auth.getUser()
+      const expectedId = readRecoveryUser()
+      if (error || !data?.user || (expectedId && expectedId !== data.user.id)) {
+        rememberRecoveryUser(null)
+        recoveryForm.style.display = 'none'
+        loginForm.style.display = 'grid'
+        setStatus('Odkaz není platný nebo vypršel. Zadej e-mail a použij Zapomenuté heslo.', 'error')
+        return
+      }
+      recoveryUserId = data.user.id
+      rememberRecoveryUser(recoveryUserId)
+      document.getElementById('recoveryEmail').textContent = data.user.email || ''
+      window.history.replaceState(null, '', window.location.pathname)
+      savePasswordBtn.disabled = false
+      setStatus('Zadej nové heslo dvakrát. Minimálně 8 znaků.')
+    }
+
+    forgotPasswordBtn.addEventListener('click', async () => {
+      const emailInput = document.getElementById('email')
+      if (!emailInput.reportValidity()) return
+      forgotPasswordBtn.disabled = true
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(emailInput.value.trim().toLowerCase(), {
+          redirectTo: new URL('index.html', window.location.href).href
+        })
+        if (error) throw error
+        setStatus('Pokud je e-mail registrovaný, přijde odkaz pro obnovu. Zkontroluj i spam.', 'success')
+      } catch (_) {
+        setStatus('Odkaz se nepodařilo odeslat. Ověř připojení a zkus to později.', 'error')
+      } finally { forgotPasswordBtn.disabled = false }
+    })
+
+    recoveryForm.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const password = document.getElementById('newPassword').value
+      const confirmation = document.getElementById('confirmPassword').value
+      if (password.length < 8 || password !== confirmation) {
+        setStatus('Hesla se musí shodovat a mít alespoň 8 znaků.', 'error')
+        return
+      }
+      savePasswordBtn.disabled = true
+      try {
+        const { data, error: userError } = await supabase.auth.getUser()
+        if (userError || !recoveryUserId || data?.user?.id !== recoveryUserId) throw new Error('invalid-session')
+        const { error } = await supabase.auth.updateUser({ password })
+        if (error) throw error
+        rememberRecoveryUser(null)
+        recoveryUserId = null
+        recoveryForm.reset()
+        recoveryForm.style.display = 'none'
+        await supabase.auth.signOut({ scope: 'local' })
+        loginForm.style.display = 'grid'
+        document.getElementById('password').value = ''
+        setStatus('Heslo je změněné. Přihlas se svým e-mailem a novým heslem.', 'success')
+      } catch (_) {
+        setStatus('Heslo se nepodařilo uložit. Zkontroluj připojení; pokud odkaz vypršel, vyžádej nový.', 'error')
+        savePasswordBtn.disabled = false
+      }
+    })
 
     function setStatus(message, type = '') {
       statusLine.textContent = message
@@ -463,6 +564,7 @@
     }
 
     async function redirectAuthenticatedUser() {
+      if (recoveryMode || recoveryLinkError) return
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
 
       if (sessionError) {
@@ -472,7 +574,7 @@
 
       const authUser = sessionData?.session?.user
 
-      if (!authUser) return
+      if (!authUser || recoveryMode) return
 
       const employee = await loadEmployeeForUser(authUser.id)
 
@@ -481,6 +583,7 @@
         return
       }
 
+      if (recoveryMode) return
       storeUserSession(employee, rememberMeInput.checked)
       window.location.href = getTargetPageByRole(employee.role)
     }
@@ -529,10 +632,28 @@
       }
     })
 
-    redirectAuthenticatedUser().catch((error) => {
-      console.error(error)
-      setStatus(`Nepodařilo se načíst vstupní stav: ${error.message}`, 'error')
+    loginBtn.disabled = false
+    loginBtn.textContent = 'Přihlásit se'
+    forgotPasswordBtn.disabled = false
+    supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        recoveryMode = true
+        window.setTimeout(() => showRecovery().catch(() => setStatus('Obnovu se nepodařilo načíst. Obnov stránku.', 'error')), 0)
+      }
     })
+    if (recoveryLinkError) {
+      rememberRecoveryUser(null)
+      window.history.replaceState(null, '', window.location.pathname)
+      setStatus('Odkaz není platný nebo vypršel. Zadej e-mail a použij Zapomenuté heslo.', 'error')
+    } else if (recoveryMode) {
+      await showRecovery()
+    } else {
+      setStatus('Zadej email a heslo.')
+      await redirectAuthenticatedUser()
+    }
+  })().catch(() => {
+    document.getElementById('statusLine').textContent = 'Načtení se nezdařilo. Ověř připojení a obnov stránku.'
+  })
   </script>
   <script src="./pwa.js?v=20260903-mobile-service-cups-v1" defer></script>
 </body>
