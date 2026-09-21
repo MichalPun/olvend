@@ -37,7 +37,7 @@ const fixtures=[
 const output=new Map();const node=key=>{if(!output.has(key))output.set(key,{});return output.get(key)};
 const tasks=vm.createContext({Intl,Date,state:{employee:{id:'tech'},plan:[],services:fixtures,jobs:[{...old,id:7,job_type:'transfer',planned_date:'2026-09-20'}],filter:'all'},today:'2026-09-15',locationOf:()=>null,machineOf:()=>null,taskKey:(type,id)=>`${type}:${id}`,$:node,taskCard:item=>String(item.id)});
 vm.runInContext(html.slice(html.indexOf('function serviceDone('),html.indexOf('function taskTypeLabel(')),tasks);
-tasks.buildTasks();assert.equal(tasks.state.allTasks.length,6);assert.deepEqual(Array.from(tasks.state.tasks,item=>item.id),[5]);
+tasks.buildTasks();assert.equal(tasks.state.allTasks.length,6);assert.equal(tasks.state.allTasks[0].done,false,'Unfinished work is listed before history');assert.deepEqual(Array.from(tasks.state.tasks,item=>item.id),[5]);
 vm.runInContext(html.slice(html.indexOf('function renderTasks()'),html.indexOf('function renderEnd()')),tasks);
 for(const [filter,count] of [['all',6],['today',1],['service',5],['transport',1],['done',2]]){
  tasks.state.filter=filter;tasks.renderTasks();assert.equal(node('#taskCount').textContent,String(count),filter);
