@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v196-password-recovery';
+const CACHE_NAME = 'olvend-v197-technician-all-tasks';
 const APP_SHELL = [
   './',
   './index.html',

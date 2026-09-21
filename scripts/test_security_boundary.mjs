@@ -37,3 +37,6 @@ for (const test of [{session:null,active:false,redirect:true},{session:{user:{id
 console.log('PASS: application syntax, private file origin/path handling and signed links, anonymous QR uses restricted RPC only');
 
 await import('./test_password_recovery.mjs');
+
+await import('./test_technician_open_services.mjs');
+await import('./test_technician_service_preview.mjs');
