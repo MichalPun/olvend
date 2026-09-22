@@ -50,7 +50,9 @@ function extractFunction(name) {
 }
 
 function context(extra = {}) {
-  return vm.createContext({ console, Map, Math, Number, String, Date, ...extra })
+  const sandbox = vm.createContext({ console, Map, Math, Number, String, Date, ...extra })
+  vm.runInContext(extractFunction('getFoodPlanningSlot'), sandbox)
+  return sandbox
 }
 
 {

@@ -7,7 +7,7 @@ for(const [name,html] of [['mobile',mobile],['inventory',inventory]])for(const m
 const products=[{id:1,sku:'SOCO-BONGO-ORIGINAL-40',active:true},{id:2,sku:'SOCO-BONGO-MATA-40',active:true},{id:3,sku:'SOCO-RAWBAR-APPLE',active:true}];
 const slot={id:10,machine_id:1,product_sku:products[0].sku,product_family:'Bongo',substitution_policy:'same_family',capacity_units:6,current_units:0};
 const ctx=vm.createContext({state:{products},normalizeText:x=>String(x).toLowerCase(),getFoodPlanogramChange:()=>null,getFoodRequiredFillQuantity:()=>6,getFoodSlotDraft:()=>({fillItems:[],pickedQuantity:0}),getFoodAvailableVehicleQuantity:(detail,stop,slot,id)=>detail.vehicleStock[id]||0,isFoodExpiryExpired:()=>false,getFoodDemandTargetQuantity:()=>6,getFoodDailySales:()=>1,getFoodTransferReservedByBatch:()=>new Map()});
-for(const [start,end] of [['getFoodProductFamilyPatch','normalizeFoodExpiryDate'],['getFoodSlotProductOptions','getFoodSlotComposition'],['getFoodRouteAllocatedQuantity','getRouteStopUrgency'],['getFoodPickSuggestion','prefillFoodRecommendedPicks']]) {
+for(const [start,end] of [['getFoodPlanningSlot','getFoodRequiredFillQuantity'],['getFoodProductFamilyPatch','normalizeFoodExpiryDate'],['getFoodSlotProductOptions','getFoodSlotComposition'],['getFoodRouteAllocatedQuantity','getRouteStopUrgency'],['getFoodPickSuggestion','prefillFoodRecommendedPicks']]) {
  const from=mobile.indexOf('    function '+start+'('),to=mobile.indexOf('    '+(end==='getRouteStopUrgency'?'async ':'')+'function '+end+'(',from);assert.ok(from>=0&&to>from);vm.runInContext(mobile.slice(from,to),ctx);
 }
 const detail={vehicleStock:{1:0,2:6},routePlanningContext:{loaded:true,routeSlots:[slot,{...slot,id:20,machine_id:2}],stopOrderByMachine:new Map([['1',0],['2',1]])}};
