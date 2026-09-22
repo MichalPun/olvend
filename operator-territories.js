@@ -308,7 +308,7 @@ async function load() {
   await requireManager();
   if (!$('effectiveFrom').value) $('effectiveFrom').value = new Intl.DateTimeFormat('en-CA', {timeZone:'Europe/Prague',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const [employees, locations, machines, assignments, settings] = await Promise.all([
-    supabase.from('employees').select('id,name,surname,role,active,bonus_eligible').eq('active', true).order('surname'),
+    supabase.from('employees').select('id,name,surname,role,active').eq('active', true).order('surname'),
     supabase.from('locations').select('id,name,city,address,latitude,longitude,active').eq('active', true).order('name'),
     supabase.from('machines').select('id,location_id,evidence_number,name,machine_type,active,status').eq('active', true),
     supabase.rpc('get_operator_territories_v51', {p_date: $('effectiveFrom').value}),
@@ -321,7 +321,7 @@ async function load() {
     .map((employee, index) => ({
       ...employee,
       color: palette[index % palette.length],
-      isRouteOperator: Boolean(employee.bonus_eligible) || String(employee.id) === MICHAL_EMPLOYEE_ID
+      isRouteOperator: String(employee.role || '').toLowerCase() === 'operator' || String(employee.id) === MICHAL_EMPLOYEE_ID
     }));
   state.locations = locations.data || [];
   state.machines = (machines.data || []).filter((machine) => machine.location_id && !/warehouse|sklad|reserve|rezerv/i.test(String(machine.status || '')));
