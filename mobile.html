@@ -6759,6 +6759,11 @@
         <strong>Dnešní trasa je nachystaná</strong>
         <span>${escapeHtml(plan.title || 'Dnešní trasa')} · ${stops.length || 0} zastávek${routeVehicle ? ` · ${escapeHtml(routeVehicle.name || 'Vozidlo')}${routeVehicle.plate ? ` ${escapeHtml(routeVehicle.plate)}` : ''}` : ''}</span>
       `
+      if (isWarehouseDirectRoute(plan)) {
+        els.vehicleSelect.value = ''
+        els.startOdometerInput.value = ''
+        els.startKmLabel.style.display = 'none'
+      }
       if (plan.vehicle_id && !els.vehicleSelect.value) {
         els.vehicleSelect.value = String(plan.vehicle_id)
         const selected = els.vehicleSelect.selectedOptions[0]
@@ -6783,7 +6788,7 @@
       const closedStops = completedStops + skippedStops
       const nextStop = routeAlreadyDone ? null : stops.find((stop) => !isRouteStopClosed(stop))
       const returningToWarehouse = !routeAlreadyDone && stops.length > 0 && stops.every(isRouteStopClosed)
-      const routeVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
+      const routeVehicle = (isWarehouseDirectRoute(plan) ? null : state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId())))
       els.todayRouteSection.hidden = false
       els.todayRouteSection.innerHTML = `
         <div class="section-head">
@@ -6795,7 +6800,7 @@
             <div>
               <h4>${escapeHtml(plan.title || 'Trasa z VendSoftu')}</h4>
               <div class="meta">
-                <span>${escapeHtml(routeVehicle?.name || 'Vozidlo z plánu')}${routeVehicle?.plate ? ` · ${escapeHtml(routeVehicle.plate)}` : ''}</span>
+                <span>${escapeHtml(isWarehouseDirectRoute(plan) ? `Přímo ze skladu ${plan.route_payload?.stock_source_name || ''}` : (routeVehicle?.name || 'Vozidlo z plánu'))}${routeVehicle?.plate ? ` · ${escapeHtml(routeVehicle.plate)}` : ''}</span>
                 <span>${nextStop ? `Další: ${escapeHtml(getRouteStopTitle(nextStop))}` : returningToWarehouse ? 'Automaty hotové · návrat na sklad' : `${completedStops} hotovo${skippedStops ? ` · ${skippedStops} nejeto` : ''}`}</span>
               </div>
             </div>
@@ -6848,6 +6853,40 @@
 
     function getCurrentVehicleId() {
       return state.attendanceDay?.vehicle_id || state.vehicleLog?.vehicle_id || ''
+    }
+
+    function getRouteStockPlan(detail = null) {
+      if (detail?.stopId) {
+        const plan = state.routePlans.find((row) => (row.route_plan_stops || []).some((stop) => String(stop.id) === String(detail.stopId)))
+        if (!plan) throw new Error('Nelze určit sklad trasy pro tuto návštěvu.')
+        return plan
+      }
+      return getAssignedRoutePlan()
+    }
+
+    function isWarehouseDirectRoute(plan = getAssignedRoutePlan()) {
+      return plan?.route_payload?.stock_source_mode === 'warehouse_direct'
+    }
+
+    function getRouteStockSource(plan = getAssignedRoutePlan()) {
+      if (isWarehouseDirectRoute(plan)) {
+        if (plan.vehicle_id || !plan.warehouse_id) throw new Error('Přímé doplnění vyžaduje sklad a trasu bez vozidla.')
+        return { type: 'warehouse', id: plan.warehouse_id, label: plan.route_payload?.stock_source_name || 'Sklad trasy' }
+      }
+      const vehicleId = getCurrentVehicleId()
+      if (!vehicleId) throw new Error('Směna nemá přiřazené vozidlo. Přímé doplnění ze skladu musí být nastavené v trase.')
+      return { type: 'vehicle', id: vehicleId, label: 'Vozidlo' }
+    }
+
+    async function getRouteStockLocation(detail = null) {
+      const source = getRouteStockSource(getRouteStockPlan(detail))
+      return ensureStockLocation(source.type, source.id, source.label)
+    }
+
+    function renderRouteStockSourceNotice() {
+      const plan = getAssignedRoutePlan()
+      if (!isWarehouseDirectRoute(plan)) return ''
+      return `<div class="route-prefill"><strong>Přímé doplnění ze skladu ${escapeHtml(plan.route_payload?.stock_source_name || 'trasy')}</strong><br>Doplněné zboží se odečítá přímo ze skladu. Nakládku do vozidla nezapisuj.</div>`
     }
 
     function renderStockVehicleSelect() {
@@ -7655,7 +7694,8 @@
 
     async function loadPendingRouteWaste() {
       const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
-      if (!vehicleId) {
+      const directPlan = isWarehouseDirectRoute() ? getAssignedRoutePlan() : null
+      if (!vehicleId && !directPlan) {
         state.routeWasteItems = []
         renderPendingRouteWaste()
         return
@@ -7663,9 +7703,9 @@
       let wasteQuery = supabase
         .from('route_vehicle_waste_items')
         .select('*')
-        .eq('vehicle_id', vehicleId)
         .eq('status', 'pending')
         .order('collected_at', { ascending: true })
+      wasteQuery = directPlan ? wasteQuery.is('vehicle_id', null).eq('employee_id', state.employee.id).eq('source_warehouse_id', directPlan.warehouse_id) : wasteQuery.eq('vehicle_id', vehicleId)
       if (state.routeWasteFilter === 'expired') wasteQuery = wasteQuery.eq('reason', 'expired')
       if (state.routeWasteFilter === 'damaged') wasteQuery = wasteQuery.in('reason', ['damaged', 'opened', 'shaken', 'other'])
       const { data, error } = await wasteQuery
@@ -10534,9 +10574,8 @@
         .filter(Boolean))]
       const vehicleStock = {}
       const vehicleBatches = {}
-      const vehicleId = getCurrentVehicleId()
-      if (vehicleId && productIds.length) {
-        const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+      if (productIds.length) {
+        const vehicleLocationId = await getRouteStockLocation(detail)
         const { data: balances, error } = await supabase
           .from('stock_location_balances')
           .select('product_id, batch_id, quantity_on_hand, inventory_batches(lot_code, best_before_date, use_by_date)')
@@ -11632,14 +11671,14 @@
       if (machineKind === 'food') {
         routeScreen?.classList.add('coffee-machine-mode')
         document.body.classList.add('coffee-workflow-active')
-        els.routeMachineContent.innerHTML = renderFoodVisitDetail(stop, getRouteVisitForStop(stop))
+        els.routeMachineContent.innerHTML = renderRouteStockSourceNotice() + renderFoodVisitDetail(stop, getRouteVisitForStop(stop))
         restoreFoodMachineRenderAnchor()
         return
       }
       if (machineKind === 'coffee') {
         routeScreen?.classList.add('coffee-machine-mode')
         document.body.classList.add('coffee-workflow-active')
-        els.routeMachineContent.innerHTML = renderCoffeeVisitDetail(stop, getRouteVisitForStop(stop))
+        els.routeMachineContent.innerHTML = renderRouteStockSourceNotice() + renderCoffeeVisitDetail(stop, getRouteVisitForStop(stop))
         restoreCoffeeMachineRenderAnchor()
         return
       }
@@ -11767,7 +11806,7 @@
         : []
       const multipleMachinesAtLocation = currentLocationAllStops.length > 1
       const recalculation = getRouteRecalculation(plan)
-      const currentVehicle = state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId()))
+      const currentVehicle = (isWarehouseDirectRoute(plan) ? null : state.vehicles.find((vehicle) => String(vehicle.id) === String(plan.vehicle_id || getCurrentVehicleId())))
       const normalizedRouteStatus = String(plan.execution_status || '')
       const routeAlreadyDone = ['done', 'completed'].includes(normalizedRouteStatus)
       const returningToWarehouse = allClosed && !routeAlreadyDone
@@ -12133,7 +12172,7 @@
       let error = null
       const primaryRoutes = await supabase
         .from('route_plans')
-        .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, start_latitude, start_longitude, end_latitude, end_longitude, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
+        .select('id, planning_date, planned_departure_time, title, vehicle_id, warehouse_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, start_latitude, start_longitude, end_latitude, end_longitude, route_payload, route_plan_stops(id, route_plan_id, location_id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, priority_snapshot, service_window_snapshot, estimated_service_minutes, note)')
         .eq('planned_employee_id', state.employee.id)
         .gte('planning_date', fromDate)
         .lte('planning_date', toDate)
@@ -12145,7 +12184,7 @@
       if (error) {
         const fallbackRoutes = await supabase
           .from('route_plans')
-          .select('id, planning_date, planned_departure_time, title, vehicle_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, route_payload, created_at')
+          .select('id, planning_date, planned_departure_time, title, vehicle_id, warehouse_id, planned_employee_id, execution_status, assigned_at, started_at, completed_at, estimated_distance_km, estimated_drive_minutes, return_to_start, route_payload, created_at')
           .eq('planned_employee_id', state.employee.id)
           .gte('planning_date', fromDate)
           .lte('planning_date', toDate)
@@ -12994,7 +13033,7 @@
           route_plan_stop_id: stop.id,
           machine_id: machine.id,
           employee_id: state.employee?.id || null,
-          vehicle_id: plan.vehicle_id || getCurrentVehicleId() || null,
+          vehicle_id: isWarehouseDirectRoute(plan) ? null : (plan.vehicle_id || getCurrentVehicleId() || null),
           visit_date: todayIso,
           machine_kind: getMachineKind(machine),
           status: 'arrived',
@@ -13228,10 +13267,9 @@
         }
 
         const vehiclePackages = {}
-        const vehicleId = getCurrentVehicleId()
-        if (vehicleId) {
+        {
           try {
-            const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+            const vehicleLocationId = await getRouteStockLocation({ stopId: stop.id })
             const productIds = containers.map((container) => container.product_id).filter(Boolean)
             if (productIds.length) {
               const { data: balances, error: balancesError } = await supabase
@@ -13450,9 +13488,8 @@
         const productIds = [...new Set(slots.flatMap((slot) => getFoodSlotProductOptions(slot).map((product) => product.id)).filter(Boolean))]
         const vehicleStock = {}
         const vehicleBatches = {}
-        const vehicleId = getCurrentVehicleId()
-        if (vehicleId && productIds.length) {
-          const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+        if (productIds.length) {
+          const vehicleLocationId = await getRouteStockLocation({ stopId: stop.id })
           const { data: balances, error: balancesError } = await supabase
             .from('stock_location_balances')
             .select('product_id, batch_id, quantity_on_hand, inventory_batches(lot_code, best_before_date, use_by_date)')
@@ -14050,7 +14087,7 @@
             route_plan_stop_id: stop.id,
             machine_id: machine.id,
             employee_id: state.employee?.id || null,
-            vehicle_id: plan.vehicle_id || getCurrentVehicleId() || null,
+            vehicle_id: isWarehouseDirectRoute(plan) ? null : (plan.vehicle_id || getCurrentVehicleId() || null),
             visit_date: todayIso,
             machine_kind: getMachineKind(machine),
             status: 'skipped',
@@ -14346,9 +14383,7 @@
         return { queued: false }
       }
 
-      const vehicleId = getCurrentVehicleId()
-      if (!vehicleId) throw new Error('Pro opravu odečtu chybí vozidlo směny.')
-      const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+      const vehicleLocationId = await getRouteStockLocation({ stopId })
       const machineLocationId = await ensureStockLocation('machine', container.machine_id, `Automat ${container.machine_id}`)
       const movingToMachine = difference > 0
       const quantity = Math.abs(difference)
@@ -14868,9 +14903,9 @@
       const nextDesiredQuantity = detail.manualStockMode
         ? Math.max(0, Number(slot.desired_units || 0))
         : Math.max(0, targetQuantity - finalQuantity)
-      const vehicleId = getCurrentVehicleId()
-      if (!vehicleId) throw new Error('Směna nemá přiřazené vozidlo.')
-      const vehicleLocationId = await ensureStockLocation('vehicle', vehicleId, 'Vozidlo')
+      const stockSource = getRouteStockSource(getRouteStockPlan(detail))
+      const vehicleId = stockSource.type === 'vehicle' ? stockSource.id : null
+      const vehicleLocationId = await getRouteStockLocation(detail)
       const machineLocationId = await ensureStockLocation('machine', slot.machine_id, `Automat ${slot.machine_id}`)
 
       if (stockDifference !== 0) {
@@ -15108,6 +15143,7 @@
           machine_id: slot.machine_id,
           employee_id: state.employee?.id || visit?.employee_id || null,
           vehicle_id: vehicleId,
+          source_warehouse_id: stockSource.type === 'warehouse' ? stockSource.id : null,
           product_id: wasteProduct.id,
           product_sku: wasteProduct.sku || null,
           product_name: wasteProduct.name || slot.product_name || null,
@@ -17183,7 +17219,7 @@
         status: 'open',
         actual_start: new Date().toISOString(),
         vehicle_id: vehicleId,
-        start_warehouse_id: selectedVehicle?.warehouse_id || null
+        start_warehouse_id: selectedVehicle?.warehouse_id || (isWarehouseDirectRoute() ? getAssignedRoutePlan()?.warehouse_id : null)
       }
 
       const { data, error } = await supabase
