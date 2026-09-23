@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v199-warehouse-direct-route';
+const CACHE_NAME = 'olvend-v200-stock-source-labels';
 const APP_SHELL = [
   './',
   './index.html',
