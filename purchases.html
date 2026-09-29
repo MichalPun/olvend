@@ -965,6 +965,7 @@
             <textarea id="quickJipOutput" rows="12" spellcheck="false"></textarea>
           </div>
         </div>
+        <div id="jipDemandBreakdown" style="overflow-x:auto;margin-top:16px"></div>
         <div class="status-line" id="quickJipStatus" style="margin-top:16px;">Vyber dodavatele a zkontroluj řádky před vložením do JIP.</div>
       </div>
       <div class="modal-footer split">
@@ -1014,6 +1015,7 @@
 
   <script src="./sidebar.js?v=20260712lightfix2"></script>
   <script type="module">
+    import { jipQuantity, mergeJipProfiles, receiptShortfalls } from "./jip-demand.js?v=20260929"
     import { supabase } from './supabase.js'
 
     const purchasePageView = new URLSearchParams(window.location.search).get('view') === 'recurring'
@@ -1243,6 +1245,7 @@
     let supplierProductMappings = []
     let supplierOrderRules = []
     let currentInvoiceImport = null
+    let jipDemandMap = new Map()
     let productRecommendationMap = new Map()
     let productLastPurchasePriceMap = new Map()
     let currentQuickProductLineKey = ''
@@ -2968,12 +2971,17 @@
       return recurringOrders.filter((order) => String(order.supplier_id) === String(supplierId) && order.active !== false)
     }
     function getPurchaseProfilesForSupplier(supplierId) {
-      return purchaseProductProfiles.filter((profile) => String(profile.supplier_id) === String(supplierId) && profile.active !== false && profile.reorder_enabled !== false)
+      return purchaseProductProfiles.filter((profile) => String(profile.supplier_id) === String(supplierId) && profile.active !== false && profile.reorder_enabled !== false && (String(supplierId) !== '3' || getProductById(profile.product_id)))
     }
     function getRecommendationForProfile(profile) {
+      if (String(profile.supplier_id) === '3' && (profile.pilot_scope || 'general') === 'general') {
+        return jipDemandMap.get(String(profile.product_id)) || { calculation_error: 'Chybí ověřený JIP kód nebo výpočet produktu.' }
+      }
       return productRecommendationMap.get(`${profile.product_id}:${profile.pilot_scope || 'general'}`) || {}
     }
     function getRecommendationForItem(item) {
+      const supplierId = item.supplier_id || recurringOrders.find(order => String(order.id) === String(item.recurring_order_id))?.supplier_id
+      if (String(supplierId) === '3' && (item.pilot_scope || 'general') === 'general') return jipDemandMap.get(String(item.product_id)) || { calculation_error: 'Chybí výpočet JIP.' }
       return productRecommendationMap.get(`${item.product_id}:${item.pilot_scope || 'general'}`) || {}
     }
     function recurringItemUnitCost(item) {
@@ -3081,6 +3089,7 @@
     }
     function purchaseProfileOrderQuantity(profile, mode = 'recommended') {
       const recommendation = getRecommendationForProfile(profile)
+      if (String(profile.supplier_id) === '3' && (profile.pilot_scope || 'general') === 'general' && mode !== 'base') return jipQuantity(recommendation) ?? 0
       const recommended = roundProfileQuantity(Number(recommendation.recommended_order_qty || 0), profile)
       const base = roundProfileQuantity(Number(profile.base_order_quantity || 0), profile)
       if (mode === 'base') return base
@@ -3134,7 +3143,30 @@
         })
         .filter(Boolean)
     }
+    function assertJipCalculationReady() {
+      if (String(quickJipSupplierId.value) !== '3') return
+      const problems = getPurchaseProfilesForSupplier(3).filter(p => jipQuantity(getRecommendationForProfile(p)) === null)
+      if (problems.length) throw new Error(`Nejdřív oprav nákupní podklady: ${problems.map(p => p.product_name).join(', ')}.`)
+    }
+    function renderJipBreakdown() {
+      const target = document.getElementById('jipDemandBreakdown')
+      if (String(quickJipSupplierId.value) !== '3') { target.innerHTML = ''; return }
+      const num = value => escapeHtml(Number(value || 0).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }))
+      target.innerHTML = `<p>Zdroj: sklad Blučina. Požadavky tras se započítávají v plné výši. Rezerva nejméně 3 dny. Historická dostupnost je odhad ze skladových pohybů. Dodávka se stejným datem jako odjezd nezaručuje ranní pokrytí.</p>
+        <table><thead><tr><th>Produkt</th><th>Sklad</th><th>Trasy</th><th>Další spotřeba</th><th>Rezerva</th><th>Objednáno</th><th>Chybí před odjezdem</th><th>Objednat ks</th></tr></thead><tbody>${getPurchaseProfilesForSupplier(3).map(p => {
+          const r = getRecommendationForProfile(p)
+          return `<tr><td>${escapeHtml(p.product_name)}${p.auto_from_mapping ? '<small> · doplněno z katalogu JIP</small>' : ''}</td>
+          <td>${num(r.warehouse_qty)}</td><td>${num(r.route_demand_qty)}</td><td>${num(r.additional_forecast_qty)}</td><td>${num(r.safety_qty)}</td><td>${num(r.incoming_qty)}</td><td>${num(r.urgent_qty)}</td><td><strong>${jipQuantity(r) === null ? escapeHtml(r.calculation_error || 'Ověř balení') : num(r.recommended_order_qty)}</strong></td></tr>`
+        }).join('')}</tbody></table>`
+    }
     function renderQuickJipOrder() {
+      renderJipBreakdown()
+      try { assertJipCalculationReady() } catch (error) {
+        quickJipOutput.value = ''
+        quickJipStatus.textContent = error.message
+        quickJipStatus.className = 'status-line error'
+        return
+      }
       const { rows, missing } = buildQuickJipRows()
       quickJipOutput.value = [JIP_CSV_HEADER, ...rows.map((row) => [
         row.code,
@@ -3161,7 +3193,7 @@
       quickJipSupplierId.innerHTML = supplierOptionsHtml()
       const fallbackSupplier = quickOrderSupplierDefault()
       quickJipSupplierId.value = fallbackSupplier?.id ? String(fallbackSupplier.id) : ''
-      quickJipMode.value = 'recommended'
+      quickJipMode.value = 'recommended_only'
       renderQuickJipOrder()
       quickJipOrderModalBackdrop.classList.add('show')
     }
@@ -3170,6 +3202,7 @@
       quickJipOutput.value = ''
     }
     async function copyQuickJipOrder() {
+      assertJipCalculationReady()
       const rows = quickJipRowsFromEditor()
       if (!rows.length) return
       const pasteText = rows.map((row) => `${row.code};${decimalForQuickOrder(row.quantity)}`).join('\n')
@@ -3178,6 +3211,7 @@
       quickJipStatus.className = 'status-line success'
     }
     async function saveQuickJipDraft() {
+      assertJipCalculationReady()
       const supplierId = parseRequiredEntityId(quickJipSupplierId.value, 'Dodavatel')
       const rows = quickJipRowsFromEditor()
       const missing = rows.filter((row) => !row.code || row.source !== 'supplier_code')
@@ -3208,6 +3242,7 @@
       return order.id
     }
     function downloadQuickJipOrder() {
+      assertJipCalculationReady()
       const text = quickJipOutput.value.trim()
       if (!text) return
       const supplier = suppliers.find((item) => String(item.id) === String(quickJipSupplierId.value))
@@ -4364,8 +4399,8 @@
             <td data-label="Primární dodavatel"><strong>${escapeHtml(row.supplier_name || 'Dodavatel')}</strong><span class="subtext">${escapeHtml(row.reorder_enabled === false ? 'Doporučení vypnuto' : 'Primární pro objednávky')}</span></td>
             <td data-label="Sklad"><strong>${escapeHtml(Number(recommendation.warehouse_qty || 0).toFixed(3))}</strong><span class="subtext">min. ${escapeHtml(Number(row.safety_stock_quantity || 0).toFixed(3))} · cíl ${escapeHtml(Number(row.target_stock_quantity || 0).toFixed(3))}</span></td>
             <td data-label="Balení / kód"><strong>${escapeHtml(Number(packageQuantity).toFixed(3))} ks</strong><span class="subtext">JIP ${escapeHtml(mapping?.supplier_item_code || 'nedoplněn')}</span></td>
-            <td data-label="Doporučení"><strong>${escapeHtml(recommended > 0 ? `${Number(recommended).toFixed(3)} ks` : 'Bez objednávky')}</strong><span class="subtext">počítá jen reálný sklad, ne automaty</span></td>
-            <td data-label="Akce">${actionMenu('Akce pro nákupní nastavení', `<button class="btn secondary small" type="button" data-action="edit-purchase-setting" data-id="${row.id}">Upravit</button>`)}</td>
+            <td data-label="Doporučení"><strong>${escapeHtml(recommended > 0 ? `${Number(recommended).toFixed(3)} ks` : 'Bez objednávky')}</strong><span class="subtext">${escapeHtml(recommendation.calculation_error || (String(row.supplier_id) === '3' ? 'Blučina + plné požadavky tras + rezerva' : 'počítá jen reálný sklad, ne automaty'))}</span></td>
+            <td data-label="Akce">${row.auto_from_mapping ? 'Z katalogu JIP' : actionMenu('Akce pro nákupní nastavení', `<button class="btn secondary small" type="button" data-action="edit-purchase-setting" data-id="${row.id}">Upravit</button>`)}</td>
           </tr>
         `
       }).join('')
@@ -4682,6 +4717,9 @@
         ;(recommendationsResult.data || []).forEach((row) => {
           productRecommendationMap.set(`${row.product_id}:${row.pilot_scope || 'general'}`, row)
         })
+        const jipResult = await supabase.from('purchase_jip_demand_v1').select('*')
+        if (jipResult.error) throw new Error(`Nelze ověřit nákupní návrh JIP: ${jipResult.error.message}`)
+        jipDemandMap = new Map((jipResult.data || []).map(row => [String(row.product_id), row]))
         const productMap = new Map(products.map((item) => [String(item.id), item]))
         const supplierMap = new Map(suppliers.map((item) => [String(item.id), item]))
         recurringOrders = (recurringOrdersResult.data || []).map((row) => ({
@@ -4695,6 +4733,7 @@
           target_stock_quantity: row.target_stock_quantity || 0,
           package_quantity: row.package_quantity || row.order_multiple_quantity || 1
         }))
+        purchaseProductProfiles = mergeJipProfiles(purchaseProductProfiles, [...jipDemandMap.values()])
         const recurringOrderMap = new Map(recurringOrders.map((row) => [String(row.id), row]))
         recurringItems = (recurringItemsResult.data || []).map((row) => {
           const recurringOrder = recurringOrderMap.get(String(row.recurring_order_id))
