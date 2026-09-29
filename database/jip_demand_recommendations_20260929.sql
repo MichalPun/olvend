@@ -22,31 +22,31 @@ with catalog as (
  sum(case when sm.from_stock_location_id in(select id from wh) and dst.location_type in('vehicle','machine') then sm.quantity_base_units
  when sm.to_stock_location_id in(select id from wh) and src.location_type in('vehicle','machine') then -sm.quantity_base_units else 0 end) used
  from stock_movements_v13 sm left join stock_locations src on src.id=sm.from_stock_location_id left join stock_locations dst on dst.id=sm.to_stock_location_id
- where sm.created_at >= ((current_date-28)::timestamp at time zone 'Europe/Prague')
+ where sm.created_at >= (((now() at time zone 'Europe/Prague')::date-28)::timestamp at time zone 'Europe/Prague')
  and (sm.from_stock_location_id in(select id from wh) or sm.to_stock_location_id in(select id from wh)) group by 1,2
 ), days as (
  select c.product_id,d::date as day,coalesce(f.used,0) used,coalesce(f.delta,0) delta,
  coalesce(s.qty,0)-coalesce((select sum(f2.delta) from flows f2 where f2.product_id=c.product_id and f2.day>=d::date),0) opening
- from catalog c cross join generate_series(current_date-28,current_date-1,'1 day') d
+ from catalog c cross join generate_series((now() at time zone 'Europe/Prague')::date-28,(now() at time zone 'Europe/Prague')::date-1,'1 day') d
  left join flows f on f.product_id=c.product_id and f.day=d::date left join stock s on s.product_id=c.product_id
 ), history as (
  select product_id,greatest(sum(used),0) issued,
  count(*) filter(where opening>0 or opening+delta>0 or used>0) available_days from days group by 1
 ), sales as (
  select p.product_id,sum(e.quantity)/28.0 daily from catalog p join telemetry_sales_events e on e.product_sku=p.sku
- where e.source_event_at>=((current_date-28)::timestamp at time zone 'Europe/Prague')
- and e.source_event_at<(current_date::timestamp at time zone 'Europe/Prague') and e.quantity>0 group by 1
+ where e.source_event_at>=(((now() at time zone 'Europe/Prague')::date-28)::timestamp at time zone 'Europe/Prague')
+ and e.source_event_at<((now() at time zone 'Europe/Prague')::date::timestamp at time zone 'Europe/Prague') and e.quantity>0 group by 1
 ), requests as (
  select r.* from mobile_stock_requests r left join route_plans rp on rp.id=r.route_plan_id
  where r.request_type='vehicle_load' and r.status in('requested','picking','ready')
- and r.stock_applied_at is null and r.requested_for_date>=current_date
+ and r.stock_applied_at is null and r.requested_for_date>=(now() at time zone 'Europe/Prague')::date
  and coalesce(rp.execution_status,'planned') not in('done','cancelled')
 ), request_items as (
  select c.product_id,r.id,r.route_plan_id,r.requested_for_date,
  sum(i.requested_quantity*case when i.unit=c.base_unit then 1 else pk.factor end) qty,
  count(*) filter(where i.unit is distinct from c.base_unit and pk.factor is null) unknown_units
  from catalog c join mobile_stock_request_items i on i.product_id=c.product_id
- join requests r on r.id=i.request_id and r.requested_for_date<current_date+c.horizon and r.source_stock_location_id in(select id from wh)
+ join requests r on r.id=i.request_id and r.requested_for_date<(now() at time zone 'Europe/Prague')::date+c.horizon and r.source_stock_location_id in(select id from wh)
  left join lateral(select case when count(distinct units_per_package)=1 then max(units_per_package) end factor
  from product_packages where active and product_id=c.product_id and package_name=i.unit)pk on true
  group by c.product_id,r.id,r.route_plan_id,r.requested_for_date
@@ -61,7 +61,7 @@ with catalog as (
  join route_plan_stops rs on rs.machine_id=s.machine_id and coalesce(rs.status,'planned') not in('completed','skipped')
  join route_plans rp on rp.id=rs.route_plan_id and rp.vehicle_id is null and rp.warehouse_id=1
  and rp.route_payload->>'stock_source_mode'='warehouse_direct'
- and rp.planning_date>=current_date and rp.planning_date<current_date+c.horizon
+ and rp.planning_date>=(now() at time zone 'Europe/Prague')::date and rp.planning_date<(now() at time zone 'Europe/Prague')::date+c.horizon
  and coalesce(rp.execution_status,'planned') not in('done','cancelled')
  where not exists(select 1 from requests r where r.route_plan_id=rp.id)
  group by c.product_id,s.id
@@ -70,7 +70,7 @@ with catalog as (
 ), incoming as (
  select i.product_id,sum(greatest(i.ordered_quantity-i.received_quantity,0)) qty from purchase_order_items i
  join purchase_orders o on o.id=i.purchase_order_id join catalog c on c.product_id=i.product_id
- where o.status='ordered' and o.supplier_id=3 and o.delivery_date>=current_date and o.delivery_date<current_date+c.horizon group by 1
+ where o.status='ordered' and o.supplier_id=3 and o.delivery_date>=(now() at time zone 'Europe/Prague')::date and o.delivery_date<(now() at time zone 'Europe/Prague')::date+c.horizon group by 1
 ), shortages as (
  -- Date-only deliveries count AFTER the delivery day: they cannot promise a morning load.
  select n.product_id,max(greatest(0,
@@ -79,7 +79,7 @@ with catalog as (
  -(select coalesce(sum(greatest(i.ordered_quantity-i.received_quantity,0)),0)
  from purchase_order_items i join purchase_orders o on o.id=i.purchase_order_id
  where i.product_id=n.product_id and o.supplier_id=3 and o.status='ordered'
- and o.delivery_date>=current_date and o.delivery_date<n.requested_for_date)
+ and o.delivery_date>=(now() at time zone 'Europe/Prague')::date and o.delivery_date<n.requested_for_date)
  )) urgent_qty
  from route_needs n left join stock s on s.product_id=n.product_id group by n.product_id
 ), calc as (
