@@ -322,8 +322,8 @@
       versionNote: ""
     },
     "report-telemetry.html": {
-      currentLabel: "Reporty",
-      activeKey: "reporty",
+      currentLabel: "Prodeje",
+      activeKey: "report-telemetry",
       versionLabel: "Aktuální verze",
       versionValue: APP_VERSION,
       versionNote: ""
@@ -475,7 +475,7 @@
             { key: "report-vehicles", href: "report-vehicles.html", label: "Vozidla" },
             { key: "report-monthly-review", href: "report-monthly-review.html", label: "Měsíční uzávěrka" },
             { key: "report-invoice-comparison", href: "report-invoice-comparison.html", label: "Srovnání fakturace" },
-            { key: "report-telemetry", href: "report-telemetry.html", label: "Telemetrické reporty" }
+            { key: "report-telemetry", href: "report-telemetry.html", label: "Prodeje" }
           ]
         },
         {
