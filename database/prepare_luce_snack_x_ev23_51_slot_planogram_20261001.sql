@@ -1,5 +1,5 @@
 -- Připraví odstavený Luce Snack X EV 23 na nový plánogram z 1. 10. 2026.
--- Rozložení: 51 voleb, z toho horní řada obsahuje tři dvojité a tři jednoduché spirály.
+-- Rozložení: 49 voleb; horní, šestá řada obsahuje pouze první čtyři položky.
 -- Stroj musí být před spuštěním bez lokality a neaktivní.
 -- Stroj je fyzicky prázdný; evidované stavy, expirace a rozpracované výměny se proto vynulují.
 
@@ -105,7 +105,7 @@ begin
     d.operator_instruction, 0, null,
     false, null, 'none',
     0, null, false,
-    null, 'Cílový 51pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Stroj byl potvrzen jako fyzicky prázdný; evidované stavy byly vynulovány.'
+    null, 'Cílový 49pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Stroj byl potvrzen jako fyzicky prázdný; evidované stavy byly vynulovány.'
   from (values
     ('1',  '163', 19::numeric,  6,  0, 'QXE', null, 'exact', null::text, null::text),
     ('2',  '163', 19::numeric,  6,  1, 'QXE', null, 'exact', null, null),
@@ -155,9 +155,7 @@ begin
     ('57', '39',  24::numeric, 10, 45, 'Haribo', 'Goldbären', 'exact', null, null),
     ('59', '42',  15::numeric, 10, 46, '7days', 'Lískový oříšek', 'exact', null, null),
     ('61', 'BERTYCKY-TVARUZKOVE', 21::numeric, 10, 47, 'Bertýčky', 'Tvarůžkové', 'exact', null, null),
-    ('62', '144', 18::numeric,  6, 48, 'Yoohoo!', 'Kakao+lískový oříšek', 'exact', null, null),
-    ('63', '20',  25::numeric, 10, 49, 'Dupetky', 'Hořčice, med a cibulka', 'exact', null, null),
-    ('64', '162', 13::numeric,  8, 50, 'Ovesná svačinka', 'Brusnice', 'exact', null, null)
+    ('62', '144', 18::numeric,  6, 48, 'Yoohoo!', 'Kakao+lískový oříšek', 'exact', null, null)
   ) as d(
     slot_code, sku, price_czk, capacity_units, sort_order,
     product_family, product_variant, substitution_policy,
@@ -367,17 +365,24 @@ begin
     updated_at = now();
 
   get diagnostics v_inserted = row_count;
-  if v_inserted <> 51 then
-    raise exception 'EV 23: očekáváno 51 vložených nebo upravených pozic, získáno %.', v_inserted;
+  if v_inserted <> 49 then
+    raise exception 'EV 23: očekáváno 49 vložených nebo upravených pozic, získáno %.', v_inserted;
   end if;
+
+  update public.machine_planogram_slots
+  set active = false,
+      customer_selection_code = null,
+      updated_at = now()
+  where machine_id = v_machine_id
+    and slot_code in ('63', '64');
 
   select count(*) into v_active_slots
   from public.machine_planogram_slots
   where machine_id = v_machine_id
     and active is true;
 
-  if v_active_slots <> 51 then
-    raise exception 'EV 23: očekáváno 51 aktivních pozic, nalezeno %.', v_active_slots;
+  if v_active_slots <> 49 then
+    raise exception 'EV 23: očekáváno 49 aktivních pozic, nalezeno %.', v_active_slots;
   end if;
 
   if exists (
@@ -400,7 +405,7 @@ begin
   set note = concat_ws(
         ' · ',
         nullif(trim(note), ''),
-        '1. 10. 2026: připraven čistý 51pozicový plánogram podle schváleného podkladu; automat potvrzen jako fyzicky prázdný, evidované zásoby a expirace vynulovány.'
+        '1. 10. 2026: připraven čistý 49pozicový plánogram podle schváleného podkladu; šestá řada obsahuje jen první čtyři položky, evidované zásoby a expirace byly vynulovány.'
       )
   where id = v_machine_id;
 end;
