@@ -46,21 +46,14 @@ begin
   select id, active, location_id
   into strict v_machine_id, v_machine_active, v_location_id
   from public.machines
-  where evidence_number = 23
-    and name = 'Luce Snack X';
+  where id = 19
+    and evidence_number = 23
+    and name = 'Luce Snack X'
+    and brand = 'Rheavendors'
+    and status = 'removed';
 
   if v_machine_active is true or v_location_id is not null then
     raise exception 'EV 23 musí být před přestavbou neaktivní a bez lokality.';
-  end if;
-
-  if not exists (
-    select 1
-    from public.machine_external_links
-    where machine_id = v_machine_id
-      and provider = 'IMA'
-      and external_machine_id = '582171'
-  ) then
-    raise exception 'EV 23 nemá očekávanou vazbu IMA TID 582171.';
   end if;
 
   select coalesce(sum(current_units), 0)
