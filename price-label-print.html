@@ -65,6 +65,7 @@
     .label.separate-position{border-left:1mm solid var(--red);background:#f4f6f8}
     .label.separate-position .separate-number{font-size:7mm;line-height:1}
     .label.separate-price{justify-content:flex-end;padding-right:3mm;background:#fff}
+    .selection-input{width:72px;height:29px;padding:0 7px;border:1px solid #cbd2dc;border-radius:4px;text-align:center;font-weight:900}.selection-input.missing{border-color:#e3a23b;background:#fff8eb}
     body.with-marks .label{outline:.25mm dashed #9aa3ae;outline-offset:1mm}
     .size-note{align-self:flex-end;color:#697386;font-size:5px;font-weight:850;line-height:1.25;white-space:nowrap}
     @page{size:A4;margin:10mm}
@@ -99,13 +100,13 @@
         <section class="table-panel">
           <div class="sheet-head"><div><h2>Cenovky k tisku</h2><p>FAS/Bianchi = jeden štítek. Europa/Luce X = pozice a cena zvlášť.</p></div><span class="badge green">Rozměry ověřeny podle Excelu</span></div>
           <div class="notice"><i class="dot"></i><div><b>Automatický výběr šablony:</b> systém použije typ automatu z evidence. U oddělených rámečků vytiskne stejný počet pozičních i cenových štítků a spáruje je pořadím.</div></div>
-          <div class="filters"><input id="search" placeholder="Hledat lokalitu, automat, EV, produkt nebo pozici…"><select id="typeFilter"><option value="">Všechny typy</option><option value="combined">FAS / Bianchi</option><option value="separate">Europa / Luce Snack X</option><option value="universal">Ostatní automaty</option></select><select id="statusFilter"><option value="">Všechny stavy</option><option value="product">Nová cenovka</option><option value="price">Změna ceny</option><option value="missing">Chybějící cena</option><option value="current">Beze změny</option></select><button class="btn" id="clear">Vyčistit</button></div>
+          <div class="filters"><input id="search" placeholder="Hledat lokalitu, automat, EV, produkt nebo pozici…"><select id="typeFilter"><option value="">Všechny typy</option><option value="combined">FAS / Bianchi</option><option value="separate">Europa / Luce Snack X</option><option value="universal">Ostatní automaty</option></select><select id="statusFilter"><option value="">Všechny stavy</option><option value="selection">Chybí zákaznická volba</option><option value="product">Nová cenovka</option><option value="price">Změna ceny</option><option value="missing">Chybějící cena</option><option value="current">Beze změny</option></select><button class="btn" id="clear">Vyčistit</button></div>
           <div class="scroll"><table>
             <colgroup><col style="width:38px"><col style="width:200px"><col style="width:170px"><col style="width:80px"><col style="width:100px"><col style="width:105px"><col style="width:125px"><col style="width:105px"></colgroup>
-            <thead><tr><th><input class="check" id="selectAll" type="checkbox" checked></th><th>Lokalita</th><th>Automat</th><th>Pozice</th><th>Cena</th><th>Šablona</th><th>Výstup</th><th>Stav</th></tr></thead>
+            <thead><tr><th><input class="check" id="selectAll" type="checkbox"></th><th>Lokalita</th><th>Automat</th><th>Volba zákazníka</th><th>Cena</th><th>Šablona</th><th>Výstup</th><th>Stav</th></tr></thead>
             <tbody id="rows"><tr><td colspan="8"><div class="sub">Načítám automaty a plánogramy…</div></td></tr></tbody>
           </table></div>
-          <div class="table-foot"><span><b id="visibleCount">0 položek</b> · cenu lze před tiskem opravit přímo v řádku</span><div class="inline"><button class="btn" id="saveDraft">Uložit rozpracované</button><button class="btn primary" id="printBottom">Vytisknout vybrané</button></div></div>
+          <div class="table-foot"><span><b id="visibleCount">0 položek</b> · interní kód a zákaznická volba se vedou odděleně</span><div class="inline"><button class="btn" id="saveCustomerCodes">Uložit zákaznické volby</button><button class="btn" id="saveDraft">Uložit rozpracované</button><button class="btn primary" id="printBottom">Vytisknout vybrané</button></div></div>
         </section>
 
         <aside class="preview">
@@ -152,6 +153,7 @@
   let previewView = 'all'
   const selectedKeys = new Set()
   const priceOverrides = new Map()
+  const customerCodeOverrides = new Map()
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -218,7 +220,7 @@
     const productName = slot.pending_product_name || slot.planned_product_name || slot.product_name || 'Bez produktu'
     const productChanged = Boolean(targetSku && targetSku !== currentSku)
     const priceChanged = targetPrice != null && currentPrice != null && targetPrice !== currentPrice
-    const status = targetPrice == null ? 'missing' : productChanged ? 'product' : priceChanged ? 'price' : 'current'
+    const customerCode = String(slot.customer_selection_code || '').trim()
     const key = `${machine.id}:${slot.id}`
     return {
       key,
@@ -228,14 +230,27 @@
       template,
       productName,
       price: targetPrice,
-      status,
-      changed: status !== 'current',
+      customerCode,
+      productChanged,
+      priceChanged,
       search: normalize([
         location?.name, location?.city, location?.address,
         machine.name, machine.brand, machine.model, machine.evidence_number,
-        slot.slot_code, productName, targetSku
+        slot.slot_code, customerCode, productName, targetSku
       ].filter(Boolean).join(' '))
     }
+  }
+
+  function customerCodeFor(item) {
+    return String(customerCodeOverrides.has(item.key) ? customerCodeOverrides.get(item.key) : item.customerCode).trim()
+  }
+
+  function statusFor(item) {
+    if (!customerCodeFor(item)) return 'selection'
+    if (item.price == null) return 'missing'
+    if (item.productChanged) return 'product'
+    if (item.priceChanged) return 'price'
+    return 'current'
   }
 
   function slotCompare(a, b) {
@@ -279,17 +294,19 @@
     const type = elements.type.value
     const status = elements.status.value
     return items.filter(item => {
+      const itemStatus = statusFor(item)
       if (source === 'machine' && (!machineId || String(item.machine.id) !== machineId)) return false
-      if (source === 'changes' && !item.changed) return false
+      if (source === 'changes' && itemStatus === 'current') return false
       if (source !== 'machine' && machineId && String(item.machine.id) !== machineId) return false
       if (query && !item.search.includes(query)) return false
       if (type && item.template.group !== type) return false
-      if (status && item.status !== status) return false
+      if (status && itemStatus !== status) return false
       return true
     })
   }
 
   function statusMarkup(status) {
+    if (status === 'selection') return '<span class="badge amber">Doplň zákaznickou volbu</span>'
     if (status === 'missing') return '<span class="badge amber">Chybějící cena</span>'
     if (status === 'product') return '<span class="badge blue">Nový produkt</span>'
     if (status === 'price') return '<span class="badge">Změna ceny</span>'
@@ -310,15 +327,17 @@
         const machineSub = [item.machine.brand, item.machine.machine_type, item.machine.active === false ? 'neaktivní' : 'aktivní'].filter(Boolean).join(' · ')
         const checked = selectedKeys.has(item.key)
         const price = priceOverrides.has(item.key) ? priceOverrides.get(item.key) : item.price
+        const customerCode = customerCodeFor(item)
+        const itemStatus = statusFor(item)
         return `<tr class="${checked ? 'selected' : ''}" data-key="${escapeHtml(item.key)}">
-          <td><input class="check row-check" type="checkbox" ${checked ? 'checked' : ''}></td>
+          <td><input class="check row-check" type="checkbox" ${checked ? 'checked' : ''} ${customerCode ? '' : 'disabled'}></td>
           <td><div class="name">${escapeHtml(locationName)}</div><div class="sub">${escapeHtml(locationSub)}</div></td>
           <td><div class="name">${escapeHtml(machineTitle(item.machine))}</div><div class="sub">${escapeHtml(machineSub)}</div></td>
-          <td><b>${escapeHtml(item.slot.slot_code)}</b><div class="sub">${escapeHtml(item.productName)}</div></td>
+          <td><input class="selection-input ${customerCode ? '' : 'missing'}" type="text" value="${escapeHtml(customerCode)}" placeholder="např. 12"><div class="sub">Interně: ${escapeHtml(item.slot.slot_code)} · ${escapeHtml(item.productName)}</div></td>
           <td><input class="price-input" type="number" min="0" step="1" value="${price ?? ''}"> Kč</td>
           <td><span class="badge ${item.template.kind === 'separate' ? 'blue' : ''}">${escapeHtml(item.template.label)}</span></td>
           <td><span class="badge ${item.template.kind === 'separate' ? 'amber' : 'green'}">${item.template.kind === 'separate' ? '2 štítky' : '1 štítek'}</span></td>
-          <td>${statusMarkup(item.status)}</td>
+          <td data-status>${statusMarkup(itemStatus)}</td>
         </tr>`
       }).join('')
     }
@@ -335,15 +354,33 @@
         priceOverrides.set(key, event.target.value)
         renderPreview()
       })
+      row.querySelector('.selection-input').addEventListener('input', event => {
+        const item = items.find(candidate => candidate.key === key)
+        customerCodeOverrides.set(key, event.target.value)
+        const codePresent = Boolean(customerCodeFor(item))
+        event.target.classList.toggle('missing', !codePresent)
+        const checkbox = row.querySelector('.row-check')
+        checkbox.disabled = !codePresent
+        if (!codePresent) {
+          checkbox.checked = false
+          selectedKeys.delete(key)
+          row.classList.remove('selected')
+        }
+        row.querySelector('[data-status]').innerHTML = statusMarkup(statusFor(item))
+        renderPreview()
+        syncSelectAll()
+      })
     })
     document.getElementById('visibleCount').textContent = `${visibleItems.length} položek · ${new Set(visibleItems.map(item => item.machine.id)).size} automatů`
     syncSelectAll()
   }
 
   function syncSelectAll() {
-    const selectedVisible = visibleItems.filter(item => selectedKeys.has(item.key)).length
-    elements.selectAll.checked = visibleItems.length > 0 && selectedVisible === visibleItems.length
-    elements.selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleItems.length
+    const selectableItems = visibleItems.filter(item => customerCodeFor(item))
+    const selectedVisible = selectableItems.filter(item => selectedKeys.has(item.key)).length
+    elements.selectAll.checked = selectableItems.length > 0 && selectedVisible === selectableItems.length
+    elements.selectAll.indeterminate = selectedVisible > 0 && selectedVisible < selectableItems.length
+    elements.selectAll.disabled = selectableItems.length === 0
   }
 
   function selectedItems() {
@@ -356,7 +393,7 @@
   }
 
   function labelMarkup(item) {
-    const position = escapeHtml(item.slot.slot_code)
+    const position = escapeHtml(customerCodeFor(item))
     const price = escapeHtml(priceFor(item))
     if (item.template.kind === 'combined') {
       const size = item.template.template === 'bianchi' ? '40,5 × 18,3 mm' : '40,5 × 16,9 mm'
@@ -386,7 +423,7 @@
   }
 
   function renderAll() {
-    document.getElementById('reviewMetric').textContent = items.filter(item => item.changed).length
+    document.getElementById('reviewMetric').textContent = items.filter(item => statusFor(item) !== 'current').length
     renderTable()
     renderPreview()
   }
@@ -396,6 +433,7 @@
       const draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}')
       ;(draft.selectedKeys || []).forEach(key => selectedKeys.add(String(key)))
       Object.entries(draft.priceOverrides || {}).forEach(([key, value]) => priceOverrides.set(key, value))
+      Object.entries(draft.customerCodeOverrides || {}).forEach(([key, value]) => customerCodeOverrides.set(key, value))
       if (draft.source) elements.source.value = draft.source
       if (draft.machine) elements.machine.value = draft.machine
     } catch {}
@@ -405,10 +443,47 @@
     localStorage.setItem(DRAFT_KEY, JSON.stringify({
       selectedKeys: [...selectedKeys],
       priceOverrides: Object.fromEntries(priceOverrides),
+      customerCodeOverrides: Object.fromEntries(customerCodeOverrides),
       source: elements.source.value,
       machine: elements.machine.value
     }))
     say('Rozpracovaný výběr byl uložen v tomto prohlížeči')
+  }
+
+  async function saveCustomerCodes() {
+    const changed = items.filter(item => customerCodeOverrides.has(item.key) && customerCodeFor(item) !== item.customerCode)
+    if (!changed.length) return say('Žádná zákaznická volba nebyla změněná')
+    const seen = new Map()
+    for (const item of items) {
+      const code = customerCodeFor(item)
+      if (!code) continue
+      const uniqueKey = `${item.machine.id}:${normalize(code)}`
+      if (seen.has(uniqueKey)) {
+        throw new Error(`${machineTitle(item.machine)}: zákaznická volba ${code} je zadaná vícekrát.`)
+      }
+      seen.set(uniqueKey, item.key)
+    }
+    const button = document.getElementById('saveCustomerCodes')
+    button.disabled = true
+    button.textContent = 'Ukládám…'
+    try {
+      for (const item of changed) {
+        const value = customerCodeFor(item) || null
+        const { error } = await supabase.from('machine_planogram_slots').update({ customer_selection_code: value }).eq('id', item.slot.id)
+        if (error) throw error
+        item.customerCode = value || ''
+        item.slot.customer_selection_code = value
+        customerCodeOverrides.delete(item.key)
+      }
+      renderAll()
+      say(`Uloženo ${changed.length} zákaznických voleb`)
+    } catch (error) {
+      console.error(error)
+      say(error.message || 'Zákaznické volby se nepodařilo uložit', 4200)
+    } finally {
+      button.disabled = false
+      button.textContent = 'Uložit zákaznické volby'
+    }
   }
 
   async function loadData({ restoreDraft = false } = {}) {
@@ -419,7 +494,7 @@
       const [machineRows, locationRows, slotRows] = await Promise.all([
         fetchAll(() => supabase.from('machines').select('id,location_id,name,machine_type,brand,model,evidence_number,status,active').order('id', { ascending: true })),
         fetchAll(() => supabase.from('locations').select('id,name,city,address,active').order('id', { ascending: true })),
-        fetchAll(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,product_name,product_sku,price_czk,customer_price_czk,dex_price_czk,active,sort_order,pending_product_sku,pending_product_name,pending_price_czk,planned_product_sku,planned_product_name,planned_price_czk').eq('active', true).order('machine_id', { ascending: true }).order('sort_order', { ascending: true }))
+        fetchAll(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,customer_selection_code,product_name,product_sku,price_czk,customer_price_czk,dex_price_czk,active,sort_order,pending_product_sku,pending_product_name,pending_price_czk,planned_product_sku,planned_product_name,planned_price_czk').eq('active', true).order('machine_id', { ascending: true }).order('sort_order', { ascending: true }))
       ])
       machines = machineRows
       locations = locationRows
@@ -432,6 +507,10 @@
       if (restoreDraft) {
         loadDraft()
         populateMachines()
+      }
+      for (const key of [...selectedKeys]) {
+        const item = items.find(candidate => candidate.key === key)
+        if (!item || !customerCodeFor(item)) selectedKeys.delete(key)
       }
       renderAll()
       say(`Načteno ${machines.length} automatů a ${items.length} aktivních pozic`)
@@ -446,7 +525,11 @@
   }
 
   elements.selectAll.addEventListener('change', event => {
-    visibleItems.forEach(item => event.target.checked ? selectedKeys.add(item.key) : selectedKeys.delete(item.key))
+    visibleItems.forEach(item => {
+      if (!event.target.checked || customerCodeFor(item)) {
+        event.target.checked ? selectedKeys.add(item.key) : selectedKeys.delete(item.key)
+      }
+    })
     renderAll()
   })
 
@@ -469,9 +552,9 @@
 
   elements.selectionMode.addEventListener('change', () => {
     if (elements.selectionMode.value === 'changes') {
-      visibleItems.filter(item => item.changed).forEach(item => selectedKeys.add(item.key))
+      visibleItems.filter(item => statusFor(item) !== 'current' && customerCodeFor(item)).forEach(item => selectedKeys.add(item.key))
     } else if (elements.selectionMode.value === 'visible') {
-      visibleItems.forEach(item => selectedKeys.add(item.key))
+      visibleItems.filter(item => customerCodeFor(item)).forEach(item => selectedKeys.add(item.key))
     }
     renderAll()
   })
@@ -484,6 +567,7 @@
 
   elements.refresh.addEventListener('click', () => loadData())
   document.getElementById('saveDraft').addEventListener('click', saveDraft)
+  document.getElementById('saveCustomerCodes').addEventListener('click', () => saveCustomerCodes().catch(error => say(error.message, 4200)))
   document.getElementById('templateInfo').addEventListener('click', () => say('FAS/Bianchi: společný štítek · Europa/Luce Snack X: pozice a cena zvlášť · ostatní: univerzální formát'))
   document.getElementById('printHistory').addEventListener('click', () => {
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
@@ -495,6 +579,7 @@
   function printLabels() {
     const selected = selectedItems()
     if (!selected.length) return say('Vyberte alespoň jednu cenovku')
+    if (selected.some(item => !customerCodeFor(item))) return say('Nejdřív doplňte zákaznické volby u všech vybraných pozic', 3600)
     const copies = Math.max(1, Math.min(10, Number(elements.copyCount.value || 1)))
     const physicalLabels = selected.reduce((count, item) => count + (item.template.kind === 'separate' ? 2 : 1), 0) * copies
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
