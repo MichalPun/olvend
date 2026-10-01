@@ -24,5 +24,6 @@ for(const name of ['normalizeText','roundMoney','normalizedPartnerProductName','
  const transfers=[{machine_id:66,from_location_id:60,to_location_id:null,transferred_at:'2026-09-04T18:45:36Z'},{machine_id:66,from_location_id:null,to_location_id:120,transferred_at:'2026-09-13T16:13:00Z'}];
  const events=[{machine_id:66,source_event_at:'2026-09-03T12:00:00Z'},{machine_id:66,source_event_at:'2026-09-15T12:00:00Z'}];assert.equal(ctx.filterPartnerTelemetryByLocation(events,60,transfers).length,1);
  assert(html.includes('setup.billingMachineTypes.includes(machine?.machine_type)'));
+ assert(html.includes('profileMap.set(locationId, { ...profile, ...(profileMap.get(locationId) || {}) })'), 'Saved profile must override built-in defaults');
  console.log('PASS: GP 519 transactions reconcile to 8953 CZK, persisted rates retain totals, duplicate/period checks and transfer boundaries preserved.');
 })().catch(e=>{console.error(e);process.exit(1)});
