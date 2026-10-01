@@ -17,6 +17,7 @@ begin
   new.settlement_partner:=m.subsidy_default_partner;
   new.settlement_billing_enabled:=m.subsidy_default_enabled and new.settlement_amount_czk>0;
  elsif new.subsidy_mode='none' then
+  new.settlement_type:='none';
   new.settlement_billing_enabled:=false;
  end if;
  return new;
