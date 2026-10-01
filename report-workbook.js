@@ -2,6 +2,15 @@ import {matchesFilter,csvCell} from './report-core.js';
 import {columnLetter} from './report-xlsx.js';
 const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const number=v=>Number(v).toLocaleString('cs-CZ',{maximumFractionDigits:2});
+const changeKeys=new Set(['revenueDelta','revenueNetDelta','quantityDelta','profitDelta','costDelta','changePercent']);
+function changeMarkup(key,value) {
+  if(value==null || !Number.isFinite(Number(value))) return '<span class="change-value change-unknown">—</span>';
+  const amount=Number(value), rounded=Number(amount.toFixed(key==='changePercent'?1:2));
+  const direction=rounded>0?'up':rounded<0?'down':'flat';
+  const label=(rounded>0?'+':'')+number(rounded)+(key==='changePercent'?' %':'');
+  return `<span class="change-value change-${direction}">${esc(label)}</span>`;
+}
+
 export function createWorkbook({head,body,foot,toolbar,status,onOutput,onOpen}) {
   let columns=[],source=[],visible=[],filters={},hidden=new Set(),sort='',ascending=false,limit=200,anchor=null,end=null,view='',dragging=false;
   const value=(r,c)=>c.csv?c.csv(r):r[c.key];
@@ -20,8 +29,8 @@ export function createWorkbook({head,body,foot,toolbar,status,onOutput,onOpen}) 
     visible=source.filter(r=>columns.every(c=>matchesFilter(value(r,c),filters[c.key])));
     if(sort){const col=columns.find(c=>c.key===sort);if(col)visible.sort((a,b)=>{const av=value(a,col),bv=value(b,col);if(av==null)return bv==null?0:1;if(bv==null)return -1;return(typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv),'cs',{numeric:true}))*(ascending?1:-1);});}
     anchor=end=null;
-    body.innerHTML=visible.slice(0,limit).map((r,i)=>`<tr><th class="row-number" scope="row">${i+3}</th>${cs.map((c,j)=>`<td tabindex="0" data-cell="${i}:${j}" class="${c.num?'num ':''}${j===0?'frozen-cell':''}" title="${esc(value(r,c))}">${value(r,c)==null?'—':c.render(r)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${cs.length+1}">Žádné řádky odpovídající filtrům.</td></tr>`;
-    foot.innerHTML=`<tr><th class="row-number">Σ</th>${cs.map((c,i)=>{let total='';if(i===0)total='Celkem';else if(additive.has(c.key)){const values=visible.map(r=>value(r,c));total=values.some(v=>v==null)?'Neúplné':number(values.reduce((sum,v)=>sum+Number(v||0),0));}else if(c.key==='share')total=number(visible.reduce((sum,r)=>sum+Number(value(r,c)||0),0))+' %';return `<td class="${c.num?'num':''}">${esc(total)}</td>`;}).join('')}</tr>`;
+    body.innerHTML=visible.slice(0,limit).map((r,i)=>`<tr><th class="row-number" scope="row">${i+3}</th>${cs.map((c,j)=>`<td tabindex="0" data-cell="${i}:${j}" class="${c.num?'num ':''}${j===0?'frozen-cell':''}" title="${esc(value(r,c))}">${changeKeys.has(c.key)?changeMarkup(c.key,value(r,c)):value(r,c)==null?'—':c.render(r)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${cs.length+1}">Žádné řádky odpovídající filtrům.</td></tr>`;
+    foot.innerHTML=`<tr><th class="row-number">Σ</th>${cs.map((c,i)=>{let total='',delta=null;if(i===0)total='Celkem';else if(additive.has(c.key)){const values=visible.map(r=>value(r,c));delta=values.some(v=>v==null)?null:values.reduce((sum,v)=>sum+Number(v||0),0);total=delta==null?'Neúplné':number(delta);}else if(c.key==='share')total=number(visible.reduce((sum,r)=>sum+Number(value(r,c)||0),0))+' %';return `<td class="${c.num?'num':''}">${changeKeys.has(c.key)&&additive.has(c.key)&&delta!=null?changeMarkup(c.key,delta):esc(total)}</td>`;}).join('')}</tr>`;
     const totals=cs.filter(c=>additive.has(c.key)).map(c=>{const values=visible.map(r=>value(r,c));return [c.label,values.some(v=>v==null)?'Neúplné':values.reduce((sum,v)=>sum+Number(v||0),0)];});
     onOutput(visible.map(r=>Object.fromEntries(cs.map(c=>[c.label,value(r,c)]))),visible,{totals,filters:columns.filter(c=>filters[c.key]).map(c=>[c.label,filters[c.key]])});
     document.getElementById('rowCount').textContent=`${Math.min(limit,visible.length)} z ${visible.length} řádků`;
