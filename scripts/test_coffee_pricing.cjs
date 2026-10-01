@@ -13,3 +13,8 @@ const fixture=ctx.renderCoffeePlanogram([],Array.from({length:24},(_,i)=>({id:i+
 fs.writeFileSync('/tmp/coffee-preview.html',`<html><head><style>${html.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body>${fixture}<script>${source('refreshCoffeeSelection').split('    // With no partner')[0]}</script></body></html>`);
 assert(fixture.includes('Cena nápoje 10 Kč · zákazník 0 Kč'));assert.equal((fixture.match(/data-coffee-select=/g)||[]).length,24);
 console.log('PASS: explicit zero price, billing off/on preserves rate and partner, legacy billing mirror, 24 selectable choices and differing-price display');
+
+fields.coffeeSubsidyMode.value='inherit';assert.equal(ctx.getCoffeeButtonPayload().subsidy_mode,'inherit');
+fields.coffeeSubsidyMode.value='none';assert.equal(ctx.getCoffeeButtonPayload().subsidy_mode,'none');
+assert(html.includes('getTelemetrySlotPayloadFromCoffeeButton(savedButton)'), 'Mirror must use server-resolved inherited amount');
+console.log('PASS: subsidy modes survive editor payload; mirror uses authoritative saved rule');
