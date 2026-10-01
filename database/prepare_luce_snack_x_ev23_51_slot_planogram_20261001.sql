@@ -1,7 +1,7 @@
 -- Připraví odstavený Luce Snack X EV 23 na nový plánogram z 1. 10. 2026.
 -- Rozložení: 51 voleb, z toho horní řada obsahuje tři dvojité a tři jednoduché spirály.
 -- Stroj musí být před spuštěním bez lokality a neaktivní.
--- Existující zásoba ani expirace se nemažou: změněné obsazené pozice se připraví jako úplná výměna.
+-- Stroj je fyzicky prázdný; evidované stavy, expirace a rozpracované výměny se proto vynulují.
 
 begin;
 
@@ -40,8 +40,6 @@ declare
   v_location_id bigint;
   v_inserted integer;
   v_active_slots integer;
-  v_units_before numeric;
-  v_units_after numeric;
 begin
   select id, active, location_id
   into strict v_machine_id, v_machine_active, v_location_id
@@ -56,9 +54,25 @@ begin
     raise exception 'EV 23 musí být před přestavbou neaktivní a bez lokality.';
   end if;
 
-  select coalesce(sum(current_units), 0)
-  into v_units_before
-  from public.machine_planogram_slots
+  update public.machine_planogram_slots
+  set current_units = 0,
+      last_units = 0,
+      fill_percent = 0,
+      expiry_date = null,
+      pending_product_id = null,
+      pending_product_sku = null,
+      pending_product_name = null,
+      pending_price_czk = null,
+      pending_change_effective_date = null,
+      pending_change_note = null,
+      pending_change_mode = 'sell_through',
+      planned_product_name = null,
+      planned_product_sku = null,
+      planned_price_czk = null,
+      changeover_old_units = null,
+      changeover_new_units = null,
+      changeover_started_at = null,
+      updated_at = now()
   where machine_id = v_machine_id;
 
   insert into public.machine_planogram_slots as current_slot (
@@ -91,26 +105,26 @@ begin
     d.operator_instruction, 0, null,
     false, null, 'none',
     0, null, false,
-    null, 'Cílový 51pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Existující zásoba a expirace zůstávají zachované do fyzického osazení.'
+    null, 'Cílový 51pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Stroj byl potvrzen jako fyzicky prázdný; evidované stavy byly vynulovány.'
   from (values
-    ('1',  '71',  27::numeric,  6,  0, 'Pepsi', 'Cola', 'exact', null::text, null::text),
-    ('2',  '67',  23::numeric,  6,  1, 'Nestea', 'Různé druhy', 'approved_list', 'Nestea Lemon 0,5l (SKU 275)', 'Přednostně SKU 67; lze použít Lemon SKU 275.'),
-    ('3',  '70',  26::numeric,  6,  2, 'Kofola', 'Original', 'exact', null, null),
-    ('4',  '209', 20::numeric,  6,  3, 'ZON', 'Různé druhy', 'exact', null, null),
-    ('5',  '156', 24::numeric,  6,  4, 'Ice Coffee', null, 'exact', null, null),
-    ('6',  '2',   32::numeric,  6,  5, 'Big Shock!', 'Exotic', 'exact', null, null),
-    ('7',  '187', 22::numeric,  6,  6, 'Staropramen Cool', 'Citron', 'exact', null, null),
-    ('8',  '13',  15::numeric,  6,  7, 'Hanácká kyselka', null, 'exact', null, null),
-    ('9',  '71',  27::numeric,  6,  8, 'Pepsi', 'Cola', 'exact', null, null),
-    ('12', '163', 19::numeric,  6,  9, 'QXE', null, 'exact', null, null),
-    ('13', '163', 19::numeric,  6, 10, 'QXE', null, 'exact', null, null),
-    ('14', '4',   27::numeric,  6, 11, 'Hell', 'Classic', 'exact', null, null),
-    ('15', '190', 48::numeric,  6, 12, 'Red Bull', null, 'exact', null, null),
-    ('16', '6',   25::numeric,  6, 13, 'Relax', 'Liči', 'exact', null, null),
-    ('17', '41',  15::numeric,  6, 14, 'Capri-Sun', 'Multivitamin', 'exact', null, null),
-    ('18', '259', 25::numeric,  6, 15, 'Hello', 'Perlivá', 'exact', null, null),
-    ('19', '157', 19::numeric,  6, 16, 'Pepsi', '0,33 l', 'exact', null, null),
-    ('20', '163', 19::numeric,  6, 17, 'QXE', null, 'exact', null, null),
+    ('1',  '163', 19::numeric,  6,  0, 'QXE', null, 'exact', null::text, null::text),
+    ('2',  '163', 19::numeric,  6,  1, 'QXE', null, 'exact', null, null),
+    ('3',  '4',   27::numeric,  6,  2, 'Hell', 'Classic', 'exact', null, null),
+    ('4',  '190', 48::numeric,  6,  3, 'Red Bull', null, 'exact', null, null),
+    ('5',  '6',   25::numeric,  6,  4, 'Relax', 'Liči', 'exact', null, null),
+    ('6',  '41',  15::numeric,  6,  5, 'Capri-Sun', 'Multivitamin', 'exact', null, null),
+    ('7',  '259', 25::numeric,  6,  6, 'Hello', 'Perlivá', 'exact', null, null),
+    ('8',  '157', 19::numeric,  6,  7, 'Pepsi', '0,33 l', 'exact', null, null),
+    ('9',  '163', 19::numeric,  6,  8, 'QXE', null, 'exact', null, null),
+    ('12', '71',  27::numeric,  6,  9, 'Pepsi', 'Cola', 'exact', null, null),
+    ('13', '67',  23::numeric,  6, 10, 'Nestea', 'Různé druhy', 'approved_list', 'Nestea Lemon 0,5l (SKU 275)', 'Přednostně SKU 67; lze použít Lemon SKU 275.'),
+    ('14', '70',  26::numeric,  6, 11, 'Kofola', 'Original', 'exact', null, null),
+    ('15', '209', 20::numeric,  6, 12, 'ZON', 'Různé druhy', 'exact', null, null),
+    ('16', '156', 24::numeric,  6, 13, 'Ice Coffee', null, 'exact', null, null),
+    ('17', '2',   32::numeric,  6, 14, 'Big Shock!', 'Exotic', 'exact', null, null),
+    ('18', '187', 22::numeric,  6, 15, 'Staropramen Cool', 'Citron', 'exact', null, null),
+    ('19', '13',  15::numeric,  6, 16, 'Hanácká kyselka', null, 'exact', null, null),
+    ('20', '71',  27::numeric,  6, 17, 'Pepsi', 'Cola', 'exact', null, null),
     ('23', 'SIMPLY-DEBRECIN', 44::numeric, 5, 18, 'Simply', 'Debrecín', 'exact', null, 'Nový čerstvý sortiment; při vložení eviduj expiraci.'),
     ('24', 'SIMPLY-PORIZEK',  44::numeric, 5, 19, 'Simply', 'Pořízek', 'exact', null, 'Nový čerstvý sortiment; při vložení eviduj expiraci.'),
     ('25', 'SIMPLY-MLSKA',    44::numeric, 5, 20, 'Simply', 'Mlska', 'exact', null, 'Nový čerstvý sortiment; při vložení eviduj expiraci.'),
@@ -366,20 +380,27 @@ begin
     raise exception 'EV 23: očekáváno 51 aktivních pozic, nalezeno %.', v_active_slots;
   end if;
 
-  select coalesce(sum(current_units), 0)
-  into v_units_after
-  from public.machine_planogram_slots
-  where machine_id = v_machine_id;
-
-  if v_units_after <> v_units_before then
-    raise exception 'EV 23: migrace změnila evidovaný počet kusů (% → %), proto byla vrácena zpět.', v_units_before, v_units_after;
+  if exists (
+    select 1
+    from public.machine_planogram_slots
+    where machine_id = v_machine_id
+      and active is true
+      and (
+        coalesce(current_units, 0) <> 0
+        or coalesce(last_units, 0) <> 0
+        or expiry_date is not null
+        or pending_product_sku is not null
+        or planned_product_sku is not null
+      )
+  ) then
+    raise exception 'EV 23: prázdný výchozí stav plánogramu nebyl nastaven.';
   end if;
 
   update public.machines
   set note = concat_ws(
         ' · ',
         nullif(trim(note), ''),
-        '1. 10. 2026: připraven bezpečný 51pozicový plánogram podle schváleného podkladu; existující zásoba a expirace zachovány, změny se dokončí při fyzickém osazení.'
+        '1. 10. 2026: připraven čistý 51pozicový plánogram podle schváleného podkladu; automat potvrzen jako fyzicky prázdný, evidované zásoby a expirace vynulovány.'
       )
   where id = v_machine_id;
 end;
