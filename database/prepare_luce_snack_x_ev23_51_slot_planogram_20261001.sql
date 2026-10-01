@@ -48,7 +48,6 @@ begin
   from public.machines
   where id = 19
     and evidence_number = 23
-    and qr_token = 'vendsoft-23'
     and name = 'Luce Snack X'
     and brand = 'Rheavendors'
     and status = 'removed';
