@@ -1,6 +1,7 @@
 -- Připraví odstavený Luce Snack X EV 23 na nový plánogram z 1. 10. 2026.
 -- Rozložení: 51 voleb, z toho horní řada obsahuje tři dvojité a tři jednoduché spirály.
--- Stroj musí být před spuštěním bez lokality a neaktivní. Nový plánogram začíná s nulovou zásobou.
+-- Stroj musí být před spuštěním bez lokality a neaktivní.
+-- Existující zásoba ani expirace se nemažou: změněné obsazené pozice se připraví jako úplná výměna.
 
 begin;
 
@@ -39,6 +40,8 @@ declare
   v_location_id bigint;
   v_inserted integer;
   v_active_slots integer;
+  v_units_before numeric;
+  v_units_after numeric;
 begin
   select id, active, location_id
   into strict v_machine_id, v_machine_active, v_location_id
@@ -60,31 +63,12 @@ begin
     raise exception 'EV 23 nemá očekávanou vazbu IMA TID 582171.';
   end if;
 
-  update public.machine_planogram_slots
-  set active = false,
-      current_units = 0,
-      last_units = 0,
-      desired_units = 0,
-      target_units = 0,
-      fill_percent = 0,
-      expiry_date = null,
-      pending_product_id = null,
-      pending_product_sku = null,
-      pending_product_name = null,
-      pending_price_czk = null,
-      pending_change_effective_date = null,
-      pending_change_note = null,
-      pending_change_mode = 'sell_through',
-      planned_product_name = null,
-      planned_product_sku = null,
-      planned_price_czk = null,
-      changeover_old_units = null,
-      changeover_new_units = null,
-      changeover_started_at = null,
-      updated_at = now()
+  select coalesce(sum(current_units), 0)
+  into v_units_before
+  from public.machine_planogram_slots
   where machine_id = v_machine_id;
 
-  insert into public.machine_planogram_slots (
+  insert into public.machine_planogram_slots as current_slot (
     machine_id, slot_code, product_name, product_sku,
     price_czk, customer_price_czk, dex_price_czk,
     current_units, last_units, capacity_units, desired_units, target_units,
@@ -114,7 +98,7 @@ begin
     d.operator_instruction, 0, null,
     false, null, 'none',
     0, null, false,
-    null, 'Cílový 51pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Stroj připraven prázdný k fyzickému osazení.'
+    null, 'Cílový 51pozicový plánogram EV 23 podle podkladu 1. 10. 2026. Existující zásoba a expirace zůstávají zachované do fyzického osazení.'
   from (values
     ('1',  '71',  27::numeric,  6,  0, 'Pepsi', 'Cola', 'exact', null::text, null::text),
     ('2',  '67',  23::numeric,  6,  1, 'Nestea', 'Různé druhy', 'approved_list', 'Nestea Lemon 0,5l (SKU 275)', 'Přednostně SKU 67; lze použít Lemon SKU 275.'),
@@ -176,36 +160,189 @@ begin
     on product.sku = d.sku
    and product.active is true
   on conflict (machine_id, slot_code) do update set
-    product_name = excluded.product_name,
-    product_sku = excluded.product_sku,
-    price_czk = excluded.price_czk,
-    customer_price_czk = excluded.customer_price_czk,
-    dex_price_czk = excluded.dex_price_czk,
-    current_units = excluded.current_units,
-    last_units = excluded.last_units,
-    capacity_units = excluded.capacity_units,
-    desired_units = excluded.desired_units,
-    target_units = excluded.target_units,
-    fill_percent = excluded.fill_percent,
-    expiry_date = null,
+    product_name = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_slot.product_name
+      else excluded.product_name
+    end,
+    product_sku = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_slot.product_sku
+      else excluded.product_sku
+    end,
+    price_czk = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_slot.price_czk
+      else excluded.price_czk
+    end,
+    customer_price_czk = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_slot.customer_price_czk
+      else excluded.customer_price_czk
+    end,
+    dex_price_czk = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_slot.dex_price_czk
+      else excluded.dex_price_czk
+    end,
+    current_units = current_slot.current_units,
+    last_units = current_slot.last_units,
+    capacity_units = case
+      when coalesce(current_slot.current_units, 0) > 0 then current_slot.capacity_units
+      else excluded.capacity_units
+    end,
+    desired_units = case
+      when coalesce(current_slot.current_units, 0) > 0 then current_slot.desired_units
+      else excluded.desired_units
+    end,
+    target_units = case
+      when coalesce(current_slot.current_units, 0) > 0 then current_slot.target_units
+      else excluded.target_units
+    end,
+    fill_percent = case
+      when coalesce(current_slot.current_units, 0) > 0 then current_slot.fill_percent
+      else excluded.fill_percent
+    end,
+    expiry_date = case
+      when coalesce(current_slot.current_units, 0) > 0 then current_slot.expiry_date
+      else null
+    end,
     telemetry_key = excluded.telemetry_key,
     sort_order = excluded.sort_order,
     active = true,
-    product_family = excluded.product_family,
-    product_variant = excluded.product_variant,
+    product_family = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then current_slot.product_family
+      else excluded.product_family
+    end,
+    product_variant = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then current_slot.product_variant
+      else excluded.product_variant
+    end,
     replenishment_mode = excluded.replenishment_mode,
-    planned_product_name = null,
-    planned_product_sku = null,
-    planned_price_czk = null,
-    pending_product_id = null,
-    pending_product_sku = null,
-    pending_product_name = null,
-    pending_price_czk = null,
-    pending_change_effective_date = null,
-    pending_change_note = null,
-    pending_change_mode = 'sell_through',
-    changeover_old_units = null,
-    changeover_new_units = null,
+    planned_product_name = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.product_name
+      else null
+    end,
+    planned_product_sku = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.product_sku
+      else null
+    end,
+    planned_price_czk = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.price_czk
+      else null
+    end,
+    pending_product_id = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then (select id from public.products where sku = excluded.product_sku)
+      else null
+    end,
+    pending_product_sku = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.product_sku
+      else null
+    end,
+    pending_product_name = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.product_name
+      else null
+    end,
+    pending_price_czk = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then excluded.price_czk
+      else null
+    end,
+    pending_change_effective_date = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and (
+         current_slot.product_sku is distinct from excluded.product_sku
+         or coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+       ) then current_date
+      else null
+    end,
+    pending_change_note = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then 'Nový plánogram EV 23: při fyzickém osazení vrať původní kusy do vozidla a vlož cílový produkt.'
+      when coalesce(current_slot.current_units, 0) > 0
+       and coalesce(current_slot.customer_price_czk, current_slot.price_czk, current_slot.dex_price_czk)
+            is distinct from excluded.price_czk
+        then 'Nový plánogram EV 23: při fyzickém osazení změň cenu na automatu a potvrď ji v aplikaci.'
+      else null
+    end,
+    pending_change_mode = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then 'full_swap'
+      else 'sell_through'
+    end,
+    changeover_old_units = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then current_slot.current_units
+      else null
+    end,
+    changeover_new_units = case
+      when coalesce(current_slot.current_units, 0) > 0
+       and current_slot.product_sku is distinct from excluded.product_sku
+        then 0
+      else null
+    end,
     changeover_started_at = null,
     substitution_policy = excluded.substitution_policy,
     allowed_substitutes = excluded.allowed_substitutes,
@@ -236,27 +373,20 @@ begin
     raise exception 'EV 23: očekáváno 51 aktivních pozic, nalezeno %.', v_active_slots;
   end if;
 
-  if exists (
-    select 1
-    from public.machine_planogram_slots
-    where machine_id = v_machine_id
-      and active is true
-      and (
-        current_units <> 0
-        or last_units <> 0
-        or expiry_date is not null
-        or product_sku is null
-        or price_czk is null
-      )
-  ) then
-    raise exception 'EV 23: nový plánogram nemá čistý výchozí stav.';
+  select coalesce(sum(current_units), 0)
+  into v_units_after
+  from public.machine_planogram_slots
+  where machine_id = v_machine_id;
+
+  if v_units_after <> v_units_before then
+    raise exception 'EV 23: migrace změnila evidovaný počet kusů (% → %), proto byla vrácena zpět.', v_units_before, v_units_after;
   end if;
 
   update public.machines
   set note = concat_ws(
         ' · ',
         nullif(trim(note), ''),
-        '1. 10. 2026: připraven nový prázdný 51pozicový plánogram podle schváleného podkladu; stroj zůstává stažený a neaktivní.'
+        '1. 10. 2026: připraven bezpečný 51pozicový plánogram podle schváleného podkladu; existující zásoba a expirace zachovány, změny se dokončí při fyzickém osazení.'
       )
   where id = v_machine_id;
 end;
