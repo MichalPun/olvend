@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { createImaA5Synchronizer } from './ima-a5-sync.mjs'
 
 const PORT = Number(process.env.PORT || 10000)
 const PROXY_PATH = process.env.TELEMETRY_PROXY_PATH || '/gp-vendsoft-telemetry'
@@ -10,6 +11,7 @@ const VENDSOFT_SYNC_URL = process.env.VENDSOFT_SYNC_URL ||
   'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/vendsoft-food-sync'
 const VENDSOFT_SYNC_INTERVAL_MS = Math.max(60_000, Number(process.env.VENDSOFT_SYNC_INTERVAL_MS || 60_000))
 const VENDSOFT_SYNC_ENABLED = String(process.env.VENDSOFT_SYNC_ENABLED || 'false').toLowerCase() === 'true'
+const imaA5Sync = createImaA5Synchronizer(process.env)
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === 'string' ? body : JSON.stringify(body)
@@ -81,8 +83,23 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       service: 'olvend-telemetry-proxy',
       target: TARGET_URL,
-      path: PROXY_PATH
+      path: PROXY_PATH,
+      imaA5: imaA5Sync.state()
     })
+  }
+
+  if (url.pathname === '/ima-a5-sync/status' && req.method === 'GET') {
+    if (!isAuthorized(req, url)) return send(res, 401, { error: 'Unauthorized.' })
+    return send(res, 200, imaA5Sync.state())
+  }
+
+  if (url.pathname === '/ima-a5-sync' && req.method === 'POST') {
+    if (!isAuthorized(req, url)) return send(res, 401, { error: 'Unauthorized.' })
+    try {
+      return send(res, 200, await imaA5Sync.run())
+    } catch (error) {
+      return send(res, 502, { error: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   if (req.method === 'OPTIONS') {
@@ -156,3 +173,13 @@ if (VENDSOFT_SYNC_ENABLED) {
   setTimeout(runVendSoftSync, 5_000)
   setInterval(runVendSoftSync, VENDSOFT_SYNC_INTERVAL_MS)
 }
+
+imaA5Sync.start()
+
+async function shutdown() {
+  await imaA5Sync.stop()
+  server.close(() => process.exit(0))
+}
+
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
