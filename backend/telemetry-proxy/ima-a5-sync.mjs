@@ -110,6 +110,15 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
     } catch {}
   })
   await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+
+  // The Blazor shell answers with /Data/Reports first and performs the auth
+  // redirect client-side a moment later. Wait for the real page state before
+  // deciding whether credentials are needed.
+  await Promise.race([
+    page.waitForURL((url) => url.pathname.includes('/Account/Login'), { timeout: 30_000 }).catch(() => null),
+    page.getByRole('textbox', { name: 'Zařízení', exact: true })
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => null)
+  ])
   const loggedIn = await loginIfNeeded(page, credentials, reportUrl)
   if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
 
