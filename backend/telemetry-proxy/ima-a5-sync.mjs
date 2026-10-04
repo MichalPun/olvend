@@ -67,12 +67,13 @@ export function sanitizeRows(rows, allowedDevices = DEFAULT_DEVICE_UIDS) {
   return safe
 }
 
-async function loginIfNeeded(page, { username, password }) {
+async function loginIfNeeded(page, { username, password }, reportUrl) {
   if (!page.url().includes('/Account/Login')) return false
+  const reportHost = new URL(reportUrl).host
   await page.getByRole('textbox', { name: 'Uživatelské jméno', exact: true }).fill(username)
   await page.getByLabel('Heslo', { exact: true }).fill(password)
   await Promise.all([
-    page.waitForURL((url) => !url.pathname.includes('/Account/Login'), { timeout: 30_000 }),
+    page.waitForURL((url) => url.host === reportHost && !url.pathname.includes('/Account/Login'), { timeout: 60_000 }),
     page.getByRole('button', { name: 'Přihlásit', exact: true }).click()
   ])
   return true
@@ -80,7 +81,7 @@ async function loginIfNeeded(page, { username, password }) {
 
 async function readDeviceRows(page, reportUrl, uid, credentials) {
   await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  const loggedIn = await loginIfNeeded(page, credentials)
+  const loggedIn = await loginIfNeeded(page, credentials, reportUrl)
   if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
 
   // A successful login can finish on the A5 home page instead of honoring the
@@ -89,8 +90,12 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
     await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
   }
   if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
-  await page.getByRole('textbox', { name: 'Zařízení', exact: true })
-    .waitFor({ state: 'visible', timeout: 30_000 })
+  try {
+    await page.getByRole('textbox', { name: 'Zařízení', exact: true })
+      .waitFor({ state: 'visible', timeout: 30_000 })
+  } catch {
+    throw new Error(`IMA_REPORT_NOT_READY: ${page.url()}`)
+  }
 
   await page.getByText('Dnes', { exact: true }).click()
   await page.getByText('Poslední 3 dny', { exact: true }).click()
