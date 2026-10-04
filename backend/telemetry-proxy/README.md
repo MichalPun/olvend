@@ -54,7 +54,7 @@ IMA_A5_PASSWORD=<stored only as a Render secret>
 IMA_A5_SYNC_INTERVAL_MS=300000
 IMA_A5_DEVICE_UIDS=635456,635457,635458
 IMA_A5_INGEST_URL=https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/ima-a5-ingest
-CHROMIUM_PATH=/usr/bin/chromium-browser
+CHROMIUM_PATH=/usr/bin/chromium-browser # optional; packaged Chromium is used when this path does not exist
 ```
 
 The existing `TELEMETRY_INGEST_TOKEN` protects both telemetry endpoints. Status is available at `GET /ima-a5-sync/status` and a protected manual run at `POST /ima-a5-sync`.

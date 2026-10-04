@@ -1,4 +1,5 @@
-import { chromium } from 'playwright-core'
+import { existsSync } from 'node:fs'
+import { chromium } from 'playwright-chromium'
 
 const DEFAULT_REPORT_URL = 'https://gpe.vending.ima.cz/Data/Reports'
 const DEFAULT_INGEST_URL = 'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/ima-a5-ingest'
@@ -143,7 +144,7 @@ export function createImaA5Synchronizer(env = process.env) {
   const deviceUids = String(env.IMA_A5_DEVICE_UIDS || DEFAULT_DEVICE_UIDS.join(','))
     .split(',').map((value) => value.trim()).filter(Boolean)
   const intervalMs = Math.max(300_000, Number(env.IMA_A5_SYNC_INTERVAL_MS || 300_000))
-  const chromiumPath = String(env.CHROMIUM_PATH || '/usr/bin/chromium-browser')
+  const chromiumPath = String(env.CHROMIUM_PATH || '').trim()
   let browser
   let context
   let running = false
@@ -160,11 +161,12 @@ export function createImaA5Synchronizer(env = process.env) {
 
   async function ensureContext() {
     if (context) return context
-    browser = await chromium.launch({
+    const launchOptions = {
       headless: true,
-      executablePath: chromiumPath,
       args: ['--no-sandbox', '--disable-dev-shm-usage']
-    })
+    }
+    if (chromiumPath && existsSync(chromiumPath)) launchOptions.executablePath = chromiumPath
+    browser = await chromium.launch(launchOptions)
     context = await browser.newContext({ locale: 'cs-CZ', timezoneId: 'Europe/Prague' })
     return context
   }
