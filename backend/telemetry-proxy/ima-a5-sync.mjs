@@ -99,6 +99,16 @@ async function loginIfNeeded(page, { username, password }, reportUrl) {
 }
 
 async function readDeviceRows(page, reportUrl, uid, credentials) {
+  const navigationTrail = []
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame()) return
+    try {
+      const url = new URL(frame.url())
+      const safeLocation = `${url.origin}${url.pathname}`
+      if (navigationTrail.at(-1) !== safeLocation) navigationTrail.push(safeLocation)
+      if (navigationTrail.length > 12) navigationTrail.shift()
+    } catch {}
+  })
   await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
   const loggedIn = await loginIfNeeded(page, credentials, reportUrl)
   if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
@@ -113,7 +123,7 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
     await page.getByRole('textbox', { name: 'Zařízení', exact: true })
       .waitFor({ state: 'visible', timeout: 30_000 })
   } catch {
-    throw new Error(`IMA_REPORT_NOT_READY: ${page.url()}`)
+    throw new Error(`IMA_REPORT_NOT_READY: ${navigationTrail.join(' -> ')}`)
   }
 
   await page.getByText('Dnes', { exact: true }).click()
