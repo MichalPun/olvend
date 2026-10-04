@@ -70,6 +70,19 @@ export function sanitizeRows(rows, allowedDevices = DEFAULT_DEVICE_UIDS) {
 async function loginIfNeeded(page, { username, password }, reportUrl) {
   if (!page.url().includes('/Account/Login')) return false
   const reportHost = new URL(reportUrl).host
+
+  // The GPE login page also exposes a legacy local form. OLVEND's account is
+  // an A5Central account, so follow the SSO button before entering credentials.
+  if (new URL(page.url()).host === reportHost) {
+    const centralLogin = page.getByRole('button', { name: 'Přihlášení A5Central', exact: true })
+    if (await centralLogin.isVisible()) {
+      await Promise.all([
+        page.waitForURL((url) => url.host !== reportHost && url.pathname.includes('/Account/Login'), { timeout: 30_000 }),
+        centralLogin.click()
+      ])
+    }
+  }
+
   await page.getByRole('textbox', { name: 'Uživatelské jméno', exact: true }).fill(username)
   await page.getByLabel('Heslo', { exact: true }).fill(password)
   await Promise.all([
