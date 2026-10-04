@@ -68,19 +68,29 @@ export function sanitizeRows(rows, allowedDevices = DEFAULT_DEVICE_UIDS) {
 }
 
 async function loginIfNeeded(page, { username, password }) {
-  if (!page.url().includes('/Account/Login')) return
+  if (!page.url().includes('/Account/Login')) return false
   await page.getByRole('textbox', { name: 'Uživatelské jméno', exact: true }).fill(username)
   await page.getByLabel('Heslo', { exact: true }).fill(password)
   await Promise.all([
     page.waitForURL((url) => !url.pathname.includes('/Account/Login'), { timeout: 30_000 }),
     page.getByRole('button', { name: 'Přihlásit', exact: true }).click()
   ])
+  return true
 }
 
 async function readDeviceRows(page, reportUrl, uid, credentials) {
   await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  await loginIfNeeded(page, credentials)
+  const loggedIn = await loginIfNeeded(page, credentials)
   if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
+
+  // A successful login can finish on the A5 home page instead of honoring the
+  // original return URL. Re-open the report with the authenticated session.
+  if (loggedIn || !page.url().includes('/Data/Reports')) {
+    await page.goto(reportUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  }
+  if (page.url().includes('/Account/Login')) throw new Error('IMA_LOGIN_FAILED')
+  await page.getByRole('textbox', { name: 'Zařízení', exact: true })
+    .waitFor({ state: 'visible', timeout: 30_000 })
 
   await page.getByText('Dnes', { exact: true }).click()
   await page.getByText('Poslední 3 dny', { exact: true }).click()
