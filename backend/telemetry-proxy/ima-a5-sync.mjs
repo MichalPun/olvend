@@ -137,8 +137,10 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
 
   await page.getByText('Dnes', { exact: true }).click()
   await page.getByText('Poslední 3 dny', { exact: true }).click()
-  await page.getByRole('textbox', { name: 'Zařízení', exact: true }).click()
+  const deviceFilter = page.getByRole('textbox', { name: 'Zařízení', exact: true })
+  await deviceFilter.click()
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
+  await deviceFilter.press('Escape')
   await page.getByRole('button', { name: 'Filtr', exact: true }).click()
   await page.getByRole('button', { name: 'Obnovit', exact: true }).click()
 
