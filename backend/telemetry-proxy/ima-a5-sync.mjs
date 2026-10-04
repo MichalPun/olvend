@@ -86,9 +86,15 @@ async function loginIfNeeded(page, { username, password }, reportUrl) {
   await page.getByRole('textbox', { name: 'Uživatelské jméno', exact: true }).fill(username)
   await page.getByLabel('Heslo', { exact: true }).fill(password)
   await Promise.all([
-    page.waitForURL((url) => url.host === reportHost && !url.pathname.includes('/Account/Login'), { timeout: 60_000 }),
+    page.waitForURL((url) => {
+      const path = url.pathname.toLowerCase()
+      return url.host === reportHost &&
+        !path.includes('/account/login') &&
+        !path.includes('/a5central/signin-oidc')
+    }, { timeout: 60_000 }),
     page.getByRole('button', { name: 'Přihlásit', exact: true }).click()
   ])
+  await page.waitForLoadState('domcontentloaded')
   return true
 }
 
