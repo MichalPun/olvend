@@ -100,7 +100,6 @@ async function armReportTableRefreshWatch(page) {
 }
 
 async function waitForReportTableRefresh(page, expectedDeviceUid) {
-  let observedRefresh = true
   try {
     await page.waitForFunction((uid) => {
       const watch = window.__olvendReportRefreshWatch
@@ -117,18 +116,14 @@ async function waitForReportTableRefresh(page, expectedDeviceUid) {
       })
       return transactionRows.every((row) => row.querySelectorAll('td')[2]?.textContent?.trim() === uid)
     }, String(expectedDeviceUid), { timeout: 20_000, polling: 250 })
+    return true
   } catch {
-    // Some A5 responses reuse the existing DOM when the result set did not
-    // change. A bounded grace period still prevents the previous immediate
-    // stale read while allowing a legitimate unchanged or empty result.
-    observedRefresh = false
-    await page.waitForTimeout(5_000)
+    return false
   } finally {
     await page.evaluate(() => {
       window.__olvendReportRefreshWatch?.observer?.disconnect?.()
     })
   }
-  return observedRefresh
 }
 
 async function readReportTableRows(page) {
@@ -230,13 +225,21 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
   await deviceFilter.click()
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
   await deviceFilter.press('Escape')
-  await armReportTableRefreshWatch(page)
   await page.getByRole('button', { name: 'Filtr', exact: true }).click()
-  await page.getByRole('button', { name: 'Obnovit', exact: true }).click()
+  await deviceFilter.waitFor({ state: 'hidden', timeout: 5_000 })
+
+  // Arm the observer only after the filter drawer has closed. Otherwise its
+  // own DOM animation looks like a successful table refresh and stale rows
+  // can be accepted. A5Web also ignores an ordinary pointer click on the
+  // floating refresh action in some Chromium sessions; keyboard activation
+  // reliably triggers the same action as a manual Enter press.
+  await armReportTableRefreshWatch(page)
+  await page.getByRole('button', { name: 'Obnovit', exact: true }).press('Enter')
 
   const exportButton = page.getByRole('button', { name: 'Export', exact: true })
   await exportButton.waitFor({ state: 'visible', timeout: 20_000 })
   const observedRefresh = await waitForReportTableRefresh(page, uid)
+  if (!observedRefresh) throw new Error(`IMA_REPORT_REFRESH_NOT_OBSERVED_${uid}`)
   const rows = await readReportTableRows(page)
   if (!rowsMatchDevice(rows, uid)) throw new Error(`IMA_REPORT_DEVICE_MISMATCH_${uid}`)
   return { rows, observedRefresh }
