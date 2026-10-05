@@ -12,7 +12,7 @@ function changeMarkup(key,value) {
 }
 
 export function createWorkbook({head,body,foot,toolbar,status,onOutput,onOpen}) {
-  let columns=[],source=[],visible=[],filters={},hidden=new Set(),sort='',ascending=false,limit=200,anchor=null,end=null,view='',dragging=false;
+  let columns=[],source=[],visible=[],filteredRows=[],filters={},hidden=new Set(),sort='',ascending=false,limit=200,anchor=null,end=null,view='',dragging=false,grouping=null;
   const value=(r,c)=>c.csv?c.csv(r):r[c.key];
   const additive=new Set(['quantity','revenue','revenueNet','cash','cashless','unknown','cost','profit','compareRevenue','compareQuantity','revenueDelta','quantityDelta','profitDelta','costDelta','movements','total_amount_czk','cash_amount_czk','cashless_amount_czk','compareRevenueNet','revenueNetDelta']);
   const cols=()=>columns.filter(c=>!hidden.has(c.key));
@@ -26,15 +26,24 @@ export function createWorkbook({head,body,foot,toolbar,status,onOutput,onOpen}) 
   }
   function renderBody(){
     const cs=cols();
-    visible=source.filter(r=>columns.every(c=>matchesFilter(value(r,c),filters[c.key])));
-    if(sort){const col=columns.find(c=>c.key===sort);if(col)visible.sort((a,b)=>{const av=value(a,col),bv=value(b,col);if(av==null)return bv==null?0:1;if(bv==null)return -1;return(typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv),'cs',{numeric:true}))*(ascending?1:-1);});}
+    filteredRows=source.filter(r=>columns.every(c=>matchesFilter(value(r,c),filters[c.key])));
+    if(sort){const col=columns.find(c=>c.key===sort);if(col)filteredRows.sort((a,b)=>{const av=value(a,col),bv=value(b,col);if(av==null)return bv==null?0:1;if(bv==null)return -1;return(typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv),'cs',{numeric:true}))*(ascending?1:-1);});}
+    const pageRows=filteredRows.slice(0,limit);
+    if(grouping&&pageRows.length){
+      const keyOf=typeof grouping.key==='function'?grouping.key:r=>r[grouping.key];
+      const buckets=new Map();
+      pageRows.forEach(row=>{const key=String(keyOf(row)||'Nezařazeno');if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(row);});
+      const labels=[...buckets.keys()].sort(grouping.compare||((a,b)=>a.localeCompare(b,'cs',{numeric:true})));
+      visible=labels.flatMap(label=>{const rows=buckets.get(label);const subtotal=grouping.subtotal?.(rows,label,filteredRows);return subtotal?[...rows,{...subtotal,_summary:subtotal._summary||'summary'}]:rows;});
+    }else visible=pageRows;
     anchor=end=null;
-    body.innerHTML=visible.slice(0,limit).map((r,i)=>`<tr><th class="row-number" scope="row">${i+3}</th>${cs.map((c,j)=>`<td tabindex="0" data-cell="${i}:${j}" class="${c.num?'num ':''}${j===0?'frozen-cell':''}" title="${esc(value(r,c))}">${changeKeys.has(c.key)?changeMarkup(c.key,value(r,c)):value(r,c)==null?'—':c.render(r)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${cs.length+1}">Žádné řádky odpovídající filtrům.</td></tr>`;
-    foot.innerHTML=`<tr><th class="row-number">Σ</th>${cs.map((c,i)=>{let total='',delta=null;if(i===0)total='Celkem';else if(additive.has(c.key)){const values=visible.map(r=>value(r,c));delta=values.some(v=>v==null)?null:values.reduce((sum,v)=>sum+Number(v||0),0);total=delta==null?'Neúplné':number(delta);}else if(c.key==='share')total=number(visible.reduce((sum,r)=>sum+Number(value(r,c)||0),0))+' %';return `<td class="${c.num?'num':''}">${changeKeys.has(c.key)&&additive.has(c.key)&&delta!=null?changeMarkup(c.key,delta):esc(total)}</td>`;}).join('')}</tr>`;
-    const totals=cs.filter(c=>additive.has(c.key)).map(c=>{const values=visible.map(r=>value(r,c));return [c.label,values.some(v=>v==null)?'Neúplné':values.reduce((sum,v)=>sum+Number(v||0),0)];});
-    onOutput(visible.map(r=>Object.fromEntries(cs.map(c=>[c.label,value(r,c)]))),visible,{totals,filters:columns.filter(c=>filters[c.key]).map(c=>[c.label,filters[c.key]])});
-    document.getElementById('rowCount').textContent=`${Math.min(limit,visible.length)} z ${visible.length} řádků`;
-    const more=toolbar.querySelector('[data-more]');if(more)more.hidden=visible.length<=limit;
+    body.innerHTML=visible.map((r,i)=>`<tr class="${r._summary==='grand'?'grand-row':r._summary?'summary-row':''}"><th class="row-number" scope="row">${r._summary?'Σ':i+3}</th>${cs.map((c,j)=>`<td tabindex="0" data-cell="${i}:${j}" class="${c.num?'num ':''}${j===0?'frozen-cell':''}" title="${esc(value(r,c))}">${changeKeys.has(c.key)?changeMarkup(c.key,value(r,c)):value(r,c)==null?'—':c.render(r)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${cs.length+1}">Žádné řádky odpovídající filtrům.</td></tr>`;
+    foot.innerHTML=`<tr><th class="row-number">Σ</th>${cs.map((c,i)=>{let total='',delta=null;if(i===0)total='Celkem';else if(additive.has(c.key)){const values=filteredRows.map(r=>value(r,c));delta=values.some(v=>v==null)?null:values.reduce((sum,v)=>sum+Number(v||0),0);total=delta==null?'Neúplné':number(delta);}else if(c.key==='share')total=number(filteredRows.reduce((sum,r)=>sum+Number(value(r,c)||0),0))+' %';return `<td class="${c.num?'num':''}">${changeKeys.has(c.key)&&additive.has(c.key)&&delta!=null?changeMarkup(c.key,delta):esc(total)}</td>`;}).join('')}</tr>`;
+    const totals=cs.filter(c=>additive.has(c.key)).map(c=>{const values=filteredRows.map(r=>value(r,c));return [c.label,values.some(v=>v==null)?'Neúplné':values.reduce((sum,v)=>sum+Number(v||0),0)];});
+    onOutput(filteredRows.map(r=>Object.fromEntries(cs.map(c=>[c.label,value(r,c)]))),filteredRows,{totals,filters:columns.filter(c=>filters[c.key]).map(c=>[c.label,filters[c.key]])});
+    const summaryCount=visible.filter(r=>r._summary).length;
+    document.getElementById('rowCount').textContent=`${Math.min(limit,filteredRows.length)} z ${filteredRows.length} položek${summaryCount?` · ${summaryCount} mezisoučtů`:''}`;
+    const more=toolbar.querySelector('[data-more]');if(more)more.hidden=filteredRows.length<=limit;
     select();
   }
   function render(){
@@ -52,8 +61,8 @@ export function createWorkbook({head,body,foot,toolbar,status,onOutput,onOpen}) 
   body.addEventListener('pointerover',e=>{const td=e.target.closest('[data-cell]');if(dragging&&td){end=td.dataset.cell.split(':').map(Number);select();}});
   window.addEventListener('pointerup',()=>dragging=false);
   window.addEventListener('blur',()=>dragging=false);
-  body.addEventListener('dblclick',e=>{const td=e.target.closest('[data-cell]');if(td)onOpen?.(visible[Number(td.dataset.cell.split(':')[0])]);});
+  body.addEventListener('dblclick',e=>{const td=e.target.closest('[data-cell]'),row=td&&visible[Number(td.dataset.cell.split(':')[0])];if(row&&!row._summary)onOpen?.(row);});
   body.addEventListener('keydown',e=>{const td=e.target.closest('[data-cell]');if(!td)return;const pos=td.dataset.cell.split(':').map(Number),moves={ArrowDown:[1,0],ArrowUp:[-1,0],ArrowLeft:[0,-1],ArrowRight:[0,1]};if(moves[e.key]){e.preventDefault();const next=[Math.max(0,Math.min(Math.min(limit,visible.length)-1,pos[0]+moves[e.key][0])),Math.max(0,Math.min(cols().length-1,pos[1]+moves[e.key][1]))];if(!e.shiftKey||!anchor)anchor=e.shiftKey?pos:next;end=next;body.querySelector(`[data-cell="${next.join(':')}"]`)?.focus();select();}});
   body.addEventListener('copy',e=>{if(!anchor||!end)return;const cs=cols(),out=[];for(let i=Math.min(anchor[0],end[0]);i<=Math.max(anchor[0],end[0]);i++){const row=[];for(let j=Math.min(anchor[1],end[1]);j<=Math.max(anchor[1],end[1]);j++)row.push(csvCell(value(visible[i],cs[j])));out.push(row.join('\t'));}e.clipboardData.setData('text/plain',out.join('\n'));e.preventDefault();});
-  return {set(nextColumns,rows,key){if(key!==view){view=key;filters={};hidden=new Set(nextColumns.filter(c=>c.hidden).map(c=>c.key));sort=nextColumns.some(c=>c.key==='revenue')?'revenue':'';ascending=false;limit=200;}columns=nextColumns;source=rows.filter(r=>!r._summary);render();},clear(){source=[];renderBody();}};
+  return {set(nextColumns,rows,key,options={}){if(key!==view){view=key;filters={};hidden=new Set(nextColumns.filter(c=>c.hidden).map(c=>c.key));sort=nextColumns.some(c=>c.key==='revenue')?'revenue':'';ascending=false;limit=200;}columns=nextColumns;source=rows.filter(r=>!r._summary);grouping=options.grouping||null;render();},clear(){source=[];grouping=null;renderBody();}};
 }

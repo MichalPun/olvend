@@ -398,7 +398,7 @@
       .kpi { border-right: 0; border-bottom: 1px solid var(--border); }
     }
   </style>
-  <link rel="stylesheet" href="./report-workbook.css?v=20260930">
+  <link rel="stylesheet" href="./report-workbook.css?v=20261005-category-subtotals">
 </head>
 <body>
   <div class="layout">
@@ -528,7 +528,7 @@
   <script type="module">
     import { supabase } from './supabase.js'
     import {pragueDay,pragueMidnight,addDays,dayNumber,validateRange,comparisonRange,mergeComparison,csvCell} from './report-core.js'
-    import {createWorkbook} from './report-workbook.js'
+    import {createWorkbook} from './report-workbook.js?v=20261005-category-subtotals'
     import {makeXlsx,downloadBlob} from './report-xlsx.js'
     import { loadStockOutlookReport } from './stock-outlook-report.js'
 
@@ -833,24 +833,32 @@
         quantity: sum.quantity + Number(row.quantity || 0),
         revenue: sum.revenue + Number(row.revenue || 0),
         revenueNet: sum.revenueNet + Number(row.revenueNet || 0),
+        cash: sum.cash + Number(row.cash || 0),
+        cashless: sum.cashless + Number(row.cashless || 0),
+        unknown: sum.unknown + Number(row.unknown || 0),
         cost: sum.cost + Number(row.cost || 0),
-        profit: sum.profit + Number(row.profit || 0),
+        profit: sum.profit == null || row.profit == null ? null : sum.profit + Number(row.profit || 0),
+        compareRevenue: sum.compareRevenue + Number(row.compareRevenue || 0),
+        compareQuantity: sum.compareQuantity + Number(row.compareQuantity || 0),
         quantityDelta: sum.quantityDelta + Number(row.quantityDelta || 0),
         revenueDelta: sum.revenueDelta + Number(row.revenueDelta || 0),
         revenueNetDelta: sum.revenueNetDelta + Number(row.revenueNetDelta || 0),
-        profitDelta: sum.profitDelta + Number(row.profitDelta || 0),
+        profitDelta: sum.profitDelta == null || row.profitDelta == null ? null : sum.profitDelta + Number(row.profitDelta || 0),
         missingCost: sum.missingCost + Number(row.missingCost || 0),
-        vatFallback: sum.vatFallback + Number(row.vatFallback || 0)
-      }), { quantity: 0, revenue: 0, revenueNet: 0, cost: 0, profit: 0, quantityDelta: 0, revenueDelta: 0, revenueNetDelta: 0, profitDelta: 0, missingCost: 0, vatFallback: 0 });
+        vatFallback: sum.vatFallback + Number(row.vatFallback || 0),
+        unvaluedRevenue: sum.unvaluedRevenue + Number(row.unvaluedRevenue || 0),
+        unpricedQuantity: sum.unpricedQuantity + Number(row.unpricedQuantity || 0)
+      }), { quantity: 0, revenue: 0, revenueNet: 0, cash: 0, cashless: 0, unknown: 0, cost: 0, profit: 0, compareRevenue: 0, compareQuantity: 0, quantityDelta: 0, revenueDelta: 0, revenueNetDelta: 0, profitDelta: 0, missingCost: 0, vatFallback: 0, unvaluedRevenue: 0, unpricedQuantity: 0 });
       return {
         ...total,
         key: `${summaryType}:${label}`,
-        label,
+        label: 'Mezisoučet',
         typeLabel: label,
         sku: '',
         avgCost: total.quantity > 0 ? total.cost / total.quantity : 0,
         vendsPerDay: total.quantity / selectedDayCount(),
-        margin: total.revenueNet > 0 ? (total.profit / total.revenueNet) * 100 : 0,
+        margin: total.profit == null ? null : total.revenueNet > 0 ? (total.profit / total.revenueNet) * 100 : 0,
+        changePercent: total.compareRevenue ? total.revenueDelta / total.compareRevenue * 100 : null,
         vatRateLabel: '',
         _summary: summaryType
       };
@@ -1191,8 +1199,8 @@
       state.drill={locationName:state.activeReport==='sales-location'&&!row.locationId?row.label:null,machine:state.activeReport==='sales-machine'?row.machineId:null,location:state.activeReport==='sales-location'?row.locationId:null,product:state.activeReport==='sales-product'?row.productKey:null};
       state.activeReport='transactions';render();
     }});
-    function table(columns,rows,exportRows=rows) {
-      workbook.set(columns.map(c=>({...c,num:c.num||['share','margin'].includes(c.key)})),exportRows,state.activeReport+':'+!!state.compareRange);
+    function table(columns,rows,exportRows=rows,options={}) {
+      workbook.set(columns.map(c=>({...c,num:c.num||['share','margin'].includes(c.key)})),exportRows,state.activeReport+':'+!!state.compareRange,options);
     }
     function renderAggregate(kind) {
       const byProduct=kind.includes('product'),byMachine=kind.includes('machine'),byDay=kind.startsWith('day'),byWeek=kind.startsWith('week');
@@ -1205,8 +1213,11 @@
       groups.forEach(r=>{r.share=total?r.revenue/total*100:0;r.quality=quality(r);if(byDay&&state.compareRange){const prior=addDays(state.compareRange.from,dayNumber(r.date)-dayNumber(els.from.value));r.compareDate=prior<=state.compareRange.to?prior:'—';if(r.date>els.to.value)r.date='—';}});
       const text=(label,key,hidden=false)=>({label,key,hidden,render:r=>escapeHtml(r[key]??''),csv:r=>r[key]??''});
       const num=(label,key,hidden=false,percent=false)=>({label,key,num:true,hidden,render:r=>escapeHtml(r[key]==null?(key==='changePercent'&&r.revenue>0?'Nové':'—'):(percent?pct(r[key]):qty(r[key]))),csv:r=>r[key]??null});
-      const columns=[...(byDay||byWeek?[text(byDay?'Den':'Týden období','date'),...(byDay&&state.compareRange?[text('Srovnávaný den','compareDate')]:[])]:[]),...(byMachine?[text('EV','machineCode')]:byProduct?[text('SKU','sku')]:[]),text(byProduct?'Produkt':byMachine?'Automat':'Lokalita','label'),...(byMachine?[text('Lokalita','location')]:[]),num('Výdeje ks','quantity'),num('Tržba Kč','revenue'),...(state.compareRange?[num('Srovnání Kč','compareRevenue'),num('Změna Kč','revenueDelta'),num('Změna %','changePercent',false,true),num('Srovnání ks','compareQuantity',true),num('Změna ks','quantityDelta',true)]:[]),num('Hotově Kč','cash'),num('Kartou Kč','cashless'),num('Neurčeno Kč','unknown',true),num('Podíl období %','share',true,true),num('Odhad bez DPH Kč','revenueNet',true),num('Odhad hrubého zisku Kč','profit',true),num('Odhad marže %','margin',true,true),text('Ocenění dat','quality',true)];
-      table(columns,groups);
+      const categoryColumn={label:'Kategorie',key:'typeLabel',render:r=>`<span class="strong">${escapeHtml(r.typeLabel||'Nezařazeno')}</span>`,csv:r=>r.typeLabel||'Nezařazeno'};
+      const productColumn={label:'Produkt',key:'label',render:r=>`<span class="strong">${escapeHtml(r._summary?'Mezisoučet':r.label||'Bez produktu')}</span>`,csv:r=>r._summary?`Mezisoučet: ${r.typeLabel||'Nezařazeno'}`:r.label||'Bez produktu'};
+      const columns=[...(byDay||byWeek?[text(byDay?'Den':'Týden období','date'),...(byDay&&state.compareRange?[text('Srovnávaný den','compareDate')]:[])]:[]),...(byProduct&&!byDay&&!byWeek?[categoryColumn]:[]),...(byMachine?[text('EV','machineCode')]:byProduct?[text('SKU','sku')]:[]),byProduct?productColumn:text(byMachine?'Automat':'Lokalita','label'),...(byMachine?[text('Lokalita','location')]:[]),num('Výdeje ks','quantity'),num('Tržba Kč','revenue'),...(state.compareRange?[num('Srovnání Kč','compareRevenue'),num('Změna Kč','revenueDelta'),num('Změna %','changePercent',false,true),num('Srovnání ks','compareQuantity',true),num('Změna ks','quantityDelta',true)]:[]),num('Hotově Kč','cash'),num('Kartou Kč','cashless'),num('Neurčeno Kč','unknown',true),num('Podíl období %','share',true,true),num('Odhad bez DPH Kč','revenueNet',true),num('Odhad hrubého zisku Kč','profit',true),num('Odhad marže %','margin',true,true),text('Ocenění dat','quality',true)];
+      const grouping=byProduct&&!byDay&&!byWeek?{grouping:{key:r=>r.typeLabel||'Nezařazeno',subtotal:(categoryRows,label,allRows)=>{const subtotal=summarizeAggregateRows(categoryRows,label);subtotal.share=allRows.reduce((sum,row)=>sum+Number(row.revenue||0),0)?subtotal.revenue/allRows.reduce((sum,row)=>sum+Number(row.revenue||0),0)*100:0;subtotal.quality=quality(subtotal);return subtotal;}}}:{};
+      table(columns,groups,groups,grouping);
     }
 
     function renderFilledProducts() {
