@@ -67,6 +67,95 @@ export function sanitizeRows(rows, allowedDevices = DEFAULT_DEVICE_UIDS) {
   return safe
 }
 
+export function rowsMatchDevice(rows, expectedDeviceUid) {
+  const expected = String(expectedDeviceUid ?? '').trim()
+  return (rows || []).every((row) => String(row?.deviceUid ?? '').trim() === expected)
+}
+
+async function armReportTableRefreshWatch(page) {
+  await page.evaluate(() => {
+    window.__olvendReportRefreshWatch?.observer?.disconnect?.()
+    const tables = Array.from(document.querySelectorAll('table'))
+    const table = tables.find((candidate) => Array.from(candidate.querySelectorAll('th'))
+      .some((header) => header.textContent?.includes('ID trn.')))
+    const root = table?.parentElement || document.querySelector('main') || document.body
+    const state = {
+      startedAt: Date.now(),
+      mutationCount: 0,
+      lastMutationAt: 0,
+      observer: null
+    }
+    state.observer = new MutationObserver(() => {
+      state.mutationCount += 1
+      state.lastMutationAt = Date.now()
+    })
+    state.observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true
+    })
+    window.__olvendReportRefreshWatch = state
+  })
+}
+
+async function waitForReportTableRefresh(page, expectedDeviceUid) {
+  let observedRefresh = true
+  try {
+    await page.waitForFunction((uid) => {
+      const watch = window.__olvendReportRefreshWatch
+      if (!watch || watch.mutationCount < 1) return false
+      if (Date.now() - watch.startedAt < 750 || Date.now() - watch.lastMutationAt < 750) return false
+
+      const tables = Array.from(document.querySelectorAll('table'))
+      const table = tables.find((candidate) => Array.from(candidate.querySelectorAll('th'))
+        .some((header) => header.textContent?.includes('ID trn.')))
+      if (!table) return false
+      const transactionRows = Array.from(table.querySelectorAll('tbody tr')).filter((row) => {
+        const transactionId = row.querySelectorAll('td')[0]?.textContent?.trim() || ''
+        return /^\d+$/.test(transactionId)
+      })
+      return transactionRows.every((row) => row.querySelectorAll('td')[2]?.textContent?.trim() === uid)
+    }, String(expectedDeviceUid), { timeout: 20_000, polling: 250 })
+  } catch {
+    // Some A5 responses reuse the existing DOM when the result set did not
+    // change. A bounded grace period still prevents the previous immediate
+    // stale read while allowing a legitimate unchanged or empty result.
+    observedRefresh = false
+    await page.waitForTimeout(5_000)
+  } finally {
+    await page.evaluate(() => {
+      window.__olvendReportRefreshWatch?.observer?.disconnect?.()
+    })
+  }
+  return observedRefresh
+}
+
+async function readReportTableRows(page) {
+  return page.evaluate(() => {
+    const tables = Array.from(document.querySelectorAll('table'))
+    const table = tables.find((candidate) => Array.from(candidate.querySelectorAll('th'))
+      .some((header) => header.textContent?.includes('ID trn.')))
+    if (!table) return []
+    return Array.from(table.querySelectorAll('tbody tr')).flatMap((row) => {
+      const cells = row.querySelectorAll('td')
+      const transactionId = cells[0]?.textContent?.trim() || ''
+      if (!/^\d+$/.test(transactionId)) return []
+      // Deliberately read only the safe columns. Card and personal columns are never accessed.
+      return [{
+        transactionId,
+        occurredAt: cells[1]?.textContent?.trim() || '',
+        deviceUid: cells[2]?.textContent?.trim() || '',
+        deviceAcronym: cells[3]?.textContent?.trim() || '',
+        selection: cells[6]?.textContent?.trim() || '',
+        unitPrice: cells[8]?.textContent?.trim() || '',
+        quantity: 1,
+        productName: cells[11]?.textContent?.trim() || ''
+      }]
+    })
+  })
+}
+
 async function loginIfNeeded(page, { username, password }, reportUrl) {
   if (!page.url().includes('/Account/Login')) return false
   const reportHost = new URL(reportUrl).host
@@ -141,38 +230,16 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
   await deviceFilter.click()
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
   await deviceFilter.press('Escape')
+  await armReportTableRefreshWatch(page)
   await page.getByRole('button', { name: 'Filtr', exact: true }).click()
   await page.getByRole('button', { name: 'Obnovit', exact: true }).click()
 
   const exportButton = page.getByRole('button', { name: 'Export', exact: true })
   await exportButton.waitFor({ state: 'visible', timeout: 20_000 })
-  await page.waitForFunction(() => {
-    const buttons = Array.from(document.querySelectorAll('button'))
-    return buttons.some((button) => button.textContent?.trim() === 'Export' && !button.disabled)
-  }, null, { timeout: 20_000 })
-
-  return page.evaluate(() => {
-    const tables = Array.from(document.querySelectorAll('table'))
-    const table = tables.find((candidate) => Array.from(candidate.querySelectorAll('th'))
-      .some((header) => header.textContent?.includes('ID trn.')))
-    if (!table) return []
-    return Array.from(table.querySelectorAll('tbody tr')).flatMap((row) => {
-      const cells = row.querySelectorAll('td')
-      const transactionId = cells[0]?.textContent?.trim() || ''
-      if (!/^\d+$/.test(transactionId)) return []
-      // Deliberately read only the safe columns. Card and personal columns are never accessed.
-      return [{
-        transactionId,
-        occurredAt: cells[1]?.textContent?.trim() || '',
-        deviceUid: cells[2]?.textContent?.trim() || '',
-        deviceAcronym: cells[3]?.textContent?.trim() || '',
-        selection: cells[6]?.textContent?.trim() || '',
-        unitPrice: cells[8]?.textContent?.trim() || '',
-        quantity: 1,
-        productName: cells[11]?.textContent?.trim() || ''
-      }]
-    })
-  })
+  const observedRefresh = await waitForReportTableRefresh(page, uid)
+  const rows = await readReportTableRows(page)
+  if (!rowsMatchDevice(rows, uid)) throw new Error(`IMA_REPORT_DEVICE_MISMATCH_${uid}`)
+  return { rows, observedRefresh }
 }
 
 async function postRows(ingestUrl, ingestToken, rows) {
@@ -211,7 +278,8 @@ export function createImaA5Synchronizer(env = process.env) {
     lastSuccessAt: null,
     lastError: null,
     lastRowsRead: 0,
-    lastIngest: null
+    lastIngest: null,
+    lastDeviceReads: null
   }
 
   async function ensureContext() {
@@ -235,10 +303,17 @@ export function createImaA5Synchronizer(env = process.env) {
     try {
       const activeContext = await ensureContext()
       const rows = []
+      const deviceReads = {}
       for (const uid of deviceUids) {
         const page = await activeContext.newPage()
         try {
-          rows.push(...await readDeviceRows(page, reportUrl, uid, { username, password }))
+          const result = await readDeviceRows(page, reportUrl, uid, { username, password })
+          rows.push(...result.rows)
+          deviceReads[uid] = {
+            rows: result.rows.length,
+            observedRefresh: result.observedRefresh,
+            newestOccurredAt: result.rows[0]?.occurredAt || null
+          }
         } finally {
           await page.close()
         }
@@ -249,6 +324,7 @@ export function createImaA5Synchronizer(env = process.env) {
       state.lastError = null
       state.lastRowsRead = safeRows.length
       state.lastIngest = ingest
+      state.lastDeviceReads = deviceReads
       return { ok: true, rows: safeRows.length, ingest }
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error)

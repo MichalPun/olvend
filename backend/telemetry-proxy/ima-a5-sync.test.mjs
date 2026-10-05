@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeSelection, parseCzechMoney, pragueIso, sanitizeRows } from './ima-a5-sync.mjs'
+import { normalizeSelection, parseCzechMoney, pragueIso, rowsMatchDevice, sanitizeRows } from './ima-a5-sync.mjs'
 
 test('normalizes the A5 technical vend bit', () => {
   assert.equal(normalizeSelection('32792'), '24')
@@ -29,4 +29,10 @@ test('keeps only safe allowed unique transactions', () => {
     'selection', 'transactionId', 'unitPrice'
   ])
   assert.equal(result[0].selection, '24')
+})
+
+test('rejects report rows from a stale device filter', () => {
+  assert.equal(rowsMatchDevice([], '635456'), true)
+  assert.equal(rowsMatchDevice([{ deviceUid: '635456' }], '635456'), true)
+  assert.equal(rowsMatchDevice([{ deviceUid: '635457' }], '635456'), false)
 })
