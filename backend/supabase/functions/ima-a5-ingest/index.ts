@@ -58,10 +58,17 @@ Deno.serve(async (req) => {
       p_product_name: text(row.productName) || null,
       p_quantity: Number(row.quantity || 1),
       p_unit_price_czk: row.unitPrice == null ? null : Number(row.unitPrice),
-      p_payment_method: null,
+      p_payment_method: text(row.paymentMethod) || null,
       p_source_event_at: occurredAt
     })
     if (error) return json({ error: error.message, accepted, counts }, 500)
+    if (text(row.paymentMethod)) {
+      const { error: paymentError } = await admin.rpc('apply_ima_a5_payment_method', {
+        p_event_key: `${deviceUid}:${transactionId}`,
+        p_payment_method: text(row.paymentMethod)
+      })
+      if (paymentError) return json({ error: paymentError.message, accepted, counts }, 500)
+    }
     const status = text(data?.status) || 'unknown'
     counts[status] = (counts[status] || 0) + 1
     accepted += 1

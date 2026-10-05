@@ -61,10 +61,22 @@ export function sanitizeRows(rows, allowedDevices = DEFAULT_DEVICE_UIDS) {
       selection,
       unitPrice: parseCzechMoney(row.unitPrice),
       quantity: 1,
-      productName: String(row.productName || '').trim()
+      productName: String(row.productName || '').trim(),
+      paymentMethod: String(row.paymentMethod || '').trim().toLowerCase()
     })
   }
   return safe
+}
+
+async function ensurePaymentTypeColumn(page) {
+  const dataButton = page.getByRole('button', { name: 'Data', exact: true })
+  await dataButton.click()
+  const label = page.getByText('EMV – typ karty', { exact: true })
+  await label.waitFor({ state: 'visible', timeout: 10_000 })
+  const checkbox = label.locator('..').getByRole('checkbox')
+  if (!(await checkbox.isChecked())) await checkbox.click()
+  await dataButton.press('Enter')
+  await page.waitForTimeout(250)
 }
 
 export function rowsMatchDevice(rows, expectedDeviceUid) {
@@ -131,11 +143,16 @@ async function readReportTableRows(page) {
     const tables = Array.from(document.querySelectorAll('table'))
     const table = tables.find((candidate) => Array.from(candidate.querySelectorAll('th'))
       .some((header) => header.textContent?.includes('ID trn.')))
-    if (!table) return []
-    return Array.from(table.querySelectorAll('tbody tr')).flatMap((row) => {
+    if (!table) return { rows: [], paymentColumnFound: false }
+    const headers = Array.from(table.querySelectorAll('th')).map((header) => header.textContent?.trim() || '')
+    const paymentColumnIndex = headers.findIndex((header) => header.includes('EMV – typ karty'))
+    const rows = Array.from(table.querySelectorAll('tbody tr')).flatMap((row) => {
       const cells = row.querySelectorAll('td')
       const transactionId = cells[0]?.textContent?.trim() || ''
       if (!/^\d+$/.test(transactionId)) return []
+      const emvCardType = paymentColumnIndex >= 0
+        ? cells[paymentColumnIndex]?.textContent?.trim() || ''
+        : ''
       // Deliberately read only the safe columns. Card and personal columns are never accessed.
       return [{
         transactionId,
@@ -145,9 +162,11 @@ async function readReportTableRows(page) {
         selection: cells[6]?.textContent?.trim() || '',
         unitPrice: cells[8]?.textContent?.trim() || '',
         quantity: 1,
-        productName: cells[11]?.textContent?.trim() || ''
+        productName: cells[11]?.textContent?.trim() || '',
+        paymentMethod: emvCardType ? 'card' : 'cash'
       }]
     })
+    return { rows, paymentColumnFound: paymentColumnIndex >= 0 }
   })
 }
 
@@ -223,6 +242,7 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
   // "Poslední 3 dny" aggregate can lag the live view by hours, so using it
   // for a five-minute synchronizer silently omits the newest sales.
   await page.getByText('Dnes', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+  await ensurePaymentTypeColumn(page)
   const deviceFilter = page.getByRole('textbox', { name: 'Zařízení', exact: true })
   await deviceFilter.click()
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
@@ -245,7 +265,9 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
   await exportButton.waitFor({ state: 'visible', timeout: 20_000 })
   const observedRefresh = await waitForReportTableRefresh(page, uid)
   if (!observedRefresh) throw new Error(`IMA_REPORT_REFRESH_NOT_OBSERVED_${uid}`)
-  const rows = await readReportTableRows(page)
+  const report = await readReportTableRows(page)
+  if (!report.paymentColumnFound) throw new Error(`IMA_REPORT_PAYMENT_COLUMN_MISSING_${uid}`)
+  const rows = report.rows
   if (!rowsMatchDevice(rows, uid)) throw new Error(`IMA_REPORT_DEVICE_MISMATCH_${uid}`)
   return { rows, observedRefresh }
 }
