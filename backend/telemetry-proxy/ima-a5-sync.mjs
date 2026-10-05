@@ -219,8 +219,10 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
     throw new Error(`IMA_REPORT_NOT_READY: ${navigationTrail.join(' -> ')}`)
   }
 
-  await page.getByText('Dnes', { exact: true }).click()
-  await page.getByText('Poslední 3 dny', { exact: true }).click()
+  // The default "Dnes" report is the live transaction view. A5Web's
+  // "Poslední 3 dny" aggregate can lag the live view by hours, so using it
+  // for a five-minute synchronizer silently omits the newest sales.
+  await page.getByText('Dnes', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
   const deviceFilter = page.getByRole('textbox', { name: 'Zařízení', exact: true })
   await deviceFilter.click()
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
