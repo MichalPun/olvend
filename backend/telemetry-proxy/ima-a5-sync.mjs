@@ -226,7 +226,10 @@ async function readDeviceRows(page, reportUrl, uid, credentials) {
   await page.getByText(`[${uid}] OLMIKA s.r.o.`, { exact: true }).click()
   await deviceFilter.press('Escape')
   await page.getByRole('button', { name: 'Filtr', exact: true }).click()
-  await deviceFilter.waitFor({ state: 'hidden', timeout: 5_000 })
+  // MudBlazor keeps the off-canvas filter controls technically visible in
+  // the accessibility tree after closing the drawer, so wait only for the
+  // closing animation to settle before watching the report table itself.
+  await page.waitForTimeout(500)
 
   // Arm the observer only after the filter drawer has closed. Otherwise its
   // own DOM animation looks like a successful table refresh and stale rows
