@@ -25,10 +25,11 @@ test('keeps only safe allowed unique transactions', () => {
   const result = sanitizeRows([...input, ...input])
   assert.equal(result.length, 1)
   assert.deepEqual(Object.keys(result[0]).sort(), [
-    'deviceAcronym', 'deviceUid', 'occurredAt', 'productName', 'quantity',
-    'selection', 'transactionId', 'unitPrice'
+    'deviceAcronym', 'deviceUid', 'occurredAt', 'paymentMethod', 'productName',
+    'quantity', 'selection', 'transactionId', 'unitPrice'
   ])
   assert.equal(result[0].selection, '24')
+  assert.equal(result[0].paymentMethod, '')
 })
 
 test('rejects report rows from a stale device filter', () => {
