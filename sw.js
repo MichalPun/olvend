@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v205-route-add-next-r1';
+const CACHE_NAME = 'olvend-v206-route-add-pin-r2';
 const APP_SHELL = [
   './',
   './index.html',
