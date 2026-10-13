@@ -106,7 +106,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 })
 
 // UI guard complements database authorization; it is not the security boundary.
-const publicPages = new Set(['', 'index.html', 'machine-qr.html', 'route-skip-approval.html'])
+const publicPages = new Set(['', 'index.html', 'machine-qr.html', 'route-skip-approval.html', 'route-add-approval.html'])
 const pageName = window.location.pathname.split('/').pop()
 if (!publicPages.has(pageName)) {
   const { data: sessionData } = await supabase.auth.getSession()

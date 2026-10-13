@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v202-coffee-release-v1';
+const CACHE_NAME = 'olvend-v203-coffee-release-r2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const APP_SHELL = [
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
   './route-skip-approval.html',
+  './route-add-approval.html',
   './supabase.js',
   './secure-files.js',
   './machines-planogram.css?v=20260913d',
