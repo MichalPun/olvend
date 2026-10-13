@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v204-coffee-problem-continue-r1';
+const CACHE_NAME = 'olvend-v205-route-add-next-r1';
 const APP_SHELL = [
   './',
   './index.html',

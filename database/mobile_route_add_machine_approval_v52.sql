@@ -174,8 +174,23 @@ begin
   select * into v_location from public.locations where id = v_machine.location_id and active is true;
   if not found then raise exception 'Lokalita automatu už není aktivní.'; end if;
 
-  select coalesce(max(stop_order), 0) + 1 into v_stop_order
-  from public.route_plan_stops where route_plan_id = v_request.route_plan_id;
+  -- Schválený automat je operátorova další práce, ne poslední bod dne.
+  -- Hotové zastávky zůstávají na místě a všechny otevřené se posunou o jednu.
+  select min(stop_order) into v_stop_order
+  from public.route_plan_stops
+  where route_plan_id = v_request.route_plan_id
+    and not (status in ('done','completed','skipped') or completed_at is not null or skipped_at is not null);
+  if v_stop_order is null then
+    select coalesce(max(stop_order), 0) + 1 into v_stop_order
+    from public.route_plan_stops where route_plan_id = v_request.route_plan_id;
+  else
+    update public.route_plan_stops
+    set stop_order = stop_order + 1000000
+    where route_plan_id = v_request.route_plan_id and stop_order >= v_stop_order;
+    update public.route_plan_stops
+    set stop_order = stop_order - 999999
+    where route_plan_id = v_request.route_plan_id and stop_order >= v_stop_order + 1000000;
+  end if;
   v_title := concat_ws(' · ', nullif(v_location.name, ''), nullif(v_machine.name, ''));
 
   insert into public.route_plan_stops(
