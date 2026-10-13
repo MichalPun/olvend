@@ -4392,6 +4392,9 @@
     .coffee-quality-choices button small { margin-top:2px; color:#78838c; font-size:9px; }
     .coffee-quality-choices button.selected { color:#287b55; background:#eaf5ef; border-color:#a8d6bd; }
     .coffee-quality-choices button.problem.selected { color:#a52a34; background:#fff0f1; border-color:#e7b2b7; }
+    .coffee-problem-reason { margin:0 0 10px; padding:11px; display:grid; gap:6px; color:#7f1d28; background:#fff6f6; border:1px solid #e7b2b7; border-radius:11px; font-size:10px; font-weight:500; }
+    .coffee-problem-reason textarea { min-height:78px; resize:vertical; color:#19252e; background:#fff; border:1px solid #d9b7ba; border-radius:9px; font-family:inherit; font-size:12px; line-height:1.45; }
+    .coffee-problem-reason small { color:#8b5b60; font-size:9px; font-weight:400; }
     @media(max-width:350px){.coffee-pick-card-main{grid-template-columns:62px 1fr}.coffee-pick-facts{grid-template-columns:1fr}}
     .food-actual-stepper { display:grid; grid-template-columns:42px 64px 42px; align-items:center; overflow:hidden; border:1px solid #cbd5e1; border-radius:11px; background:#fff; }
     .food-actual-stepper button { height:44px; border:0; color:#253247; background:#e9eef4; font-family:inherit; font-size:23px; font-weight:900; }
@@ -5414,7 +5417,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261013-coffee-release-r2" defer></script>
+  <script src="./pwa.js?v=20261013-coffee-problem-continue-r1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -5510,6 +5513,7 @@
     const MOBILE_RELEASE_KEY = 'olvendSeenMobileReleaseNotesV110R2'
     const MOBILE_SNAPSHOT_KEY = 'olvendMobileSnapshotV1'
     const COFFEE_OFFLINE_STOCK_KEY = 'olvendCoffeeOfflineStockV1'
+    const COFFEE_OFFLINE_SERVICE_KEY = 'olvendCoffeeOfflineServiceV1'
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
@@ -5837,6 +5841,26 @@
       window.dispatchEvent(new CustomEvent('olvend-offline-queue'))
     }
 
+    function readCoffeeOfflineServiceQueue() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(COFFEE_OFFLINE_SERVICE_KEY) || '[]')
+        return Array.isArray(rows) ? rows : []
+      } catch (_) {
+        return []
+      }
+    }
+
+    function writeCoffeeOfflineServiceQueue(rows) {
+      localStorage.setItem(COFFEE_OFFLINE_SERVICE_KEY, JSON.stringify(rows || []))
+      window.dispatchEvent(new CustomEvent('olvend-offline-queue'))
+    }
+
+    function queueCoffeeProblemService(report) {
+      const rows = readCoffeeOfflineServiceQueue().filter((row) => row.sourceKey !== report.sourceKey)
+      rows.push(report)
+      writeCoffeeOfflineServiceQueue(rows)
+    }
+
     function queueCoffeeOfflineStockSync(stopId, container, desiredPackages) {
       const key = `${stopId}:${container.id}`
       const rows = readCoffeeOfflineStockQueue().filter((row) => row.key !== key)
@@ -5851,7 +5875,7 @@
     }
 
     function getCombinedOfflineRequestCount() {
-      return getOfflineRequestCount() + readCoffeeOfflineStockQueue().length
+      return getOfflineRequestCount() + readCoffeeOfflineStockQueue().length + readCoffeeOfflineServiceQueue().length
     }
 
     async function syncCoffeeOfflineStockQueue() {
@@ -5875,6 +5899,34 @@
         }
       }
       writeCoffeeOfflineStockQueue(pending)
+      return { pending: pending.length, synced }
+    }
+
+    async function syncCoffeeOfflineServiceQueue() {
+      if (!navigator.onLine) return { pending: readCoffeeOfflineServiceQueue().length, synced: 0 }
+      const rows = readCoffeeOfflineServiceQueue()
+      const pending = []
+      let synced = 0
+      for (const row of rows) {
+        try {
+          const { sourceKey, ...payload } = row
+          const { data: existing, error: lookupError } = await supabase
+            .from('service_requests')
+            .select('id')
+            .ilike('description', `%OLVEND:${sourceKey}%`)
+            .limit(1)
+          if (lookupError) throw lookupError
+          if (!existing?.length) {
+            const { error } = await supabase.from('service_requests').insert([payload])
+            if (error) throw error
+          }
+          synced += 1
+        } catch (error) {
+          console.warn('Hlášení závady z kontroly se zatím nepodařilo synchronizovat:', error)
+          pending.push(row)
+        }
+      }
+      writeCoffeeOfflineServiceQueue(pending)
       return { pending: pending.length, synced }
     }
 
@@ -5902,8 +5954,9 @@
       try {
         const requestResult = await syncOfflineRequests().catch((error) => ({ error, pending: getOfflineRequestCount(), synced: 0 }))
         const coffeeResult = await syncCoffeeOfflineStockQueue().catch((error) => ({ error, pending: readCoffeeOfflineStockQueue().length, synced: 0 }))
-        const pending = Number(requestResult.pending || 0) + Number(coffeeResult.pending || 0)
-        const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0)
+        const serviceResult = await syncCoffeeOfflineServiceQueue().catch((error) => ({ error, pending: readCoffeeOfflineServiceQueue().length, synced: 0 }))
+        const pending = Number(requestResult.pending || 0) + Number(coffeeResult.pending || 0) + Number(serviceResult.pending || 0)
+        const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0) + Number(serviceResult.synced || 0)
         if (!pending) {
           Object.values(state.routeCoffeeDetails || {}).forEach((detail) => { detail.openedOffline = false })
           const text = synced ? `${synced} uložených změn bylo synchronizováno.` : 'Připojení je zpět.'
@@ -9576,6 +9629,7 @@
         picklistStep: detail?.draft?.picklistStep || 'stock',
         gearChecks: { ...(detail?.draft?.gearChecks || {}) },
         qualityOutcomes: { ...(detail?.draft?.qualityOutcomes || {}) },
+        qualityProblemReasons: { ...(detail?.draft?.qualityProblemReasons || {}) },
         savedAt: new Date().toISOString()
       }
     }
@@ -10193,12 +10247,13 @@
       const visualInside = section === 'inside' || isTest || (isPhoto && String(pending.assigned_payload?.target_key || '').startsWith('internal'))
       const imageSrc = visualInside ? 'assets/rheavendors-luce-x2-interior.jpg' : 'assets/rheavendors-luce-x2.jpg'
       const selectedOutcome = detail.draft?.qualityOutcomes?.[pending.check_key] || ''
+      const problemReason = detail.draft?.qualityProblemReasons?.[pending.check_key] || ''
       return `
         <div class="coffee-quality-parts"><button class="coffee-quality-part ${section === 'inside' || isTest || (isPhoto && visualInside) ? 'active' : insideDone ? 'done' : ''}" type="button" disabled>1 · Vnitřní hygiena ${insideDone ? '✓' : ''}</button><button class="coffee-quality-part ${section === 'outside' || (isPhoto && !visualInside) ? 'active' : outsideDone ? 'done' : ''}" type="button" disabled>2 · Vnější vzhled ${outsideDone ? '✓' : ''}</button></div>
         <div class="coffee-next-box"><small>${isTest ? 'Povinný test po sestavení' : isPhoto ? 'Jediná fotografie návštěvy' : section === 'outside' ? '2. část · pohledem zákazníka' : `1. část · hygiena a funkce · ${areaDone + 1} z ${areaRows.length}`}</small><h4>${escapeHtml(isPhoto ? `Vyfoť ${photoTarget}` : pending.label)}</h4><p>${isTest ? 'Zkontroluj výdej kelímku, objem, vzhled, chuť a případný únik.' : isPhoto ? 'Fotografie je vyžadovaná jen u náhodně vybraných návštěv.' : 'Proveď právě tento úkol a potvrď ho až po skutečném dokončení.'}</p></div>
         ${isPhoto ? `<div class="coffee-info-strip"><span>▣</span><span><b>Tato návštěva byla náhodně vybrána.</b> Pořiď jedinou fotografii: ${escapeHtml(photoTarget)}. Další fotografie už nebude potřeba.</span></div>` : ''}
         ${isTest ? `<section class="coffee-test-card"><small>Náhodně vybráno z aktivní nabídky</small><h4>${escapeHtml(pending.assigned_payload?.product_name || 'Zkušební nápoj')}</h4><p>Volba ${escapeHtml(pending.assigned_payload?.selection_code || '—')}. Výdej uložíme jako test, nikoliv jako tržbu, a odečteme recepturu.</p></section>` : `<section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Jak má výsledek vypadat</h4><span>${visualInside ? 'uvnitř' : 'zvenku'}</span></div><div class="coffee-standard-photo"><img src="${imageSrc}" alt="Čistý Rheavendors Luce X2" onerror="this.closest('.coffee-standard-photo').style.display='none'"><span>✓ ${visualInside ? 'Nejdřív čistota uvnitř' : 'Potom vzhled pro zákazníka'}</span></div></section>`}
-        ${isPhoto ? '' : isTest ? `<button class="coffee-guide-primary" type="button" data-coffee-action="guided-test-drink" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}">Potvrzuji – ${escapeHtml(pending.assigned_payload?.product_name || 'nápoj')} je v pořádku</button><div class="coffee-guide-hint">Výdej se nepočítá do tržby</div>` : `<div class="coffee-quality-choices"><button class="${selectedOutcome === 'clean' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="clean" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>✓</span><span><strong>Bylo čisté / v pořádku</strong><small>Nebylo potřeba nic opravovat</small></span></button><button class="${selectedOutcome === 'fixed' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="fixed" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>✦</span><span><strong>Vyčištěno / opraveno</strong><small>Úkol jsem právě dokončil/a</small></span></button><button class="problem ${selectedOutcome === 'problem' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="problem" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>!</span><span><strong>Nelze dokončit</strong><small>Uložit problém a pokračovat</small></span></button></div><button class="coffee-guide-primary" type="button" data-coffee-action="guided-check-result" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}" ${selectedOutcome ? '' : 'disabled'}>${selectedOutcome === 'problem' ? 'Založit závadu a pokračovat' : selectedOutcome === 'fixed' ? 'Uložit · vyčištěno / opraveno' : 'Uložit výsledek'}</button>`}
+        ${isPhoto ? '' : isTest ? `<button class="coffee-guide-primary" type="button" data-coffee-action="guided-test-drink" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}">Potvrzuji – ${escapeHtml(pending.assigned_payload?.product_name || 'nápoj')} je v pořádku</button><div class="coffee-guide-hint">Výdej se nepočítá do tržby</div>` : `<div class="coffee-quality-choices"><button class="${selectedOutcome === 'clean' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="clean" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>✓</span><span><strong>Bylo čisté / v pořádku</strong><small>Nebylo potřeba nic opravovat</small></span></button><button class="${selectedOutcome === 'fixed' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="fixed" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>✦</span><span><strong>Vyčištěno / opraveno</strong><small>Úkol jsem právě dokončil/a</small></span></button><button class="problem ${selectedOutcome === 'problem' ? 'selected' : ''}" type="button" data-coffee-action="guided-check-outcome" data-outcome="problem" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}"><span>!</span><span><strong>Nelze dokončit</strong><small>Uložit důvod, předat technikovi a pokračovat</small></span></button></div>${selectedOutcome === 'problem' ? `<label class="coffee-problem-reason">Proč to nelze dokončit?<textarea data-coffee-problem-reason data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}" placeholder="Napiš konkrétně, co brání dokončení">${escapeHtml(problemReason)}</textarea><small>Důvod se uloží ke kontrole a závada se předá technikům. Na jejich schválení nečekáš.</small></label>` : ''}<button class="coffee-guide-primary" type="button" data-coffee-action="guided-check-result" data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}" ${selectedOutcome ? '' : 'disabled'}>${selectedOutcome === 'problem' ? 'Uložit závadu a pokračovat' : selectedOutcome === 'fixed' ? 'Uložit · vyčištěno / opraveno' : 'Uložit výsledek'}</button>`}
         ${isPhoto ? `<label class="coffee-photo-box"><span>📷</span><span><strong>Vyfotit přímo fotoaparátem</strong><small>Jedna fotografie, bez výběru z galerie. Před odesláním ji zmenšíme.</small></span><input type="file" accept="image/*" capture="environment" data-coffee-photo-input data-stop-id="${escapeHtml(stop.id)}" data-check-key="${escapeHtml(pending.check_key)}" hidden></label>` : ''}
         <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Průběh kontroly</h4><span>${rows.filter((row) => row.status === 'done').length} / ${rows.length}</span></div><div class="coffee-guide-row done"><span class="coffee-guide-icon">✓</span><span class="coffee-guide-main"><strong>Dokončeno</strong><small>${rows.filter((row) => row.status === 'done').length} potvrzených povinností</small></span><span class="coffee-guide-value">Sbaleno</span></div><div class="coffee-guide-row"><span class="coffee-guide-icon">…</span><span class="coffee-guide-main"><strong>Zbývá</strong><small>${rows.filter((row) => row.status !== 'done').length} povinností včetně aktuální</small></span><span class="coffee-guide-value">Postupně</span></div><button class="coffee-guide-more" type="button" data-coffee-action="guided-add-duty" data-stop-id="${escapeHtml(stop.id)}">+ Přidat povinnost nebo nahlásit problém</button></section>
         ${isPhoto ? '<div class="coffee-guide-hint">Po pořízení zůstaneš na této obrazovce a otevře se další krok</div>' : ''}`
@@ -13815,7 +13870,10 @@
               : { ...(savedCoffeePreparation.gearChecks || {}), ...(state.routeCoffeeDetails[key]?.draft?.gearChecks || {}) },
             qualityOutcomes: navigator.onLine
               ? { ...(state.routeCoffeeDetails[key]?.draft?.qualityOutcomes || {}), ...(savedCoffeePreparation.qualityOutcomes || {}) }
-              : { ...(savedCoffeePreparation.qualityOutcomes || {}), ...(state.routeCoffeeDetails[key]?.draft?.qualityOutcomes || {}) }
+              : { ...(savedCoffeePreparation.qualityOutcomes || {}), ...(state.routeCoffeeDetails[key]?.draft?.qualityOutcomes || {}) },
+            qualityProblemReasons: navigator.onLine
+              ? { ...(state.routeCoffeeDetails[key]?.draft?.qualityProblemReasons || {}), ...(savedCoffeePreparation.qualityProblemReasons || {}) }
+              : { ...(savedCoffeePreparation.qualityProblemReasons || {}), ...(state.routeCoffeeDetails[key]?.draft?.qualityProblemReasons || {}) }
           }
         }
       } catch (error) {
@@ -16986,23 +17044,39 @@
         const outcome = detail.draft?.qualityOutcomes?.[checkKey]
         if (!outcome) throw new Error('Nejdřív vyber skutečný výsledek kontroly.')
         const guidedRow = (detail.checkRows || []).find((row) => String(row.check_key) === checkKey)
+        const reasonInput = els.routeMachineContent?.querySelector(`[data-coffee-problem-reason][data-stop-id="${CSS.escape(String(stopId))}"][data-check-key="${CSS.escape(checkKey)}"]`)
+        const problemReason = String(reasonInput?.value || detail.draft?.qualityProblemReasons?.[checkKey] || '').trim()
+        if (outcome === 'problem' && !problemReason) throw new Error('Napiš důvod, proč povinnost nelze dokončit.')
+        if (outcome === 'problem') {
+          detail.draft.qualityProblemReasons = { ...(detail.draft.qualityProblemReasons || {}), [checkKey]:problemReason }
+        }
         const payload = {
           visit_id:detail.visitId,
           check_key:checkKey,
           label:guidedRow?.label || checkKey,
           required:true,
           status:'done',
+          assigned_payload:{
+            ...(guidedRow?.assigned_payload || {}),
+            operator_outcome:outcome,
+            task_unresolved:outcome === 'problem'
+          },
           completed_at:new Date().toISOString(),
-          operator_note:outcome === 'clean' ? 'Bylo čisté / v pořádku.' : outcome === 'fixed' ? 'Vyčištěno / opraveno při návštěvě.' : 'Nelze dokončit · problém zaznamenán operátorem.'
+          operator_note:outcome === 'clean' ? 'Bylo čisté / v pořádku.' : outcome === 'fixed' ? 'Vyčištěno / opraveno při návštěvě.' : `Nelze dokončit · ${problemReason}`
         }
         const { error } = await supabase.from('route_machine_visit_checks').upsert(payload, { onConflict:'visit_id,check_key' })
         if (error && navigator.onLine) throw error
         detail.checks[checkKey] = 'done'
         if (guidedRow) Object.assign(guidedRow, payload)
+        let problemReport = null
+        if (outcome === 'problem') problemReport = await submitCoffeeProblemService(stopId, guidedRow, problemReason)
         persistMobileSnapshot()
         renderRouteMachineScreen()
-        if (outcome === 'problem') openServiceReportForStop(stopId)
-        showMessage(outcome === 'problem' ? 'Problém je uložený. Otevírám další krok.' : 'Výsledek je uložený. Otevírám další krok.', outcome === 'problem' ? 'error' : 'success', { scroll:false })
+        showMessage(outcome === 'problem'
+          ? problemReport?.queued
+            ? 'Důvod je uložený. Závada se odešle technikům po obnovení spojení; můžeš pokračovat.'
+            : 'Důvod je uložený a závada je předaná technikům. Pokračuj dalším krokem.'
+          : 'Výsledek je uložený. Otevírám další krok.', 'success', { scroll:false })
         return
       }
 
@@ -17467,6 +17541,38 @@
       }
       persistMobileSnapshot()
       renderRouteMachineScreen()
+    }
+
+    async function submitCoffeeProblemService(stopId, check, reason) {
+      const { stop } = findRouteStop(stopId)
+      const detail = getCoffeeDetail(stopId)
+      const machine = getRouteStopMachine(stop)
+      const locationId = Number(machine?.location_id || stop?.location_id || 0)
+      if (!locationId) return { queued:false, skipped:true }
+      const sourceKey = `${detail?.visitId || 'visit'}:${check?.check_key || 'check'}`
+      const report = {
+        sourceKey,
+        location_id:locationId,
+        machine_id:machine?.id ? Number(machine.id) : null,
+        title:`Nelze dokončit: ${check?.label || 'kontrolní povinnost'}`,
+        description:`${reason}\n\nOLVEND:${sourceKey}`,
+        priority:'normal',
+        status:'new',
+        due_date:todayIso,
+        created_by:state.employee?.id || null
+      }
+      if (!navigator.onLine || detail?.openedOffline) {
+        queueCoffeeProblemService(report)
+        return { queued:true }
+      }
+      const { sourceKey:ignored, ...payload } = report
+      const { error } = await supabase.from('service_requests').insert([payload])
+      if (error) {
+        console.warn('Závada z kontroly bude odeslaná později:', error)
+        queueCoffeeProblemService(report)
+        return { queued:true }
+      }
+      return { queued:false }
     }
 
     async function saveGuidedCoffeeTestDrink(stopId, checkKey) {
@@ -19476,6 +19582,19 @@
           })
       })
       els.routeMachineContent?.addEventListener('input', (event) => {
+        const coffeeProblemReason = event.target.closest('[data-coffee-problem-reason]')
+        if (coffeeProblemReason) {
+          const detail = getCoffeeDetail(coffeeProblemReason.dataset.stopId)
+          const checkKey = String(coffeeProblemReason.dataset.checkKey || '')
+          if (detail && checkKey) {
+            detail.draft.qualityProblemReasons = {
+              ...(detail.draft.qualityProblemReasons || {}),
+              [checkKey]:coffeeProblemReason.value
+            }
+            persistMobileSnapshot()
+          }
+          return
+        }
         const foodBatchChoice = event.target.closest('[data-food-batch-choice]')
         if (foodBatchChoice) {
           applyFoodBatchChoice(foodBatchChoice)
