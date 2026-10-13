@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v200-stock-source-labels';
+const CACHE_NAME = 'olvend-v201-coffee-guided-v2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -44,6 +44,7 @@ const APP_SHELL = [
   './manifest.webmanifest',
   './assets/rheavendors-luce-x2.jpg',
   './assets/rheavendors-luce-x2-interior.jpg',
+  './assets/cash-security-bag.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
