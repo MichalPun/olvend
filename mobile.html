@@ -5417,7 +5417,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261013-route-add-next-r1" defer></script>
+  <script src="./pwa.js?v=20261013-route-add-pin-r2" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -8748,7 +8748,26 @@
 
     function getRouteStops(plan) {
       const stops = Array.isArray(plan?.route_plan_stops) ? plan.route_plan_stops : []
-      return [...stops].sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
+      const ordered = [...stops].sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
+      const activeArrival = ordered.find((stop) => !isRouteStopClosed(stop) && getRouteStopStatus(stop) === 'arrived')
+      if (activeArrival) return ordered
+
+      // Schválený automat je závazně další otevřená zastávka. Tohle pravidlo
+      // platí i pro starší trasu, kterou mohl dřívější mobilní přepočet znovu
+      // odsunout na konec. Následující přepočet stejné pořadí uloží i do DB.
+      const pinnedRequest = state.routeAddMachineRequests
+        .filter((request) => String(request.route_plan_id || '') === String(plan?.id || '')
+          && request.status === 'approved'
+          && request.added_route_plan_stop_id)
+        .sort((a, b) => String(b.decided_at || b.requested_at || '').localeCompare(String(a.decided_at || a.requested_at || '')))
+        .find((request) => ordered.some((stop) => String(stop.id) === String(request.added_route_plan_stop_id) && !isRouteStopClosed(stop)))
+      if (!pinnedRequest) return ordered
+
+      const pinnedId = String(pinnedRequest.added_route_plan_stop_id)
+      const closed = ordered.filter(isRouteStopClosed)
+      const open = ordered.filter((stop) => !isRouteStopClosed(stop))
+      const pinned = open.find((stop) => String(stop.id) === pinnedId)
+      return pinned ? [...closed, pinned, ...open.filter((stop) => String(stop.id) !== pinnedId)] : ordered
     }
 
     function formatRouteDurationWords(minutes) {
@@ -9253,8 +9272,9 @@
       const closed = getRouteStops(plan).filter(isRouteStopClosed).map((stop) => `${stop.id}:${stop.completed_at || stop.skipped_at || getRouteVisitForStop(stop)?.completed_at || getRouteVisitForStop(stop)?.skipped_at || getRouteStopStatus(stop)}`)
       const decisions = getRouteSkipRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}`)
       const additions = getRouteAddMachineRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}:${request.added_route_plan_stop_id || ''}`)
+      const openOrder = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop)).map((stop) => stop.id).join(',')
       const liveWindow = Math.floor(Date.now() / 300000)
-      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|live:${liveWindow}`
+      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|order:${openOrder}|live:${liveWindow}`
     }
 
     async function recalculateRemainingRoute(plan = getAssignedRoutePlan()) {
