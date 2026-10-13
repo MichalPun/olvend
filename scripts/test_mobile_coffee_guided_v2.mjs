@@ -25,13 +25,20 @@ for (const required of [
   'Bylo čisté / v pořádku',
   'Vyčištěno / opraveno',
   'Nelze dokončit',
+  'data-coffee-problem-reason',
+  'Na jejich schválení nečekáš',
+  'submitCoffeeProblemService',
   'assets/cash-security-bag.png'
 ]) assert.ok(html.includes(required), `Chybí kávový prvek: ${required}`)
 
 assert.match(html, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(html, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')
+assert.match(html, /outcome === 'problem' && !problemReason[\s\S]*?Napiš důvod/, 'Nedokončená povinnost musí vyžadovat důvod')
+assert.match(html, /status:'done',[\s\S]*?task_unresolved:outcome === 'problem'/, 'Nahlášený problém musí kontrolní bod uzavřít bez čekání na technika')
+assert.doesNotMatch(html, /if \(outcome === 'problem'\) openServiceReportForStop/, 'Nahlášení problému nesmí vyhodit obsluhu z návštěvy do servisu')
+assert.match(html, /syncCoffeeOfflineServiceQueue/, 'Závada musí jít bezpečně odeslat i po návratu připojení')
 assert.match(html, /coffee-visit-detail coffee-guided coffee-only-flow/, 'Nový vzhled musí být omezený jen na kávový tok')
 assert.doesNotMatch(html, /coffee-visit-detail coffee-guided coffee-only-flow[^\n]*data-food-action/, 'Potravinový tok nesmí dostat coffee-only vzhled')
 
-console.log('OK: guided coffee v2 — approved visuals, stock decisions, gear, sticks, zero refill, cash and quality')
+console.log('OK: guided coffee v2 — approved visuals, stock decisions, gear, sticks, zero refill, cash and non-blocking quality issue')
