@@ -10028,14 +10028,29 @@
       return new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit' }).format(date)
     }
 
+    function hasCoffeeContainerRefillWork(stopId, container) {
+      const detail = getCoffeeDetail(stopId)
+      const draft = detail?.draft?.containers?.[String(container?.id)] || {}
+      return Boolean(
+        detail?.manualCounterMode
+        || getCoffeeActualPackages(stopId, container) > 0
+        || Number(draft.movedPackages || 0) > 0
+        || draft.actualBeforeQuantity != null
+        || draft.stateCorrection
+        || draft.addedOutsidePicklist
+      )
+    }
+
+    function isCoffeeContainerPendingConfirmation(stopId, container) {
+      const draft = getCoffeeDetail(stopId)?.draft?.containers?.[String(container?.id)] || {}
+      return !draft.accepted && hasCoffeeContainerRefillWork(stopId, container)
+    }
+
     function getCoffeeGuidedStage(stopId, detail, readOnly = false) {
       if (readOnly) return 'done'
       if (!detail?.machineOpen) return 'goods'
       if (detail.draft?.extraContainerPickerOpen) return 'refill'
-      const pendingContainer = (detail.containers || []).find((container) => {
-        const draft = detail.draft?.containers?.[String(container.id)] || {}
-        return !draft.accepted && (detail.manualCounterMode || getCoffeeActualPackages(stopId, container) > 0 || draft.stateCorrection)
-      })
+      const pendingContainer = (detail.containers || []).find((container) => isCoffeeContainerPendingConfirmation(stopId, container))
       if (pendingContainer) return 'refill'
       const hasContainers = (detail.containers || []).length > 0
       const hasPlannedRefill = (detail.containers || []).some((container) => getCoffeeActualPackages(stopId, container) > 0)
@@ -10194,13 +10209,10 @@
 
     function renderCoffeeGuidedRefill(stop, detail) {
       if (detail.draft?.extraContainerPickerOpen) return renderCoffeeExtraContainerPicker(stop, detail)
-      const containers = getCoffeeContainersInBagOrder(detail, true).filter((container) => detail.manualCounterMode || getCoffeeActualPackages(stop.id, container) > 0 || detail.draft?.containers?.[String(container.id)]?.stateCorrection)
+      const containers = getCoffeeContainersInBagOrder(detail, true).filter((container) => hasCoffeeContainerRefillWork(stop.id, container))
       const priorityId = String(detail.draft?.priorityExtraContainerId || '')
       if (priorityId) containers.sort((a, b) => String(a.id) === priorityId ? -1 : String(b.id) === priorityId ? 1 : 0)
-      const pending = containers.find((container) => {
-        const draft = detail.draft?.containers?.[String(container.id)] || {}
-        return !draft.accepted && (detail.manualCounterMode || getCoffeeActualPackages(stop.id, container) > 0)
-      })
+      const pending = containers.find((container) => isCoffeeContainerPendingConfirmation(stop.id, container))
       if (!pending) {
         const physicalRows = getCoffeeContainersInBagOrder(detail)
         const checked = physicalRows.filter((container) => detail.draft?.containers?.[String(container.id)]?.physicalChecked).length
@@ -14442,10 +14454,10 @@
       const nowIso = new Date().toISOString()
       const detail = getCoffeeDetail(stop.id)
       const foodDetail = getFoodDetail(stop.id)
-      if (getMachineKind(getRouteStopMachine(stop)) === 'coffee' && detail) {
-        const missingContainer = (detail.containers || []).find((container) => {
-          return !detail.draft?.containers?.[String(container.id)]?.accepted && getCoffeeActualPackages(stop.id, container) > 0
-        })
+      const isCoffeeVisit = getMachineKind(getRouteStopMachine(stop)) === 'coffee'
+      if (isCoffeeVisit && !detail) throw new Error('Stav kávového automatu není načtený. Otevři návštěvu znovu a dokonči ji v aplikaci.')
+      if (isCoffeeVisit) {
+        const missingContainer = (detail.containers || []).find((container) => isCoffeeContainerPendingConfirmation(stop.id, container))
         if (missingContainer) throw new Error(`Nejdřív potvrď zásobník ${missingContainer.container_code || missingContainer.product_name}.`)
         const guidedRows = getCoffeeGuidedCheckRows(detail)
         if (guidedRows.length) {
@@ -14463,6 +14475,7 @@
           const { error: noteError } = await supabase.from('route_machine_visits').update({ operator_note: operatorNote }).eq('id', visitId)
           if (noteError) throw noteError
         }
+        await saveCoffeePreparation(stop.id, 'machine')
       }
       if (getMachineKind(getRouteStopMachine(stop)) === 'food') {
         if (!foodDetail) throw new Error('Potravinový planogram není načtený.')
@@ -14483,18 +14496,16 @@
       }
 
       const pendingBeforeCompletion = getOfflineRequestCount()
-      const [visitResult, stopResult] = await Promise.all([
-        supabase
-          .from('route_machine_visits')
-          .update({ status: 'completed', completed_at: nowIso, synced_at: nowIso })
-          .eq('id', visitId),
-        supabase
-          .from('route_plan_stops')
-          .update({ status: 'done', completed_at: nowIso })
-          .eq('id', stop.id)
-      ])
+      const visitResult = await supabase
+        .from('route_machine_visits')
+        .update({ status: 'completed', completed_at: nowIso, synced_at: nowIso })
+        .eq('id', visitId)
       const visitError = visitResult.error
       if (visitError) throw visitError
+      const stopResult = await supabase
+        .from('route_plan_stops')
+        .update({ status: 'done', completed_at: nowIso })
+        .eq('id', stop.id)
       const stopError = stopResult.error
       if (stopError) throw stopError
 
@@ -14851,6 +14862,7 @@
         accepted: true
       }
       persistMobileSnapshot()
+      await saveCoffeePreparation(stopId, 'machine')
       return savedRow
     }
 
