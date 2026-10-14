@@ -1,7 +1,8 @@
 -- EV 89 / Luce X2 I/E / Sportisimo Slezská Ostrava-Hrušov.
 -- Návštěvy #1249 a #1274 převedly čokoládu z vozidel do automatu, ale mobilní
--- aplikace neuložila potvrzení zásobníku Z4. Druhá návštěva fyzicky potvrdila
--- plný stav 2 000 g; její převod 2 kg do automatu proto vracíme do vozidla.
+-- aplikace neuložila potvrzení zásobníku Z4. Michal následně potvrdil, že
+-- 13. 10. nic nedoplňoval a zásobník byl plný až přeplněný. Také 14. 10. byl
+-- fyzicky potvrzen plný stav 2 000 g. Oba neuskutečněné převody vracíme.
 
 begin;
 
@@ -11,6 +12,7 @@ declare
   v_container_id constant bigint := 470;
   v_product_id constant bigint := 106;
   v_machine_location_id constant bigint := 48;
+  v_michal_vehicle_location_id constant bigint := 93;
   v_david_vehicle_location_id constant bigint := 2;
   v_visit_michal constant bigint := 1249;
   v_visit_david constant bigint := 1274;
@@ -57,7 +59,7 @@ begin
     where movement.reference_type = 'mobile_stock_request'
       and movement.reference_id like 'route_visit_1249_container_470_sync_in_%'
       and movement.product_id = v_product_id
-      and movement.from_stock_location_id = 93
+      and movement.from_stock_location_id = v_michal_vehicle_location_id
       and movement.to_stock_location_id = v_machine_location_id
       and movement.movement_type = 'fill_machine'
       and movement.quantity_base_units = 2
@@ -72,6 +74,24 @@ begin
       and movement.quantity_base_units = 2
   ) then
     raise exception 'Původní skladové převody Z4 neodpovídají auditu.';
+  end if;
+
+  if not exists (
+    select 1 from public.stock_movements_v13 movement
+    where movement.reference_type = 'mobile_stock_request'
+      and movement.reference_id = 'route_visit_1249_container_470_sync_back_user_confirmation_20261014'
+  ) then
+    perform public.apply_stock_movements_v13(jsonb_build_array(jsonb_build_object(
+      'product_id', v_product_id,
+      'batch_id', null,
+      'from_stock_location_id', v_machine_location_id,
+      'to_stock_location_id', v_michal_vehicle_location_id,
+      'movement_type', 'return',
+      'quantity_base_units', 2,
+      'reference_type', 'mobile_stock_request',
+      'reference_id', 'route_visit_1249_container_470_sync_back_user_confirmation_20261014',
+      'note', 'EV 89 · návštěva #1249 · Michal potvrdil, že 13. 10. nic nedoplňoval; nevsypané 2 × 1 kg vráceny do vozidla'
+    )));
   end if;
 
   if not exists (
@@ -108,12 +128,26 @@ begin
       v_visit_michal, v_machine_id, 'coffee_container', v_container_id, 'Z4',
       v_product_id, '47', 'oVe DRINK WITH COCOA 1 kg',
       v_product_id, '47', 'oVe DRINK WITH COCOA 1 kg',
-      0, 0, 2000, 2000, 0, 2000, 2000,
+      0, 2000, 2000, 0, 0, 2000, 2000,
       'g', 'telemetry_mismatch',
-      'Manažerská oprava 14. 10. 2026: fyzicky doplněny 2 × 1 kg čokolády; mobilní potvrzení se kvůli chybě aplikace neuložilo.',
+      'Oprava 14. 10. 2026 podle potvrzení Michala Punčocháře: při návštěvě 13. 10. nebyla doplněna žádná čokoláda; zásobník byl plný až přeplněný.',
       (select completed_at from public.route_machine_visits where id = v_visit_michal)
     );
   end if;
+
+  update public.route_machine_visit_items
+  set actual_before_quantity = 2000,
+      suggested_add_quantity = 2000,
+      actual_add_quantity = 0,
+      removed_quantity = 0,
+      final_quantity = 2000,
+      capacity_quantity = 2000,
+      issue_type = 'telemetry_mismatch',
+      operator_note = 'Oprava 14. 10. 2026 podle potvrzení Michala Punčocháře: při návštěvě 13. 10. nebyla doplněna žádná čokoláda; zásobník byl plný až přeplněný.',
+      accepted_at = (select completed_at from public.route_machine_visits where id = v_visit_michal),
+      updated_at = now()
+  where visit_id = v_visit_michal
+    and coffee_container_id = v_container_id;
 
   if not exists (
     select 1 from public.route_machine_visit_items item
@@ -140,8 +174,14 @@ begin
 
   update public.route_machine_visits
   set coffee_preparation = jsonb_set(
-        jsonb_set(coalesce(coffee_preparation, '{}'::jsonb), '{containers,470,accepted}', 'true'::jsonb, true),
-        '{containers,470,actualBeforeQuantity}', '0'::jsonb, true
+        jsonb_set(
+          jsonb_set(
+            jsonb_set(coalesce(coffee_preparation, '{}'::jsonb), '{containers,470,accepted}', 'true'::jsonb, true),
+            '{containers,470,actualBeforeQuantity}', '2000'::jsonb, true
+          ),
+          '{containers,470,packages}', '0'::jsonb, true
+        ),
+        '{containers,470,movedPackages}', '0'::jsonb, true
       ),
       synced_at = now()
   where id = v_visit_michal;
