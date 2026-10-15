@@ -274,8 +274,8 @@
     }
 
     .route-time-cell.verdict.over {
-      background: rgba(255,91,102,0.11);
-      color: #ffb0b6;
+      background: rgba(255,182,72,0.11);
+      color: #ffd68f;
     }
 
     .setup-column .setup-card .btn {
@@ -1364,8 +1364,8 @@
     }
 
     :root[data-olvend-theme="light"] .route-time-cell.verdict.over {
-      background: #fef3f2;
-      color: #b42318;
+      background: #fffaeb;
+      color: #b54708;
     }
 
     :root[data-olvend-theme="light"] .panel {
@@ -2115,9 +2115,10 @@
                         </select>
                       </div>
                       <div class="compact-field setup-advanced">
-                        <label for="maxRouteHoursInput">Maximální čas celkem</label>
-                        <input id="maxRouteHoursInput" type="number" min="1" max="24" step="0.25" value="" placeholder="Načte se ze směny" inputmode="decimal" aria-describedby="routeShiftHint" />
-                        <small id="routeShiftHint">Vyber zaměstnance. Limit trasy načtu z jeho publikované směny pro zvolený den.</small>
+                        <label for="maxRouteHoursInput">Plánovaná délka směny</label>
+                        <input id="maxRouteHoursInput" type="number" min="1" max="24" step="0.25" value="" placeholder="Načte se ze směny" inputmode="decimal" aria-describedby="routeShiftHint routeOvertimeHint" />
+                        <small id="routeShiftHint">Vyber zaměstnance. Délku načtu z jeho publikované směny pro zvolený den.</small>
+                        <small id="routeOvertimeHint">Měsíční přesčasy se zobrazí po výběru zaměstnance.</small>
                       </div>
                       <div class="compact-field setup-advanced">
                         <label for="preparationMinutesInput">Příprava auta (min)</label>
@@ -2329,6 +2330,7 @@
     const routeTimeCheck = document.getElementById('routeTimeCheck')
     const maxRouteHoursInput = document.getElementById('maxRouteHoursInput')
     const routeShiftHint = document.getElementById('routeShiftHint')
+    const routeOvertimeHint = document.getElementById('routeOvertimeHint')
     const preparationMinutesInput = document.getElementById('preparationMinutesInput')
     const coffeeServiceMinutesInput = document.getElementById('coffeeServiceMinutesInput')
     const foodServiceMinutesInput = document.getElementById('foodServiceMinutesInput')
@@ -2433,8 +2435,17 @@
       previousPlanSnapshot: null,
       lastPlanComparison: '',
       selectedPublishedShift: null,
+      selectedMonthShiftRows: [],
       routeTimeBudgetSource: 'missing',
       shiftLookupRevision: 0,
+      monthlyOvertime: {
+        status: 'idle',
+        employeeId: null,
+        monthKey: '',
+        monthLabel: '',
+        attendanceRows: [],
+        routeRows: [],
+      },
     }
 
     let currentWizardStep = 1
@@ -2533,6 +2544,112 @@
       return /^\d{2}:\d{2}$/.test(start) && /^\d{2}:\d{2}$/.test(end) ? `${start}–${end}` : 'čas neuveden'
     }
 
+    function getPlanningMonth(planningDate = routeDateInput.value) {
+      const match = String(planningDate || '').match(/^(\d{4})-(\d{2})-\d{2}$/)
+      if (!match) return null
+      const year = Number(match[1])
+      const month = Number(match[2])
+      const monthKey = `${match[1]}-${match[2]}`
+      const lastDay = new Date(year, month, 0).getDate()
+      return {
+        year,
+        month,
+        monthKey,
+        from: `${monthKey}-01`,
+        to: `${monthKey}-${String(lastDay).padStart(2, '0')}`,
+        label: new Date(year, month - 1, 1).toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' }),
+      }
+    }
+
+    function getSavedRouteTotalMinutes(route) {
+      const budget = route?.route_payload?.route_time_budget || {}
+      const storedTotal = Number(budget.estimated_total_minutes)
+      if (Number.isFinite(storedTotal) && storedTotal > 0) return Math.round(storedTotal)
+      return Math.max(0, Math.round(
+        Number(budget.preparation_minutes || 0)
+        + Number(route?.estimated_drive_minutes || 0)
+        + Number(route?.estimated_service_minutes || 0)
+        + Number(budget.waiting_minutes || 0)
+      ))
+    }
+
+    function getMonthlyOvertimeSummary(plan = null) {
+      const snapshot = state.monthlyOvertime || {}
+      const employee = getSelectedEmployee()
+      const month = getPlanningMonth()
+      const empty = {
+        status: snapshot.status || 'idle',
+        monthLabel: month?.label || '',
+        recordedMinutes: 0,
+        plannedRouteMinutes: 0,
+        currentRouteMinutes: 0,
+        projectedMinutes: 0,
+        unknownRouteCount: 0,
+      }
+      if (!employee || !month || String(snapshot.employeeId || '') !== String(employee.id || '') || snapshot.monthKey !== month.monthKey) return empty
+      if (snapshot.status !== 'ready') return { ...empty, status: snapshot.status }
+
+      const plannedByDate = new Map(
+        state.selectedMonthShiftRows.map((row) => [String(row.plan_date), getPlannedShiftMinutes(row)])
+      )
+      const recordedMinutes = snapshot.attendanceRows.reduce((sum, row) => {
+        const payableMinutes = Math.max(0, Number(row.payable_minutes || 0))
+        const plannedMinutes = Math.max(0, Number(plannedByDate.get(String(row.attendance_date)) || 0))
+        return sum + Math.max(0, payableMinutes - plannedMinutes)
+      }, 0)
+
+      let unknownRouteCount = 0
+      const plannedRouteMinutes = snapshot.routeRows.reduce((sum, route) => {
+        if (['done', 'completed', 'cancelled'].includes(String(route.execution_status || ''))) return sum
+        if (state.editingPlanKey && String(route.id) === String(state.editingPlanKey)) return sum
+        const plannedMinutes = Math.max(0, Number(plannedByDate.get(String(route.planning_date)) || 0))
+        if (!plannedMinutes) {
+          unknownRouteCount += 1
+          return sum
+        }
+        return sum + Math.max(0, getSavedRouteTotalMinutes(route) - plannedMinutes)
+      }, 0)
+
+      const selectedShiftMinutes = getPlannedShiftMinutes(state.selectedPublishedShift)
+      const currentRouteMinutes = plan && selectedShiftMinutes > 0
+        ? Math.max(0, getRouteTiming(plan).totalMinutes - selectedShiftMinutes)
+        : 0
+      return {
+        status: 'ready',
+        monthLabel: snapshot.monthLabel || month.label,
+        recordedMinutes,
+        plannedRouteMinutes,
+        currentRouteMinutes,
+        projectedMinutes: recordedMinutes + plannedRouteMinutes + currentRouteMinutes,
+        unknownRouteCount,
+      }
+    }
+
+    function renderRouteMonthlyOvertimeHint(plan = state.currentPlan) {
+      if (!routeOvertimeHint) return
+      const employee = getSelectedEmployee()
+      const summary = getMonthlyOvertimeSummary(plan)
+      if (!employee) {
+        routeOvertimeHint.textContent = 'Měsíční přesčasy se zobrazí po výběru zaměstnance.'
+        return
+      }
+      if (summary.status === 'loading') {
+        routeOvertimeHint.textContent = 'Načítám evidované a plánované přesčasy za měsíc…'
+        return
+      }
+      if (summary.status === 'error') {
+        routeOvertimeHint.textContent = 'Měsíční přesčasy se nepodařilo načíst; plánování trasy tím není blokované.'
+        return
+      }
+      if (summary.status !== 'ready') {
+        routeOvertimeHint.textContent = 'Měsíční přesčasy zatím nejsou načtené.'
+        return
+      }
+      const currentPart = plan ? ` · tato trasa +${formatDuration(summary.currentRouteMinutes)}` : ''
+      const unknownPart = summary.unknownRouteCount ? ` · ${summary.unknownRouteCount} trasa bez směny není započtena` : ''
+      routeOvertimeHint.textContent = `${summary.monthLabel}: evidováno ${formatDuration(summary.recordedMinutes)} · další naplánované trasy +${formatDuration(summary.plannedRouteMinutes)}${currentPart} · celkem ${formatDuration(summary.projectedMinutes)}. Pouze informace, uložení není blokované.${unknownPart}`
+    }
+
     function renderRouteShiftHint() {
       if (!routeShiftHint) return
       const employee = getSelectedEmployee()
@@ -2543,21 +2660,81 @@
         return
       }
       if (state.routeTimeBudgetSource === 'lookup_error') {
-        routeShiftHint.textContent = 'Směnu se nepodařilo načíst. Zkontroluj spojení nebo zadej limit ručně.'
+        routeShiftHint.textContent = 'Směnu se nepodařilo načíst. Zkontroluj spojení nebo zadej její délku ručně.'
         return
       }
       if (shift && minutes > 0) {
-        const source = state.routeTimeBudgetSource === 'manual' ? ' · limit je ručně upravený' : ' · načteno z publikovaného plánu'
+        const source = state.routeTimeBudgetSource === 'manual' ? ' · délka je ručně upravená' : ' · načteno z publikovaného plánu'
         routeShiftHint.textContent = `Směna ${getShiftTimeLabel(shift)} · ${formatDuration(minutes)}${source}`
         return
       }
       if (state.routeTimeBudgetSource === 'saved_plan') {
-        routeShiftHint.textContent = 'Limit je převzatý z uložené trasy.'
+        routeShiftHint.textContent = 'Délka směny je převzatá z uložené trasy.'
         return
       }
       routeShiftHint.textContent = employee
-        ? `Pro ${getEmployeeDisplayName(employee)} není na ${routeDateInput.value || 'zvolený den'} publikovaná pracovní směna. Zadej limit ručně.`
-        : 'Vyber zaměstnance. Limit trasy načtu z jeho publikované směny pro zvolený den.'
+        ? `Pro ${getEmployeeDisplayName(employee)} není na ${routeDateInput.value || 'zvolený den'} publikovaná pracovní směna. Délku směny můžeš zadat ručně.`
+        : 'Vyber zaměstnance. Délku načtu z jeho publikované směny pro zvolený den.'
+    }
+
+    async function loadMonthlyOvertimeForSelection({ employee, planningDate, shiftRows, revision }) {
+      const month = getPlanningMonth(planningDate)
+      if (!employee || !month) {
+        state.monthlyOvertime = { status: 'idle', employeeId: null, monthKey: '', monthLabel: '', attendanceRows: [], routeRows: [] }
+        renderRouteMonthlyOvertimeHint()
+        return
+      }
+
+      state.monthlyOvertime = {
+        status: 'loading',
+        employeeId: employee.id,
+        monthKey: month.monthKey,
+        monthLabel: month.label,
+        attendanceRows: [],
+        routeRows: [],
+      }
+      renderRouteMonthlyOvertimeHint()
+
+      try {
+        const [attendanceResult, routesResult] = await Promise.all([
+          supabase
+            .from('attendance_days')
+            .select('attendance_date,payable_minutes,status')
+            .eq('employee_id', employee.id)
+            .gte('attendance_date', month.from)
+            .lte('attendance_date', month.to),
+          supabase
+            .from('route_plans')
+            .select('id,planning_date,planned_employee_id,execution_status,estimated_drive_minutes,estimated_service_minutes,route_payload')
+            .eq('planned_employee_id', employee.id)
+            .gte('planning_date', month.from)
+            .lte('planning_date', month.to),
+        ])
+        if (attendanceResult.error) throw attendanceResult.error
+        if (routesResult.error) throw routesResult.error
+        if (revision !== state.shiftLookupRevision) return
+        state.selectedMonthShiftRows = shiftRows || []
+        state.monthlyOvertime = {
+          status: 'ready',
+          employeeId: employee.id,
+          monthKey: month.monthKey,
+          monthLabel: month.label,
+          attendanceRows: attendanceResult.data || [],
+          routeRows: routesResult.data || [],
+        }
+      } catch (error) {
+        if (revision !== state.shiftLookupRevision) return
+        console.error('Monthly overtime load failed:', error)
+        state.monthlyOvertime = {
+          status: 'error',
+          employeeId: employee.id,
+          monthKey: month.monthKey,
+          monthLabel: month.label,
+          attendanceRows: [],
+          routeRows: [],
+        }
+      }
+      renderRouteMonthlyOvertimeHint()
     }
 
     function refreshRouteTimingViews() {
@@ -2572,16 +2749,28 @@
       const employee = getSelectedEmployee()
       const planningDate = routeDateInput.value
       state.selectedPublishedShift = null
+      state.selectedMonthShiftRows = []
       state.routeTimeBudgetSource = 'loading'
+      state.monthlyOvertime = {
+        status: employee ? 'loading' : 'idle',
+        employeeId: employee?.id || null,
+        monthKey: getPlanningMonth(planningDate)?.monthKey || '',
+        monthLabel: getPlanningMonth(planningDate)?.label || '',
+        attendanceRows: [],
+        routeRows: [],
+      }
       maxRouteHoursInput.disabled = true
       if (!preserveManualValue) maxRouteHoursInput.value = ''
       renderRouteShiftHint()
+      renderRouteMonthlyOvertimeHint()
 
       if (!employee || !/^\d{4}-\d{2}-\d{2}$/.test(planningDate || '')) {
         if (revision !== state.shiftLookupRevision) return null
         state.routeTimeBudgetSource = preserveManualValue && maxRouteHoursInput.value ? 'manual' : 'missing'
+        state.monthlyOvertime = { status: 'idle', employeeId: null, monthKey: '', monthLabel: '', attendanceRows: [], routeRows: [] }
         maxRouteHoursInput.disabled = false
         renderRouteShiftHint()
+        renderRouteMonthlyOvertimeHint()
         refreshRouteTimingViews()
         return null
       }
@@ -2607,11 +2796,11 @@
             .select('id,shift_plan_id,employee_id,plan_date,shift_type,planned_start,planned_end,planned_minutes,warehouse_id,vehicle_id,note,status')
             .eq('shift_plan_id', plans[0].id)
             .eq('employee_id', employee.id)
-            .eq('plan_date', planningDate)
             .eq('status', 'published')
-            .limit(1)
+            .order('plan_date', { ascending: true })
           if (rowError) throw rowError
-          shift = rows?.[0] || null
+          state.selectedMonthShiftRows = rows || []
+          shift = state.selectedMonthShiftRows.find((row) => row.plan_date === planningDate) || null
         }
         if (revision !== state.shiftLookupRevision) return null
 
@@ -2626,14 +2815,27 @@
           maxRouteHoursInput.value = preserveManualValue ? maxRouteHoursInput.value : ''
           state.routeTimeBudgetSource = preserveManualValue && maxRouteHoursInput.value ? 'manual' : 'missing'
         }
+        await loadMonthlyOvertimeForSelection({
+          employee,
+          planningDate,
+          shiftRows: state.selectedMonthShiftRows,
+          revision,
+        })
+        if (revision !== state.shiftLookupRevision) return null
         renderRouteShiftHint()
+        renderRouteMonthlyOvertimeHint()
         refreshRouteTimingViews()
         return shift
       } catch (error) {
         if (revision !== state.shiftLookupRevision) return null
         console.error('Published shift load failed:', error)
         state.routeTimeBudgetSource = 'lookup_error'
+        state.monthlyOvertime = {
+          ...state.monthlyOvertime,
+          status: 'error',
+        }
         renderRouteShiftHint()
+        renderRouteMonthlyOvertimeHint()
         refreshRouteTimingViews()
         return null
       } finally {
@@ -3672,6 +3874,8 @@
     function renderRouteTimeCheck(plan = null) {
       if (!routeTimeCheck) return
       const timing = getRouteTiming(plan)
+      const overtime = getMonthlyOvertimeSummary(plan)
+      renderRouteMonthlyOvertimeHint(plan)
 
       if (!plan) {
         routeTimeCheck.innerHTML = `
@@ -3685,22 +3889,27 @@
             <div class="route-time-cell"><div class="route-time-label">Jízda</div><div class="route-time-value">—</div></div>
             <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">—</div><div class="route-time-note">Káva ${escapeHtml(formatDuration(timing.coffeeServiceMinutes))} · potraviny ${escapeHtml(formatDuration(timing.foodServiceMinutes))} / automat</div></div>
             <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">—</div></div>
-            <div class="route-time-cell verdict"><div class="route-time-label">Limit</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div><div class="route-time-note">Vyber zastávky a klikni na Spočítat trasu.</div></div>
+            <div class="route-time-cell verdict"><div class="route-time-label">Plánovaná směna</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div><div class="route-time-note">Vyber zastávky a klikni na Spočítat trasu. Překročení je povolené.</div></div>
           </div>
         `
         return
       }
 
       const verdict = timing.tone === 'over'
-        ? `Návrh se nevejde o ${formatDuration(Math.abs(timing.remainingMinutes))}.`
+        ? `Trasa přesahuje směnu o ${formatDuration(Math.abs(timing.remainingMinutes))}.`
         : timing.tone === 'tight'
           ? `Návrh se vejde, rezerva jen ${formatDuration(timing.remainingMinutes)}.`
           : `Návrh je v pořádku, rezerva ${formatDuration(timing.remainingMinutes)}.`
       const recommendation = timing.tone === 'over'
-        ? 'Zkrať obsluhu, odeber zastávky nebo zvyš schválený limit.'
+        ? 'Překročení je povolené a uložení neblokuje.'
         : timing.tone === 'tight'
           ? 'Počítej s minimální rezervou na zdržení.'
-          : 'Trasu lze přiřadit v nastaveném limitu.'
+          : 'Trasu lze přiřadit v plánované směně.'
+      const monthlyOvertimeNote = overtime.status === 'ready'
+        ? `${overtime.monthLabel}: evidováno ${formatDuration(overtime.recordedMinutes)}, další trasy +${formatDuration(overtime.plannedRouteMinutes)}, tato trasa +${formatDuration(overtime.currentRouteMinutes)}, po započtení celkem ${formatDuration(overtime.projectedMinutes)}.`
+        : overtime.status === 'error'
+          ? 'Měsíční přesčasy se nepodařilo načíst; plánování tím není blokované.'
+          : 'Měsíční přesčasy se načítají.'
       const comparison = state.lastPlanComparison
 
       routeTimeCheck.innerHTML = `
@@ -3710,8 +3919,8 @@
           <div class="route-time-cell"><div class="route-time-label">Obsluha strojů</div><div class="route-time-value">${escapeHtml(formatDuration(timing.serviceMinutes))}</div><div class="route-time-note">${escapeHtml(formatStopCount(plan.orderedStops?.length || 0))} · káva ${escapeHtml(formatDuration(timing.coffeeServiceMinutes))}, potraviny ${escapeHtml(formatDuration(timing.foodServiceMinutes))} / automat</div></div>
           ${timing.waitingMinutes ? `<div class="route-time-cell"><div class="route-time-label">Čekání na otevření</div><div class="route-time-value">${escapeHtml(formatDuration(timing.waitingMinutes))}</div></div>` : ''}
           <div class="route-time-cell"><div class="route-time-label">Celkem</div><div class="route-time-value">${escapeHtml(formatDuration(timing.totalMinutes))}</div></div>
-          <div class="route-time-cell"><div class="route-time-label">Maximální čas</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
-          <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}${comparison ? `<br><strong>${escapeHtml(comparison)}</strong>` : ''}</div></div>
+          <div class="route-time-cell"><div class="route-time-label">Plánovaná směna</div><div class="route-time-value">${escapeHtml(formatDuration(timing.maximumMinutes))}</div></div>
+          <div class="route-time-cell verdict ${timing.tone}"><div class="route-time-label">Vyhodnocení · pouze informační</div><div class="route-time-value">${escapeHtml(verdict)}</div><div class="route-time-note">${escapeHtml(recommendation)}<br>${escapeHtml(monthlyOvertimeNote)}${comparison ? `<br><strong>${escapeHtml(comparison)}</strong>` : ''}</div></div>
         </div>
       `
     }
@@ -5705,6 +5914,7 @@
         })
       })
 
+      const monthlyOvertime = getMonthlyOvertimeSummary(state.currentPlan)
       const planPayload = {
         planning_date: routeDateInput.value,
         planned_departure_time: routeDepartureTimeInput.value || '07:00',
@@ -5760,6 +5970,12 @@
             estimated_total_minutes: getRouteTiming(state.currentPlan).totalMinutes,
             remaining_minutes: getRouteTiming(state.currentPlan).remainingMinutes,
             verdict: getRouteTiming(state.currentPlan).tone,
+            monthly_overtime_month: state.monthlyOvertime?.monthKey || null,
+            monthly_overtime_recorded_minutes: monthlyOvertime.status === 'ready' ? monthlyOvertime.recordedMinutes : null,
+            monthly_overtime_planned_routes_minutes: monthlyOvertime.status === 'ready' ? monthlyOvertime.plannedRouteMinutes : null,
+            monthly_overtime_current_route_minutes: monthlyOvertime.status === 'ready' ? monthlyOvertime.currentRouteMinutes : null,
+            monthly_overtime_projected_minutes: monthlyOvertime.status === 'ready' ? monthlyOvertime.projectedMinutes : null,
+            monthly_overtime_informational_only: true,
           },
         },
         created_by: employeeId,
@@ -6615,8 +6831,8 @@
       if (selectedEmployee) {
         const plannedMinutes = getPlannedShiftMinutes(publishedShift)
         setStatus(publishedShift && plannedMinutes > 0
-          ? `Načetl jsem směnu ${getShiftTimeLabel(publishedShift)} (${formatDuration(plannedMinutes)}). Limit trasy i odjezd jsou nastavené podle plánu směn.`
-          : `Pro ${getEmployeeDisplayName(selectedEmployee)} není na ${routeDateInput.value} publikovaná pracovní směna. Limit trasy zadej ručně.`, publishedShift && plannedMinutes > 0 ? 'success' : 'warning')
+          ? `Načetl jsem směnu ${getShiftTimeLabel(publishedShift)} (${formatDuration(plannedMinutes)}). Délka směny i odjezd jsou nastavené podle plánu.`
+          : `Pro ${getEmployeeDisplayName(selectedEmployee)} není na ${routeDateInput.value} publikovaná pracovní směna. Délku směny zadej ručně.`, publishedShift && plannedMinutes > 0 ? 'success' : 'warning')
       }
       buildCandidateRows()
       applyFilters()
@@ -6664,8 +6880,8 @@
       if (selectedEmployee) {
         const plannedMinutes = getPlannedShiftMinutes(publishedShift)
         setStatus(publishedShift && plannedMinutes > 0
-          ? `Načetl jsem směnu ${getShiftTimeLabel(publishedShift)} (${formatDuration(plannedMinutes)}). Limit trasy i odjezd jsou nastavené podle plánu směn.`
-          : `Pro ${getEmployeeDisplayName(selectedEmployee)} není na ${routeDateInput.value} publikovaná pracovní směna. Limit trasy zadej ručně.`, publishedShift && plannedMinutes > 0 ? 'success' : 'warning')
+          ? `Načetl jsem směnu ${getShiftTimeLabel(publishedShift)} (${formatDuration(plannedMinutes)}). Délka směny i odjezd jsou nastavené podle plánu.`
+          : `Pro ${getEmployeeDisplayName(selectedEmployee)} není na ${routeDateInput.value} publikovaná pracovní směna. Délku směny zadej ručně.`, publishedShift && plannedMinutes > 0 ? 'success' : 'warning')
       }
       renderSummary()
       applyFilters()
@@ -6817,7 +7033,7 @@
     optimizeBtn.addEventListener('click', async () => {
       try {
         if (!getRouteTiming().maximumMinutes) {
-          throw new Error('Vyber zaměstnance s publikovanou směnou, nebo zadej maximální čas trasy ručně.')
+          throw new Error('Vyber zaměstnance s publikovanou směnou, nebo zadej délku směny ručně.')
         }
         optimizeBtn.disabled = true
         optimizeBtn.textContent = 'Počítám trasu...'
@@ -6831,7 +7047,7 @@
           engineBadge.className = 'route-badge live'
           const timing = getRouteTiming(plan)
           setStatus(timing.remainingMinutes < 0
-            ? `Pořadí i standardní čas jízdy jsou spočítané přes Google. Trasa překračuje limit směny o ${formatDuration(Math.abs(timing.remainingMinutes))}; uprav výběr nebo limit podle výsledného plánu.`
+            ? `Pořadí i standardní čas jízdy jsou spočítané přes Google. Trasa přesahuje plánovanou směnu o ${formatDuration(Math.abs(timing.remainingMinutes))}; překročení je povolené a zobrazené v měsíčním součtu přesčasů.`
             : 'Pořadí je spočítané přes Google; čas jízdy je uveden bez proměnlivé dopravní prognózy.', timing.remainingMinutes < 0 ? 'warning' : 'success')
         } catch (googleError) {
           console.warn('Google Routes fallback:', googleError)
