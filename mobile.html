@@ -5514,6 +5514,7 @@
     const MOBILE_SNAPSHOT_KEY = 'olvendMobileSnapshotV1'
     const COFFEE_OFFLINE_STOCK_KEY = 'olvendCoffeeOfflineStockV1'
     const COFFEE_OFFLINE_SERVICE_KEY = 'olvendCoffeeOfflineServiceV1'
+    const OPERATOR_PRICE_OFFLINE_KEY = 'olvendOperatorPriceRequestsV1'
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
@@ -5855,6 +5856,85 @@
       window.dispatchEvent(new CustomEvent('olvend-offline-queue'))
     }
 
+    function readOperatorPriceOfflineQueue() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(OPERATOR_PRICE_OFFLINE_KEY) || '[]')
+        return Array.isArray(rows) ? rows : []
+      } catch (_) {
+        return []
+      }
+    }
+
+    function writeOperatorPriceOfflineQueue(rows) {
+      localStorage.setItem(OPERATOR_PRICE_OFFLINE_KEY, JSON.stringify(rows || []))
+      window.dispatchEvent(new CustomEvent('olvend-offline-queue'))
+    }
+
+    function queueOperatorPriceRequest(payload) {
+      const rows = readOperatorPriceOfflineQueue().filter((row) => row.client_request_key !== payload.client_request_key)
+      rows.push(payload)
+      writeOperatorPriceOfflineQueue(rows)
+    }
+
+    async function sendOperatorPriceRequest(payload) {
+      const { data, error } = await supabase.functions.invoke('operator-price-approval', { body: payload })
+      if (error) {
+        let detail = null
+        try { detail = await error.context?.json() } catch (_) { /* odpověď nemusí být JSON */ }
+        const wrapped = new Error(detail?.error || error.message || 'Žádost o změnu ceny se nepodařilo odeslat.')
+        wrapped.isTransportError = !navigator.onLine || /fetch|network|timeout|aborted/i.test(String(error.message || ''))
+        throw wrapped
+      }
+      if (!data?.ok) throw new Error(data?.error || 'Žádost o změnu ceny se nepodařilo uložit.')
+      return data
+    }
+
+    function applyOperatorPriceRequestResult(payload, data, status = 'pending') {
+      const detail = getFoodDetail(payload.stop_id)
+      const slot = getFoodSlot(payload.stop_id, payload.planogram_slot_id)
+      if (slot) {
+        slot.customer_price_czk = Number(payload.proposed_price_czk)
+        slot.dex_price_czk = Number(payload.proposed_price_czk)
+        slot._priceRequest = {
+          id: data?.request_id || null,
+          status,
+          proposed_price_czk: Number(payload.proposed_price_czk),
+          recommended_price_czk: Number(slot.price_czk || 0),
+          email_sent_at: data?.email_sent_at || null,
+          mail_error: data?.warning || null
+        }
+      }
+      if (detail && slot) {
+        updateFoodSlotDraft(payload.stop_id, payload.planogram_slot_id, {
+          operatorPriceRequestStatus: status,
+          operatorPriceRequestId: data?.request_id || null,
+          operatorPriceClientKey: payload.client_request_key,
+          operatorProposedPrice: Number(payload.proposed_price_czk),
+          operatorPriceMailWarning: data?.warning || ''
+        })
+      }
+    }
+
+    async function syncOperatorPriceOfflineQueue() {
+      if (!navigator.onLine) return { pending: readOperatorPriceOfflineQueue().length, synced: 0 }
+      const rows = readOperatorPriceOfflineQueue()
+      const pending = []
+      let synced = 0
+      for (const row of rows) {
+        try {
+          const data = await sendOperatorPriceRequest(row)
+          applyOperatorPriceRequestResult(row, data, 'pending')
+          if (data.email_pending) pending.push(row)
+          else synced += 1
+        } catch (error) {
+          console.warn('Žádost o změnu ceny se zatím nepodařilo synchronizovat:', error)
+          pending.push(row)
+        }
+      }
+      writeOperatorPriceOfflineQueue(pending)
+      return { pending: pending.length, synced }
+    }
+
     function queueCoffeeProblemService(report) {
       const rows = readCoffeeOfflineServiceQueue().filter((row) => row.sourceKey !== report.sourceKey)
       rows.push(report)
@@ -5875,7 +5955,7 @@
     }
 
     function getCombinedOfflineRequestCount() {
-      return getOfflineRequestCount() + readCoffeeOfflineStockQueue().length + readCoffeeOfflineServiceQueue().length
+      return getOfflineRequestCount() + readCoffeeOfflineStockQueue().length + readCoffeeOfflineServiceQueue().length + readOperatorPriceOfflineQueue().length
     }
 
     async function syncCoffeeOfflineStockQueue() {
@@ -5955,8 +6035,9 @@
         const requestResult = await syncOfflineRequests().catch((error) => ({ error, pending: getOfflineRequestCount(), synced: 0 }))
         const coffeeResult = await syncCoffeeOfflineStockQueue().catch((error) => ({ error, pending: readCoffeeOfflineStockQueue().length, synced: 0 }))
         const serviceResult = await syncCoffeeOfflineServiceQueue().catch((error) => ({ error, pending: readCoffeeOfflineServiceQueue().length, synced: 0 }))
-        const pending = Number(requestResult.pending || 0) + Number(coffeeResult.pending || 0) + Number(serviceResult.pending || 0)
-        const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0) + Number(serviceResult.synced || 0)
+        const priceResult = await syncOperatorPriceOfflineQueue().catch((error) => ({ error, pending: readOperatorPriceOfflineQueue().length, synced: 0 }))
+        const pending = Number(requestResult.pending || 0) + Number(coffeeResult.pending || 0) + Number(serviceResult.pending || 0) + Number(priceResult.pending || 0)
+        const synced = Number(requestResult.synced || 0) + Number(coffeeResult.synced || 0) + Number(serviceResult.synced || 0) + Number(priceResult.synced || 0)
         if (!pending) {
           Object.values(state.routeCoffeeDetails || {}).forEach((detail) => { detail.openedOffline = false })
           const text = synced ? `${synced} uložených změn bylo synchronizováno.` : 'Připojení je zpět.'
@@ -10795,7 +10876,7 @@
       // planned_product_sku zůstává platným cílem i v průběhu směsi starého a
       // nového produktu. Počet nových kusů nesmí schovat povinnou změnu.
       const nextSku = String(slot?.pending_product_sku || plannedSku || '')
-      const currentPrice = Number(slot?.price_czk || 0)
+      const currentPrice = Number(slot?.customer_price_czk ?? slot?.price_czk ?? 0)
       const nextPriceRaw = slot?.pending_price_czk ?? slot?.planned_price_czk
       const nextPrice = nextPriceRaw == null ? null : Number(nextPriceRaw)
       const productChanged = Boolean(nextSku && nextSku !== currentSku)
@@ -11268,6 +11349,13 @@
         manualProductChoice: Boolean(draft.manualProductChoice),
         pickConfirmed: Boolean(draft.pickConfirmed),
         machinePriceConfirmed: Boolean(draft.machinePriceConfirmed),
+        operatorProposedPrice: draft.operatorProposedPrice == null ? '' : Number(draft.operatorProposedPrice),
+        operatorPriceNote: draft.operatorPriceNote || '',
+        operatorPriceConfirmed: Boolean(draft.operatorPriceConfirmed),
+        operatorPriceRequestStatus: slot?._priceRequest?.status || draft.operatorPriceRequestStatus || '',
+        operatorPriceRequestId: slot?._priceRequest?.id || draft.operatorPriceRequestId || null,
+        operatorPriceClientKey: draft.operatorPriceClientKey || '',
+        operatorPriceMailWarning: slot?._priceRequest?.mail_error || draft.operatorPriceMailWarning || '',
         deferFullSwap: Boolean(draft.deferFullSwap),
         cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
         note: draft.note || '',
@@ -11701,6 +11789,28 @@
         </details>`
     }
 
+    function renderOperatorPriceProposal(stop, slot, draft, readOnly = false) {
+      const request = slot?._priceRequest || null
+      const status = draft.operatorPriceRequestStatus || request?.status || ''
+      const recommended = Number(slot?.price_czk || 0)
+      const actual = Number(slot?.customer_price_czk ?? slot?.price_czk ?? 0)
+      const proposed = draft.operatorProposedPrice === ''
+        ? Math.max(recommended + 1, actual > recommended ? actual : recommended + 1)
+        : Number(draft.operatorProposedPrice)
+      const active = ['sending','queued','pending','rejected'].includes(status)
+      const previousStatus = status === 'approved'
+        ? `<div class="coffee-info-strip"><span>✓</span><span><b>Poslední vyšší cena byla schválena.</b> Doporučená cena je nyní ${escapeHtml(formatNumber(recommended))} Kč.</span></div>`
+        : status === 'reverted'
+          ? `<div class="coffee-info-strip"><span>✓</span><span><b>Zamítnutá cena byla vrácena.</b> Pozice znovu odpovídá doporučené ceně.</span></div>`
+          : ''
+      if (status === 'sending') return `<div class="attention-box"><strong>Ukládám změnu ceny</strong><span>Operátor může mezitím pokračovat; trasa není uzamčená.</span></div>`
+      if (status === 'queued') return `<div class="attention-box"><strong>Změna ceny čeká na odeslání</strong><span>Na automatu je ${escapeHtml(formatNumber(proposed))} Kč. Po návratu připojení odejde žádost i e-mail automaticky. Další práce není blokovaná.</span></div>`
+      if (status === 'pending') return `<div class="coffee-info-strip"><span>↗</span><span><b>${escapeHtml(formatNumber(request?.proposed_price_czk ?? proposed))} Kč čeká na schválení.</b> Doporučeno ${escapeHtml(formatNumber(request?.recommended_price_czk ?? recommended))} Kč. Operátor pokračuje bez čekání.${draft.operatorPriceMailWarning || request?.mail_error ? ` E-mail se zatím nepodařilo potvrdit: ${escapeHtml(draft.operatorPriceMailWarning || request?.mail_error)}` : ''}</span></div>`
+      if (status === 'rejected') return `<div class="food-expired-warning"><strong>Vyšší cena nebyla schválena</strong><span>Při příští návštěvě vrať cenu z ${escapeHtml(formatNumber(actual))} Kč na doporučených ${escapeHtml(formatNumber(recommended))} Kč. Dnešní práci dokonči normálně.</span></div>`
+      if (readOnly || active || recommended <= 0) return previousStatus
+      return `${previousStatus}<details class="food-special-action"><summary><span class="food-special-action-summary">Jiná cena v automatu</span><small>Doporučeno ${escapeHtml(formatNumber(recommended))} Kč</small></summary><div class="food-special-action-body"><div class="coffee-info-strip"><span>i</span><span>Nastavit lze pouze cenu vyšší než doporučenou. Po odeslání pokračujte v práci; schválení probíhá na pozadí.</span></div><label>Nová cena v automatu<input class="coffee-correction-input" type="number" inputmode="decimal" min="${escapeHtml(recommended + 0.01)}" max="999" step="1" value="${escapeHtml(proposed)}" data-food-field="operator-proposed-price" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"></label><label>Důvod / poznámka pro vedoucího<textarea data-food-field="operator-price-note" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" placeholder="Např. dražší lokalita, okolní ceny, požadavek zákazníka">${escapeHtml(draft.operatorPriceNote)}</textarea></label><label><input type="checkbox" data-food-field="operator-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.operatorPriceConfirmed ? 'checked' : ''}> Potvrzuji, že jsem cenu ${escapeHtml(formatNumber(proposed))} Kč fyzicky nastavil(a) na automatu</label><button class="coffee-guide-more extra" type="button" data-food-action="submit-price-change" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Odeslat ke schválení a pokračovat</button></div></details>`
+    }
+
     function renderFoodGuidedPosition(stop, detail, slot, workSlots) {
       const draft = getFoodSlotDraft(stop.id, slot)
       const product = state.products.find((item) => String(item.id) === String(draft.fillItems[0]?.productId || draft.selectedProductId))
@@ -11762,6 +11872,7 @@
           <div class="coffee-instruction"><strong>${actualAdd > 0 ? `Vlož nyní ${escapeHtml(actualAdd)} ks` : 'Bez plánovaného doplnění'}</strong><span>${batchLabels.length ? `${escapeHtml(batchLabels.join(' · '))} · po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks` : `Po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Případné další kusy systém odebere FEFO ze zásoby auta.`}</span></div>
           ${planogramChange?.fullSwap && actualAdd <= 0 ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nemáš nový produkt pro kompletní výměnu?'}</strong><span>${deferredFullSwap ? 'Ulož skutečný stav původního produktu a pokračuj. Nový produkt zůstane povinně naplánovaný na další návštěvu.' : 'Nepotvrzuj vložení, které neproběhlo. Odlož pouze výměnu; plán ani cílová cena se nesmažou.'}</span><button class="coffee-guide-more extra" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená · můžeš potvrdit pozici' : 'Nový produkt nemám · odložit výměnu a pokračovat'}</button></div>` : ''}
           ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(displayPrice))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>. OLVEND cenu na tomto automatu neumí zapsat na dálku.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''}> Potvrzuji, že jsem cenu pozice na automatu změnil(a) na ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</label></div>` : ''}
+          ${renderOperatorPriceProposal(stop, slot, draft, false)}
           ${missingQuantity || extraVehicleQuantity ? `<div class="food-extra-decision ${extraVehicleQuantity ? 'confirmed' : ''}"><strong>${extraVehicleQuantity ? `✓ Navíc ze zásoby přidáno ${escapeHtml(extraVehicleQuantity)} ks` : 'Doplnit pozici do plna?'}</strong><span>${extraVehicleQuantity ? `Celkem vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.` : `Bez této volby vložíš ${escapeHtml(actualAdd)} ks a výsledný stav bude ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks.`}</span><button type="button" data-food-action="machine-take-from-vehicle" data-food-extra-stock data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${extraVehicleQuantity ? `Zrušit dodatečných ${escapeHtml(extraVehicleQuantity)} ks` : `+ Přidat ${escapeHtml(pendingExtraQuantity)} ks ze zásoby`}</button></div>` : ''}
           ${isFoodExpiryTracked(transferProduct || product) && draft.actualBefore > 0 && (shortExpiry || recordedExpired) ? (!draft.expiryVerified ? `<div class="coffee-info-strip"><span>!</span><span><b>${isBagetteProduct(transferProduct || product) ? 'Bageta musí být vyřešená nejpozději zítra.' : 'Produkt vstoupil do 30denního řízeného doprodeje.'}</b> Nejdřív fyzicky zkontroluj počet a datum výše. Potom aplikace vybere silnější automat na zbývající trase.</span></div><button class="food-transfer-action" type="button" data-food-action="guided-food-evaluate-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Ověřit stav a vyhodnotit přesun →</button>` : draft.transferRecommendation?.available ? `<div class="recommendation-card"><strong>Doporučený přesun po fyzické kontrole</strong><span>${escapeHtml(draft.transferRecommendation.quantity)} ks → ${escapeHtml(draft.transferRecommendation.targetTitle)} · EV ${escapeHtml(draft.transferRecommendation.targetEvidence)} · pozice ${escapeHtml(draft.transferRecommendation.targetSlotCode)}. Cíl prodává přibližně ${escapeHtml(draft.transferRecommendation.dailySales)} ks denně a má volné místo.</span></div><button class="food-transfer-action ${transferQuantity ? 'ready' : ''}" type="button" data-food-action="guided-food-accept-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${transferQuantity ? `✓ Přesun ${escapeHtml(transferQuantity)} ks je připravený` : `Připravit přesun ${escapeHtml(draft.transferRecommendation.quantity)} ks →`}</button>` : `<div class="coffee-rule-box"><strong>Přesun se nenabízí</strong>${escapeHtml(draft.transferRecommendation?.reason || 'Ověřená data neukazují vhodný cíl.')}</div>`) : ''}
           ${transferQuantity > 0 ? `<div class="coffee-info-strip"><span>→</span><span><b>${escapeHtml(transferQuantity)} ks vyndej jako prodejné zboží pro přesun.</b> Po potvrzení se vrátí do zdrojové zásoby a zůstanou oddělené od odpisu.</span></div><button class="coffee-guide-more" type="button" data-food-action="guided-food-cancel-transfer" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Zrušit doporučený přesun</button>` : ''}
@@ -12056,6 +12167,7 @@
                   ` : ''}
                   ${planogramChange?.fullSwap && actualAdd <= 0 && !readOnly && !draft.accepted ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nový produkt není ve zdrojové zásobě?'}</strong><span>${deferredFullSwap ? 'Potvrď skutečný stav. Povinná výměna zůstane připravená na další návštěvu.' : 'Odlož výměnu bez falešného vložení a pokračuj v návštěvě.'}</span><button class="secondary-btn" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená' : 'Nový produkt nemám · odložit výměnu'}</button></div>` : ''}
                   ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(slot.customer_price_czk ?? slot.price_czk))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''} ${readOnly || draft.accepted ? 'disabled' : ''}> Cena je na automatu skutečně změněná</label></div>` : ''}
+                  ${renderOperatorPriceProposal(stop, slot, draft, readOnly)}
                   <section class="food-machine-step">
                     <strong>1. Zkontroluj počet v automatu</strong>
                     <label>
@@ -13935,7 +14047,7 @@
       renderRouteMachineScreen()
 
       try {
-        const [slotsResult, itemsResult, fillsResult, checksResult, cashResult] = await Promise.all([
+        const [slotsResult, itemsResult, fillsResult, checksResult, cashResult, priceRequestsResult] = await Promise.all([
           supabase
             .from('machine_planogram_slots')
             .select('*')
@@ -13949,13 +14061,18 @@
             .eq('item_kind', 'food_slot'),
           supabase.from('route_machine_visit_food_fills').select('*').eq('visit_id', visitId).order('load_order', { ascending: true }),
           supabase.from('route_machine_visit_checks').select('*').eq('visit_id', visitId),
-          supabase.from('route_machine_cash_reports').select('*').eq('visit_id', visitId).maybeSingle()
+          supabase.from('route_machine_cash_reports').select('*').eq('visit_id', visitId).maybeSingle(),
+          supabase.from('operator_price_change_requests')
+            .select('id,planogram_slot_id,recommended_price_czk,proposed_price_czk,status,email_sent_at,mail_error,requested_at,decided_at,decision_note')
+            .eq('route_machine_visit_id', visitId)
+            .order('requested_at', { ascending: false })
         ])
         if (slotsResult.error) throw slotsResult.error
         if (itemsResult.error) throw itemsResult.error
         if (fillsResult.error) throw fillsResult.error
         if (checksResult.error) throw checksResult.error
         if (cashResult.error && !/0 rows|multiple|route_machine_cash_reports/i.test(String(cashResult.error.message || ''))) throw cashResult.error
+        if (priceRequestsResult.error) throw priceRequestsResult.error
 
         let guidedChecks = checksResult.data || []
         let guidedCash = cashResult.data || null
@@ -13977,7 +14094,13 @@
         }
 
         const slots = slotsResult.data || []
+        const latestPriceRequestBySlot = new Map()
+        for (const request of priceRequestsResult.data || []) {
+          const slotKey = String(request.planogram_slot_id || '')
+          if (!latestPriceRequestBySlot.has(slotKey)) latestPriceRequestBySlot.set(slotKey, request)
+        }
         for (const slot of slots) {
+          slot._priceRequest = latestPriceRequestBySlot.get(String(slot.id)) || null
           if (!slot.product_family) continue
           slot._familyAlternativeSkus = slots
             .filter((candidate) => candidate.active !== false && String(candidate.product_family || '') === String(slot.product_family))
@@ -14029,6 +14152,13 @@
               transferRecommendation: prepared.transferRecommendation || null,
               manualProductChoice: Boolean(prepared.manualProductChoice),
               pickConfirmed: Boolean(prepared.pickConfirmed),
+              operatorProposedPrice: prepared.operatorProposedPrice == null ? '' : Number(prepared.operatorProposedPrice),
+              operatorPriceNote: prepared.operatorPriceNote || '',
+              operatorPriceConfirmed: Boolean(prepared.operatorPriceConfirmed),
+              operatorPriceRequestStatus: prepared.operatorPriceRequestStatus || '',
+              operatorPriceRequestId: prepared.operatorPriceRequestId || null,
+              operatorPriceClientKey: prepared.operatorPriceClientKey || '',
+              operatorPriceMailWarning: prepared.operatorPriceMailWarning || '',
               cartLoadOrder: Math.max(0, Number(prepared.cartLoadOrder || 0)),
               note: prepared.note || '',
               accepted: false,
@@ -15198,6 +15328,13 @@
           transferRecommendation: draft.transferRecommendation || null,
           manualProductChoice: Boolean(draft.manualProductChoice),
           pickConfirmed: Boolean(draft.pickConfirmed),
+          operatorProposedPrice: draft.operatorProposedPrice === '' ? null : Number(draft.operatorProposedPrice),
+          operatorPriceNote: draft.operatorPriceNote || '',
+          operatorPriceConfirmed: Boolean(draft.operatorPriceConfirmed),
+          operatorPriceRequestStatus: draft.operatorPriceRequestStatus || '',
+          operatorPriceRequestId: draft.operatorPriceRequestId || null,
+          operatorPriceClientKey: draft.operatorPriceClientKey || '',
+          operatorPriceMailWarning: draft.operatorPriceMailWarning || '',
           deferFullSwap: Boolean(draft.deferFullSwap),
           cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
           note: draft.note || ''
@@ -16077,10 +16214,72 @@
       renderRouteMachineScreen()
     }
 
+    async function submitOperatorPriceChange(stopId, slot, target) {
+      const detail = getFoodDetail(stopId)
+      if (!detail?.visitId || !slot) throw new Error('Návštěva nebo pozice není připravená.')
+      const draft = getFoodSlotDraft(stopId, slot)
+      const recommended = Number(slot.price_czk || 0)
+      const proposed = Number(draft.operatorProposedPrice)
+      if (!Number.isFinite(proposed) || proposed <= recommended) {
+        throw new Error(`Zadejte cenu vyšší než doporučených ${formatNumber(recommended)} Kč.`)
+      }
+      if (!draft.operatorPriceConfirmed) {
+        throw new Error(`Nejdřív potvrďte, že jste cenu ${formatNumber(proposed)} Kč fyzicky nastavil(a) na automatu.`)
+      }
+      if (['sending','queued','pending'].includes(draft.operatorPriceRequestStatus)) return
+      const clientKey = draft.operatorPriceClientKey || (crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${detail.visitId}-${slot.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+      const payload = {
+        client_request_key: clientKey,
+        visit_id: Number(detail.visitId),
+        planogram_slot_id: Number(slot.id),
+        proposed_price_czk: proposed,
+        note: String(draft.operatorPriceNote || '').trim(),
+        stop_id: String(stopId)
+      }
+      updateFoodSlotDraft(stopId, slot.id, {
+        operatorPriceRequestStatus: 'sending',
+        operatorPriceClientKey: clientKey
+      })
+      const restore = setButtonBusy(target, 'Odesílám na pozadí…')
+      try {
+        if (!navigator.onLine) {
+          queueOperatorPriceRequest(payload)
+          applyOperatorPriceRequestResult(payload, {}, 'queued')
+          renderRouteMachineScreen()
+          showMessage(`Cena ${formatNumber(proposed)} Kč je uložená k odeslání. Po návratu připojení odejde schvalovateli; můžete pokračovat.`, 'success', { scroll: false })
+          return
+        }
+        try {
+          const data = await sendOperatorPriceRequest(payload)
+          applyOperatorPriceRequestResult(payload, data, 'pending')
+          if (data.email_pending) queueOperatorPriceRequest(payload)
+          renderRouteMachineScreen()
+          showMessage(data.email_pending
+            ? `Cena ${formatNumber(proposed)} Kč je uložená ke schválení. E-mail se zatím nepodařilo doručit, ale další práce není blokovaná.`
+            : `Cena ${formatNumber(proposed)} Kč čeká na schválení ${data.approver_name || 'vedoucího'}. Můžete pokračovat.`, data.email_pending ? 'info' : 'success', { scroll: false })
+        } catch (error) {
+          if (!error.isTransportError) throw error
+          queueOperatorPriceRequest(payload)
+          applyOperatorPriceRequestResult(payload, {}, 'queued')
+          renderRouteMachineScreen()
+          showMessage(`Spojení se přerušilo. Změna ceny je uložená v telefonu a odešle se automaticky; můžete pokračovat.`, 'info', { scroll: false })
+        }
+      } finally {
+        restore()
+        scheduleFoodWorkProgressSave(stopId)
+      }
+    }
+
     async function handleFoodAction(action, stopId, target) {
       const detail = getFoodDetail(stopId)
       const slot = getFoodSlot(stopId, target?.dataset?.slotId)
       if (!detail) throw new Error('Potravinový planogram ještě není načtený.')
+      if (action === 'submit-price-change' && slot) {
+        await submitOperatorPriceChange(stopId, slot, target)
+        return
+      }
       if (action === 'guided-food-back-route') {
         openScreen('vehicle')
         return
@@ -19549,7 +19748,7 @@
         const foodButton = event.target.closest('[data-food-action]')
         if (foodButton) {
           if (foodButton.disabled || foodButton.classList.contains('is-busy')) return
-          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before', 'adjust-actual-add', 'adjust-capacity']
+          const instantActions = ['skip-pick', 'add-fill', 'remove-fill', 'add-waste', 'remove-waste', 'back-picklist', 'adjust-actual-before', 'adjust-actual-add', 'adjust-capacity', 'submit-price-change']
           const foodAction = foodButton.dataset.foodAction
           const foodStopId = String(foodButton.dataset.stopId || '')
           const locksVisit = !instantActions.includes(foodAction)
@@ -19713,6 +19912,21 @@
         }
         const foodField = event.target.closest('[data-food-field]')
         if (foodField) {
+          if (['operator-proposed-price','operator-price-note','operator-price-confirmed'].includes(foodField.dataset.foodField)) {
+            const key = foodField.dataset.foodField === 'operator-proposed-price'
+              ? 'operatorProposedPrice'
+              : foodField.dataset.foodField === 'operator-price-note'
+                ? 'operatorPriceNote'
+                : 'operatorPriceConfirmed'
+            const value = key === 'operatorProposedPrice'
+              ? Math.max(0, parseNumber(foodField.value) || 0)
+              : key === 'operatorPriceConfirmed'
+                ? Boolean(foodField.checked)
+                : foodField.value
+            updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, { [key]: value })
+            scheduleFoodWorkProgressSave(foodField.dataset.stopId)
+            return
+          }
           const fieldMap = {
             product: 'selectedProductId',
             'actual-before': 'actualBefore',
@@ -19893,7 +20107,20 @@
         }
         const foodField = event.target.closest('[data-food-field]')
         if (foodField) {
-          if (foodField.dataset.foodField === 'product') {
+          if (['operator-proposed-price','operator-price-note','operator-price-confirmed'].includes(foodField.dataset.foodField)) {
+            const key = foodField.dataset.foodField === 'operator-proposed-price'
+              ? 'operatorProposedPrice'
+              : foodField.dataset.foodField === 'operator-price-note'
+                ? 'operatorPriceNote'
+                : 'operatorPriceConfirmed'
+            const value = key === 'operatorProposedPrice'
+              ? Math.max(0, parseNumber(foodField.value) || 0)
+              : key === 'operatorPriceConfirmed'
+                ? Boolean(foodField.checked)
+                : foodField.value
+            updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, { [key]: value })
+            scheduleFoodWorkProgressSave(foodField.dataset.stopId)
+          } else if (foodField.dataset.foodField === 'product') {
             rememberFoodMachineRenderAnchor(foodField)
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
               selectedProductId: foodField.value,
