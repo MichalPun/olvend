@@ -3743,7 +3743,11 @@
         const rawArrival = new Date(cursor)
         const window = stop.accessWindow || parseOpeningWindow(stop.serviceWindow, planningDate)
         let waitingMinutes = 0
-        let openingStatus = stop.routeAccessStatus === 'needs_confirmation' ? 'needs_confirmation' : (stop.serviceWindow ? 'unverified' : 'unknown')
+        let openingStatus = stop.routeAccessStatus === 'closed'
+          ? 'closed'
+          : stop.routeAccessStatus === 'needs_confirmation'
+            ? 'needs_confirmation'
+            : (stop.serviceWindow ? 'unverified' : 'unknown')
 
         const serviceMinutes = Math.max(0, Number(stop.estimatedServiceMinutes) || 0)
         if (window) {
@@ -3787,12 +3791,20 @@
       }
     }
 
-    function assertRouteFeasible(plan) {
+    function assertRouteFeasible(plan, { allowWindowConflicts = false } = {}) {
       const feasibility = getRouteFeasibility(plan)
-      if (feasibility.inaccessibleStops.length) {
+      if (feasibility.inaccessibleStops.length && !allowWindowConflicts) {
         throw new Error(`Do otevírací doby se nevejde: ${feasibility.inaccessibleStops.map((stop) => stop.name).join(', ')}. Uprav výběr nebo čas odjezdu.`)
       }
-      return feasibility.plan
+      return {
+        ...feasibility.plan,
+        routeWindowConflicts: feasibility.inaccessibleStops.map((stop) => ({
+          key: stop.key,
+          name: stop.name,
+          serviceWindow: stop.serviceWindow || '',
+          estimatedArrivalAt: stop.estimatedArrivalAt || null,
+        })),
+      }
     }
 
     function formatStopCount(count) {
@@ -5343,25 +5355,34 @@
           let waitingMinutes = 0
           let deadlineSlack = 720
 
+          let windowConflict = false
           if (window) {
             const intervals = window.intervals?.length ? window.intervals : [window]
             const interval = intervals.find((item) => Math.max(arrivalMinute, item.opensAt) + serviceMinutes <= item.closesAt)
-            if (!interval) return
-            waitingMinutes = Math.max(0, interval.opensAt - arrivalMinute)
-            deadlineSlack = interval.closesAt - (arrivalMinute + waitingMinutes + serviceMinutes)
+            if (interval) {
+              waitingMinutes = Math.max(0, interval.opensAt - arrivalMinute)
+              deadlineSlack = interval.closesAt - (arrivalMinute + waitingMinutes + serviceMinutes)
+            } else {
+              windowConflict = true
+              deadlineSlack = -720
+            }
           }
 
-          const score = driveMinutes + waitingMinutes + (deadlineSlack * 0.015) - calcPriorityBonus(stop, biasMode)
+          const score = (windowConflict ? 100000 : 0)
+            + driveMinutes
+            + waitingMinutes
+            + (deadlineSlack * 0.015)
+            - calcPriorityBonus(stop, biasMode)
 
           if (score < bestScore) {
             bestScore = score
             bestIndex = index
-            bestTiming = { airKm, roadKm, driveMinutes, waitingMinutes, serviceMinutes }
+            bestTiming = { airKm, roadKm, driveMinutes, waitingMinutes, serviceMinutes, windowConflict }
           }
         })
 
         if (bestIndex < 0 || !bestTiming) {
-          throw new Error(`Do otevírací doby už nelze vložit: ${remaining.map((stop) => stop.name).join(', ')}. Zkus dřívější odjezd nebo méně zastávek.`)
+          throw new Error(`Trasu se nepodařilo sestavit pro: ${remaining.map((stop) => stop.name).join(', ')}.`)
         }
 
         const [nextStop] = remaining.splice(bestIndex, 1)
@@ -5393,7 +5414,7 @@
         estimatedServiceMinutes,
         provider: 'heuristic',
         createdAt: new Date().toISOString(),
-      })
+      }, { allowWindowConflicts: true })
     }
 
     function restoreSavedPlanLegs(plan, orderedStops) {
@@ -7083,6 +7104,15 @@
           console.warn('Route telemetry revenue failed:', telemetryError)
           plan.telemetryRevenue = null
           setStatus('Trasa je spočítaná, ale online tržbu se teď nepodařilo načíst.', 'warning')
+        }
+
+        const windowConflicts = Array.isArray(plan.routeWindowConflicts) ? plan.routeWindowConflicts : []
+        if (windowConflicts.length) {
+          setStatus(
+            `Trasa je spočítaná. Mimo potvrzenou otevírací dobu vychází ${windowConflicts.map((stop) => stop.name).join(', ')}. `
+            + 'Zastávky zůstaly v trase, můžeš upravit jejich pořadí a pokračovat; uložení není blokované.',
+            'warning'
+          )
         }
 
         if (calculationRevision !== state.selectionRevision) {
