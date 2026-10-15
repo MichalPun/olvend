@@ -112,6 +112,10 @@ using (
   )
 );
 
+-- RLS policy sama nestaci: PostgREST potrebuje take tabulkove opravneni.
+-- Bez SELECT grantu doplnkovy dotaz v mobilu skonci na permission denied.
+grant select on public.operator_price_change_requests to authenticated;
+
 create or replace function public.create_operator_price_change_request_v51(
   p_client_request_key text,
   p_visit_id bigint,
