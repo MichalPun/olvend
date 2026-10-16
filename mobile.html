@@ -14048,6 +14048,14 @@
       renderRouteMachineScreen()
     }
 
+    function isManualFoodStockMode(machine, telemetryLinksResult) {
+      const telemetryLinkLookupAvailable = !telemetryLinksResult?.error
+      const hasTelemetry = telemetryLinkLookupAvailable
+        ? (telemetryLinksResult?.data || []).length > 0
+        : machine?.sales_tracking_mode === 'telemetry'
+      return machine?.sales_tracking_mode === 'none' && !hasTelemetry
+    }
+
     async function loadRouteFoodDetail(stop, visitId) {
       const machine = getRouteStopMachine(stop)
       if (!machine?.id || !visitId) return
@@ -14061,7 +14069,7 @@
       renderRouteMachineScreen()
 
       try {
-        const [slotsResult, itemsResult, fillsResult, checksResult, cashResult, priceRequestsResult] = await Promise.all([
+        const [slotsResult, itemsResult, fillsResult, checksResult, cashResult, priceRequestsResult, telemetryLinksResult] = await Promise.all([
           supabase
             .from('machine_planogram_slots')
             .select('*')
@@ -14079,7 +14087,11 @@
           supabase.from('operator_price_change_requests')
             .select('id,planogram_slot_id,recommended_price_czk,proposed_price_czk,status,email_sent_at,mail_error,requested_at,decided_at,decision_note')
             .eq('route_machine_visit_id', visitId)
-            .order('requested_at', { ascending: false })
+            .order('requested_at', { ascending: false }),
+          supabase.from('machine_external_links')
+            .select('id,provider,external_machine_id,telemetry_enabled')
+            .eq('machine_id', machine.id)
+            .eq('telemetry_enabled', true)
         ])
         if (slotsResult.error) throw slotsResult.error
         if (itemsResult.error) throw itemsResult.error
@@ -14090,6 +14102,9 @@
         // kratky vypadek nebo starsi DB schema nesmi shodit cely planogram.
         if (priceRequestsResult.error) {
           console.warn('Operator price request lookup failed; planogram continues without approval status:', priceRequestsResult.error)
+        }
+        if (telemetryLinksResult.error && !/machine_external_links/i.test(String(telemetryLinksResult.error.message || ''))) {
+          console.warn('Food telemetry link lookup failed; falling back to machine tracking mode:', telemetryLinksResult.error)
         }
 
         let guidedChecks = checksResult.data || []
@@ -14246,7 +14261,9 @@
           error: '',
           visitId,
           machineId: machine.id,
-          manualStockMode: machine.sales_tracking_mode === 'none',
+          // Aktivní TID je autoritativní. Chrání trasu i při starším chybném
+          // sales_tracking_mode, aby se znovu nepoužil ruční/stálý návrh doplnění.
+          manualStockMode: isManualFoodStockMode(machine, telemetryLinksResult),
           slots,
           visitItems: existingItems,
           checkRows: guidedChecks,
