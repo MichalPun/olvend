@@ -44,6 +44,8 @@ const optimizerContext = vm.createContext({
   haversineKm: (from, to) => Math.hypot(Number(to.latitude) - Number(from.latitude), Number(to.longitude) - Number(from.longitude)),
   parseOpeningWindow: () => null,
   estimateServiceMinutes: () => 20,
+  groupRouteStopsByLocation: (items) => items,
+  expandGroupedRouteStops: (items) => items,
   calcPriorityBonus: () => 0,
   ROAD_FACTOR: 1,
   AVG_SPEED_KMH: 60,
@@ -61,5 +63,10 @@ const plan = optimizerContext.optimizeStops()
 assert.equal(plan.orderedStops.length, 2, 'Ani zastávky mimo okno se nesmí z plánované trasy zahodit')
 assert.equal(plan.testOptions.allowWindowConflicts, true, 'Ruční plánovač musí konflikt zobrazit, ale nesmí blokovat pokračování')
 assert.match(html, /Zastávky zůstaly v trase, můžeš upravit jejich pořadí a pokračovat; uložení není blokované/)
+assert.match(
+  html,
+  /assertRouteFeasible\(await optimizeStopsWithGoogle\(\), \{ allowWindowConflicts: true \}\)/,
+  'Konflikt otevírací doby nesmí zahodit geograficky optimalizované pořadí z Googlu'
+)
 
 console.log('OK: konflikt otevírací doby je viditelný, ale ruční plánování a uložení dál pokračuje')
