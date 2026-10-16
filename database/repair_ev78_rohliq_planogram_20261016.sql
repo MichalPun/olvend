@@ -1,8 +1,9 @@
 -- EV 78 / RÖHLÍQ SUUS Holubice: při přesunu 9. 10. 2026 zůstal v pozici 47
 -- starý plánogram Vitaru (HAMÉ). Uživatel 16. 10. potvrdil, že fyzický a
--- aktuální plánogram má v této pozici DrWitt. Pozice 44/49 Arašídy a 48
--- Pistácie byly fyzicky potvrzené dnešní návštěvou; jejich produktové mapování
--- je již správné, ale Pistácie chybějí ve skladové evidenci stroje.
+-- aktuální plánogram má v této pozici DrWitt. Pozice 48 Pistácie a 49 Arašídy
+-- byly fyzicky potvrzené; Pistácie chybějí ve skladové evidenci stroje.
+-- Pozice 44 se řeší navazující opravou, protože mobil na ní chybně zaznamenal
+-- výměnu Havlíku za Arašídy.
 
 begin;
 
@@ -131,7 +132,7 @@ begin
     where machine_id = v_machine.id and slot_code = '49' and active = true
       and product_sku = 'VA-ARASIDY-PRAZ-SOL-100' and current_units = 6
   ) then
-    raise exception 'Arašídy v pozicich 44/49 neodpovidaji dnesnimu fyzickemu potvrzeni.';
+    raise exception 'Pozice 44/49 neodpovidaji mezistavu po dnesnim mobilnim zapisu.';
   end if;
 
   select coalesce(sum(balance.quantity_on_hand), 0)
