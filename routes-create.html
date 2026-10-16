@@ -2317,6 +2317,7 @@
   <script src="./vendor/leaflet/leaflet.js?v=1.9.4"></script>
   <script type="module">
     import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js'
+    import { groupRouteStopsByLocation, expandGroupedRouteStops } from './route-location-groups.js'
 
     const ROAD_FACTOR = 1.23
     const AVG_SPEED_KMH = 52
@@ -5329,8 +5330,9 @@
 
       const startPoint = determineStartPoint()
       const biasMode = sortBias.value
-      const remaining = [...selectedStops]
-      const orderedStops = []
+      const locationGroups = groupRouteStopsByLocation(selectedStops, { estimateServiceMinutes })
+      const remaining = [...locationGroups]
+      const orderedLocationGroups = []
       let current = { latitude: startPoint.latitude, longitude: startPoint.longitude }
       let totalAirKm = 0
       const planningDate = routeDateInput.value
@@ -5387,7 +5389,7 @@
 
         const [nextStop] = remaining.splice(bestIndex, 1)
         totalAirKm += bestTiming.airKm
-        orderedStops.push({
+        orderedLocationGroups.push({
           ...nextStop,
           distanceFromPreviousKm: bestTiming.roadKm,
           driveMinutesFromPrevious: bestTiming.driveMinutes,
@@ -5403,6 +5405,7 @@
 
       const estimatedDistanceKm = totalAirKm * ROAD_FACTOR
       const estimatedDriveMinutes = Math.round((estimatedDistanceKm / AVG_SPEED_KMH) * 60)
+      const orderedStops = expandGroupedRouteStops(orderedLocationGroups, locationGroups, { estimateServiceMinutes })
       const estimatedServiceMinutes = orderedStops.reduce((sum, stop) => sum + stop.estimatedServiceMinutes, 0)
 
       return assertRouteFeasible({
@@ -5542,11 +5545,16 @@
 
       try {
         const accessToken = await getAccessToken()
+        const locationGroups = groupRouteStopsByLocation(plan.orderedStops, { estimateServiceMinutes })
         const payload = {
           mode: 'ordered',
           origin: plan.startPoint || determineStartPoint(),
-          stops: plan.orderedStops.map((stop) => ({
+          stops: locationGroups.map((stop) => ({
             id: stop.id,
+            key: stop.key,
+            locationId: stop.locationId,
+            machineId: null,
+            optimizationGroupKey: stop.optimizationGroupKey,
             name: stop.name,
             city: stop.city,
             address: stop.address,
@@ -5564,15 +5572,16 @@
         const data = await invokeGoogleRoutePlanner(payload, accessToken)
         if (revision !== state.manualRouteRecalcRevision || !state.currentPlan) return
         const googleTiming = getGoogleDriveTiming(data?.route)
-
-        const exactStops = plan.orderedStops.map((stop, index) => {
-          const googleStop = data?.orderedStops?.[index] || {}
-          return {
-            ...stop,
-            distanceFromPreviousKm: Number(googleStop.googleLegDistanceMeters || 0) / 1000,
-            driveMinutesFromPrevious: Math.round((Number(googleStop.googleLegDurationSeconds || 0) / 60) * googleTiming.legScale),
-          }
+        const exactStops = expandGroupedRouteStops(data?.orderedStops || [], locationGroups, {
+          estimateServiceMinutes,
+          legScale: googleTiming.legScale,
         })
+        const expandedGoogleData = {
+          ...data,
+          orderedStops: exactStops.map((stop, index) => ({ ...stop, originalIndex: index })),
+          optimizedIntermediateWaypointIndex: exactStops.map((_, index) => index),
+          locationGroupsApplied: true,
+        }
         state.currentPlan = {
           ...state.currentPlan,
           orderedStops: exactStops,
@@ -5580,7 +5589,7 @@
           estimatedDriveMinutes: googleTiming.preferredMinutes,
           trafficEstimatedDriveMinutes: googleTiming.trafficMinutes,
           provider: 'google_routes_manual',
-          google: data,
+          google: expandedGoogleData,
           manuallyReordered: true,
         }
         engineBadge.textContent = 'Google · ručně'
@@ -5731,14 +5740,16 @@
 
       const startPoint = determineStartPoint()
       const departureTime = buildGoogleDepartureTime(routeDateInput.value)
+      const locationGroups = groupRouteStopsByLocation(selectedStops, { estimateServiceMinutes })
       const payload = {
         origin: startPoint,
-        stops: selectedStops.map((stop) => ({
+        stops: locationGroups.map((stop) => ({
           key: stop.key,
           id: stop.id,
           locationId: stop.locationId,
-          machineId: stop.machineId,
+          machineId: null,
           stopKind: stop.stopKind,
+          optimizationGroupKey: stop.optimizationGroupKey,
           name: stop.name,
           parentLocationName: stop.parentLocationName,
           city: stop.city,
@@ -5763,19 +5774,16 @@
       }
 
       const googleTiming = getGoogleDriveTiming(data?.route)
-
-      const orderedStops = (data?.orderedStops || []).map((stop, orderedIndex) => {
-        const originalIndex = stop && typeof stop === 'object' && stop.originalIndex != null ? Number(stop.originalIndex) : orderedIndex
-        const fallbackCandidate = selectedStops[Number.isFinite(originalIndex) ? originalIndex : orderedIndex] || selectedStops[orderedIndex] || null
-        const sourceStop = stop && typeof stop === 'object' ? stop : {}
-        const enrichedStop = enrichRouteStop(sourceStop, fallbackCandidate)
-        return {
-          ...enrichedStop,
-          distanceFromPreviousKm: Number(sourceStop.googleLegDistanceMeters || 0) / 1000,
-          driveMinutesFromPrevious: Math.round((Number(sourceStop.googleLegDurationSeconds || 0) / 60) * googleTiming.legScale),
-          estimatedServiceMinutes: estimateServiceMinutes(enrichedStop),
-        }
+      const orderedStops = expandGroupedRouteStops(data?.orderedStops || [], locationGroups, {
+        estimateServiceMinutes,
+        legScale: googleTiming.legScale,
       })
+      const expandedGoogleData = {
+        ...data,
+        orderedStops: orderedStops.map((stop, index) => ({ ...stop, originalIndex: index })),
+        optimizedIntermediateWaypointIndex: orderedStops.map((_, index) => index),
+        locationGroupsApplied: true,
+      }
 
       return {
         orderedStops,
@@ -5787,7 +5795,7 @@
         estimatedServiceMinutes: orderedStops.reduce((sum, stop) => sum + stop.estimatedServiceMinutes, 0),
         provider: 'google_routes',
         createdAt: new Date().toISOString(),
-        google: data,
+        google: expandedGoogleData,
       }
     }
 
@@ -7063,7 +7071,7 @@
         let plan
 
         try {
-          plan = assertRouteFeasible(await optimizeStopsWithGoogle())
+          plan = assertRouteFeasible(await optimizeStopsWithGoogle(), { allowWindowConflicts: true })
           engineBadge.textContent = 'Google'
           engineBadge.className = 'route-badge live'
           const timing = getRouteTiming(plan)
