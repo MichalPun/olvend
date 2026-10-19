@@ -153,6 +153,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "machine-calibration.html": {
+      currentLabel: "Kalibrace automatů",
+      activeKey: "machine-calibration",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "machines.html": {
       currentLabel: "Stroje",
       activeKey: "machines",
@@ -420,6 +427,7 @@
           children: [
             { key: "technical-overview", href: "technical-overview.html", label: "Přehled práce" },
             { key: "technical-jobs", href: "technical-jobs.html", label: "Detailní technické karty" },
+            { key: "machine-calibration", href: "machine-calibration.html", label: "Kalibrace automatů" },
             { key: "qr-labels", href: "machine-qr-print.html", label: "QR štítky" }
           ]
         }
@@ -602,7 +610,7 @@
     shift: 'clock', suppliers: 'contacts', 'machines-management': 'machine', machines: 'machine', telemetry: 'reports',
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
-    'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'qr-labels': 'machine',
+    'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'machine-calibration': 'tools', 'qr-labels': 'machine',
     'finance-management': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', 'meeting-calendar': 'calendar', employees: 'people',

@@ -1,9 +1,11 @@
-const CACHE_NAME = 'olvend-v207-service-report-unblock-r3';
+const CACHE_NAME = 'olvend-v208-technician-calibration';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
   './technician-mobile.html',
+  './machine-calibration.html',
+  './machine-calibration-core.mjs',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
