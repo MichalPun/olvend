@@ -23,6 +23,10 @@ export function timeToDsec(value, unit = 'dsec') {
   return null
 }
 
+export function resolveCalibrationMeasurement(currentMeasurement, latestCompletedMeasurement) {
+  return currentMeasurement || latestCompletedMeasurement || {}
+}
+
 export function roundToStep(value, step = 1) {
   const number = parseLocaleNumber(value)
   const precision = parseLocaleNumber(step)
