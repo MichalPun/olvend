@@ -6,6 +6,7 @@ import {
   calculateDispenseSetting,
   parseLocaleNumber,
   physicalButtonSort,
+  resolveCalibrationMeasurement,
   timeToDsec
 } from '../machine-calibration-core.mjs'
 
@@ -77,4 +78,12 @@ test('výsledky používají vazby přes ID kontejneru, ne názvy surovin', () =
   })
   assert.equal(result[0].ingredients[0].settingDsec, 21)
   assert.equal(result[0].ingredients[0].productId, 100)
+})
+
+test('prázdný nový koncept zobrazí poslední dokončené měření, ale vlastní hodnota má přednost', () => {
+  const latest = { coffee_container_id: 10, calibration_time_dsec: 70, measured_amount_g: 47.62 }
+  const draft = { coffee_container_id: 10, calibration_time_dsec: 70, measured_amount_g: 48.1 }
+  assert.equal(resolveCalibrationMeasurement(null, latest), latest)
+  assert.equal(resolveCalibrationMeasurement(draft, latest), draft)
+  assert.deepEqual(resolveCalibrationMeasurement(null, null), {})
 })
