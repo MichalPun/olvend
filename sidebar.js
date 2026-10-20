@@ -167,6 +167,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "machine-pricing.html": {
+      currentLabel: "Cenotvorba",
+      activeKey: "machine-pricing",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: ""
+    },
     "telemetry.html": {
       currentLabel: "Telemetrie",
       activeKey: "telemetry",
@@ -394,6 +401,7 @@
           label: "Stroje",
           children: [
             { key: "machines", href: "machines.html", label: "Přehled strojů" },
+            { key: "machine-pricing", href: "machine-pricing.html", label: "Cenotvorba" },
             { key: "telemetry", href: "telemetry.html", label: "Telemetrie" }
           ]
         },
@@ -607,7 +615,7 @@
   };
 
   const NAV_ICON_ALIASES = {
-    shift: 'clock', suppliers: 'contacts', 'machines-management': 'machine', machines: 'machine', telemetry: 'reports',
+    shift: 'clock', suppliers: 'contacts', 'machines-management': 'machine', machines: 'machine', 'machine-pricing': 'finance', telemetry: 'reports',
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'machine-calibration': 'tools', 'qr-labels': 'machine',
