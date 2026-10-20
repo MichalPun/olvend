@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v212-control-economics';
+const CACHE_NAME = 'olvend-v213-control-economics-machine-pricing';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const APP_SHELL = [
   './technician-mobile.html',
   './machine-calibration.html',
   './machine-calibration-core.mjs',
+  './machine-pricing.html',
+  './machine-pricing.js',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',

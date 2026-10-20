@@ -185,6 +185,10 @@
     .machine-overview-title h4 { margin:0; font-size:24px; color:#111827; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .machine-overview-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; color:#4b5563; font-size:12px; font-weight:800; }
     .machine-overview-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+    .pending-price-banner { margin-top:12px; padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid #efcf9d; border-radius:10px; color:#7b4b09; background:#fff7e9; }
+    .pending-price-banner strong,.pending-price-banner small { display:block; }
+    .pending-price-banner small { margin-top:3px; color:#8c6838; font-size:11px; }
+    .pending-price-chip { display:inline-flex; align-items:center; min-height:23px; padding:3px 7px; border-radius:999px; color:#8a4d06; background:#fff0d5; font-size:10px; font-weight:900; white-space:nowrap; }
     .machine-telemetry {
       display:grid;
       grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1fr) auto auto;
@@ -1776,7 +1780,7 @@
                     <button class="cabinet-slot ${escapeHtml(status.cls)}" type="button" data-planogram-action="edit" data-slot-id="${slot.id}" data-machine-id="${machine.id}">
                       <span class="cabinet-slot-head">
                         <span class="cabinet-slot-code">${escapeHtml(code)}</span>
-                        <span class="cabinet-slot-price">${customerPrice != null ? `${Number(customerPrice).toLocaleString('cs-CZ')} Kč` : '-'}</span>
+                        <span class="cabinet-slot-price">${customerPrice != null ? `${Number(customerPrice).toLocaleString('cs-CZ')} Kč` : '-'}${slot._pendingPrice ? ` → ${Number(slot._pendingPrice.new_price_czk).toLocaleString('cs-CZ')} Kč` : ''}</span>
                       </span>
                       <span class="cabinet-product">
                         ${escapeHtml(slot.product_name || 'Bez produktu')}${hasCurrentMix ? ` · ${escapeHtml(changeoverOldUnits)} ks` : ''}
@@ -1790,6 +1794,7 @@
                           <span>${escapeHtml(status.label)}</span>
                         </span>
                         ${settlementAmount > 0 && settlementLabel ? `<span class="cabinet-money-note">${escapeHtml(settlementLabel)}</span>` : ''}
+                        ${slot._pendingPrice ? '<span class="pending-price-chip">Schváleno · čeká na změnu</span>' : ''}
                         <span class="cabinet-expiry-note ${escapeHtml(expiryStatus.cls)}">${escapeHtml(expiryStatus.label)}</span>
                         <span class="cabinet-bar"><span style="width:${percent}%"></span></span>
                         <span class="cabinet-replacements">${escapeHtml(planogramReplacementLabel(slot))}</span>
@@ -1909,12 +1914,13 @@
                   <div class="coffee-choice" style="grid-column:${col}; grid-row:${visualRow};">
                   <label class="coffee-select"><input type="checkbox" data-coffee-select="${escapeHtml(button?.selection_code || '')}" ${button ? '' : 'disabled'} aria-label="Označit volbu ${escapeHtml(selection)}"> Označit</label>
                   <button class="coffee-button" type="button" data-planogram-action="edit-coffee-button" data-coffee-button-id="${escapeHtml(button?.id || '')}" data-machine-id="${escapeHtml(button?.machine_id || '')}" title="${escapeHtml(button?.product_name || 'Bez nápoje')}">
-                    <div class="coffee-button-code"><span>Volba ${escapeHtml(selection)}</span><span>${customerPrice != null ? `${Number(customerPrice).toLocaleString('cs-CZ')} Kč` : '-'}</span></div>
+                    <div class="coffee-button-code"><span>Volba ${escapeHtml(selection)}</span><span>${customerPrice != null ? `${Number(customerPrice).toLocaleString('cs-CZ')} Kč` : '-'}${button?._pendingPrice ? ` → ${Number(button._pendingPrice.new_price_czk).toLocaleString('cs-CZ')} Kč` : ''}</span></div>
                     <div class="coffee-button-name">${escapeHtml(button?.product_name || 'Bez nápoje')}</div>
                     <small>${button?.subsidy_mode === 'inherit' ? 'Dotace podle automatu' : button?.subsidy_mode === 'none' ? 'Bez dotace' : 'Vlastní finanční pravidlo'}</small>
                     ${plannedProduct ? `<div class="coffee-money-note">Po doprodání: ${escapeHtml(plannedProduct)}</div>` : ''}
                     ${button?.sale_price_czk != null && Number(button.sale_price_czk) !== Number(customerPrice) ? `<small>Cena nápoje ${Number(button.sale_price_czk).toLocaleString('cs-CZ')} Kč · zákazník ${Number(customerPrice).toLocaleString('cs-CZ')} Kč</small>` : ''}
                     ${button?.subsidy_mode !== 'none' && settlementAmount > 0 && settlementLabel ? `<div class="coffee-money-note">${escapeHtml(settlementLabel)}${button?.settlement_billing_enabled ? '' : ' · fakturace vypnutá'}</div>` : ''}
+                    ${button?._pendingPrice ? '<div class="pending-price-chip">Schváleno · čeká na změnu</div>' : ''}
                     <div class="coffee-button-meta"><span>${escapeHtml(button?.product_sku ? `SKU ${button.product_sku}` : '')}</span><span>${button?.last_counter != null ? `Prodeje ${button.last_counter}` : ''}</span></div>
                   </button>
                   </div>
@@ -2396,6 +2402,14 @@
       detail.priceObservations = priceResult.data || []
       detail.priceCheckUnavailable = Boolean(priceResult.error)
 
+      const pendingPricesResult = await supabase.from('machine_price_change_items')
+        .select('id,batch_id,target_type,planogram_slot_id,coffee_button_id,slot_code,product_name,old_price_czk,new_price_czk,status,machine_price_change_batches(batch_code,approved_at)')
+        .eq('machine_id', machineId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+      if (pendingPricesResult.error) throw pendingPricesResult.error
+      detail.pendingPriceChanges = pendingPricesResult.data || []
+
       const telemetryError = telemetryLinksError || telemetryStateError
       if (telemetryError) {
         const message = String(telemetryError.message || '').toLowerCase()
@@ -2483,6 +2497,11 @@
       const planogram = detailData.planogram || []
       const coffeeContainers = detailData.coffeeContainers || []
       const coffeeButtons = detailData.coffeeButtons || []
+      const pendingPriceChanges = detailData.pendingPriceChanges || []
+      const pendingSlotPrices = new Map(pendingPriceChanges.filter((item) => item.planogram_slot_id).map((item) => [String(item.planogram_slot_id), item]))
+      const pendingButtonPrices = new Map(pendingPriceChanges.filter((item) => item.coffee_button_id).map((item) => [String(item.coffee_button_id), item]))
+      planogram.forEach((slot) => { slot._pendingPrice = pendingSlotPrices.get(String(slot.id)) || null })
+      coffeeButtons.forEach((button) => { button._pendingPrice = pendingButtonPrices.get(String(button.id)) || null })
       const isCoffeeMachine = normalizeText(machine.machine_type).includes('coffee') || coffeeContainers.length || coffeeButtons.length
       const evidenceNumber = Number(getEvidenceNumber(machine))
       const isManualCounterMachine = machine.sales_tracking_mode === 'manual_counters'
@@ -2536,6 +2555,7 @@
               </div>
               <div class="machine-overview-actions">
                 <a class="btn secondary" href="inventory.html?machine=${encodeURIComponent(String(machine.id))}">Zásoby</a>
+                <a class="btn secondary" href="machine-pricing.html?machine=${encodeURIComponent(String(machine.id))}">Cenotvorba</a>
                 <button class="btn secondary" type="button" data-planogram-action="add" data-machine-id="${machine.id}">Přidat slot</button>
                 <button class="btn secondary" type="button" data-planogram-action="copy" data-machine-id="${machine.id}">Kopírovat</button>
                 <button class="btn secondary" type="button" data-machine-action="transfer" data-machine-id="${machine.id}">Přesunout</button>
@@ -2620,6 +2640,7 @@
               <div class="detail-metric"><div class="detail-metric-label">${isCoffeeMachine ? 'Suroviny' : 'Kusy'}</div><div class="detail-metric-value">${escapeHtml(isCoffeeMachine ? `${coffeeCurrentTotal.toFixed(0)} / ${coffeeCapacityTotal ? coffeeCapacityTotal.toFixed(0) : '-'}` : `${currentTotal} / ${capacityTotal || '-'}`)}</div></div>
               <div class="detail-metric"><div class="detail-metric-label">Naplnění</div><div class="detail-metric-value">${isCoffeeMachine ? (coffeeFillRate == null ? '-' : `${coffeeFillRate}%`) : (fillRate == null ? '-' : `${fillRate}%`)}</div></div>
             </div>
+            ${pendingPriceChanges.length ? `<div class="pending-price-banner"><div><strong>Čekající schválená sada cen</strong><small>${escapeHtml(pendingPriceChanges.map((item) => `${item.slot_code}: ${Number(item.old_price_czk).toLocaleString('cs-CZ')} → ${Number(item.new_price_czk).toLocaleString('cs-CZ')} Kč`).join(' · '))}</small></div><a class="btn secondary" href="machine-pricing.html?machine=${encodeURIComponent(String(machine.id))}">Otevřít cenotvorbu</a></div>` : ''}
             ${renderTerminalPriceChecks(planogram, detailData.priceObservations, detailData.priceCheckUnavailable)}
           </section>
 
