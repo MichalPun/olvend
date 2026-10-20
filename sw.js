@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v217-coffee-telemetry';
+const CACHE_NAME = 'olvend-v218-control-price-sync';
 const APP_SHELL = [
   './',
   './index.html',
