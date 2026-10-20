@@ -5418,7 +5418,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261020-coffee-correction-v60" defer></script>
+  <script src="./pwa.js?v=20261020-coffee-telemetry-v61" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 
@@ -17859,14 +17859,19 @@
         if (!buttonId || !count) throw new Error('Vyber konkrétní kávu zdarma a počet.')
         const button = detail.buttons.find((item) => String(item.id) === String(buttonId))
         const recipeItems = (detail.recipeItems || []).filter((item) => String(item.coffee_button_id || '') === String(buttonId))
-        for (const recipeItem of recipeItems) {
-          const container = detail.containers.find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
-          if (!container) continue
-          const used = convertRecipeQuantity(recipeItem.quantity_per_vend * count, recipeItem.unit, container.unit)
-          const next = Math.max(0, Number(container.current_quantity || 0) - used)
-          const { error } = await supabase.from('machine_coffee_containers').update({ current_quantity: next }).eq('id', container.id)
-          if (error) throw error
-          container.current_quantity = next
+        // A telemetrický automat zapíše skutečný výdej sám. Ruční odečet by
+        // stejný nápoj odečetl podruhé a absolutní update by navíc mohl přepsat
+        // prodeje, které dorazily mezi načtením stránky a tímto potvrzením.
+        if (detail.hasTelemetry === false) {
+          for (const recipeItem of recipeItems) {
+            const container = detail.containers.find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
+            if (!container) continue
+            const used = convertRecipeQuantity(recipeItem.quantity_per_vend * count, recipeItem.unit, container.unit)
+            const next = Math.max(0, Number(container.current_quantity || 0) - used)
+            const { error } = await supabase.from('machine_coffee_containers').update({ current_quantity: next }).eq('id', container.id)
+            if (error) throw error
+            container.current_quantity = next
+          }
         }
         const freeCoffeeRow = {
           visit_id: detail.visitId,
@@ -17893,7 +17898,9 @@
         showMessage(
           requestQueued
             ? 'Káva zdarma je uložená v telefonu a čeká na synchronizaci se serverem.'
-            : 'Káva zdarma je zapsaná a suroviny se odečetly podle receptury.',
+            : detail.hasTelemetry === false
+            ? 'Káva zdarma je zapsaná a suroviny se odečetly podle receptury.'
+            : 'Káva zdarma je zapsaná. Suroviny odečte skutečný výdej z telemetrie, takže se neodečtou dvakrát.',
           requestQueued ? 'info' : 'success',
           { scroll: false }
         )
@@ -18024,14 +18031,19 @@
       if (!button) throw new Error('Náhodný zkušební nápoj už není v aktivní nabídce. Obnov data nebo nahlas problém.')
       const machine = getRouteStopMachine(findRouteStop(stopId).stop)
       const recipeItems = (detail.recipeItems || []).filter((item) => String(item.coffee_button_id || '') === String(buttonId))
-      for (const recipeItem of recipeItems) {
-        const container = (detail.containers || []).find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
-        if (!container) continue
-        const used = convertRecipeQuantity(Number(recipeItem.quantity_per_vend || 0), recipeItem.unit, container.unit)
-        const next = Math.max(0, Number(container.current_quantity || 0) - used)
-        const { error } = await supabase.from('machine_coffee_containers').update({ current_quantity: next }).eq('id', container.id)
-        if (error) throw error
-        container.current_quantity = next
+      // U automatu s telemetrií je zkušební nápoj fyzický výdej stejně jako
+      // prodej. Odečte jej proto PA2/telemetrie. Druhý ruční odečet zde dříve
+      // vytvářel falešné nedostatky a absolutním stavem přepisoval nové prodeje.
+      if (detail.hasTelemetry === false) {
+        for (const recipeItem of recipeItems) {
+          const container = (detail.containers || []).find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
+          if (!container) continue
+          const used = convertRecipeQuantity(Number(recipeItem.quantity_per_vend || 0), recipeItem.unit, container.unit)
+          const next = Math.max(0, Number(container.current_quantity || 0) - used)
+          const { error } = await supabase.from('machine_coffee_containers').update({ current_quantity: next }).eq('id', container.id)
+          if (error) throw error
+          container.current_quantity = next
+        }
       }
       const row = {
         visit_id: detail.visitId,
@@ -18051,7 +18063,13 @@
       const { error } = await supabase.from('route_machine_visit_items').insert([row])
       if (error) throw error
       await saveCoffeeCheck(stopId, checkKey, true)
-      showMessage('Zkušební nápoj je uložený bez tržby a receptura byla odečtená.', 'success', { scroll: false })
+      showMessage(
+        detail.hasTelemetry === false
+          ? 'Zkušební nápoj je uložený bez tržby a receptura byla odečtená.'
+          : 'Zkušební nápoj je uložený bez tržby. Suroviny odečte skutečný výdej z telemetrie, takže se neodečtou dvakrát.',
+        'success',
+        { scroll: false }
+      )
     }
 
     async function compressCoffeeEvidenceImage(file) {
