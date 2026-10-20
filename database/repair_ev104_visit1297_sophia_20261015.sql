@@ -12,6 +12,11 @@ create table if not exists public.repair_ev104_visit1297_audit_20261015 (
   repaired_at timestamptz not null default now()
 );
 
+-- Internal rollback evidence only. It must never be reachable from a client
+-- session, even by an authenticated employee account.
+alter table public.repair_ev104_visit1297_audit_20261015 enable row level security;
+revoke all on table public.repair_ev104_visit1297_audit_20261015 from public, anon, authenticated;
+
 do $$
 declare
   v_visit public.route_machine_visits%rowtype;
