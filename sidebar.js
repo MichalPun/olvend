@@ -425,7 +425,7 @@
           children: [
             { key: "inventory", href: "inventory.html", label: "Zásoby" },
             { key: "purchases-recurring", href: "purchases.html?view=recurring", label: "Stálé objednávky" },
-            { key: "price-labels", href: "price-label-print.html?v=20261006-connected-v7", label: "Tisk cenovek" }
+            { key: "price-labels", href: "price-label-print.html?v=20261020-current-v8", label: "Tisk cenovek" }
           ]
         },
         {
