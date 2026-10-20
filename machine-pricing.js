@@ -35,9 +35,9 @@ function marginAt(product, grossPrice) {
   const price = Number(grossPrice || 0)
   const cost = Number(product.purchase_price_czk)
   const vat = Number(product.vat_rate || 0)
-  if (!price || !Number.isFinite(cost)) return null
+  if (!price || !Number.isFinite(cost) || cost <= 0) return null
   const net = price / (1 + vat / 100)
-  return net > 0 ? ((net - cost) / net) * 100 : null
+  return net > 0 ? ((net - cost) / cost) * 100 : null
 }
 
 function marketValues(product) {
@@ -55,15 +55,13 @@ function minimumPrice(product) {
   const cost = Number(product.purchase_price_czk)
   const vat = Number(product.vat_rate || 0)
   const limit = Number(categoryFor(product).margin || 0)
-  if (!Number.isFinite(cost) || limit >= 100) return Number(product.current_price_czk || 0)
-  return cost / (1 - limit / 100) * (1 + vat / 100)
+  if (!Number.isFinite(cost)) return Number(product.current_price_czk || 0)
+  return cost * (1 + limit / 100) * (1 + vat / 100)
 }
 
 function recommendedPrice(product) {
   const step = Number($('#rounding')?.value || 1)
-  const market = marketMedian(product)
-  const raw = Math.max(minimumPrice(product), market || 0)
-  return Math.ceil(raw / step) * step
+  return Math.ceil(minimumPrice(product) / step) * step
 }
 
 function proposedPrice(product) {
@@ -84,7 +82,7 @@ function statusFor(product) {
   const margin = marginAt(product, proposedPrice(product))
   const limit = Number(categoryFor(product).margin)
   if (margin === null || margin + 0.01 < limit) return { label: `Pod limitem · ${percent(margin)}`, cls: 'red' }
-  return isChange(product) ? { label: `Nová marže ${percent(margin)}`, cls: 'green' } : { label: 'Beze změny', cls: '' }
+  return isChange(product) ? { label: `Nová přirážka ${percent(margin)}`, cls: 'green' } : { label: 'Beze změny', cls: '' }
 }
 
 function showToast(message, error = false) {
@@ -183,7 +181,7 @@ function renderMachine(nextVisitDate) {
 }
 
 function renderCategories() {
-  $('#categoryGrid').innerHTML = state.categories.map((item) => `<article class="category-card" style="--category:${item.color}" data-category-card="${item.id}"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.note)}</small><div class="margin-control"><input class="margin-input" data-margin="${item.id}" type="number" min="0" max="95" step="0.5" value="${item.margin}" aria-label="Minimální marže ${escapeHtml(item.name)}"><span class="suffix">% marže</span></div></article>`).join('')
+  $('#categoryGrid').innerHTML = state.categories.map((item) => `<article class="category-card" style="--category:${item.color}" data-category-card="${item.id}"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.note)}</small><div class="margin-control"><input class="margin-input" data-margin="${item.id}" type="number" min="0" max="95" step="0.5" value="${item.margin}" aria-label="Minimální přirážka ${escapeHtml(item.name)}"><span class="suffix">% přirážka</span></div></article>`).join('')
   $('#categoryFilter').innerHTML = '<option value="">Všechny kategorie</option>' + state.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('')
 }
 
@@ -208,7 +206,7 @@ function renderRows() {
     const categoryItem = categoryFor(product)
     const marketLabel = values.length ? `${money(values[0])}–${money(values.at(-1))}` : 'Bez srovnání'
     const marketSub = values.length ? `medián ${money(marketMedian(product))} · ${values.length} zdrojů` : 'jiný automat se stejným SKU nenalezen'
-    return `<tr data-product="${escapeHtml(key)}" class="${selected ? 'selected' : ''}"><td><input class="row-check product-check" type="checkbox" data-key="${escapeHtml(key)}" ${selected ? 'checked' : ''} ${product.pending_item ? 'disabled' : ''}></td><td><div class="product"><strong>${escapeHtml(product.product_name)}</strong><small>Pozice ${escapeHtml(product.slot_code)} · ${escapeHtml(product.product_sku || 'bez SKU')}</small></div></td><td><span class="pill" style="border-color:${categoryItem.color}44;color:${categoryItem.color};background:${categoryItem.color}0d">${escapeHtml(categoryItem.name)}</span></td><td><span class="money"><strong>${Number.isFinite(Number(product.purchase_price_czk)) ? Number(product.purchase_price_czk).toFixed(2).replace('.', ',') + ' Kč' : '—'}</strong><small>DPH ${Number(product.vat_rate || 0)} %</small></span></td><td><span class="money"><strong>${money(product.current_price_czk)}</strong><small>${percent(currentMargin)} marže</small></span></td><td><button class="market-button ${state.activeProductId === key ? 'active' : ''}" data-market="${escapeHtml(key)}" type="button"><strong>${marketLabel}</strong><small>${marketSub}</small></button></td><td><b>${categoryItem.margin} %</b><div class="product"><small>min. ${money(minimumPrice(product))}</small></div></td><td><span class="money"><strong>${money(recommendedPrice(product))}</strong><small>splní limit</small></span></td><td><div class="proposal"><input class="price-input ${result.cls === 'red' ? 'invalid' : ''}" data-price="${escapeHtml(key)}" type="number" min="1" step="1" value="${proposedPrice(product)}" ${product.pending_item ? 'disabled' : ''}><span>Kč</span></div></td><td><span class="pill ${result.cls}">${escapeHtml(result.label)}</span></td></tr>`
+    return `<tr data-product="${escapeHtml(key)}" class="${selected ? 'selected' : ''}"><td><input class="row-check product-check" type="checkbox" data-key="${escapeHtml(key)}" ${selected ? 'checked' : ''} ${product.pending_item ? 'disabled' : ''}></td><td><div class="product"><strong>${escapeHtml(product.product_name)}</strong><small>Pozice ${escapeHtml(product.slot_code)} · ${escapeHtml(product.product_sku || 'bez SKU')}</small></div></td><td><span class="pill" style="border-color:${categoryItem.color}44;color:${categoryItem.color};background:${categoryItem.color}0d">${escapeHtml(categoryItem.name)}</span></td><td><span class="money"><strong>${Number.isFinite(Number(product.purchase_price_czk)) ? Number(product.purchase_price_czk).toFixed(2).replace('.', ',') + ' Kč' : '—'}</strong><small>DPH ${Number(product.vat_rate || 0)} %</small></span></td><td><span class="money"><strong>${money(product.current_price_czk)}</strong><small>${percent(currentMargin)} přirážka</small></span></td><td><button class="market-button ${state.activeProductId === key ? 'active' : ''}" data-market="${escapeHtml(key)}" type="button"><strong>${marketLabel}</strong><small>${marketSub}</small></button></td><td><b>${categoryItem.margin} %</b><div class="product"><small>min. ${money(minimumPrice(product))}</small></div></td><td><span class="money"><strong>${money(recommendedPrice(product))}</strong><small>splní limit</small></span></td><td><div class="proposal"><input class="price-input ${result.cls === 'red' ? 'invalid' : ''}" data-price="${escapeHtml(key)}" type="number" min="1" step="1" value="${proposedPrice(product)}" ${product.pending_item ? 'disabled' : ''}><span>Kč</span></div></td><td><span class="pill ${result.cls}">${escapeHtml(result.label)}</span></td></tr>`
   }).join('') || '<tr><td colspan="10" style="padding:28px;text-align:center;color:var(--muted)">Žádná položka neodpovídá filtru.</td></tr>'
   $('#visibleRows').textContent = `${visible.length} ${visible.length === 1 ? 'položka' : visible.length > 1 && visible.length < 5 ? 'položky' : 'položek'}`
   $('#selectAll').checked = state.products.filter((item) => !item.pending_item).every((item) => state.selected.has(productKey(item)))
@@ -259,7 +257,7 @@ async function saveRules(showConfirmation = true) {
   const { error } = await supabase.rpc('save_machine_pricing_rules_v55', { p_machine_id: state.machineId, p_rules: rulesPayload() })
   if (error) throw error
   document.querySelectorAll('.category-card.changed').forEach((card) => card.classList.remove('changed'))
-  if (showConfirmation) showToast('Pravidla marží pro automat byla uložena.')
+  if (showConfirmation) showToast('Pravidla přirážek pro automat byla uložena.')
 }
 
 function changedProducts() {
@@ -269,7 +267,7 @@ function changedProducts() {
 function openApproval() {
   const changed = changedProducts()
   if (!changed.length) return showToast('Není vybraná žádná změna ceny.', true)
-  if (changed.some((product) => statusFor(product).cls === 'red')) return showToast('Některá vybraná cena nesplňuje minimální marži nebo nemá nákupní cenu.', true)
+  if (changed.some((product) => statusFor(product).cls === 'red')) return showToast('Některá vybraná cena nesplňuje minimální přirážku nebo nemá nákupní cenu.', true)
   $('#approveDialog').showModal()
 }
 
