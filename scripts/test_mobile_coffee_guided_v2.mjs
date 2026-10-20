@@ -39,6 +39,8 @@ assert.match(html, /status:'done',[\s\S]*?task_unresolved:outcome === 'problem'/
 assert.doesNotMatch(html, /if \(outcome === 'problem'\) openServiceReportForStop/, 'Nahlášení problému nesmí vyhodit obsluhu z návštěvy do servisu')
 assert.match(html, /syncCoffeeOfflineServiceQueue/, 'Závada musí jít bezpečně odeslat i po návratu připojení')
 assert.match(html, /if \(correctionOnly\) \{[\s\S]*?await saveCoffeeContainerVisitItem[\s\S]*?final_quantity: actualBefore[\s\S]*?physicalChecked: true[\s\S]*?skutečný stav je uložený v evidenci/, 'Samostatná korekce zásobníku se musí uložit jedním potvrzením, ne jen připravit do dalšího kroku')
+assert.match(html, /if \(action === 'save-free-coffee'\)[\s\S]*?if \(detail\.hasTelemetry === false\) \{[\s\S]*?machine_coffee_containers[\s\S]*?Suroviny odečte skutečný výdej z telemetrie/, 'Káva zdarma se na telemetrickém automatu nesmí odečíst ručně podruhé')
+assert.match(html, /async function saveGuidedCoffeeTestDrink[\s\S]*?if \(detail\.hasTelemetry === false\) \{[\s\S]*?machine_coffee_containers[\s\S]*?Suroviny odečte skutečný výdej z telemetrie/, 'Povinný test se na telemetrickém automatu nesmí odečíst ručně podruhé')
 assert.match(html, /coffee-visit-detail coffee-guided coffee-only-flow/, 'Nový vzhled musí být omezený jen na kávový tok')
 assert.doesNotMatch(html, /coffee-visit-detail coffee-guided coffee-only-flow[^\n]*data-food-action/, 'Potravinový tok nesmí dostat coffee-only vzhled')
 
