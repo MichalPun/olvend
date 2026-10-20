@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v214-control-operations';
+const CACHE_NAME = 'olvend-v215-control-stop-postpone';
 const APP_SHELL = [
   './',
   './index.html',

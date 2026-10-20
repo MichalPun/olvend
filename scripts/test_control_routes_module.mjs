@@ -16,6 +16,7 @@ const sqlSource = fs.readFileSync(new URL('../database/control_routes_v55.sql', 
 const adjustmentSqlSource = fs.readFileSync(new URL('../database/control_adjustments_v56.sql', import.meta.url), 'utf8')
 const economicsSqlSource = fs.readFileSync(new URL('../database/control_economics_v57.sql', import.meta.url), 'utf8')
 const operationsSqlSource = fs.readFileSync(new URL('../database/control_operations_v58.sql', import.meta.url), 'utf8')
+const postponeSqlSource = fs.readFileSync(new URL('../database/control_stop_postpone_v59.sql', import.meta.url), 'utf8')
 const protocolSource = fs.readFileSync(new URL('../control-route-protocol.html', import.meta.url), 'utf8')
 
 assert.doesNotMatch(desktopSource, /\.from\(['"]route_plans['"]\)/)
@@ -36,6 +37,12 @@ assert.match(operationsSqlSource, /save_control_price_label_request_v58/i)
 assert.match(operationsSqlSource, /get_control_route_protocol_v58/i)
 assert.match(operationsSqlSource, /swap_control_planogram_slots_v58/i)
 assert.match(operationsSqlSource, /save_control_finding_v58/i)
+assert.match(postponeSqlSource, /postpone_control_stop_v59/i)
+assert.match(postponeSqlSource, /save_control_visit_handoff_v59/i)
+assert.doesNotMatch(postponeSqlSource, /(?:update|insert\s+into|delete\s+from)\s+public\.route_plans/i)
+assert.doesNotMatch(postponeSqlSource, /(?:update|insert\s+into|delete\s+from)\s+public\.route_plan_stops/i)
+assert.match(mobileSource, /Odložit návštěvu/)
+assert.match(mobileSource, /Pokyn pro příští návštěvu/)
 assert.match(mobileSource, /Stav při odjezdu/)
 assert.match(mobileSource, /Cenovky a lišty/)
 assert.match(mobileSource, /Rentabilní od/)
@@ -86,7 +93,7 @@ export function getOfflineRequestCount(){return 0}
 
 const protocolMockModule = `
 export const supabase = {
-  rpc: async () => ({data:{route:{id:101,name:'Kontrolní trasa Ostrava',planned_date:'2026-10-20',status:'completed',employee:'Michal Punčochář',completed_at:'2026-10-20T14:00:00+02:00'},stops:[{id:501,stop_order:1,status:'completed',location_name:'ViaPharma Ostrava',address:'Roháčova 89',city:'Ostrava',completed_at:'2026-10-20T13:50:00+02:00'}],machines:[{id:602,stop_id:501,machine_kind:'food',status:'completed',evidence_number:28,machine_name:'Snack'}],checks:[{stop_id:501,machine_id:602,item_label:'Kontrola cen na automatu',status:'ok',note:'Ceny fyzicky ověřeny'}],findings:[],adjustments:[],label_requests:[{stop_id:501,machine_id:602,request_code:'CEN-TEST',status:'requested',issue_types:['Chybí lišta'],assigned_employee:'Lukáš Urbánek',technical_job_id:77}],photos:[{stop_id:501,machine_id:602,photo_type:'departure',storage_path:'101/501/photo.jpg',created_at:'2026-10-20T13:45:00+02:00'}]},error:null}),
+  rpc: async () => ({data:{route:{id:101,name:'Kontrolní trasa Ostrava',planned_date:'2026-10-20',status:'completed',employee:'Michal Punčochář',completed_at:'2026-10-20T14:00:00+02:00'},stops:[{id:501,stop_order:1,status:'completed',location_name:'ViaPharma Ostrava',address:'Roháčova 89',city:'Ostrava',completed_at:'2026-10-20T13:50:00+02:00'}],machines:[{id:602,stop_id:501,machine_kind:'food',status:'completed',evidence_number:28,machine_name:'Snack'}],checks:[{stop_id:501,machine_id:602,item_label:'Kontrola cen na automatu',status:'ok',note:'Ceny fyzicky ověřeny'}],findings:[],adjustments:[],label_requests:[{stop_id:501,machine_id:602,request_code:'CEN-TEST',status:'requested',issue_types:['Chybí lišta'],assigned_employee:'Lukáš Urbánek',technical_job_id:77}],photos:[{stop_id:501,machine_id:602,photo_type:'departure',storage_path:'101/501/photo.jpg',created_at:'2026-10-20T13:45:00+02:00'}],handoffs:[{stop_id:501,machine_id:null,title:'Pozor na klíček',message:'Po odjezdu zkontrolovat zámek.',operator_message_id:88,created_by:'Michal Punčochář'}]},error:null}),
   storage:{from(){return {createSignedUrl:async()=>({data:{signedUrl:'https://example.test/photo.jpg'},error:null})}}}
 };
 `
@@ -125,16 +132,26 @@ try {
   await mobile.getByText('Kontrolní trasa Ostrava').waitFor()
   assert.equal(await mobile.locator('.app').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(247, 249, 252)')
   await mobile.locator('[data-open-route="101"]').click()
+  assert.equal(await mobile.locator('.stop-card').count(), 1)
+  assert.match(await mobile.locator('.route-overview').innerText(), /zbývá/)
   await mobile.locator('[data-open-stop="501"]').click()
   assert.equal(await mobile.locator('[data-complete-stop]').count(), 0)
   assert.equal(await mobile.locator('[data-check]').first().isEnabled(), false)
   await mobile.locator('#backBtn').click()
   await mobile.locator('[data-start-route]').click()
+  await mobile.locator('[data-postpone-stop="501"]').click()
+  assert.match(await mobile.locator('#postponeModal').innerText(), /nedokončené automaty/)
+  assert.equal(await mobile.locator('#postponeDate').inputValue(), '2026-10-21')
+  await mobile.locator('#cancelPostpone').click()
   await mobile.locator('[data-open-stop="501"]').click()
   assert.match(await mobile.locator('#stopContent').innerText(), /Ekonomika lokality/)
   assert.match(await mobile.locator('#stopContent').innerText(), /Odhad měsíce/)
   assert.match(await mobile.locator('#stopContent').innerText(), /Poslední skutečně dokončená obsluha/)
   assert.match(await mobile.locator('#stopContent').innerText(), /David Boudný/)
+  assert.match(await mobile.locator('#stopContent').innerText(), /Výsledek pro příští obsluhu/)
+  await mobile.locator('[data-open-handoff]').click()
+  assert.match(await mobile.locator('#handoffModal').innerText(), /nejbližší běžné doplňovací návštěvě/)
+  await mobile.locator('#cancelHandoff').click()
   assert.equal(await mobile.locator('[data-check-card="place_cleanliness"] [data-check="ok"]').getAttribute('class'), 'ok selected')
   await mobile.locator('[data-open-machine="602"]').click()
   assert.match(await mobile.locator('#machineContent').innerText(), /Výkon automatu/)
@@ -180,6 +197,7 @@ try {
   assert.match(await protocol.locator('#content').innerText(), /NÁVŠTĚVNÍ PROTOKOL/)
   assert.match(await protocol.locator('#content').innerText(), /Lukáš Urbánek/)
   assert.match(await protocol.locator('#content').innerText(), /Kontrola cen na automatu/)
+  assert.match(await protocol.locator('#content').innerText(), /Pozor na klíček/)
   console.log('Control routes module: UI and separation checks OK')
 } finally {
   await browser.close()
