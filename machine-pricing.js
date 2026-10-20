@@ -5,6 +5,8 @@ const money = (value) => `${Number(value || 0).toLocaleString('cs-CZ', { maximum
 const percent = (value) => Number.isFinite(Number(value)) ? `${Number(value).toFixed(1).replace('.', ',')} %` : '—'
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]))
 const dateLabel = (value) => value ? new Intl.DateTimeFormat('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric' }).format(new Date(`${value}T12:00:00`)) : 'nenaplánována'
+const monthLabel = (value) => value ? new Intl.DateTimeFormat('cs-CZ', { month: 'long', year: 'numeric' }).format(new Date(`${value}T12:00:00`)) : 'poslední uzavřený měsíc'
+const quantityLabel = (value) => Number(value || 0).toLocaleString('cs-CZ', { maximumFractionDigits: 1 })
 
 const categoryDefaults = [
   { id: 'beverage_ready', name: 'Studené nápoje', note: 'PET, plech, voda', margin: 34, color: '#2572d4' },
@@ -24,6 +26,7 @@ const state = {
   activeProductId: null,
   pendingBatches: [],
   approvedBatch: null,
+  salesPeriod: null,
   loading: false
 }
 
@@ -124,6 +127,7 @@ async function loadMachine(machineId) {
     if (error) throw error
     state.machineId = Number(machineId)
     state.machine = data.machine
+    state.salesPeriod = data.sales_period || null
     state.products = (data.products || []).map((item) => ({ ...item, category_key: categoryDefaults.some((cat) => cat.id === item.category_key) ? item.category_key : 'other' }))
     state.pendingBatches = data.pending_batches || []
     state.categories = categoryDefaults.map((base) => {
@@ -226,7 +230,9 @@ function renderInspector() {
   }
   const values = marketValues(product)
   const sources = product.benchmark?.sources || []
-  $('#marketInspector').innerHTML = `<div class="inspector-kicker">Interní cenový benchmark</div><h3>${escapeHtml(product.product_name)}</h3><p>Srovnání stejného SKU na ostatních aktivních automatech. Slouží jako informace, cenu samo nepřepisuje.</p><div class="market-summary"><div class="market-metric"><span>Minimum</span><strong>${values.length ? money(values[0]) : '—'}</strong></div><div class="market-metric"><span>Medián</span><strong>${values.length ? money(marketMedian(product)) : '—'}</strong></div><div class="market-metric"><span>Maximum</span><strong>${values.length ? money(values.at(-1)) : '—'}</strong></div><div class="market-metric"><span>Náš návrh</span><strong>${money(proposedPrice(product))}</strong></div></div><div class="source-list">${sources.slice(0, 8).map((source) => `<div class="source"><div><strong>EV ${escapeHtml(source.evidence_number || source.machine_id)} · ${escapeHtml(source.location_name || source.machine_name || 'Automat')}</strong><small>${escapeHtml(source.machine_name || '')}</small></div><span class="source-price">${money(source.price_czk)}</span></div>`).join('') || '<div class="inspector-note">Pro toto SKU zatím není cena na jiném automatu.</div>'}</div><div class="inspector-note"><b>Zdroj:</b> aktuální ceny z evidence vlastních automatů. U schválené sady se ukládá i tento snapshot pro pozdější audit.</div>`
+  const salesQuantity = Number(product.monthly_sales_quantity || 0)
+  const salesMonth = monthLabel(state.salesPeriod?.from_date)
+  $('#marketInspector').innerHTML = `<div class="inspector-kicker">Interní cenový benchmark</div><h3>${escapeHtml(product.product_name)}</h3><p>Srovnání stejného SKU na ostatních aktivních automatech. Slouží jako informace, cenu samo nepřepisuje.</p><div class="market-summary"><div class="market-metric"><span>Minimum</span><strong>${values.length ? money(values[0]) : '—'}</strong></div><div class="market-metric"><span>Medián</span><strong>${values.length ? money(marketMedian(product)) : '—'}</strong></div><div class="market-metric"><span>Maximum</span><strong>${values.length ? money(values.at(-1)) : '—'}</strong></div><div class="market-metric"><span>Náš návrh</span><strong>${money(proposedPrice(product))}</strong></div></div><div class="inspector-note"><b>Podklad dopadu:</b> ${quantityLabel(salesQuantity)} prodaných ks na této pozici za ${escapeHtml(salesMonth)}.</div><div class="source-list">${sources.slice(0, 8).map((source) => `<div class="source"><div><strong>EV ${escapeHtml(source.evidence_number || source.machine_id)} · ${escapeHtml(source.location_name || source.machine_name || 'Automat')}</strong><small>${escapeHtml(source.machine_name || '')}</small></div><span class="source-price">${money(source.price_czk)}</span></div>`).join('') || '<div class="inspector-note">Pro toto SKU zatím není cena na jiném automatu.</div>'}</div><div class="inspector-note"><b>Zdroj:</b> aktuální ceny z evidence vlastních automatů. U schválené sady se ukládá i tento snapshot pro pozdější audit.</div>`
 }
 
 function updateSummary() {
@@ -235,13 +241,15 @@ function updateSummary() {
   const currentAverage = eligible.length ? eligible.reduce((sum, product) => sum + Number(marginAt(product, product.current_price_czk) || 0), 0) / eligible.length : null
   const proposedAverage = eligible.length ? eligible.reduce((sum, product) => sum + Number(marginAt(product, proposedPrice(product)) || 0), 0) / eligible.length : null
   const below = eligible.filter((product) => Number(marginAt(product, product.current_price_czk)) + 0.01 < Number(categoryFor(product).margin)).length
-  const impact = changed.reduce((sum, product) => sum + (proposedPrice(product) - Number(product.current_price_czk || 0)) * 150, 0)
+  const soldUnits = changed.reduce((sum, product) => sum + Number(product.monthly_sales_quantity || 0), 0)
+  const impact = changed.reduce((sum, product) => sum + (proposedPrice(product) - Number(product.current_price_czk || 0)) * Number(product.monthly_sales_quantity || 0), 0)
   $('#currentMargin').textContent = percent(currentAverage)
   $('#overviewCurrentMargin').textContent = percent(currentAverage)
   $('#belowLimitCount').textContent = below
   $('#weightedMargin').textContent = percent(proposedAverage)
   $('#marginDelta').textContent = currentAverage === null || proposedAverage === null ? 'nelze spočítat' : `${proposedAverage >= currentAverage ? '+' : ''}${(proposedAverage - currentAverage).toFixed(1).replace('.', ',')} procentního bodu`
-  $('#profitImpact').textContent = `${impact >= 0 ? '+' : ''}${Math.round(impact).toLocaleString('cs-CZ')} Kč`
+  $('#profitImpact').textContent = `${impact > 0 ? '+' : ''}${Math.round(impact).toLocaleString('cs-CZ')} Kč`
+  $('#profitImpactBasis').textContent = `${quantityLabel(soldUnits)} prodaných ks za ${monthLabel(state.salesPeriod?.from_date)}`
   $('#changeCount').textContent = `${changed.length} ${changed.length === 1 ? 'cena' : changed.length > 1 && changed.length < 5 ? 'ceny' : 'cen'}`
   $('#unchangedCount').textContent = `${state.products.length - changed.length} položek zůstane beze změny`
   const ev = state.machine?.evidence_number || state.machine?.id || '—'
@@ -289,7 +297,11 @@ async function approve() {
       minimum_margin_percent: categoryFor(product).margin,
       recommended_price_czk: recommendedPrice(product),
       new_price_czk: proposedPrice(product),
-      benchmark_snapshot: product.benchmark || {}
+      benchmark_snapshot: {
+        ...(product.benchmark || {}),
+        monthly_sales_quantity: Number(product.monthly_sales_quantity || 0),
+        sales_period: state.salesPeriod
+      }
     }))
     const { data, error } = await supabase.rpc('approve_machine_price_change_v55', { p_machine_id: state.machineId, p_items: items, p_rules: rulesPayload(), p_note: null })
     if (error) throw error
