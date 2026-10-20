@@ -43,6 +43,8 @@ assert.doesNotMatch(postponeSqlSource, /(?:update|insert\s+into|delete\s+from)\s
 assert.doesNotMatch(postponeSqlSource, /(?:update|insert\s+into|delete\s+from)\s+public\.route_plan_stops/i)
 assert.match(mobileSource, /Odložit návštěvu/)
 assert.match(mobileSource, /Pokyn pro příští návštěvu/)
+assert.match(mobileSource, /control_route_stops!control_route_stops_control_route_id_fkey/)
+assert.match(desktopSource, /control_route_stops!control_route_stops_control_route_id_fkey/)
 assert.match(mobileSource, /Stav při odjezdu/)
 assert.match(mobileSource, /Cenovky a lišty/)
 assert.match(mobileSource, /Rentabilní od/)
