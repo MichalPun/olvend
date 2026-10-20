@@ -2,7 +2,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     (async () => {
       try {
-        const PWA_BOOTSTRAP_VERSION = '20261020-control-routes-v1';
+        const PWA_BOOTSTRAP_VERSION = '20261020-control-economics-v2';
         const PWA_BOOTSTRAP_KEY = 'olvendPwaBootstrapVersion';
         if (localStorage.getItem(PWA_BOOTSTRAP_KEY) !== PWA_BOOTSTRAP_VERSION) {
           localStorage.setItem(PWA_BOOTSTRAP_KEY, PWA_BOOTSTRAP_VERSION);

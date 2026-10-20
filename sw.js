@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v211-control-adjustments';
+const CACHE_NAME = 'olvend-v212-control-economics';
 const APP_SHELL = [
   './',
   './index.html',
