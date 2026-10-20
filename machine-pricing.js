@@ -104,7 +104,12 @@ async function loadMachines() {
   const { data, error } = await supabase.from('machines').select('id,name,evidence_number,machine_type,brand,model,location_id,locations(name,city)').eq('active', true).order('evidence_number')
   if (error) throw error
   const select = $('#machineSelect')
-  select.innerHTML = (data || []).map((machine) => `<option value="${machine.id}">EV ${escapeHtml(machine.evidence_number || machine.id)} · ${escapeHtml(machine.name || machine.model || 'Automat')}</option>`).join('')
+  select.innerHTML = (data || []).map((machine) => {
+    const location = Array.isArray(machine.locations) ? machine.locations[0] : machine.locations
+    const placement = [location?.name, location?.city].filter(Boolean).join(' · ')
+    const label = [`EV ${machine.evidence_number || machine.id}`, machine.name || machine.model || 'Automat', placement].filter(Boolean).join(' · ')
+    return `<option value="${machine.id}">${escapeHtml(label)}</option>`
+  }).join('')
   const requested = Number(new URLSearchParams(location.search).get('machine'))
   const initial = (data || []).some((item) => Number(item.id) === requested) ? requested : Number(data?.[0]?.id)
   if (!initial) throw new Error('V evidenci není žádný aktivní automat.')
