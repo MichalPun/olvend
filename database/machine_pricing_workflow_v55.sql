@@ -1,4 +1,5 @@
 -- OLVEND v55: centrální cenotvorba automatu, povinné provedení v jízdě a tisk cenovek.
+-- Hodnota minimum_margin_percent představuje obchodní přirážku k nákupní ceně bez DPH.
 -- Schválení vytvoří čekající sadu. Aktivní cena se přepíše až po potvrzení
 -- fyzické změny obsluhou přímo u automatu.
 
@@ -297,8 +298,8 @@ begin
       v_min:=coalesce(v_min,0);
       v_old:=coalesce(v_slot.customer_price_czk,v_slot.price_czk,v_slot.dex_price_czk,0); v_cost:=v_product.purchase_price; v_vat:=coalesce(v_product.vat_rate,21);
       if v_new<=0 or v_new=v_old then continue; end if;
-      v_margin:=case when v_cost is null or v_new=0 then null else ((v_new/(1+v_vat/100)-v_cost)/(v_new/(1+v_vat/100)))*100 end;
-      if v_margin is not null and v_margin+0.01<v_min then raise exception 'Cena pozice % nesplňuje minimální marži % %.',v_slot.slot_code,v_min,'%'; end if;
+      v_margin:=case when v_cost is null or v_cost=0 or v_new=0 then null else ((v_new/(1+v_vat/100)-v_cost)/v_cost)*100 end;
+      if v_margin is not null and v_margin+0.01<v_min then raise exception 'Cena pozice % nesplňuje minimální přirážku % %.',v_slot.slot_code,v_min,'%'; end if;
       insert into public.machine_price_change_items(batch_id,machine_id,target_type,planogram_slot_id,slot_code,product_id,product_sku,product_name,category_key,purchase_price_czk,vat_rate,old_price_czk,recommended_price_czk,new_price_czk,minimum_margin_percent,benchmark_snapshot)
       values(v_batch.id,p_machine_id,'food_slot',v_slot.id,v_slot.slot_code,v_product.id,coalesce(v_slot.product_sku,v_product.sku),v_slot.product_name,v_category,v_cost,v_vat,v_old,coalesce((v_item->>'recommended_price_czk')::numeric,v_new),v_new,v_min,coalesce(v_item->'benchmark_snapshot','{}'::jsonb));
     elsif v_item->>'target_type'='coffee_button' then
@@ -329,8 +330,8 @@ begin
       v_cost:=coalesce(v_cost,v_product.purchase_price); v_vat:=coalesce(v_product.vat_rate,12);
       v_old:=coalesce(v_button.customer_price_czk,v_button.sale_price_czk,0);
       if v_new<=0 or v_new=v_old then continue; end if;
-      v_margin:=((v_new/(1+v_vat/100)-v_cost)/(v_new/(1+v_vat/100)))*100;
-      if v_margin+0.01<v_min then raise exception 'Cena pozice % nesplňuje minimální marži % %.',v_button.selection_code,v_min,'%'; end if;
+      v_margin:=case when v_cost is null or v_cost=0 or v_new=0 then null else ((v_new/(1+v_vat/100)-v_cost)/v_cost)*100 end;
+      if v_margin is not null and v_margin+0.01<v_min then raise exception 'Cena pozice % nesplňuje minimální přirážku % %.',v_button.selection_code,v_min,'%'; end if;
       insert into public.machine_price_change_items(batch_id,machine_id,target_type,coffee_button_id,slot_code,product_id,product_sku,product_name,category_key,purchase_price_czk,vat_rate,old_price_czk,recommended_price_czk,new_price_czk,minimum_margin_percent,benchmark_snapshot)
       values(v_batch.id,p_machine_id,'coffee_button',v_button.id,v_button.selection_code,v_product.id,coalesce(v_button.product_sku,v_product.sku),v_button.product_name,v_category,v_cost,v_vat,v_old,coalesce((v_item->>'recommended_price_czk')::numeric,v_new),v_new,v_min,coalesce(v_item->'benchmark_snapshot','{}'::jsonb));
     else raise exception 'Neplatný typ cenové položky.'; end if;
