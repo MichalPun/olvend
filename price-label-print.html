@@ -99,7 +99,7 @@
     <section class="toolbar">
       <div class="field"><label>Zdroj</label><select id="sourceFilter"><option value="machine">Konkrétní automat</option><option value="changes">Změny sortimentu</option><option value="all">Všechny plánogramy</option></select></div>
       <div class="field"><label>Lokalita / automat</label><select id="machineFilter"><option value="">Načítám automaty…</option></select></div>
-      <div class="field"><label>Co tisknout</label><select id="selectionMode"><option value="selected">Vybrané pozice</option><option value="changes">Jen změněné nebo chybějící</option><option value="visible">Všechny zobrazené pozice</option></select></div>
+      <div class="field"><label>Co tisknout</label><select id="selectionMode"><option value="selected">Vybrané pozice</option><option value="changes">Jen změněné nebo chybějící</option><option value="reprint">Již vytištěné znovu</option><option value="visible">Všechny zobrazené pozice</option></select></div>
       <div class="field"><label>Formát papíru</label><select id="paperFormat"><option value="actual">A4 · skutečná velikost</option><option value="marks">A4 · s ořezovými značkami</option></select></div>
       <div class="field"><label>Počet kopií</label><input id="copyCount" type="number" value="1" min="1" max="10"></div>
       <button class="btn" id="refresh">Načíst změny</button>
@@ -110,7 +110,7 @@
       <div class="work">
         <section class="table-panel">
           <div class="sheet-head"><div><h2>Cenovky k tisku</h2><p>FAS/Bianchi = jeden štítek. Europa/Luce X = pozice a cena zvlášť.</p></div><span class="badge green">Rozměry ověřeny podle Excelu</span></div>
-          <div class="notice"><i class="dot"></i><div><b>Automatický výběr šablony:</b> systém použije typ automatu z evidence. U oddělených rámečků vytiskne stejný počet pozičních i cenových štítků a spáruje je pořadím.</div></div>
+          <div class="notice"><i class="dot"></i><div><b>Automatický výběr šablony:</b> systém použije typ automatu z evidence. U oddělených rámečků vytiskne stejný počet pozičních i cenových štítků a spáruje je pořadím. Stav „Již vytištěno“ je pouze historie — cenovku lze kdykoliv vybrat a vytisknout znovu.</div></div>
           <div class="filters"><input id="search" placeholder="Hledat lokalitu, automat, EV, produkt nebo pozici…"><select id="typeFilter"><option value="">Všechny typy</option><option value="combined">FAS / Bianchi</option><option value="separate">Europa / Luce Snack X</option><option value="universal">Ostatní automaty</option></select><select id="statusFilter"><option value="">Všechny stavy</option><option value="selection">Chybí zákaznická volba</option><option value="product">Nová cenovka</option><option value="price">Změna ceny</option><option value="missing">Chybějící cena</option><option value="printed">Již vytištěno</option><option value="current">Beze změny</option></select><button class="btn" id="clear">Vyčistit</button></div>
           <div class="scroll"><table>
             <colgroup><col style="width:38px"><col style="width:200px"><col style="width:170px"><col style="width:80px"><col style="width:100px"><col style="width:105px"><col style="width:125px"><col style="width:105px"></colgroup>
@@ -367,7 +367,7 @@
     if (status === 'missing') return '<span class="badge amber">Chybějící cena</span>'
     if (status === 'product') return '<span class="badge blue">Nový produkt</span>'
     if (status === 'price') return '<span class="badge">Změna ceny</span>'
-    if (status === 'printed') return '<span class="badge green">Již vytištěno</span>'
+    if (status === 'printed') return '<span class="badge green">Již vytištěno · lze znovu</span>'
     return '<span class="badge">Beze změny</span>'
   }
 
@@ -482,6 +482,10 @@
     const printedSets = all.length * copies
     document.getElementById('pageMetric').textContent = printedSets ? Math.ceil(printedSets / PRINT_SETS_PER_A4) : 0
     document.getElementById('previewInfo').textContent = `${all.length} vybraných položek · ${physicalLabels} fyzických štítků${copies > 1 ? ` · ${copies}×` : ''}`
+    const printedSelected = all.filter(item => statusFor(item) === 'printed').length
+    const printLabel = all.length && printedSelected === all.length ? 'Vytisknout znovu' : 'Vytisknout vybrané'
+    document.getElementById('printTop').textContent = printLabel
+    document.getElementById('printBottom').textContent = printLabel
   }
 
   function renderAll() {
@@ -659,6 +663,9 @@
   elements.selectionMode.addEventListener('change', () => {
     if (elements.selectionMode.value === 'changes') {
       visibleItems.filter(item => statusFor(item) !== 'current' && customerCodeFor(item)).forEach(item => selectedKeys.add(item.key))
+    } else if (elements.selectionMode.value === 'reprint') {
+      selectedKeys.clear()
+      visibleItems.filter(item => statusFor(item) === 'printed' && customerCodeFor(item)).forEach(item => selectedKeys.add(item.key))
     } else if (elements.selectionMode.value === 'visible') {
       visibleItems.filter(item => customerCodeFor(item)).forEach(item => selectedKeys.add(item.key))
     }
@@ -688,11 +695,15 @@
     if (selected.some(item => !customerCodeFor(item))) return say('Nejdřív doplňte zákaznické volby u všech vybraných pozic', 3600)
     const copies = Math.max(1, Math.min(10, Number(elements.copyCount.value || 1)))
     const physicalLabels = selected.reduce((count, item) => count + (item.template.kind === 'separate' ? 2 : 1), 0) * copies
+    const reprintCount = selected.filter(item => item.priceChangeItemId && item.labelPrintedAt).length
     window.print()
-    if (!window.confirm('Proběhl tisk správně? Až po potvrzení označíme cenovky jako vytištěné.')) {
+    const confirmation = reprintCount === selected.length
+      ? 'Proběhl opakovaný tisk správně?'
+      : 'Proběhl tisk správně? Až po potvrzení označíme nové cenovky jako vytištěné.'
+    if (!window.confirm(confirmation)) {
       return say('Cenovky zůstaly ve frontě a nic se nesmazalo', 4200)
     }
-    const priceChangeItemIds = [...new Set(selected.map(item => item.priceChangeItemId).filter(Boolean))]
+    const priceChangeItemIds = [...new Set(selected.filter(item => !item.labelPrintedAt).map(item => item.priceChangeItemId).filter(Boolean))]
     if (priceChangeItemIds.length) {
       const { error } = await supabase.rpc('mark_machine_price_labels_printed_v55', { p_item_ids: priceChangeItemIds })
       if (error) return say(error.message || 'Tisk se nepodařilo zapsat do evidence', 4200)
@@ -700,10 +711,10 @@
       selected.forEach(item => { if (item.priceChangeItemId) item.labelPrintedAt = printedAt })
     }
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
-    history.unshift({ printedAt: new Date().toISOString(), items: selected.length, labels: physicalLabels })
+    history.unshift({ printedAt: new Date().toISOString(), items: selected.length, labels: physicalLabels, reprints: reprintCount })
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20)))
     renderAll()
-    say('Tisk byl potvrzen. Cenovky zůstávají v historii a lze je znovu zobrazit.', 4200)
+    say(reprintCount ? `Opakovaný tisk byl potvrzen pro ${reprintCount} cenovek.` : 'Tisk byl potvrzen. Cenovky zůstávají v historii a lze je znovu vytisknout.', 4200)
   }
 
   document.getElementById('printTop').addEventListener('click', printLabels)

@@ -160,7 +160,7 @@ function renderPendingBatch() {
     $('#routeState').className = 'pill amber'; $('#routeState').textContent = 'Vznikne'
     $('#printState').className = 'pill amber'; $('#printState').textContent = 'Vznikne'
     $('#routeCard').classList.remove('ready'); $('#printCard').classList.remove('ready')
-    $('#printLink').href = `price-label-print.html?v=20261020-current-v8&machine=${state.machineId}`; $('#printLink').setAttribute('aria-disabled', 'true')
+    $('#printLink').href = `price-label-print.html?v=20261020-reprint-v9&machine=${state.machineId}`; $('#printLink').setAttribute('aria-disabled', 'true')
     $('#approve').textContent = 'Schválit a vytvořit změnu'; $('#topApprove').textContent = 'Schválit nové ceny'
     return
   }
@@ -169,7 +169,7 @@ function renderPendingBatch() {
   $('#routeState').className = 'pill green'; $('#routeState').textContent = 'Úkol vytvořen'
   $('#printState').className = 'pill green'; $('#printState').textContent = 'Připraveno'
   $('#routeCard').classList.add('ready'); $('#printCard').classList.add('ready')
-  $('#printLink').href = `price-label-print.html?v=20261020-current-v8&batch=${batch.id}`; $('#printLink').removeAttribute('aria-disabled')
+  $('#printLink').href = `price-label-print.html?v=20261020-reprint-v9&batch=${batch.id}`; $('#printLink').removeAttribute('aria-disabled')
   $('#routeDetail').textContent = `${pendingCount} pozic čeká na fyzickou změnu`
   $('#labelDetail').textContent = `${pendingCount} cenových štítků v sadě ${batch.batch_code}`
 }
