@@ -1,8 +1,10 @@
-const CACHE_NAME = 'olvend-v209-calibration-restore';
+const CACHE_NAME = 'olvend-v210-control-routes';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './mobile-control.html',
+  './controlling.html',
   './technician-mobile.html',
   './machine-calibration.html',
   './machine-calibration-core.mjs',
