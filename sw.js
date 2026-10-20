@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v210-control-routes';
+const CACHE_NAME = 'olvend-v211-control-adjustments';
 const APP_SHELL = [
   './',
   './index.html',
