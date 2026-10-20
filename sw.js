@@ -1,9 +1,10 @@
-const CACHE_NAME = 'olvend-v213-control-economics-machine-pricing';
+const CACHE_NAME = 'olvend-v214-control-operations';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
   './mobile-control.html',
+  './control-route-protocol.html',
   './controlling.html',
   './technician-mobile.html',
   './machine-calibration.html',
