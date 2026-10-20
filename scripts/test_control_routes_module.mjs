@@ -14,6 +14,7 @@ const desktopSource = fs.readFileSync(new URL('../controlling.html', import.meta
 const mobileSource = fs.readFileSync(new URL('../mobile-control.html', import.meta.url), 'utf8')
 const sqlSource = fs.readFileSync(new URL('../database/control_routes_v55.sql', import.meta.url), 'utf8')
 const adjustmentSqlSource = fs.readFileSync(new URL('../database/control_adjustments_v56.sql', import.meta.url), 'utf8')
+const economicsSqlSource = fs.readFileSync(new URL('../database/control_economics_v57.sql', import.meta.url), 'utf8')
 
 assert.doesNotMatch(desktopSource, /\.from\(['"]route_plans['"]\)/)
 assert.doesNotMatch(desktopSource, /\.from\(['"]route_plan_stops['"]\)/)
@@ -23,6 +24,10 @@ assert.doesNotMatch(sqlSource, /references\s+public\.route_plans/i)
 assert.doesNotMatch(sqlSource, /references\s+public\.route_plan_stops/i)
 assert.doesNotMatch(adjustmentSqlSource, /(?:update|insert\s+into|delete\s+from)\s+public\.route_plans/i)
 assert.doesNotMatch(adjustmentSqlSource, /(?:update|insert\s+into|delete\s+from)\s+public\.route_plan_stops/i)
+assert.match(economicsSqlSource, /get_control_economics_v57/i)
+assert.match(economicsSqlSource, /get_control_price_scenarios_v57/i)
+assert.match(mobileSource, /Ekonomika lokality/)
+assert.match(mobileSource, /Při poklesu prodejů o 5 %/)
 
 const mockModule = `
 const employeeId = '11111111-1111-1111-1111-111111111111';
@@ -36,6 +41,10 @@ const stop = {id:501,location_id:10,stop_order:1,status:'planned',location_name_
 const route = {id:101,name:'Kontrolní trasa Ostrava',control_type:'regular',planned_date:'2026-10-20',planned_start_time:'08:00:00',status:'published',instructions:'Ověřit čistotu a skutečnost.',checklist_config:{},rule_config:{photo_for_high:true,critical_stops_machine:true,show_last_completed_visit:true},employees:employees[0],control_route_stops:[stop]};
 const foodSlot = {id:1,slot_code:'45',product_name:'Havlík tyčinky',product_sku:'HAVLIK',price_czk:25,current_units:6,capacity_units:8,sort_order:45};
 const coffeeContainer = {id:3,container_code:'Z1',product_name:'Káva',product_sku:'KAVA',current_quantity:800,capacity_quantity:1500,unit:'g',sort_order:1};
+const thresholds = [
+  {machine_kind:'food',minimum_monthly_revenue_czk:8000,target_monthly_revenue_czk:10000,note:'Potravinový automat'},
+  {machine_kind:'coffee',minimum_monthly_revenue_czk:6000,target_monthly_revenue_czk:8000,note:'Kávový automat'}
+];
 const dataFor = table => {
   if(table==='employee_directory') return employees;
   if(table==='locations') return locations;
@@ -46,10 +55,11 @@ const dataFor = table => {
   if(table==='machine_planogram_slots') return [foodSlot];
   if(table==='machine_coffee_buttons') return [{id:2,selection_code:'1',product_name:'Espresso',product_sku:'ESP',sale_price_czk:16,sort_order:1}];
   if(table==='machine_coffee_containers') return [coffeeContainer];
+  if(table==='control_economic_thresholds') return thresholds;
   return [];
 };
 function query(table){let rows=dataFor(table);const q={select(){return q},eq(){return q},in(){return q},not(){return q},order(){return q},limit(){return q},match(){return q},is(){return q},update(){return q},insert(){return q},single(){return Promise.resolve({data:Array.isArray(rows)?(rows[0]||{id:701}):rows,error:null})},maybeSingle(){return Promise.resolve({data:null,error:null})},then(ok,bad){return Promise.resolve({data:rows,error:null,count:table==='control_findings'?0:null}).then(ok,bad)}};return q}
-export const supabase = {rpc(name,args){if(name==='current_employee_id')return Promise.resolve({data:employeeId,error:null});if(name==='create_control_route_v55')return Promise.resolve({data:102,error:null});if(name==='start_control_route_v55'){route.status='in_progress';return Promise.resolve({data:null,error:null})}if(name==='complete_control_route_v55'){route.status='completed';return Promise.resolve({data:null,error:null})}if(name==='apply_control_machine_adjustment_v56'){if(args.p_target_kind==='food_slot'&&args.p_adjustment_type==='price')foodSlot.price_czk=args.p_after_value.price_czk;if(args.p_target_kind==='food_slot'&&args.p_adjustment_type==='stock')foodSlot.current_units=args.p_after_value.current_units;if(args.p_target_kind==='coffee_container'&&args.p_adjustment_type==='stock')coffeeContainer.current_quantity=args.p_after_value.current_quantity;return Promise.resolve({data:{status:'applied'},error:null})}return Promise.resolve({data:null,error:null})},from:query,storage:{from(){return {upload:async()=>({data:{},error:null})}}},auth:{getSession:async()=>({data:{session:{user:{id:'auth'}}},error:null})}};
+export const supabase = {rpc(name,args){if(name==='current_employee_id')return Promise.resolve({data:employeeId,error:null});if(name==='create_control_route_v55')return Promise.resolve({data:102,error:null});if(name==='start_control_route_v55'){route.status='in_progress';return Promise.resolve({data:null,error:null})}if(name==='complete_control_route_v55'){route.status='completed';return Promise.resolve({data:null,error:null})}if(name==='get_control_economics_v57')return Promise.resolve({data:[{machine_id:45,evidence_number:45,machine_kind:'coffee',minimum_monthly_revenue_czk:6000,target_monthly_revenue_czk:8000,current_month_revenue_czk:4300,projected_month_revenue_czk:7000,previous_month_revenue_czk:6500,trailing_30_days_revenue_czk:6800,units_30_days:300,latest_sale_at:'2026-10-19T15:00:00+02:00',data_quality:'fresh',evaluation_status:'watch'},{machine_id:28,evidence_number:28,machine_kind:'food',minimum_monthly_revenue_czk:8000,target_monthly_revenue_czk:10000,current_month_revenue_czk:7000,projected_month_revenue_czk:11500,previous_month_revenue_czk:9500,trailing_30_days_revenue_czk:10000,units_30_days:400,latest_sale_at:'2026-10-19T15:00:00+02:00',data_quality:'fresh',evaluation_status:'good'}],error:null});if(name==='get_control_price_scenarios_v57')return Promise.resolve({data:[{control_route_machine_id:601,machine_id:45,change_count:0,changes:[]},{control_route_machine_id:602,machine_id:28,change_count:1,current_30_days_revenue_czk:10000,price_effect_no_volume_change_czk:1000,scenario_no_decline_czk:11000,scenario_volume_minus_5_czk:10450,scenario_volume_minus_10_czk:9900,break_even_volume_loss_percent:9.1,data_quality:'ready',changes:[{selection_code:'45',product_name:'Havlík tyčinky',old_price_czk:25,new_price_czk:30,units_30_days:200,monthly_effect_czk:1000,source:'Dnešní kontrola'}]}],error:null});if(name==='update_control_economic_threshold_v57'){const row=thresholds.find(x=>x.machine_kind===args.p_machine_kind);row.minimum_monthly_revenue_czk=args.p_minimum_monthly_revenue_czk;row.target_monthly_revenue_czk=args.p_target_monthly_revenue_czk;return Promise.resolve({data:row,error:null})}if(name==='apply_control_machine_adjustment_v56'){if(args.p_target_kind==='food_slot'&&args.p_adjustment_type==='price')foodSlot.price_czk=args.p_after_value.price_czk;if(args.p_target_kind==='food_slot'&&args.p_adjustment_type==='stock')foodSlot.current_units=args.p_after_value.current_units;if(args.p_target_kind==='coffee_container'&&args.p_adjustment_type==='stock')coffeeContainer.current_quantity=args.p_after_value.current_quantity;return Promise.resolve({data:{status:'applied'},error:null})}return Promise.resolve({data:null,error:null})},from:query,storage:{from(){return {upload:async()=>({data:{},error:null})}}},auth:{getSession:async()=>({data:{session:{user:{id:'auth'}}},error:null})}};
 export async function syncOfflineRequests(){return {pending:0,synced:0}}
 export function getOfflineRequestCount(){return 0}
 `
@@ -66,6 +76,10 @@ try {
   await page.goto(`${baseUrl}/controlling.html`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Kontrolní trasy' }).waitFor()
   assert.match(await page.locator('#tableWrap').innerText(), /Kontrolní trasa Ostrava/)
+  await page.locator('#economicsBtn').click()
+  assert.equal(await page.locator('#foodMinimum').inputValue(), '8000')
+  assert.equal(await page.locator('#coffeeTarget').inputValue(), '8000')
+  await page.locator('#closeEconomicsBtn').click()
   await page.locator('#newBtn').click()
   await page.locator('#employee').selectOption(employeeId)
   await page.locator('#nextBtn').click()
@@ -90,9 +104,14 @@ try {
   await mobile.locator('#backBtn').click()
   await mobile.locator('[data-start-route]').click()
   await mobile.locator('[data-open-stop="501"]').click()
+  assert.match(await mobile.locator('#stopContent').innerText(), /Ekonomika lokality/)
+  assert.match(await mobile.locator('#stopContent').innerText(), /Odhad měsíce/)
   assert.match(await mobile.locator('#stopContent').innerText(), /Poslední skutečně dokončená obsluha/)
   assert.match(await mobile.locator('#stopContent').innerText(), /David Boudný/)
   await mobile.locator('[data-open-machine="602"]').click()
+  assert.match(await mobile.locator('#machineContent').innerText(), /Ekonomika automatu/)
+  assert.match(await mobile.locator('#machineContent').innerText(), /Dopad změn cen/)
+  assert.match(await mobile.locator('#machineContent').innerText(), /Při poklesu prodejů o 5 %/)
   assert.match(await mobile.locator('#machineContent').innerText(), /Teplota chlazení/)
   assert.match(await mobile.locator('#machineContent').innerText(), /Havlík tyčinky/)
   await mobile.locator('[data-adjust-target="food_slot:1"]').click()
