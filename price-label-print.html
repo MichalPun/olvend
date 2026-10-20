@@ -139,6 +139,9 @@
   const PAGE_SIZE = 1000
   const DRAFT_KEY = 'olvend-price-label-draft-v2'
   const HISTORY_KEY = 'olvend-price-label-history-v1'
+  const urlParams = new URLSearchParams(window.location.search)
+  const requestedBatchId = urlParams.get('batch') || ''
+  const requestedMachineId = urlParams.get('machine') || ''
   const elements = {
     rows: document.getElementById('rows'),
     grid: document.getElementById('printGrid'),
@@ -255,6 +258,43 @@
     }
   }
 
+  function buildPriceChangeItem(change, machine, baseItem = null) {
+    const location = locationFor(machine)
+    const template = templateFor(machine)
+    const isCoffee = change.target_type === 'coffee_button'
+    const slot = baseItem?.slot || {
+      id: `coffee-${change.coffee_button_id || change.id}`,
+      machine_id: change.machine_id,
+      slot_code: change.slot_code,
+      customer_selection_code: change.slot_code,
+      product_name: change.product_name,
+      product_sku: change.product_sku
+    }
+    const customerCode = String(baseItem?.customerCode || change.slot_code || '').trim()
+    return {
+      ...(baseItem || {}),
+      key: `price-change:${change.id}`,
+      slot,
+      machine,
+      location,
+      template,
+      productName: change.product_name || baseItem?.productName || 'Bez produktu',
+      price: numericPrice(change.new_price_czk),
+      customerCode,
+      customerCodeEditable: !isCoffee,
+      productChanged: false,
+      priceChanged: true,
+      priceChangeItemId: change.id,
+      priceChangeBatchId: change.batch_id,
+      labelPrintedAt: change.label_printed_at || null,
+      search: normalize([
+        location?.name, location?.city, location?.address,
+        machine.name, machine.brand, machine.model, machine.evidence_number,
+        change.slot_code, customerCode, change.product_name, change.product_sku
+      ].filter(Boolean).join(' '))
+    }
+  }
+
   function customerCodeFor(item) {
     return String(customerCodeOverrides.has(item.key) ? customerCodeOverrides.get(item.key) : item.customerCode).trim()
   }
@@ -347,7 +387,7 @@
           <td><input class="check row-check" type="checkbox" ${checked ? 'checked' : ''} ${customerCode ? '' : 'disabled'}></td>
           <td><div class="name">${escapeHtml(locationName)}</div><div class="sub">${escapeHtml(locationSub)}</div></td>
           <td><div class="name">${escapeHtml(machineTitle(item.machine))}</div><div class="sub">${escapeHtml(machineSub)}</div></td>
-          <td><input class="selection-input ${customerCode ? '' : 'missing'}" type="text" value="${escapeHtml(customerCode)}" placeholder="např. 12"><div class="sub">Interně: ${escapeHtml(item.slot.slot_code)} · ${escapeHtml(item.productName)}</div></td>
+          <td><input class="selection-input ${customerCode ? '' : 'missing'}" type="text" value="${escapeHtml(customerCode)}" placeholder="např. 12" ${item.customerCodeEditable === false ? 'readonly' : ''}><div class="sub">Interně: ${escapeHtml(item.slot.slot_code)} · ${escapeHtml(item.productName)}</div></td>
           <td><input class="price-input" type="number" min="0" step="1" value="${price ?? ''}"> Kč</td>
           <td><span class="badge ${item.template.kind === 'separate' ? 'blue' : ''}">${escapeHtml(item.template.label)}</span></td>
           <td><span class="badge ${item.template.kind === 'separate' ? 'amber' : 'green'}">${item.template.kind === 'separate' ? '2 štítky' : '1 štítek'}</span></td>
@@ -370,6 +410,7 @@
       })
       row.querySelector('.selection-input').addEventListener('input', event => {
         const item = items.find(candidate => candidate.key === key)
+        if (item.customerCodeEditable === false) return
         customerCodeOverrides.set(key, event.target.value)
         const codePresent = Boolean(customerCodeFor(item))
         event.target.classList.toggle('missing', !codePresent)
@@ -468,7 +509,7 @@
   }
 
   async function saveCustomerCodes() {
-    const changed = items.filter(item => customerCodeOverrides.has(item.key) && customerCodeFor(item) !== item.customerCode)
+    const changed = items.filter(item => item.customerCodeEditable !== false && customerCodeOverrides.has(item.key) && customerCodeFor(item) !== item.customerCode)
     if (!changed.length) return say('Žádná zákaznická volba nebyla změněná')
     const seen = new Map()
     for (const item of items) {
@@ -508,29 +549,61 @@
     elements.refresh.textContent = 'Načítám…'
     elements.rows.innerHTML = '<tr><td colspan="8"><div class="sub">Načítám kompletní evidenci automatů a plánogramů…</div></td></tr>'
     try {
-      const [machineRows, locationRows, slotRows] = await Promise.all([
+      const [machineRows, locationRows, slotRows, priceChangeRows] = await Promise.all([
         fetchAll(() => supabase.from('machines').select('id,location_id,name,machine_type,brand,model,evidence_number,status,active').order('id', { ascending: true })),
         fetchAll(() => supabase.from('locations').select('id,name,city,address,active').order('id', { ascending: true })),
-        fetchAll(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,customer_selection_code,product_name,product_sku,price_czk,customer_price_czk,dex_price_czk,active,sort_order,pending_product_sku,pending_product_name,pending_price_czk,planned_product_sku,planned_product_name,planned_price_czk').eq('active', true).order('machine_id', { ascending: true }).order('sort_order', { ascending: true }))
+        fetchAll(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,customer_selection_code,product_name,product_sku,price_czk,customer_price_czk,dex_price_czk,active,sort_order,pending_product_sku,pending_product_name,pending_price_czk,planned_product_sku,planned_product_name,planned_price_czk').eq('active', true).order('machine_id', { ascending: true }).order('sort_order', { ascending: true })),
+        fetchAll(() => {
+          let query = supabase.from('machine_price_change_items')
+            .select('id,batch_id,machine_id,target_type,planogram_slot_id,coffee_button_id,slot_code,product_sku,product_name,new_price_czk,status,label_printed_at,created_at')
+            .in('status', ['pending', 'applied'])
+            .order('created_at', { ascending: false })
+          query = requestedBatchId ? query.eq('batch_id', requestedBatchId) : query.is('label_printed_at', null)
+          return query
+        })
       ])
       machines = machineRows
       locations = locationRows
       const machineMap = new Map(machines.map(machine => [String(machine.id), machine]))
-      items = slotRows
+      const planogramItems = slotRows
         .filter(slot => String(slot.slot_code) !== '0' && machineMap.has(String(slot.machine_id)))
         .map(slot => buildItem(slot, machineMap.get(String(slot.machine_id))))
+      const planogramItemMap = new Map(planogramItems.map(item => [String(item.slot.id), item]))
+      const replacedSlotIds = new Set(priceChangeRows.filter(change => change.planogram_slot_id).map(change => String(change.planogram_slot_id)))
+      const scheduledItems = priceChangeRows
+        .filter(change => machineMap.has(String(change.machine_id)))
+        .map(change => buildPriceChangeItem(
+          change,
+          machineMap.get(String(change.machine_id)),
+          change.planogram_slot_id ? planogramItemMap.get(String(change.planogram_slot_id)) : null
+        ))
+      items = [
+        ...planogramItems.filter(item => !replacedSlotIds.has(String(item.slot.id))),
+        ...scheduledItems
+      ]
         .sort((a, b) => machineCompare(a.machine, b.machine) || slotCompare(a, b))
       populateMachines()
-      if (restoreDraft) {
+      if (restoreDraft && !requestedBatchId && !requestedMachineId) {
         loadDraft()
         populateMachines()
+      }
+      if (requestedBatchId) {
+        elements.source.value = 'changes'
+        elements.machine.value = ''
+        selectedKeys.clear()
+        scheduledItems.filter(item => String(item.priceChangeBatchId) === requestedBatchId).forEach(item => selectedKeys.add(item.key))
+      } else if (requestedMachineId && machines.some(machine => String(machine.id) === requestedMachineId)) {
+        elements.source.value = 'machine'
+        elements.machine.value = requestedMachineId
       }
       for (const key of [...selectedKeys]) {
         const item = items.find(candidate => candidate.key === key)
         if (!item || !customerCodeFor(item)) selectedKeys.delete(key)
       }
       renderAll()
-      say(`Načteno ${machines.length} automatů a ${items.length} aktivních pozic`)
+      say(requestedBatchId
+        ? `Načtena schválená cenová sada · ${scheduledItems.length} cenovek`
+        : `Načteno ${machines.length} automatů a ${items.length} aktivních pozic`)
     } catch (error) {
       console.error(error)
       elements.rows.innerHTML = `<tr><td colspan="8"><div class="sub">Načtení se nepodařilo: ${escapeHtml(error.message || error)}</div></td></tr>`
@@ -593,7 +666,7 @@
     say(`Naposledy: ${new Date(last.printedAt).toLocaleString('cs-CZ')} · ${last.items} položek · ${last.labels} štítků`, 4200)
   })
 
-  function printLabels() {
+  async function printLabels() {
     const selected = selectedItems()
     if (!selected.length) return say('Vyberte alespoň jednu cenovku')
     if (selected.some(item => !customerCodeFor(item))) return say('Nejdřív doplňte zákaznické volby u všech vybraných pozic', 3600)
@@ -602,6 +675,13 @@
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
     history.unshift({ printedAt: new Date().toISOString(), items: selected.length, labels: physicalLabels })
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20)))
+    const priceChangeItemIds = [...new Set(selected.map(item => item.priceChangeItemId).filter(Boolean))]
+    if (priceChangeItemIds.length) {
+      const { error } = await supabase.rpc('mark_machine_price_labels_printed_v55', { p_item_ids: priceChangeItemIds })
+      if (error) return say(error.message || 'Tisk se nepodařilo zapsat do evidence', 4200)
+      const printedAt = new Date().toISOString()
+      selected.forEach(item => { if (item.priceChangeItemId) item.labelPrintedAt = printedAt })
+    }
     window.print()
   }
 
