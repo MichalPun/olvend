@@ -38,6 +38,7 @@ assert.match(html, /outcome === 'problem' && !problemReason[\s\S]*?Napiš důvod
 assert.match(html, /status:'done',[\s\S]*?task_unresolved:outcome === 'problem'/, 'Nahlášený problém musí kontrolní bod uzavřít bez čekání na technika')
 assert.doesNotMatch(html, /if \(outcome === 'problem'\) openServiceReportForStop/, 'Nahlášení problému nesmí vyhodit obsluhu z návštěvy do servisu')
 assert.match(html, /syncCoffeeOfflineServiceQueue/, 'Závada musí jít bezpečně odeslat i po návratu připojení')
+assert.match(html, /if \(correctionOnly\) \{[\s\S]*?await saveCoffeeContainerVisitItem[\s\S]*?final_quantity: actualBefore[\s\S]*?physicalChecked: true[\s\S]*?skutečný stav je uložený v evidenci/, 'Samostatná korekce zásobníku se musí uložit jedním potvrzením, ne jen připravit do dalšího kroku')
 assert.match(html, /coffee-visit-detail coffee-guided coffee-only-flow/, 'Nový vzhled musí být omezený jen na kávový tok')
 assert.doesNotMatch(html, /coffee-visit-detail coffee-guided coffee-only-flow[^\n]*data-food-action/, 'Potravinový tok nesmí dostat coffee-only vzhled')
 
