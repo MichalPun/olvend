@@ -149,12 +149,39 @@ begin
   if public.machine_pricing_current_employee_id_v55() is null then raise exception 'Přihlášení vypršelo.'; end if;
   if not exists(select 1 from public.machines where id = p_machine_id) then raise exception 'Automat nebyl nalezen.'; end if;
 
+  with sales_period as (
+    select
+      (date_trunc('month',current_timestamp at time zone 'Europe/Prague') - interval '1 month') at time zone 'Europe/Prague' as starts_at,
+      date_trunc('month',current_timestamp at time zone 'Europe/Prague') at time zone 'Europe/Prague' as ends_at
+  ), monthly_sales as (
+    select
+      e.planogram_slot_id,
+      nullif(trim(e.selection_code),'') as selection_code,
+      sum(greatest(0,e.quantity-coalesce(e.free_vend_quantity,0)-coalesce(e.unpaid_dispense_quantity,0))) as sold_quantity
+    from public.telemetry_sales_events e
+    cross join sales_period period
+    where e.machine_id=p_machine_id
+      and e.source_event_at>=period.starts_at
+      and e.source_event_at<period.ends_at
+      and not (
+        lower(coalesce(e.provider,''))='vendsoft'
+        and exists (
+          select 1 from public.telemetry_sales_events direct
+          where direct.machine_id=e.machine_id and lower(coalesce(direct.provider,''))='ima'
+        )
+      )
+    group by e.planogram_slot_id,nullif(trim(e.selection_code),'')
+  )
   select jsonb_build_object(
     'machine', jsonb_build_object(
       'id',m.id,'name',m.name,'evidence_number',m.evidence_number,'machine_type',m.machine_type,
       'brand',m.brand,'model',m.model,'location_id',m.location_id,
       'location_name',l.name,'location_city',l.city,'location_address',l.address
     ),
+    'sales_period', (select jsonb_build_object(
+      'from_date',to_char(period.starts_at at time zone 'Europe/Prague','YYYY-MM-DD'),
+      'to_date',to_char((period.ends_at at time zone 'Europe/Prague')-interval '1 day','YYYY-MM-DD')
+    ) from sales_period period),
     'rules', coalesce((select jsonb_agg(to_jsonb(r) order by r.category_key) from public.pricing_category_margin_rules r where r.machine_id=m.id),'[]'::jsonb),
     'products', coalesce((select jsonb_agg(x.row_data order by x.sort_order, x.slot_code) from (
       select s.sort_order, s.slot_code, jsonb_build_object(
@@ -163,6 +190,7 @@ begin
         'category_key',case when p.product_category in ('beverage_ready','snack_ready','food_ready') then p.product_category else 'other' end,
         'purchase_price_czk',p.purchase_price,
         'vat_rate',coalesce(p.vat_rate,21),'current_price_czk',coalesce(s.customer_price_czk,s.price_czk,s.dex_price_czk,0),
+        'monthly_sales_quantity',coalesce((select sum(ms.sold_quantity) from monthly_sales ms where ms.planogram_slot_id=s.id),0),
         'benchmark',coalesce((select jsonb_build_object(
           'minimum',min(z.price_czk),'average',round(avg(z.price_czk),2),'maximum',max(z.price_czk),'count',count(*),
           'sources',jsonb_agg(jsonb_build_object('machine_id',z.machine_id,'evidence_number',z.evidence_number,'machine_name',z.machine_name,'location_name',z.location_name,'price_czk',z.price_czk) order by z.price_czk)
@@ -206,6 +234,7 @@ begin
           where ri.coffee_button_id=b.id and ri.active is distinct from false and ip.purchase_price is not null
         ),p.purchase_price),
         'vat_rate',coalesce(p.vat_rate,12),'current_price_czk',coalesce(b.customer_price_czk,b.sale_price_czk,0),
+        'monthly_sales_quantity',coalesce((select sum(ms.sold_quantity) from monthly_sales ms where ms.planogram_slot_id is null and ms.selection_code=nullif(trim(b.selection_code),'')),0),
         'benchmark',coalesce((select jsonb_build_object(
           'minimum',min(z.price_czk),'average',round(avg(z.price_czk),2),'maximum',max(z.price_czk),'count',count(*),
           'sources',jsonb_agg(jsonb_build_object('machine_id',z.machine_id,'evidence_number',z.evidence_number,'machine_name',z.machine_name,'location_name',z.location_name,'price_czk',z.price_czk) order by z.price_czk)
