@@ -144,6 +144,7 @@
   const urlParams = new URLSearchParams(window.location.search)
   const requestedBatchId = urlParams.get('batch') || ''
   const requestedMachineId = urlParams.get('machine') || ''
+  const requestedLabelRequestId = urlParams.get('label_request') || ''
   const elements = {
     rows: document.getElementById('rows'),
     grid: document.getElementById('printGrid'),
@@ -557,7 +558,7 @@
     elements.refresh.textContent = 'Načítám…'
     elements.rows.innerHTML = '<tr><td colspan="8"><div class="sub">Načítám kompletní evidenci automatů a plánogramů…</div></td></tr>'
     try {
-      const [machineRows, locationRows, slotRows, priceChangeRows] = await Promise.all([
+      const [machineRows, locationRows, slotRows, priceChangeRows, labelRequestRows] = await Promise.all([
         fetchAll(() => supabase.from('machines').select('id,location_id,name,machine_type,brand,model,evidence_number,status,active').order('id', { ascending: true })),
         fetchAll(() => supabase.from('locations').select('id,name,city,address,active').order('id', { ascending: true })),
         fetchAll(() => supabase.from('machine_planogram_slots').select('id,machine_id,slot_code,customer_selection_code,product_name,product_sku,price_czk,customer_price_czk,dex_price_czk,active,sort_order,pending_product_sku,pending_product_name,pending_price_czk,planned_product_sku,planned_product_name,planned_price_czk').eq('active', true).order('machine_id', { ascending: true }).order('sort_order', { ascending: true })),
@@ -568,7 +569,10 @@
             .order('created_at', { ascending: false })
           if (requestedBatchId) query = query.eq('batch_id', requestedBatchId)
           return query
-        })
+        }),
+        requestedLabelRequestId
+          ? fetchAll(() => supabase.from('machine_price_label_request_items').select('request_id,target_type,target_record_id,slot_code,product_name,price_czk').eq('request_id',requestedLabelRequestId).order('slot_code'))
+          : Promise.resolve([])
       ])
       machines = machineRows
       locations = locationRows
@@ -615,13 +619,20 @@
       } else if (requestedMachineId && machines.some(machine => String(machine.id) === requestedMachineId)) {
         elements.source.value = 'machine'
         elements.machine.value = requestedMachineId
+        if (requestedLabelRequestId) {
+          selectedKeys.clear()
+          const requestedCodes = new Set(labelRequestRows.map(row => String(row.slot_code)))
+          items.filter(item => String(item.machine.id) === requestedMachineId && requestedCodes.has(String(item.slot.slot_code))).forEach(item => selectedKeys.add(item.key))
+        }
       }
       for (const key of [...selectedKeys]) {
         const item = items.find(candidate => candidate.key === key)
         if (!item || !customerCodeFor(item)) selectedKeys.delete(key)
       }
       renderAll()
-      say(requestedBatchId
+      say(requestedLabelRequestId
+        ? `Načten požadavek na dotisk · ${selectedKeys.size} cenovek`
+        : requestedBatchId
         ? `Načtena schválená cenová sada · ${scheduledItems.length} cenovek`
         : `Načteno ${machines.length} automatů a ${items.length} aktivních pozic`)
     } catch (error) {
@@ -709,6 +720,10 @@
       if (error) return say(error.message || 'Tisk se nepodařilo zapsat do evidence', 4200)
       const printedAt = new Date().toISOString()
       selected.forEach(item => { if (item.priceChangeItemId) item.labelPrintedAt = printedAt })
+    }
+    if (requestedLabelRequestId) {
+      const marked = await supabase.rpc('mark_control_price_label_request_printed_v58', { p_request_id: requestedLabelRequestId })
+      if (marked.error) return say(marked.error.message || 'Dotisk se nepodařilo zapsat do evidence', 4200)
     }
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
     history.unshift({ printedAt: new Date().toISOString(), items: selected.length, labels: physicalLabels, reprints: reprintCount })
