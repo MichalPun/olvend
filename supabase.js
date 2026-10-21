@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { installPrivateFileLinks } from './secure-files.js'
+import { processOfflineQueueInOrder } from './offline-queue.js?v=20261021-stock-visit-integrity-v1'
 
 export const supabaseUrl = 'https://rerjlkrhiytgscjerqgs.supabase.co'
 export const supabaseAnonKey = 'sb_publishable_A8OxCcapdNXAzQLjLsW5iA_XtGvBZ0S'
@@ -78,25 +79,20 @@ async function offlineAwareFetch(input, init = {}) {
 export async function syncOfflineRequests() {
   if (!navigator.onLine) return { pending: readOfflineQueue().length, synced: 0 }
   const queue = readOfflineQueue()
-  const remaining = []
   let accessToken = null
   try {
     const { data } = await supabase.auth.getSession()
     accessToken = data?.session?.access_token || null
   } catch (_) {}
-  for (const item of queue) {
-    try {
-      const headers = new Headers(item.headers || {})
-      if (accessToken) headers.set('authorization', `Bearer ${accessToken}`)
-      headers.delete('content-length')
-      const response = await fetch(item.url, { method: item.method, headers, body: item.body })
-      if (!response.ok) remaining.push(item)
-    } catch (_) {
-      remaining.push(item)
-    }
-  }
-  writeOfflineQueue(remaining)
-  return { pending: remaining.length, synced: queue.length - remaining.length }
+  const result = await processOfflineQueueInOrder(queue, async (item) => {
+    const headers = new Headers(item.headers || {})
+    if (accessToken) headers.set('authorization', `Bearer ${accessToken}`)
+    headers.delete('content-length')
+    const response = await fetch(item.url, { method: item.method, headers, body: item.body })
+    return response.ok
+  })
+  writeOfflineQueue(result.remaining)
+  return { pending: result.remaining.length, synced: result.synced }
 }
 
 export function getOfflineRequestCount() { return readOfflineQueue().length }

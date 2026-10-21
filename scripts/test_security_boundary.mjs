@@ -5,7 +5,7 @@ import vm from 'node:vm';
 for (const name of fs.readdirSync('.').filter(name => name.endsWith('.html'))) {
   for (const script of fs.readFileSync(name,'utf8').matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new vm.SourceTextModule(script[1]);
 }
-for (const name of ['supabase.js','secure-files.js']) new vm.SourceTextModule(fs.readFileSync(name,'utf8'));
+for (const name of ['supabase.js','secure-files.js','offline-queue.js']) new vm.SourceTextModule(fs.readFileSync(name,'utf8'));
 const {privateStoragePath,installPrivateFileLinks}=await import('../secure-files.js');
 const origin='https://example.supabase.co';
 assert.deepEqual(privateStoragePath(`${origin}/storage/v1/object/public/shift-documents/a%20b.pdf`,origin),{bucket:'shift-documents',path:'a b.pdf'});
@@ -28,9 +28,15 @@ for (const test of [{session:null,active:false,redirect:true},{session:{user:{id
   const client={auth:{getSession:async()=>({data:{session:test.session}}),signOut:async()=>({})},rpc:async()=>({data:test.active})};
   const sandbox=vm.createContext({window:{location:{pathname:'/machines.html',replace:url=>{redirect=url}},setTimeout:()=>{}}});
   const module=new vm.SourceTextModule(fs.readFileSync('supabase.js','utf8'),{context:sandbox});
-  await module.link(specifier => specifier.includes('supabase-js')
-    ? new vm.SyntheticModule(['createClient'],function(){this.setExport('createClient',()=>client)},{context:sandbox})
-    : new vm.SyntheticModule(['installPrivateFileLinks'],function(){this.setExport('installPrivateFileLinks',()=>{})},{context:sandbox}));
+  await module.link(specifier => {
+    if (specifier.includes('supabase-js')) {
+      return new vm.SyntheticModule(['createClient'],function(){this.setExport('createClient',()=>client)},{context:sandbox})
+    }
+    if (specifier.includes('offline-queue')) {
+      return new vm.SyntheticModule(['processOfflineQueueInOrder'],function(){this.setExport('processOfflineQueueInOrder',async()=>({remaining:[],synced:0}))},{context:sandbox})
+    }
+    return new vm.SyntheticModule(['installPrivateFileLinks'],function(){this.setExport('installPrivateFileLinks',()=>{})},{context:sandbox})
+  });
   if(test.redirect)await assert.rejects(module.evaluate());else await module.evaluate();
   assert.equal(redirect,test.redirect?'index.html':null);
 }

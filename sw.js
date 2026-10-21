@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v219-bagette-display-integrity';
+const CACHE_NAME = 'olvend-v220-stock-visit-integrity';
 const APP_SHELL = [
   './',
   './index.html',
@@ -17,6 +17,7 @@ const APP_SHELL = [
   './route-skip-approval.html',
   './route-add-approval.html',
   './supabase.js',
+  './offline-queue.js',
   './secure-files.js',
   './machines-planogram.css?v=20260913d',
   './machines-planogram-ui.js?v=20260913b',
