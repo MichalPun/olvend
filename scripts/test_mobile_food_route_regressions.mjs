@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 
 const html = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
+const coffeeDomain = fs.readFileSync(new URL('../mobile-coffee-domain.js', import.meta.url), 'utf8')
 
 for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   if (!match[1].trim()) continue
@@ -132,8 +133,8 @@ assert.match(html, /10 dnech bez využití předvybráno k vrácení do skladu/)
 assert.match(html, /const finalizedReplacement = Boolean\(!fullSwap && replacementProduct && remainingExistingQuantity <= 0\)/)
 assert.match(html, /const finalizedProductSku = finalizedReplacement/)
 assert.match(html, /product_sku: finalizedProductSku/)
-assert.match(html, /current <= capacity \* 0\.1/)
-assert.match(html, /Math\.floor\(missing \/ packageQuantity\)/)
+assert.match(coffeeDomain, /current <= capacity \* 0\.1/)
+assert.match(coffeeDomain, /Math\.floor\(Math\.max\(0, capacity - current\) \/ packageQuantity\)/)
 assert.doesNotMatch(html, /limitedPackages <= 0\) \{\s*draft\.picked = true\s*draft\.accepted = true/)
 assert.match(html, /const priceOnlyChangeRequired = Boolean\(planogramChange\?\.priceChanged && !planogramChange\.productChanged\)/)
 assert.match(html, /function foodMachinePriceConfirmationRequired/)
