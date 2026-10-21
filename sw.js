@@ -1,9 +1,10 @@
-const CACHE_NAME = 'olvend-v221-mobile-route-completion-module';
+const CACHE_NAME = 'olvend-v222-mobile-coffee-visit-module';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
   './mobile-route-completion.js?v=20261021-route-completion-v1',
+  './mobile-coffee-visit.js?v=20261021-coffee-visit-v1',
   './mobile-control.html',
   './control-route-protocol.html',
   './controlling.html',
