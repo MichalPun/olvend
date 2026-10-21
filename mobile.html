@@ -10128,6 +10128,38 @@
       return !draft.accepted && hasCoffeeContainerRefillWork(stopId, container)
     }
 
+    function hasAcceptedCoffeeContainerState(detail, container) {
+      return (detail?.visitItems || []).some((item) => (
+        item.item_kind === 'coffee_container'
+        && String(item.coffee_container_id || '') === String(container?.id || '')
+        && item.accepted_at
+        && (
+          item.final_quantity != null
+          || (
+            item.issue_type === 'missing_stock'
+            && Number(item.actual_add_quantity || 0) === 0
+            && String(item.operator_note || '').trim().length >= 10
+          )
+        )
+      ))
+    }
+
+    async function persistUnchangedCoffeeContainerStates(stopId) {
+      const detail = getCoffeeDetail(stopId)
+      if (!detail?.visitId) throw new Error('Návštěva kávového automatu není připravená.')
+      const missing = (detail.containers || []).filter((container) => !hasAcceptedCoffeeContainerState(detail, container))
+      for (const container of missing) {
+        const current = Math.max(0, Number(container.current_quantity || 0))
+        await saveCoffeeContainerVisitItem(stopId, container, {
+          actual_before_quantity: current,
+          final_quantity: current,
+          issue_type: 'none',
+          operator_note: 'Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí, bez dalšího doplnění.'
+        })
+      }
+      return missing.length
+    }
+
     function getCoffeeGuidedStage(stopId, detail, readOnly = false) {
       if (readOnly) return 'done'
       if (!detail?.machineOpen) return 'goods'
@@ -14707,6 +14739,11 @@
           const { error: noteError } = await supabase.from('route_machine_visits').update({ operator_note: operatorNote }).eq('id', visitId)
           if (noteError) throw noteError
         }
+        // Závěrečné potvrzení celého automatu je současně potvrzením všech
+        // fyzicky zkontrolovaných zásobníků, které nebylo potřeba měnit.
+        // Databázová ochrana tak dostane úplný stav bez toho, aby operátorka
+        // musela znovu rozklikávat každý beze změny ponechaný zásobník.
+        await persistUnchangedCoffeeContainerStates(stop.id)
         await saveCoffeePreparation(stop.id, 'machine')
       }
       if (getMachineKind(getRouteStopMachine(stop)) === 'food') {
