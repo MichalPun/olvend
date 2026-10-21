@@ -5418,7 +5418,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261021-mobile-coffee-domain-v1" defer></script>
+  <script src="./pwa.js?v=20261021-mobile-food-visit-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import {
@@ -5431,6 +5431,11 @@
       serializeCoffeePreparation
     } from './mobile-coffee-visit.js?v=20261021-coffee-visit-v1'
     import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261021-coffee-domain-v1'
+    import {
+      persistFoodVisitItem,
+      saveFoodProgressRecord,
+      serializeFoodPreparation as serializeFoodPreparationData
+    } from './mobile-food-visit.js?v=20261021-food-visit-v1'
 
     const technicianRouteEmbedded = window.parent !== window && new URLSearchParams(location.search).get('workspace') === 'technician-route'
     if(technicianRouteEmbedded)document.body.classList.add('technician-route-embedded')
@@ -15110,51 +15115,10 @@
     }
 
     function serializeFoodPreparation(stopId, detail) {
-      return Object.fromEntries((detail?.slots || []).map((slot) => {
-        const draft = getFoodSlotDraft(stopId, slot)
-        return [String(slot.id), {
-          selectedProductId: draft.selectedProductId || null,
-          fillItems: draft.fillItems.map((fill) => ({
-            productId: fill.productId || null,
-            quantity: draft.skipped ? 0 : Math.max(0, Number(fill.quantity || 0)),
-            batchId: fill.batchId || null,
-            expiryDate: fill.expiryDate || ''
-          })),
-          preparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.preparedQuantity || draft.pickedQuantity || 0)),
-          basePreparedQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.basePreparedQuantity || 0)),
-          extraVehicleQuantity: draft.skipped ? 0 : Math.max(0, Number(draft.extraVehicleQuantity || 0)),
-          picked: Boolean(draft.picked),
-          skipped: Boolean(draft.skipped),
-          skipReason: draft.skipReason || '',
-          notInsertedReason: draft.notInsertedReason || '',
-          capacityUnits: Math.max(1, Math.round(Number(draft.capacityUnits ?? slot.capacity_units ?? 1))),
-          actualBefore: Math.max(0, Number(draft.actualBefore || 0)),
-          actualAdd: draft.skipped ? 0 : Math.max(0, Number(draft.fillItems.reduce((sum, fill) => sum + Number(fill.quantity || 0), 0))),
-          wasteItems: draft.wasteItems.map((item) => ({
-            quantity: Math.max(0, Number(item.quantity || 0)),
-            reason: item.reason || '',
-            autoSuggested: Boolean(item.autoSuggested)
-          })),
-          existingExpiryDate: draft.existingExpiryDate || '',
-          assortmentMismatch: Boolean(draft.assortmentMismatch),
-          existingProductId: draft.existingProductId || null,
-          expiryVerified: Boolean(draft.expiryVerified),
-          transferQuantity: Math.max(0, Number(draft.transferQuantity || 0)),
-          transferRecommendation: draft.transferRecommendation || null,
-          manualProductChoice: Boolean(draft.manualProductChoice),
-          pickConfirmed: Boolean(draft.pickConfirmed),
-          operatorProposedPrice: draft.operatorProposedPrice === '' ? null : Number(draft.operatorProposedPrice),
-          operatorPriceNote: draft.operatorPriceNote || '',
-          operatorPriceConfirmed: Boolean(draft.operatorPriceConfirmed),
-          operatorPriceRequestStatus: draft.operatorPriceRequestStatus || '',
-          operatorPriceRequestId: draft.operatorPriceRequestId || null,
-          operatorPriceClientKey: draft.operatorPriceClientKey || '',
-          operatorPriceMailWarning: draft.operatorPriceMailWarning || '',
-          deferFullSwap: Boolean(draft.deferFullSwap),
-          cartLoadOrder: Math.max(0, Number(draft.cartLoadOrder || 0)),
-          note: draft.note || ''
-        }]
-      }))
+      return serializeFoodPreparationData({
+        slots: detail?.slots || [],
+        getDraft: (slot) => getFoodSlotDraft(stopId, slot)
+      })
     }
 
     function scheduleFoodWorkProgressSave(stopId) {
@@ -15167,15 +15131,12 @@
         try {
           const preparation = serializeFoodPreparation(stopId, detail)
           const workPhase = detail.draft?.phase === 'machine' ? 'machine' : 'picklist'
-          const { error } = await supabase
-            .from('route_machine_visits')
-            .update({
-              work_phase: workPhase,
-              food_preparation: preparation,
-              synced_at: new Date().toISOString()
-            })
-            .eq('id', detail.visitId)
-          if (error) throw error
+          await saveFoodProgressRecord({
+            client: supabase,
+            visitId: detail.visitId,
+            workPhase,
+            preparation
+          })
           const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
           if (currentVisit) {
             currentVisit.work_phase = workPhase
@@ -15687,27 +15648,13 @@
         operator_note: operatorNote,
         accepted_at: new Date().toISOString()
       }
-      let existing = (detail.visitItems || []).find((item) => String(item.planogram_slot_id || '') === String(slot.id))
-      const hasPersistedId = (value) => /^\d+$/.test(String(value || ''))
-      // Snapshot může po předchozím offline/rychlém potvrzení ještě neobsahovat
-      // právě uložený řádek. Před insertem proto vždy ověříme databázi; jinak
-      // mohlo několik potvrzení téže pozice vytvořit totožné duplicitní řádky.
-      if ((!existing?.id || !hasPersistedId(existing.id)) && navigator.onLine) {
-        const { data: persistedItem, error: persistedItemError } = await supabase
-          .from('route_machine_visit_items')
-          .select('*')
-          .eq('visit_id', detail.visitId)
-          .eq('planogram_slot_id', slot.id)
-          .order('id', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        if (persistedItemError) throw persistedItemError
-        existing = persistedItem || null
-      }
-      const result = existing?.id && hasPersistedId(existing.id)
-        ? await supabase.from('route_machine_visit_items').update(row).eq('id', Number(existing.id)).select('*').single()
-        : await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
-      if (result.error) throw result.error
+      const existing = (detail.visitItems || []).find((item) => String(item.planogram_slot_id || '') === String(slot.id))
+      const { savedRow } = await persistFoodVisitItem({
+        client: supabase,
+        row,
+        existing,
+        online: navigator.onLine
+      })
       if (wasteItems.length) {
         const visit = state.routeMachineVisits.find((item) => String(item.id) === String(detail.visitId))
         const machine = state.machines.find((item) => String(item.id) === String(slot.machine_id))
@@ -15717,7 +15664,7 @@
           stock_reference_id: `route_visit_${detail.visitId}_food_slot_${slot.id}_waste_${wasteIndex}_${waste.reason}`,
           route_plan_id: visit?.route_plan_id || null,
           route_machine_visit_id: detail.visitId,
-          route_machine_visit_item_id: result.data.id,
+          route_machine_visit_item_id: savedRow.id,
           machine_id: slot.machine_id,
           employee_id: state.employee?.id || visit?.employee_id || null,
           vehicle_id: vehicleId,
@@ -15746,7 +15693,7 @@
           const product = state.products.find((item) => String(item.id) === String(fill.productId))
           return {
             visit_id: detail.visitId,
-            visit_item_id: result.data.id,
+            visit_item_id: savedRow.id,
             machine_id: slot.machine_id,
             planogram_slot_id: slot.id,
             product_id: fill.productId,
@@ -15868,7 +15815,7 @@
       }
       detail.visitItems = [
         ...(detail.visitItems || []).filter((item) => String(item.planogram_slot_id || '') !== String(slot.id)),
-        result.data
+        savedRow
       ]
       updateFoodSlotDraft(stopId, slot.id, {
         capacityUnits: capacity,
