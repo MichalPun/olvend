@@ -5418,13 +5418,18 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261021-mobile-route-completion-v1" defer></script>
+  <script src="./pwa.js?v=20261021-mobile-coffee-visit-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import {
       completeRouteVisitRecord,
       persistUnchangedCoffeeContainerStates
     } from './mobile-route-completion.js?v=20261021-route-completion-v1'
+    import {
+      persistCoffeeVisitItem,
+      saveCoffeePreparationRecord,
+      serializeCoffeePreparation
+    } from './mobile-coffee-visit.js?v=20261021-coffee-visit-v1'
 
     const technicianRouteEmbedded = window.parent !== window && new URLSearchParams(location.search).get('workspace') === 'technician-route'
     if(technicianRouteEmbedded)document.body.classList.add('technician-route-embedded')
@@ -9731,40 +9736,27 @@
       return state.routeCoffeeDetails[String(stopId || '')] || null
     }
 
-    function serializeCoffeePreparation(detail, phase = detail?.machineOpen ? 'machine' : 'picklist') {
-      return {
-        version: 2,
-        phase,
-        containers: { ...(detail?.draft?.containers || {}) },
-        picklistStep: detail?.draft?.picklistStep || 'stock',
-        gearChecks: { ...(detail?.draft?.gearChecks || {}) },
-        qualityOutcomes: { ...(detail?.draft?.qualityOutcomes || {}) },
-        qualityProblemReasons: { ...(detail?.draft?.qualityProblemReasons || {}) },
-        savedAt: new Date().toISOString()
-      }
-    }
-
     async function saveCoffeePreparation(stopId, phase) {
       const detail = getCoffeeDetail(stopId)
       if (!detail?.visitId) return
       const preparation = serializeCoffeePreparation(detail, phase)
       persistMobileSnapshot()
-      if (!navigator.onLine) return
-      const { data, error } = await supabase
-        .from('route_machine_visits')
-        .update({ coffee_preparation: preparation, synced_at: new Date().toISOString() })
-        .eq('id', detail.visitId)
-        .select('id, coffee_preparation')
-        .maybeSingle()
-      if (error || !data?.id) {
+      const result = await saveCoffeePreparationRecord({
+        client: supabase,
+        visitId: detail.visitId,
+        preparation,
+        online: navigator.onLine
+      })
+      if (result.queuedOffline) return
+      if (!result.saved) {
         detail.draft.offlinePreparationPending = true
         persistMobileSnapshot()
-        console.warn('Coffee preparation will be synchronized later:', error || 'missing saved visit')
+        console.warn('Coffee preparation will be synchronized later:', result.error || 'missing saved visit')
         return
       }
       detail.draft.offlinePreparationPending = false
       const currentVisit = getRouteVisitForStop(findRouteStop(stopId).stop)
-      if (currentVisit) currentVisit.coffee_preparation = data.coffee_preparation
+      if (currentVisit) currentVisit.coffee_preparation = result.visit.coffee_preparation
     }
 
     function getFoodDetail(stopId) {
@@ -15066,33 +15058,15 @@
         operator_note: payload.operator_note || null,
         accepted_at: payload.accepted_at || new Date().toISOString()
       }
-      const pendingBeforeSave = getOfflineRequestCount()
-      let result
-      if (existing?.client_uuid && (existing._offlinePending || String(existing.id || '').startsWith('offline-'))) {
-        const offlineRow = { ...row, client_uuid: existing.client_uuid }
-        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'client_uuid' })
-        result = {
-          error: queuedResult.error,
-          data: { ...offlineRow, id: existing.id, _offlinePending: true }
-        }
-      } else if (existing?.id) {
-        result = await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
-      } else if (!navigator.onLine || detail.openedOffline) {
-        const offlineRow = { ...row, client_uuid: crypto.randomUUID() }
-        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'client_uuid' })
-        result = {
-          error: queuedResult.error,
-          data: { ...offlineRow, id: `offline-${offlineRow.client_uuid}`, _offlinePending: true }
-        }
-      } else {
-        result = await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
-      }
-      const requestQueued = getOfflineRequestCount() > pendingBeforeSave
-      if (result.error && !requestQueued) throw result.error
-      if (result.data && '_offlinePending' in result.data) result.data._offlinePending = requestQueued
-      const savedRow = result.data?.id
-        ? result.data
-        : { ...row, id: existing?.id || `offline-${detail.visitId}-${container.id}`, _offlinePending: requestQueued }
+      const { savedRow } = await persistCoffeeVisitItem({
+        client: supabase,
+        row,
+        existing,
+        offline: !navigator.onLine || detail.openedOffline,
+        fallbackId: `offline-${detail.visitId}-${container.id}`,
+        createUuid: () => crypto.randomUUID(),
+        getPendingRequestCount: getOfflineRequestCount
+      })
       const savedFinalQuantity = Number(savedRow.final_quantity ?? row.final_quantity ?? finalQty)
       if (Number.isFinite(savedFinalQuantity)) {
         // The route_machine_visit_items trigger persists the physical baseline
@@ -15149,33 +15123,15 @@
         operator_note: ['První kalibrace zásobníku', note].filter(Boolean).join(' · '),
         accepted_at: new Date().toISOString()
       }
-      const pendingBeforeSave = getOfflineRequestCount()
-      let result
-      if (existing?.client_uuid && (existing._offlinePending || String(existing.id || '').startsWith('offline-'))) {
-        const offlineRow = { ...row, client_uuid: existing.client_uuid }
-        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'client_uuid' })
-        result = {
-          error: queuedResult.error,
-          data: { ...offlineRow, id: existing.id, _offlinePending: true }
-        }
-      } else if (existing?.id) {
-        result = await supabase.from('route_machine_visit_items').update(row).eq('id', existing.id).select('*').single()
-      } else if (!navigator.onLine || detail.openedOffline) {
-        const offlineRow = { ...row, client_uuid: crypto.randomUUID() }
-        const queuedResult = await supabase.from('route_machine_visit_items').upsert([offlineRow], { onConflict: 'client_uuid' })
-        result = {
-          error: queuedResult.error,
-          data: { ...offlineRow, id: `offline-${offlineRow.client_uuid}`, _offlinePending: true }
-        }
-      } else {
-        result = await supabase.from('route_machine_visit_items').insert([row]).select('*').single()
-      }
-      const requestQueued = getOfflineRequestCount() > pendingBeforeSave
-      if (result.error && !requestQueued) throw result.error
-      if (result.data && '_offlinePending' in result.data) result.data._offlinePending = requestQueued
-      const savedRow = result.data?.id
-        ? result.data
-        : { ...row, id: existing?.id || `offline-calibration-${detail.visitId}-${container.id}`, _offlinePending: requestQueued }
+      const { savedRow } = await persistCoffeeVisitItem({
+        client: supabase,
+        row,
+        existing,
+        offline: !navigator.onLine || detail.openedOffline,
+        fallbackId: `offline-calibration-${detail.visitId}-${container.id}`,
+        createUuid: () => crypto.randomUUID(),
+        getPendingRequestCount: getOfflineRequestCount
+      })
       // The route_machine_visit_items trigger persists the physical baseline
       // and reconciles any sales that happened after this observation.
       container.current_quantity = boundedQuantity
