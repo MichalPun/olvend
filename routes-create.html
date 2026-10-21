@@ -2341,6 +2341,7 @@
   <script type="module">
     import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js'
     import { groupRouteStopsByLocation, expandGroupedRouteStops } from './route-location-groups.js'
+    import { getActionableSameLocationSiblings, getSameLocationCoverageGaps } from './route-same-location-coverage.js'
 
     const ROAD_FACTOR = 1.23
     const AVG_SPEED_KMH = 52
@@ -2440,6 +2441,7 @@
       candidates: [],
       filteredCandidates: [],
       selectedKeys: new Set(),
+      sameLocationCoverageExclusions: new Set(),
       expandedStockKeys: new Set(),
       currentEmployeeId: null,
       currentPosition: null,
@@ -2909,6 +2911,50 @@
         || candidate?.expiryItems?.some((item) => item.due)
         || candidate?.operationalRecommendations?.some((reason) => reason.type !== 'stock_info')
       )
+    }
+
+    function isSameLocationCoverageCandidateAvailable(candidate) {
+      return isCandidateAvailableForManualRoute(candidate)
+        && (!isCandidateServiceSuspended(candidate) || hasStockRecommendation(candidate))
+    }
+
+    function formatMachineCandidateReference(candidate) {
+      if (!candidate) return 'automat'
+      const evidence = candidate.evidenceNumber ?? candidate.evidence_number
+      return evidence != null && evidence !== ''
+        ? `EV ${evidence}`
+        : candidate.machineLabel || candidate.name || 'automat'
+    }
+
+    function addCandidateWithSameLocationCoverage(candidate) {
+      if (!candidate) return []
+      const added = []
+      const add = (item) => {
+        const key = String(item?.key || '')
+        if (!key || state.selectedKeys.has(key)) return
+        state.selectedKeys.add(key)
+        state.sameLocationCoverageExclusions.delete(key)
+        added.push(item)
+      }
+
+      add(candidate)
+      if (planningMode.value !== 'machine') return added
+
+      getActionableSameLocationSiblings(candidate, state.candidates, {
+        isActionable: isActionableCandidate,
+        isAvailable: isSameLocationCoverageCandidateAvailable,
+      }).forEach((sibling) => {
+        if (!state.sameLocationCoverageExclusions.has(String(sibling.key))) add(sibling)
+      })
+      return added
+    }
+
+    function getUncoveredSameLocationMachines() {
+      if (planningMode.value !== 'machine') return []
+      return getSameLocationCoverageGaps(state.candidates, state.selectedKeys, {
+        isActionable: isActionableCandidate,
+        isAvailable: isSameLocationCoverageCandidateAvailable,
+      })
     }
 
     function candidateMatchesTerritoryView(candidate) {
@@ -4275,8 +4321,22 @@
         const key = row.dataset.candidateKey
         if (!key) return
         invalidatePlanAfterSelectionChange()
-        if (state.selectedKeys.has(key)) state.selectedKeys.delete(key)
-        else state.selectedKeys.add(key)
+        const candidate = state.candidates.find((item) => String(item.key) === String(key))
+        if (state.selectedKeys.has(key)) {
+          state.selectedKeys.delete(key)
+          if (candidate && isActionableCandidate(candidate)) {
+            state.sameLocationCoverageExclusions.add(String(key))
+          }
+          const uncovered = getUncoveredSameLocationMachines()
+          if (uncovered.length) {
+            setStatus(`Pozor: na vybraných lokalitách zůstává mimo trasu ${uncovered.map(formatMachineCandidateReference).join(', ')}.`, 'warning')
+          }
+        } else {
+          const added = addCandidateWithSameLocationCoverage(candidate)
+          if (added.length > 1) {
+            setStatus(`Přidal jsem také doporučené automaty na stejné lokalitě: ${added.slice(1).map(formatMachineCandidateReference).join(', ')}.`, 'success')
+          }
+        }
         rerenderCandidatesWithoutViewportJump()
         renderSummary()
       }
@@ -7102,6 +7162,18 @@
           throw new Error(employee
             ? `Pro ${getEmployeeDisplayName(employee)} není publikovaná směna. Zadej délku směny do zvýrazněného pole.`
             : 'Vyber zaměstnance a zadej délku směny do zvýrazněného pole.')
+        }
+        const uncoveredSameLocationMachines = getUncoveredSameLocationMachines()
+        if (uncoveredSameLocationMachines.length) {
+          const uncoveredLabel = uncoveredSameLocationMachines.map(formatMachineCandidateReference).join(', ')
+          const proceed = window.confirm(
+            `Na už vybraných lokalitách zůstává mimo trasu ${uncoveredLabel}, přestože vyžaduje doplnění nebo kontrolu. `
+            + 'Opravdu chceš pokračovat bez těchto automatů?'
+          )
+          if (!proceed) {
+            setStatus(`Trasu jsem zatím nespočítal. Doplň na stejné lokalitě také ${uncoveredLabel}.`, 'warning')
+            return
+          }
         }
         optimizeBtn.disabled = true
         optimizeBtn.textContent = 'Počítám trasu...'
