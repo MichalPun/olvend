@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v218-control-price-sync';
+const CACHE_NAME = 'olvend-v219-bagette-display-integrity';
 const APP_SHELL = [
   './',
   './index.html',
