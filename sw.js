@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v225-mobile-food-domain-module';
+const CACHE_NAME = 'olvend-v226-mobile-route-domain-module';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const APP_SHELL = [
   './mobile-coffee-domain.js?v=20261021-coffee-domain-v1',
   './mobile-food-visit.js?v=20261021-food-visit-v1',
   './mobile-food-domain.js?v=20261021-food-domain-v1',
+  './mobile-route-domain.js?v=20261021-route-domain-v1',
   './mobile-control.html',
   './control-route-protocol.html',
   './controlling.html',

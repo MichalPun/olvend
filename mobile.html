@@ -5418,7 +5418,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261021-mobile-food-domain-v1" defer></script>
+  <script src="./pwa.js?v=20261021-mobile-route-domain-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import {
@@ -5437,6 +5437,10 @@
       serializeFoodPreparation as serializeFoodPreparationData
     } from './mobile-food-visit.js?v=20261021-food-visit-v1'
     import { createFoodDomain } from './mobile-food-domain.js?v=20261021-food-domain-v1'
+    import {
+      createRouteDomain,
+      ensureRouteVisitRecord
+    } from './mobile-route-domain.js?v=20261021-route-domain-v1'
 
     const technicianRouteEmbedded = window.parent !== window && new URLSearchParams(location.search).get('workspace') === 'technician-route'
     if(technicianRouteEmbedded)document.body.classList.add('technician-route-embedded')
@@ -5583,6 +5587,24 @@
       getPlanogramChange: getFoodPlanogramChange,
       isExpiryExpired: isFoodExpiryExpired,
       getTransferReservedByBatch: getFoodTransferReservedByBatch
+    })
+
+    const {
+      findRouteStop,
+      getAssignedRoutePlan,
+      getCurrentRouteLocationStops,
+      getRouteStopLocationKey,
+      getRouteStops,
+      getRouteStopStatus,
+      getRouteVisitForStop,
+      isCurrentRouteLocationStop,
+      isRouteStopClosed
+    } = createRouteDomain({
+      getRoutePlans: () => state.routePlans,
+      getVisits: () => state.routeMachineVisits,
+      getAddRequests: () => state.routeAddMachineRequests,
+      getMachine: getRouteStopMachine,
+      getTodayIso: () => todayIso
     })
 
     function getIsoDateOffset(days = 0) {
@@ -8905,40 +8927,6 @@
       if (!els.hrRequestDateTo.value) els.hrRequestDateTo.value = els.hrRequestDateFrom.value || today
     }
 
-    function getAssignedRoutePlan() {
-      const activeStatuses = ['assigned', 'in_progress', 'started', 'open', 'draft']
-      const doneStatuses = ['done', 'completed']
-      const todayPlans = state.routePlans.filter((plan) => String(plan.planning_date || '') === String(todayIso) && String(plan.execution_status || '') !== 'cancelled')
-      return todayPlans.find((plan) => activeStatuses.includes(String(plan.execution_status || 'assigned')))
-        || todayPlans.find((plan) => doneStatuses.includes(String(plan.execution_status || '')))
-        || todayPlans[0]
-        || null
-    }
-
-    function getRouteStops(plan) {
-      const stops = Array.isArray(plan?.route_plan_stops) ? plan.route_plan_stops : []
-      const ordered = [...stops].sort((a, b) => Number(a.stop_order || 0) - Number(b.stop_order || 0))
-      const activeArrival = ordered.find((stop) => !isRouteStopClosed(stop) && getRouteStopStatus(stop) === 'arrived')
-      if (activeArrival) return ordered
-
-      // Schválený automat je závazně další otevřená zastávka. Tohle pravidlo
-      // platí i pro starší trasu, kterou mohl dřívější mobilní přepočet znovu
-      // odsunout na konec. Následující přepočet stejné pořadí uloží i do DB.
-      const pinnedRequest = state.routeAddMachineRequests
-        .filter((request) => String(request.route_plan_id || '') === String(plan?.id || '')
-          && request.status === 'approved'
-          && request.added_route_plan_stop_id)
-        .sort((a, b) => String(b.decided_at || b.requested_at || '').localeCompare(String(a.decided_at || a.requested_at || '')))
-        .find((request) => ordered.some((stop) => String(stop.id) === String(request.added_route_plan_stop_id) && !isRouteStopClosed(stop)))
-      if (!pinnedRequest) return ordered
-
-      const pinnedId = String(pinnedRequest.added_route_plan_stop_id)
-      const closed = ordered.filter(isRouteStopClosed)
-      const open = ordered.filter((stop) => !isRouteStopClosed(stop))
-      const pinned = open.find((stop) => String(stop.id) === pinnedId)
-      return pinned ? [...closed, pinned, ...open.filter((stop) => String(stop.id) !== pinnedId)] : ordered
-    }
-
     function formatRouteDurationWords(minutes) {
       const safeMinutes = Math.max(0, Math.round(Number(minutes || 0)))
       const hours = Math.floor(safeMinutes / 60)
@@ -9071,47 +9059,9 @@
       return `<section class="route-active-time"><div class="route-active-time-head"><div><span>Čas na této zastávce</span><strong>${escapeHtml(getRouteStopTitle(stop))}</strong></div><span class="route-active-time-status ${result.cls}">${escapeHtml(result.label)}</span></div><div class="route-active-time-grid"><div><span>Plánovaný pobyt</span><strong>${escapeHtml(formatRouteDurationWords(row.serviceMinutes))}</strong></div><div><span>Čas na místě</span><strong>${row.actualMinutes == null ? 'Ještě nezačal' : `${escapeHtml(formatRouteDurationWords(row.actualMinutes))}${row.completed ? '' : ' · probíhá'}`}</strong></div><div><span>Plán příjezdu</span><strong>${escapeHtml(formatRouteClock(row.arrival))}</strong></div><div><span>Skutečný příjezd</span><strong>${escapeHtml(formatRouteClock(row.actualArrival))}</strong></div></div><p class="route-active-time-note">Zastávka se uzavře současným tlačítkem „Dokončit automat“. Žádný další krok nepřidáváme.</p></section>`
     }
 
-    function getRouteVisitForStop(stop) {
-      return state.routeMachineVisits.find((visit) => String(visit.route_plan_stop_id || '') === String(stop?.id || ''))
-        || state.routeMachineVisits.find((visit) => String(visit.machine_id || '') === String(stop?.machine_id || '') && String(visit.route_plan_id || '') === String(stop?.route_plan_id || ''))
-        || null
-    }
-
-    function getRouteStopStatus(stop) {
-      const visit = getRouteVisitForStop(stop)
-      if (visit?.status === 'completed' || ['done', 'completed'].includes(String(stop?.status || '')) || stop?.completed_at) return 'completed'
-      if (visit?.status === 'skipped' || stop?.status === 'skipped') return 'skipped'
-      if (visit?.status === 'arrived' || stop?.status === 'arrived' || stop?.arrived_at) return 'arrived'
-      return 'pending'
-    }
-
-    function isRouteStopClosed(stop) {
-      return ['completed', 'skipped'].includes(getRouteStopStatus(stop))
-    }
-
-    function getRouteStopLocationKey(stop) {
-      const machine = getRouteStopMachine(stop)
-      const locationId = stop?.location_id ?? machine?.location_id
-      return locationId != null && String(locationId) !== ''
-        ? `location:${locationId}`
-        : `stop:${stop?.id || ''}`
-    }
-
     function formatRouteMachineCount(count) {
       const value = Math.max(0, Number(count || 0))
       return `${value} ${value === 1 ? 'automat' : value >= 2 && value <= 4 ? 'automaty' : 'automatů'}`
-    }
-
-    function getCurrentRouteLocationStops(plan) {
-      const stops = getRouteStops(plan)
-      const firstOpen = stops.find((stop) => !isRouteStopClosed(stop))
-      if (!firstOpen) return []
-      const locationKey = getRouteStopLocationKey(firstOpen)
-      return stops.filter((stop) => !isRouteStopClosed(stop) && getRouteStopLocationKey(stop) === locationKey)
-    }
-
-    function isCurrentRouteLocationStop(plan, stop) {
-      return getCurrentRouteLocationStops(plan).some((item) => String(item.id) === String(stop?.id))
     }
 
     function getRouteSkipReasonLabel(reason) {
@@ -13327,14 +13277,6 @@
       renderMyShifts()
     }
 
-    function findRouteStop(stopId) {
-      for (const plan of state.routePlans) {
-        const stop = getRouteStops(plan).find((item) => String(item.id) === String(stopId))
-        if (stop) return { plan, stop }
-      }
-      return { plan: null, stop: null }
-    }
-
     async function acceptAssignedRoute() {
       const plan = getAssignedRoutePlan()
       if (!plan?.id) {
@@ -13355,39 +13297,18 @@
 
     async function createOrUpdateRouteVisit(plan, stop) {
       const machine = getRouteStopMachine(stop)
-      if (!plan?.id || !stop?.id || !machine?.id) throw new Error('Zastávka nemá jednoznačně navázaný automat.')
-      const nowIso = new Date().toISOString()
       const existing = getRouteVisitForStop(stop)
-      if (existing?.id) {
-        if (existing.status !== 'completed' && !existing.arrived_at) {
-          const { error } = await supabase
-            .from('route_machine_visits')
-            .update({ status: 'arrived', arrived_at: nowIso, synced_at: nowIso })
-            .eq('id', existing.id)
-          if (error) throw error
-        }
-        return existing.id
-      }
-
-      const { data, error } = await supabase
-        .from('route_machine_visits')
-        .insert([{
-          route_plan_id: plan.id,
-          route_plan_stop_id: stop.id,
-          machine_id: machine.id,
-          employee_id: state.employee?.id || null,
-          vehicle_id: isWarehouseDirectRoute(plan) ? null : (plan.vehicle_id || getCurrentVehicleId() || null),
-          visit_date: todayIso,
-          machine_kind: getMachineKind(machine),
-          status: 'arrived',
-          arrived_at: nowIso,
-          offline_created_at: nowIso,
-          synced_at: nowIso
-        }])
-        .select('id')
-        .single()
-      if (error) throw error
-      return data.id
+      return ensureRouteVisitRecord({
+        client: supabase,
+        plan,
+        stop,
+        machine,
+        existing,
+        employeeId: state.employee?.id || null,
+        vehicleId: isWarehouseDirectRoute(plan) ? null : (plan.vehicle_id || getCurrentVehicleId() || null),
+        visitDate: todayIso,
+        machineKind: getMachineKind(machine)
+      })
     }
 
     async function loadRouteCoffeeDetail(stop, visitId) {
