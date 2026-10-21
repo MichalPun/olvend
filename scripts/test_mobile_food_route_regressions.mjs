@@ -50,7 +50,12 @@ function extractFunction(name) {
 }
 
 function context(extra = {}) {
-  const sandbox = vm.createContext({ console, Map, Math, Number, String, Date, ...extra })
+  const sandbox = vm.createContext({
+    console, Map, Math, Number, String, Date,
+    getFoodDisplayDuplicateConflict: () => null,
+    getFoodDuplicateEmergencyState: () => ({ conflict: null, safeAlternatives: [], emergency: false }),
+    ...extra
+  })
   vm.runInContext(extractFunction('getFoodPlanningSlot'), sandbox)
   return sandbox
 }

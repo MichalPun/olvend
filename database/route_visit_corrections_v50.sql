@@ -186,9 +186,9 @@ begin
        end loop;
        -- Uložení opraveného rozpisu šarží pro případnou další opravu; původní pohyby zůstávají v historii.
        if qty<>f.quantity or p.id<>f.product_id or b.id is distinct from nullif(y->>'original_batch_id','')::bigint then change_stock:=true; end if;
-       if p.id<>f.product_id then
-         update machine_planogram_slots set product_sku=p.sku,product_name=p.name where id=s.id;
-       end if;
+       -- Oprava historického skutečně vloženého produktu nesmí měnit základní
+       -- plánogram. Trvalá změna sortimentu patří výhradně do řízené změny
+       -- plánogramu; jinak by jednorázová náhrada vytvořila další duplicity.
        if is_new_fill and qty>0 then
          insert into route_machine_visit_food_fills(visit_id,visit_item_id,machine_id,planogram_slot_id,product_id,product_sku,product_name,quantity,expiry_date,sale_price_czk,load_order,stock_reference_id,correction_sources)
          values(v.id,i.id,v.machine_id,i.planogram_slot_id,p.id,p.sku,p.name,qty,nullif(y->>'expiry','')::date,(y->>'price')::numeric,(select coalesce(max(load_order),-1)+1 from route_machine_visit_food_fills where visit_item_id=i.id),new_ref||'_new_'||i.id||'_'||abs(f.id),jsonb_build_array(jsonb_build_object('product_id',p.id,'batch_id',b.id,'quantity',qty)));
