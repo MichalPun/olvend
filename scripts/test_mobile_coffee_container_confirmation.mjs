@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
+import { hasAcceptedCoffeeContainerState } from '../mobile-route-completion.js'
 
 const html = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
 
@@ -33,7 +34,7 @@ const context = vm.createContext({
   String
 })
 
-for (const name of ['hasCoffeeContainerRefillWork', 'isCoffeeContainerPendingConfirmation', 'hasAcceptedCoffeeContainerState']) {
+for (const name of ['hasCoffeeContainerRefillWork', 'isCoffeeContainerPendingConfirmation']) {
   vm.runInContext(extract(name), context)
 }
 
@@ -45,7 +46,7 @@ detail.draft.containers[470].accepted = true
 assert.equal(context.isCoffeeContainerPendingConfirmation('1851', container), false, 'Po potvrzení se zásobník smí uzavřít')
 
 detail.visitItems = []
-assert.equal(context.hasAcceptedCoffeeContainerState(detail, container), false, 'Pouhé lokální potvrzení bez uloženého stavu nesmí stačit databázi')
+assert.equal(hasAcceptedCoffeeContainerState(detail, container), false, 'Pouhé lokální potvrzení bez uloženého stavu nesmí stačit databázi')
 detail.visitItems = [{
   item_kind: 'coffee_container',
   coffee_container_id: 470,
@@ -54,11 +55,11 @@ detail.visitItems = [{
   actual_add_quantity: 0,
   issue_type: 'none'
 }]
-assert.equal(context.hasAcceptedCoffeeContainerState(detail, container), true, 'Uložený konečný stav se nesmí zapisovat podruhé')
+assert.equal(hasAcceptedCoffeeContainerState(detail, container), true, 'Uložený konečný stav se nesmí zapisovat podruhé')
 
 assert.match(html, /if \(isCoffeeVisit && !detail\) throw new Error/, 'Dokončení musí odmítnout chybějící detail kávové návštěvy')
 assert.match(html, /await saveCoffeePreparation\(stop\.id, 'machine'\)/, 'Před dokončením se musí uložit aktuální příprava')
-assert.match(html, /await persistUnchangedCoffeeContainerStates\(stop\.id\)/, 'Dokončení musí hromadně uložit fyzicky zkontrolované zásobníky beze změny')
+assert.match(html, /await persistUnchangedCoffeeContainerStates\(\{/, 'Dokončení musí hromadně uložit fyzicky zkontrolované zásobníky beze změny')
 assert.doesNotMatch(html, /const \[visitResult, stopResult\] = await Promise\.all/, 'Návštěva a zastávka se nesmí uzavírat souběžně')
 
 console.log('OK: coffee container correction remains pending until it is saved and confirmed')

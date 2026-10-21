@@ -1,8 +1,9 @@
-const CACHE_NAME = 'olvend-v220-stock-visit-integrity';
+const CACHE_NAME = 'olvend-v221-mobile-route-completion-module';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './mobile-route-completion.js?v=20261021-route-completion-v1',
   './mobile-control.html',
   './control-route-protocol.html',
   './controlling.html',

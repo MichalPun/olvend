@@ -5418,9 +5418,13 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261020-coffee-telemetry-v61" defer></script>
+  <script src="./pwa.js?v=20261021-mobile-route-completion-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
+    import {
+      completeRouteVisitRecord,
+      persistUnchangedCoffeeContainerStates
+    } from './mobile-route-completion.js?v=20261021-route-completion-v1'
 
     const technicianRouteEmbedded = window.parent !== window && new URLSearchParams(location.search).get('workspace') === 'technician-route'
     if(technicianRouteEmbedded)document.body.classList.add('technician-route-embedded')
@@ -10128,38 +10132,6 @@
       return !draft.accepted && hasCoffeeContainerRefillWork(stopId, container)
     }
 
-    function hasAcceptedCoffeeContainerState(detail, container) {
-      return (detail?.visitItems || []).some((item) => (
-        item.item_kind === 'coffee_container'
-        && String(item.coffee_container_id || '') === String(container?.id || '')
-        && item.accepted_at
-        && (
-          item.final_quantity != null
-          || (
-            item.issue_type === 'missing_stock'
-            && Number(item.actual_add_quantity || 0) === 0
-            && String(item.operator_note || '').trim().length >= 10
-          )
-        )
-      ))
-    }
-
-    async function persistUnchangedCoffeeContainerStates(stopId) {
-      const detail = getCoffeeDetail(stopId)
-      if (!detail?.visitId) throw new Error('Návštěva kávového automatu není připravená.')
-      const missing = (detail.containers || []).filter((container) => !hasAcceptedCoffeeContainerState(detail, container))
-      for (const container of missing) {
-        const current = Math.max(0, Number(container.current_quantity || 0))
-        await saveCoffeeContainerVisitItem(stopId, container, {
-          actual_before_quantity: current,
-          final_quantity: current,
-          issue_type: 'none',
-          operator_note: 'Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí, bez dalšího doplnění.'
-        })
-      }
-      return missing.length
-    }
-
     function getCoffeeGuidedStage(stopId, detail, readOnly = false) {
       if (readOnly) return 'done'
       if (!detail?.machineOpen) return 'goods'
@@ -14743,7 +14715,10 @@
         // fyzicky zkontrolovaných zásobníků, které nebylo potřeba měnit.
         // Databázová ochrana tak dostane úplný stav bez toho, aby operátorka
         // musela znovu rozklikávat každý beze změny ponechaný zásobník.
-        await persistUnchangedCoffeeContainerStates(stop.id)
+        await persistUnchangedCoffeeContainerStates({
+          detail,
+          saveContainerState: (container, payload) => saveCoffeeContainerVisitItem(stop.id, container, payload)
+        })
         await saveCoffeePreparation(stop.id, 'machine')
       }
       if (getMachineKind(getRouteStopMachine(stop)) === 'food') {
@@ -14764,26 +14739,15 @@
         }
       }
 
-      const pendingBeforeCompletion = getOfflineRequestCount()
       // The database trigger updates the paired route stop in the same
       // transaction. One durable write avoids a half-completed visit when an
       // offline connection delivers only one of two independent PATCH calls.
-      const visitResult = await supabase
-        .from('route_machine_visits')
-        .update({ status: 'completed', completed_at: nowIso, synced_at: nowIso })
-        .eq('id', visitId)
-        .select('id, status, completed_at, synced_at')
-        .maybeSingle()
-      const visitError = visitResult.error
-      const completionQueued = getOfflineRequestCount() > pendingBeforeCompletion
-      if (visitError && !completionQueued) throw visitError
-      if (!completionQueued && (
-        String(visitResult.data?.id || '') !== String(visitId)
-        || visitResult.data?.status !== 'completed'
-        || !visitResult.data?.completed_at
-      )) {
-        throw new Error('Server nepotvrdil dokončení návštěvy. Automat zůstává otevřený; obnov připojení a zkus to znovu.')
-      }
+      const { completionQueued } = await completeRouteVisitRecord({
+        client: supabase,
+        visitId,
+        completedAt: nowIso,
+        getPendingRequestCount: getOfflineRequestCount
+      })
 
       const currentVisit = getRouteVisitForStop(stop)
       if (currentVisit) {
