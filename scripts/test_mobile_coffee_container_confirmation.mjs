@@ -33,7 +33,7 @@ const context = vm.createContext({
   String
 })
 
-for (const name of ['hasCoffeeContainerRefillWork', 'isCoffeeContainerPendingConfirmation']) {
+for (const name of ['hasCoffeeContainerRefillWork', 'isCoffeeContainerPendingConfirmation', 'hasAcceptedCoffeeContainerState']) {
   vm.runInContext(extract(name), context)
 }
 
@@ -44,8 +44,21 @@ assert.equal(context.isCoffeeContainerPendingConfirmation('1851', container), tr
 detail.draft.containers[470].accepted = true
 assert.equal(context.isCoffeeContainerPendingConfirmation('1851', container), false, 'Po potvrzení se zásobník smí uzavřít')
 
+detail.visitItems = []
+assert.equal(context.hasAcceptedCoffeeContainerState(detail, container), false, 'Pouhé lokální potvrzení bez uloženého stavu nesmí stačit databázi')
+detail.visitItems = [{
+  item_kind: 'coffee_container',
+  coffee_container_id: 470,
+  accepted_at: '2026-10-21T12:00:00Z',
+  final_quantity: 2000,
+  actual_add_quantity: 0,
+  issue_type: 'none'
+}]
+assert.equal(context.hasAcceptedCoffeeContainerState(detail, container), true, 'Uložený konečný stav se nesmí zapisovat podruhé')
+
 assert.match(html, /if \(isCoffeeVisit && !detail\) throw new Error/, 'Dokončení musí odmítnout chybějící detail kávové návštěvy')
 assert.match(html, /await saveCoffeePreparation\(stop\.id, 'machine'\)/, 'Před dokončením se musí uložit aktuální příprava')
+assert.match(html, /await persistUnchangedCoffeeContainerStates\(stop\.id\)/, 'Dokončení musí hromadně uložit fyzicky zkontrolované zásobníky beze změny')
 assert.doesNotMatch(html, /const \[visitResult, stopResult\] = await Promise\.all/, 'Návštěva a zastávka se nesmí uzavírat souběžně')
 
 console.log('OK: coffee container correction remains pending until it is saved and confirmed')

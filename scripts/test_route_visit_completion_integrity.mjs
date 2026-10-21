@@ -6,6 +6,9 @@ const sql = fs.readFileSync(new URL('../database/route_stock_integrity_monitor_v
 
 assert.match(mobile, /if \(!\(detail\.containers \|\| \[\]\)\.length\)/)
 assert.match(mobile, /nemá nastavený plánogram zásobníků/)
+assert.match(mobile, /async function persistUnchangedCoffeeContainerStates/)
+assert.match(mobile, /await persistUnchangedCoffeeContainerStates\(stop\.id\)/)
+assert.match(mobile, /Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí/)
 
 assert.match(sql, /new\.status <> 'completed'[\s\S]+tg_op = 'UPDATE' and old\.status = 'completed'/)
 assert.match(sql, /machine_coffee_containers[\s\S]+container\.active = true/)
