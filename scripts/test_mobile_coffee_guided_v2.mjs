@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 
 const html = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
+const coffeeDomain = fs.readFileSync(new URL('../mobile-coffee-domain.js', import.meta.url), 'utf8')
 
 for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   if (!match[1].trim()) continue
@@ -31,8 +32,9 @@ for (const required of [
   'assets/cash-security-bag.png'
 ]) assert.ok(html.includes(required), `Chybí kávový prvek: ${required}`)
 
-assert.match(html, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
-assert.match(html, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
+assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261021-coffee-domain-v1'/, 'Kávová pravidla musí být oddělená od mobilního UI')
+assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
+assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')
 assert.match(html, /outcome === 'problem' && !problemReason[\s\S]*?Napiš důvod/, 'Nedokončená povinnost musí vyžadovat důvod')
 assert.match(html, /status:'done',[\s\S]*?task_unresolved:outcome === 'problem'/, 'Nahlášený problém musí kontrolní bod uzavřít bez čekání na technika')
