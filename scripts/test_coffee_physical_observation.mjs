@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const mobile = readFileSync(resolve(root, 'mobile.html'), 'utf8')
+const routeCompletion = readFileSync(resolve(root, 'mobile-route-completion.js'), 'utf8')
 const migration = readFileSync(resolve(root, 'database/coffee_physical_observation_watermark_v53.sql'), 'utf8')
 const routeStateMigration = readFileSync(resolve(root, 'database/route_visit_completion_consistency_v54.sql'), 'utf8')
 
@@ -42,9 +43,10 @@ const completeStop = mobile.slice(
   mobile.indexOf('async function completeRouteStop'),
   mobile.indexOf('async function prepareOpenedStopForSkip')
 )
-assert.match(completeStop, /from\('route_machine_visits'\)/)
 assert.doesNotMatch(completeStop, /from\('route_plan_stops'\)/)
-assert.match(completeStop, /Server nepotvrdil dokončení návštěvy/)
+assert.match(completeStop, /completeRouteVisitRecord/)
+assert.match(routeCompletion, /from\('route_machine_visits'\)/)
+assert.match(routeCompletion, /Server nepotvrdil dokončení návštěvy/)
 
 assert.match(migration, /physical_counted_at timestamptz/)
 assert.match(migration, /trg_route_visit_item_coffee_observation/)

@@ -2,13 +2,16 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 
 const mobile = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
+const completionModule = fs.readFileSync(new URL('../mobile-route-completion.js', import.meta.url), 'utf8')
 const sql = fs.readFileSync(new URL('../database/route_stock_integrity_monitor_v64.sql', import.meta.url), 'utf8')
 
 assert.match(mobile, /if \(!\(detail\.containers \|\| \[\]\)\.length\)/)
 assert.match(mobile, /nemá nastavený plánogram zásobníků/)
-assert.match(mobile, /async function persistUnchangedCoffeeContainerStates/)
-assert.match(mobile, /await persistUnchangedCoffeeContainerStates\(stop\.id\)/)
-assert.match(mobile, /Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí/)
+assert.match(mobile, /from '\.\/mobile-route-completion\.js\?v=20261021-route-completion-v1'/)
+assert.match(mobile, /await persistUnchangedCoffeeContainerStates\(\{/)
+assert.match(mobile, /await completeRouteVisitRecord\(\{/)
+assert.match(completionModule, /Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí/)
+assert.match(completionModule, /from\('route_machine_visits'\)/)
 
 assert.match(sql, /new\.status <> 'completed'[\s\S]+tg_op = 'UPDATE' and old\.status = 'completed'/)
 assert.match(sql, /machine_coffee_containers[\s\S]+container\.active = true/)
