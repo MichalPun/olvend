@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
+import { createFoodDomain } from '../mobile-food-domain.js'
 
 const html = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
 const coffeeDomain = fs.readFileSync(new URL('../mobile-coffee-domain.js', import.meta.url), 'utf8')
@@ -57,50 +58,44 @@ function context(extra = {}) {
     getFoodDuplicateEmergencyState: () => ({ conflict: null, safeAlternatives: [], emergency: false }),
     ...extra
   })
-  vm.runInContext(extractFunction('getFoodPlanningSlot'), sandbox)
   return sandbox
 }
 
 {
-  const sandbox = context({
-    getFoodPlanogramChange: () => null,
-    isFoodExpiryExpired: () => false,
-    getFoodDailySales: (_detail, slot) => Number(slot.dailySales || 0),
-    getFoodDemandTargetQuantity: (_slot, _detail, _sku) => Number(_slot.target_units || _slot.capacity_units || 0),
-    getFoodTransferReservedByBatch: () => new Map(),
-    getFoodSlotProductOptions: (slot) => [slot.product_sku, slot.pending_product_sku, slot.planned_product_sku].filter(Boolean).map(sku => ({sku}))
+  const domain = createFoodDomain({
+    getPlanogramChange: () => null,
+    isExpiryExpired: () => false,
+    getTransferReservedByBatch: () => new Map()
   })
-  vm.runInContext(extractFunction('getFoodRouteAllocatedQuantity'), sandbox)
 
   const last = { id: 1, machine_id: 100, product_sku: '28', current_units: 5, capacity_units: 15, target_units: 15, dailySales: 1 }
   const lastDetail = {
-    routePlanningContext: { loaded: true, routeSlots: [last], stopOrderByMachine: new Map([['100', 0]]) },
+    routePlanningContext: { loaded: true, routeSlots: [last], sold28ByMachineSku: new Map([['100:28', 28]]), stopOrderByMachine: new Map([['100', 0]]) },
     vehicleBatches: {}, vehicleStock: { '28': 10 }
   }
-  assert.equal(sandbox.getFoodRouteAllocatedQuantity(lastDetail, 1, last, { id: 28, sku: '28' }, 10), 10,
+  assert.equal(domain.getFoodRouteAllocatedQuantity(lastDetail, 1, last, { id: 28, sku: '28' }, 10), 10,
     'Poslední automat musí dostat všech 10 volných kusů až do kapacity')
 
   const strong = { id: 1, machine_id: 100, product_sku: '28', current_units: 5, capacity_units: 15, target_units: 15, dailySales: 2 }
   const weak = { id: 2, machine_id: 200, product_sku: '28', current_units: 0, capacity_units: 15, target_units: 2, dailySales: 0.1 }
   const routeDetail = {
-    routePlanningContext: { loaded: true, routeSlots: [strong, weak], stopOrderByMachine: new Map([['100', 0], ['200', 1]]) },
+    routePlanningContext: { loaded: true, routeSlots: [strong, weak], sold28ByMachineSku: new Map([['100:28', 56], ['200:28', 2.8]]), stopOrderByMachine: new Map([['100', 0], ['200', 1]]) },
     vehicleBatches: {}, vehicleStock: { '28': 10 }
   }
-  const strongAllocation = sandbox.getFoodRouteAllocatedQuantity(routeDetail, 1, strong, { id: 28, sku: '28' }, 10)
-  const weakAllocation = sandbox.getFoodRouteAllocatedQuantity(routeDetail, 2, weak, { id: 28, sku: '28' }, 15)
+  const strongAllocation = domain.getFoodRouteAllocatedQuantity(routeDetail, 1, strong, { id: 28, sku: '28' }, 10)
+  const weakAllocation = domain.getFoodRouteAllocatedQuantity(routeDetail, 2, weak, { id: 28, sku: '28' }, 15)
   assert.ok(strongAllocation > weakAllocation, 'Silný automat musí dostat více než následující slabý')
   assert.equal(strongAllocation + weakAllocation, 10, 'Rozdělení nesmí ztratit kusy v autě')
 }
 
 {
-  const sandbox = context({
-    getFoodPlanogramChange: () => null,
-    isFoodExpiryExpired: () => false,
-    getFoodDemandTargetQuantity: () => 6
+  const domain = createFoodDomain({
+    getPlanogramChange: () => null,
+    isExpiryExpired: () => false,
+    getTransferReservedByBatch: () => new Map()
   })
-  vm.runInContext(extractFunction('getFoodRequiredFillQuantity'), sandbox)
   const slot = { current_units: 5, capacity_units: 15, target_units: 15, desired_units: 1 }
-  assert.equal(sandbox.getFoodRequiredFillQuantity(slot, { routePlanningContext: { loaded: true } }), 10,
+  assert.equal(domain.getFoodRequiredFillQuantity(slot, { routePlanningContext: { loaded: true, sold28ByMachineSku: new Map() } }), 10,
     'Lokální strop na trase musí být fyzicky volná kapacita, ne nízký odhad prodejnosti')
 }
 
