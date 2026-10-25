@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v226-mobile-route-domain-module';
+const CACHE_NAME = 'olvend-v227-route-table-hotfix';
 const APP_SHELL = [
   './',
   './index.html',
@@ -22,6 +22,7 @@ const APP_SHELL = [
   './vendor/leaflet/leaflet.js',
   './route-skip-approval.html',
   './route-add-approval.html',
+  './routes-create.html',
   './supabase.js',
   './offline-queue.js',
   './secure-files.js',
