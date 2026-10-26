@@ -1,11 +1,11 @@
-const CACHE_NAME = 'olvend-v229-brown-cocoa-photo';
+const CACHE_NAME = 'olvend-v230-product-card-images';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
   './mobile-route-completion.js?v=20261021-route-completion-v1',
   './mobile-coffee-visit.js?v=20261021-coffee-visit-v1',
-  './mobile-coffee-domain.js?v=20261021-coffee-domain-v1',
+  './mobile-coffee-domain.js?v=20261026-product-images-v2',
   './mobile-food-visit.js?v=20261021-food-visit-v1',
   './mobile-food-domain.js?v=20261021-food-domain-v1',
   './mobile-route-domain.js?v=20261021-route-domain-v1',
@@ -96,6 +96,19 @@ self.addEventListener('fetch', (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) {
     if (requestUrl.hostname.endsWith('.supabase.co')) {
+      if (requestUrl.pathname.includes('/storage/v1/object/sign/product-images/')) {
+        const stableImageRequest = new Request(`${requestUrl.origin}${requestUrl.pathname}`, { method: 'GET' });
+        event.respondWith(
+          caches.match(stableImageRequest).then((cachedResponse) => {
+            if (cachedResponse) return cachedResponse;
+            return fetch(event.request).then((response) => {
+              if (response?.ok) caches.open(CACHE_NAME).then((cache) => cache.put(stableImageRequest, response.clone()));
+              return response;
+            });
+          })
+        );
+        return;
+      }
       event.respondWith(fetch(event.request, { cache: 'no-store' }));
       return;
     }

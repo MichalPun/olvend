@@ -14,10 +14,6 @@ export function createCoffeeDomain({
   formatNumber
 }) {
   const detailFor = (stopId) => getDetail(stopId)
-  const picklistImageBySku = {
-    '47': './assets/product-images/47.jpg',
-    '201': './assets/product-images/201.jpg'
-  }
 
   function isCoffeeCupProduct(container) {
     return /kelimek|kelímek|pohar|pohár|cup/.test(normalizeText(`${container?.product_name || ''} ${container?.product_sku || ''}`))
@@ -330,7 +326,9 @@ export function createCoffeeDomain({
 
   function getCoffeePickVisual(container) {
     const text = normalizeText(`${container?.product_name || ''} ${container?.product_sku || ''}`)
-    const imageUrl = picklistImageBySku[String(container?.product_sku || '').trim()] || ''
+    const product = getProducts().find((item) => String(item.id) === String(container?.product_id || ''))
+      || getProducts().find((item) => String(item.sku || '').trim() === String(container?.product_sku || '').trim())
+    const imageUrl = product?.image_url || ''
     const photo = imageUrl ? { imageUrl } : {}
     if (/kelimek|pohar|cup|vicko|lid/.test(text)) return { type: 'cup', icon: '▱', label: isCoffeeLidProduct(container) ? 'Víčka' : 'Kelímky', ...photo }
     if (/matcha|pistaci/.test(text)) return { type: 'matcha', icon: '●', label: 'Matcha', ...photo }
