@@ -227,12 +227,11 @@ begin
   v_internal_number := 'OVFP26-' || lpad(v_series_number::text, 4, '0');
 
   insert into public.purchase_orders (
-    supplier_id, order_scope, status, order_date, delivery_date, document_type,
-    due_date, note, delivery_note_number, invoice_number, received_at,
-    received_stock_location_id
+    supplier_id, order_scope, status, order_date, delivery_date, note,
+    delivery_note_number, invoice_number, received_at, received_stock_location_id
   ) values (
     v_supplier_id, 'general', 'received', date '2026-10-22', date '2026-10-22',
-    'invoice', date '2026-11-12', '[rada:' || v_internal_number || '] ' || v_base_note,
+    '[rada:' || v_internal_number || '] ' || v_base_note,
     'DOL2302651477', 'P01 2302612387', v_received_at, v_stock_location_id
   ) returning id into v_order_id;
 
