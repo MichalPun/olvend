@@ -36,6 +36,11 @@ assert.equal(hasAcceptedCoffeeContainerState({ visitItems: [{
   operator_note: 'Ve vozidle nebyla potřebná surovina.'
 }] }, containers[2]), true, 'Popsaná provozní výjimka musí zůstat platným potvrzením')
 
+await assert.rejects(() => persistUnchangedCoffeeContainerStates({
+  detail: { ...detail, needsCalibration: true },
+  saveContainerState: async () => {}
+}), /První načtení automatu není dokončené/, 'První návštěva nesmí hromadně převzít neznámé systémové nuly')
+
 const saves = []
 await persistUnchangedCoffeeContainerStates({
   detail,

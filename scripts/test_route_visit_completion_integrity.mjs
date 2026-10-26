@@ -8,11 +8,12 @@ const sql = fs.readFileSync(new URL('../database/route_stock_integrity_monitor_v
 
 assert.match(mobile, /if \(!\(detail\.containers \|\| \[\]\)\.length\)/)
 assert.match(mobile, /nemá nastavený plánogram zásobníků/)
-assert.match(mobile, /from '\.\/mobile-route-completion\.js\?v=20261021-route-completion-v1'/)
+assert.match(mobile, /from '\.\/mobile-route-completion\.js\?v=20261026-initial-count-v2'/)
 assert.match(mobile, /from '\.\/mobile-route-domain\.js\?v=20261021-route-domain-v1'/)
 assert.match(mobile, /await persistUnchangedCoffeeContainerStates\(\{/)
 assert.match(mobile, /await completeRouteVisitRecord\(\{/)
 assert.match(completionModule, /Hromadně potvrzeno při dokončení: fyzický stav zásobníku souhlasí/)
+assert.match(completionModule, /První načtení automatu není dokončené/)
 assert.match(completionModule, /from\('route_machine_visits'\)/)
 assert.match(routeDomain, /export async function ensureRouteVisitRecord/)
 

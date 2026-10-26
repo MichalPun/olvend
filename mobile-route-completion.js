@@ -34,6 +34,9 @@ export async function persistUnchangedCoffeeContainerStates({ detail, saveContai
   if (typeof saveContainerState !== 'function') throw new Error('Ukládání stavu zásobníků není dostupné.')
 
   const missing = getMissingCoffeeContainerStates(detail)
+  if (detail.needsCalibration && missing.length) {
+    throw new Error('První načtení automatu není dokončené. Fyzicky potvrď stav každého zásobníku.')
+  }
   for (const container of missing) {
     const current = Math.max(0, Number(container.current_quantity || 0))
     await saveContainerState(container, {
