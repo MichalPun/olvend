@@ -22,6 +22,8 @@ for (const required of [
   'guided-gear-toggle',
   'Víčka jsou zásoba',
   'guided-zero-refill-check',
+  'renderCoffeeGuidedCalibration',
+  'Povinné první načtení',
   'guided-check-outcome',
   'Bylo čisté / v pořádku',
   'Vyčištěno / opraveno',
@@ -32,7 +34,7 @@ for (const required of [
   'assets/cash-security-bag.png'
 ]) assert.ok(html.includes(required), `Chybí kávový prvek: ${required}`)
 
-assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261021-coffee-domain-v1'/, 'Kávová pravidla musí být oddělená od mobilního UI')
+assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261026-initial-count-v3'/, 'Kávová pravidla musí být oddělená od mobilního UI')
 assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')

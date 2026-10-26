@@ -93,6 +93,9 @@ assert.equal(domain.getCoffeeNetMovedQuantity([
 
 details.stop.needsCalibration = true
 assert.equal(domain.isCoffeeCalibrationComplete('stop'), false)
+details.stop.machineOpen = true
+assert.equal(domain.getCoffeeGuidedStage('stop', details.stop), 'calibration', 'Nový automat musí před doplněním projít fyzickým načtením všech zásobníků')
+details.stop.machineOpen = false
 details.stop.draft.calibration = { c1: { quantity: 125, done: true }, c2: { quantity: 200, done: true }, c3: { quantity: 1500, done: true } }
 assert.equal(domain.getCoffeeCalibrationQuantity('stop', coffee), 1500)
 assert.equal(domain.isCoffeeCalibrationComplete('stop'), true)

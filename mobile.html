@@ -5428,13 +5428,13 @@
     import {
       completeRouteVisitRecord,
       persistUnchangedCoffeeContainerStates
-    } from './mobile-route-completion.js?v=20261021-route-completion-v1'
+    } from './mobile-route-completion.js?v=20261026-initial-count-v2'
     import {
       persistCoffeeVisitItem,
       saveCoffeePreparationRecord,
       serializeCoffeePreparation
     } from './mobile-coffee-visit.js?v=20261021-coffee-visit-v1'
-    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261026-product-images-v2'
+    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261026-initial-count-v3'
     import {
       persistFoodVisitItem,
       saveFoodProgressRecord,
@@ -9784,11 +9784,34 @@
 
     function renderCoffeeStageNav(stage) {
       const stages = [['goods','Pick list'],['refill','Doplnění'],['cash','Hotovost'],['check','Kontrola']]
-      const activeIndex = ['finish','done'].includes(stage) ? stages.length : Math.max(0, stages.findIndex(([key]) => key === stage))
+      const normalizedStage = stage === 'calibration' ? 'refill' : stage
+      const activeIndex = ['finish','done'].includes(normalizedStage) ? stages.length : Math.max(0, stages.findIndex(([key]) => key === normalizedStage))
       return `<nav class="coffee-stage-nav" aria-label="Kroky práce u automatu">${stages.map(([key,label], index) => {
         const done = index < activeIndex
-        return `<button class="coffee-stage-tab ${done ? 'done' : key === stage ? 'active' : ''}" type="button" disabled><i>${done ? '✓' : index + 1}</i><span>${label}</span></button>`
+        return `<button class="coffee-stage-tab ${done ? 'done' : key === normalizedStage ? 'active' : ''}" type="button" disabled><i>${done ? '✓' : index + 1}</i><span>${label}</span></button>`
       }).join('')}</nav>`
+    }
+
+    function renderCoffeeGuidedCalibration(stop, detail) {
+      const containers = getCoffeeContainersInBagOrder(detail)
+      const completed = containers.filter((container) => isCoffeeContainerCalibrated(stop.id, container)).length
+      const pending = containers.find((container) => !isCoffeeContainerCalibrated(stop.id, container))
+      if (!pending) return `
+        <div class="coffee-next-box"><small>První načtení dokončeno</small><h4>Všechny zásobníky jsou potvrzené</h4><p>Fyzické hladiny jsou uložené jako výchozí bod pro prodeje a další doplňování.</p></div>
+        <button class="coffee-guide-primary" type="button" data-coffee-action="finish-calibration" data-stop-id="${escapeHtml(stop.id)}">Pokračovat k doplnění</button>`
+      const quantity = getCoffeeCalibrationQuantity(stop.id, pending)
+      const capacity = Number(pending.capacity_quantity || 0)
+      const percent = capacity ? Math.round(quantity / capacity * 100) : 0
+      return `
+        <div class="coffee-next-box"><small>Povinné první načtení · ${completed + 1} z ${containers.length}</small><h4>Zkontroluj ${escapeHtml(pending.product_name || 'zásobník')}</h4><p>Podívej se přímo do zásobníku ${escapeHtml(pending.container_code || '')} a nastav skutečnou hladinu. Nulu potvrď pouze tehdy, když je opravdu prázdný.</p></div>
+        <section class="coffee-guide-panel focus coffee-calibration-card" data-coffee-calibration-row data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}">
+          <div class="coffee-focus-top"><div><h4>${escapeHtml(pending.product_name || 'Surovina')}</h4><p>Zásobník ${escapeHtml(pending.container_code || '—')} · první fyzická kontrola</p></div><span class="coffee-focus-number">${escapeHtml(pending.container_code || 'Z')}</span></div>
+          <div class="coffee-pick-head">${renderCoffeeTube(quantity, 0, capacity, { calibration:true, stopId:stop.id, containerId:pending.id })}<div class="food-pick-stats" style="flex:1"><div class="food-pick-stat"><span>Skutečně</span><strong data-coffee-calibration-readout>${escapeHtml(`${formatNumber(quantity)}/${formatNumber(capacity)}`)}</strong></div><div class="food-pick-stat"><span>Naplnění</span><strong data-coffee-calibration-percent>${percent}%</strong></div></div></div>
+          <div class="coffee-calibration-control"><input type="range" data-coffee-calibration-range data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}" min="0" max="${escapeHtml(String(capacity || Math.max(quantity,1)))}" step="${escapeHtml(String(getCoffeeCalibrationSliderStep(pending)))}" value="${escapeHtml(String(quantity))}" aria-label="Reálná hladina zásobníku ${escapeHtml(pending.container_code || '')}"><span class="coffee-calibration-value" data-coffee-calibration-quantity>${escapeHtml(describeCoffeeQuantity(quantity,pending))}</span></div>
+          <div class="coffee-visit-actions"><span class="inline-stepper"><button data-coffee-action="calibration-step" data-delta="-1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}" type="button">−</button><span>${escapeHtml(describeCoffeeQuantity(quantity,pending))}</span><button data-coffee-action="calibration-step" data-delta="1" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}" type="button">+</button></span></div>
+        </section>
+        <button class="coffee-guide-primary" type="button" data-coffee-action="calibration-save" data-stop-id="${escapeHtml(stop.id)}" data-container-id="${escapeHtml(pending.id)}">Uložit stav a pokračovat</button>
+        <div class="coffee-guide-hint">Bez potvrzení všech ${containers.length} zásobníků nejde návštěvu dokončit</div>`
     }
 
     const COFFEE_GEAR_ITEMS = [
@@ -9984,11 +10007,12 @@
       const location = getRouteStopLocation(stop)
       const stage = getCoffeeGuidedStage(stop.id, detail, readOnly)
       const content = stage === 'goods' ? renderCoffeeGuidedPicklist(stop, detail)
+        : stage === 'calibration' ? renderCoffeeGuidedCalibration(stop, detail)
         : stage === 'refill' ? renderCoffeeGuidedRefill(stop, detail)
         : stage === 'cash' ? renderCoffeeGuidedCash(stop, detail)
         : ['check','finish'].includes(stage) ? renderCoffeeGuidedQuality(stop, detail)
         : `<div class="coffee-next-box"><small>Automat dokončen</small><h4>Práce je uložená</h4><p>Zobrazuješ pouze náhled dokončené návštěvy.</p></div>`
-      const stageLabel = stage === 'goods' ? 'Picklist' : stage === 'refill' ? 'Doplňování' : stage === 'cash' ? 'Hotovost' : stage === 'done' ? 'Hotovo' : 'Kontrola'
+      const stageLabel = stage === 'goods' ? 'Picklist' : stage === 'calibration' ? 'První načtení' : stage === 'refill' ? 'Doplňování' : stage === 'cash' ? 'Hotovost' : stage === 'done' ? 'Hotovo' : 'Kontrola'
       return `<div class="coffee-visit-detail coffee-guided coffee-only-flow"><header class="coffee-guided-head"><div class="coffee-guided-title"><button class="coffee-guided-back" type="button" data-coffee-action="guided-back-route" data-stop-id="${escapeHtml(stop.id)}" aria-label="Zpět na trasu">‹</button><div><h3>${escapeHtml(stageLabel)} · EV ${escapeHtml(machine?.evidence_number || machine?.id || '—')}</h3><p>${escapeHtml(location?.name || getRouteStopTitle(stop))} · ${escapeHtml(machine?.brand || 'Rheavendors')} ${escapeHtml(machine?.model || machine?.name || 'Luce X2')}</p>${renderRouteServiceReportButton(stop)}</div></div>${stage === 'goods' ? '' : renderCoffeeStageNav(stage)}</header><main class="coffee-only-body">${content}</main></div>`
     }
 
@@ -13616,7 +13640,7 @@
           manualCounter: currentManualCounter,
           manualCounterPrevious: previousManualCounter,
           vehiclePackages,
-          needsCalibration: !manualCounterMode && previousCalibrationCount === 0 && containers.length > 0,
+          needsCalibration: !manualCounterMode && !machine.stock_initialized_at && previousCalibrationCount === 0 && containers.length > 0,
           calibratedContainers,
           machineOpen: Boolean(state.routeCoffeeDetails[key]?.machineOpen || visit?.work_phase === 'machine' || existingItems.length),
           liveStateUpdatedAt: new Date().toISOString(),
@@ -14224,6 +14248,9 @@
       if (isCoffeeVisit) {
         if (!(detail.containers || []).length) {
           throw new Error('Tento kávový automat nemá nastavený plánogram zásobníků. Návštěvu nelze bezpečně dokončit; kontaktuj vedoucího nebo servis.')
+        }
+        if (detail.needsCalibration && !isCoffeeCalibrationComplete(stop.id)) {
+          throw new Error('Nejdřív fyzicky potvrď stav všech zásobníků v prvním načtení.')
         }
         const missingContainer = (detail.containers || []).find((container) => isCoffeeContainerPendingConfirmation(stop.id, container))
         if (missingContainer) throw new Error(`Nejdřív potvrď zásobník ${missingContainer.container_code || missingContainer.product_name}.`)

@@ -1,11 +1,11 @@
-const CACHE_NAME = 'olvend-v231-agfoods-product-images';
+const CACHE_NAME = 'olvend-v232-coffee-initial-count';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
-  './mobile-route-completion.js?v=20261021-route-completion-v1',
+  './mobile-route-completion.js?v=20261026-initial-count-v2',
   './mobile-coffee-visit.js?v=20261021-coffee-visit-v1',
-  './mobile-coffee-domain.js?v=20261026-product-images-v2',
+  './mobile-coffee-domain.js?v=20261026-initial-count-v3',
   './mobile-food-visit.js?v=20261021-food-visit-v1',
   './mobile-food-domain.js?v=20261021-food-domain-v1',
   './mobile-route-domain.js?v=20261021-route-domain-v1',

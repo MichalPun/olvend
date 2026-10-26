@@ -293,6 +293,9 @@ export function createCoffeeDomain({
   function getCoffeeGuidedStage(stopId, detail, readOnly = false) {
     if (readOnly) return 'done'
     if (!detail?.machineOpen) return 'goods'
+    // U nového automatu je nulový systémový stav pouze neznámý výchozí stav.
+    // Než dovolíme běžné doplnění, musí obsluha fyzicky potvrdit každý zásobník.
+    if (detail.needsCalibration && !isCoffeeCalibrationComplete(stopId)) return 'calibration'
     if (detail.draft?.extraContainerPickerOpen) return 'refill'
     if ((detail.containers || []).some((container) => isCoffeeContainerPendingConfirmation(stopId, container))) return 'refill'
     const hasContainers = (detail.containers || []).length > 0
