@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v227-route-table-hotfix';
+const CACHE_NAME = 'olvend-v228-product-photos';
 const APP_SHELL = [
   './',
   './index.html',
@@ -61,6 +61,8 @@ const APP_SHELL = [
   './assets/rheavendors-luce-x2.jpg',
   './assets/rheavendors-luce-x2-interior.jpg',
   './assets/cash-security-bag.png',
+  './assets/product-images/47.jpg',
+  './assets/product-images/201.jpg',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',

@@ -14,6 +14,10 @@ export function createCoffeeDomain({
   formatNumber
 }) {
   const detailFor = (stopId) => getDetail(stopId)
+  const picklistImageBySku = {
+    '47': './assets/product-images/47.jpg',
+    '201': './assets/product-images/201.jpg'
+  }
 
   function isCoffeeCupProduct(container) {
     return /kelimek|kelímek|pohar|pohár|cup/.test(normalizeText(`${container?.product_name || ''} ${container?.product_sku || ''}`))
@@ -326,12 +330,14 @@ export function createCoffeeDomain({
 
   function getCoffeePickVisual(container) {
     const text = normalizeText(`${container?.product_name || ''} ${container?.product_sku || ''}`)
-    if (/kelimek|pohar|cup|vicko|lid/.test(text)) return { type: 'cup', icon: '▱', label: isCoffeeLidProduct(container) ? 'Víčka' : 'Kelímky' }
-    if (/matcha|pistaci/.test(text)) return { type: 'matcha', icon: '●', label: 'Matcha' }
-    if (/cokolad|kakao/.test(text)) return { type: 'chocolate', icon: '◆', label: 'Čokoláda' }
-    if (/mlek|smetan|creamer/.test(text)) return { type: 'milk', icon: '◒', label: 'Mléčná složka' }
-    if (/kav|coffee|barber|sofie|zrno/.test(text)) return { type: 'coffee', icon: '●', label: 'Káva' }
-    return { type: 'cup', icon: '◇', label: container?.container_code || 'Surovina' }
+    const imageUrl = picklistImageBySku[String(container?.product_sku || '').trim()] || ''
+    const photo = imageUrl ? { imageUrl } : {}
+    if (/kelimek|pohar|cup|vicko|lid/.test(text)) return { type: 'cup', icon: '▱', label: isCoffeeLidProduct(container) ? 'Víčka' : 'Kelímky', ...photo }
+    if (/matcha|pistaci/.test(text)) return { type: 'matcha', icon: '●', label: 'Matcha', ...photo }
+    if (/cokolad|kakao|cocoa|enzo/.test(text)) return { type: 'chocolate', icon: '◆', label: 'Čokoláda', ...photo }
+    if (/mlek|smetan|creamer/.test(text)) return { type: 'milk', icon: '◒', label: 'Mléčná složka', ...photo }
+    if (/kav|coffee|caffe|presto|barber|sofie|zrno/.test(text)) return { type: 'coffee', icon: '●', label: 'Káva', ...photo }
+    return { type: 'cup', icon: '◇', label: container?.container_code || 'Surovina', ...photo }
   }
 
   function getCoffeeExtraContainerMaxPackages(stopId, detail, container) {
