@@ -3236,6 +3236,12 @@
       const unitsPerPackage = Number(pack?.units_per_package || 1)
       const packageUnit = getPackageQuantityUnit(product?.base_unit)
       const baseUnit = product?.base_unit || packageUnit
+      // product_packages.units_per_package is stored in the product base unit.
+      // Keep compatibility with historical kg/l rows saved as g/ml
+      // (1000 = 1 kg) until every environment has run the normalization.
+      if (['kg', 'l'].includes(normalizeText(baseUnit)) && unitsPerPackage < 100) {
+        return Number((amount * unitsPerPackage).toFixed(3))
+      }
       return Number(convertRecipeQuantityToBase(amount * unitsPerPackage, packageUnit, baseUnit).toFixed(3))
     }
     function getDefaultRecipeUnit(product) {
@@ -3403,8 +3409,8 @@
     function getPackageSummary(productId, baseUnit) {
       const packages = getProductPackages(productId)
       if (!packages.length) return 'Bez balení'
-      const quantityUnit = getPackageQuantityUnit(baseUnit)
-      return packages.map((pack) => `${pack.package_name} = ${Number(pack.units_per_package || 0).toFixed(3)} ${quantityUnit}${pack.is_default ? ' · výchozí' : ''}`).join(' / ')
+      const product = productsV13.find((item) => String(item.id) === String(productId)) || { base_unit: baseUnit }
+      return packages.map((pack) => `${pack.package_name} = ${formatQuantityValue(convertPackageQuantityToBase(product, 1, pack), baseUnit)}${pack.is_default ? ' · výchozí' : ''}`).join(' / ')
     }
     function formatQuantityValue(quantity, unit) {
       const value = Number(quantity || 0)
@@ -10657,11 +10663,12 @@
       }
       const defaultPackage = packageRows.find((row) => row.is_default) || packageRows[0]
       if (selectedType === 'ingredient' && defaultPackage && Number(defaultPackage.units_per_package) > 0) {
+        const packageBaseQuantity = convertPackageQuantityToBase({ base_unit: payload.base_unit }, 1, defaultPackage)
         const { error } = await supabase
           .from('machine_coffee_containers')
           .update({
-            refill_package_quantity: Number(defaultPackage.units_per_package),
-            refill_package_unit: getPackageQuantityUnit(payload.base_unit)
+            refill_package_quantity: packageBaseQuantity,
+            refill_package_unit: payload.base_unit
           })
           .eq('product_id', Number(productId))
           .eq('active', true)
@@ -11086,14 +11093,14 @@
           added.add(value)
           options.push({
             value,
-            label: `${pack.package_name || 'Balení'} (${formatQuantityValue(Number(pack.units_per_package || 0), getPackageQuantityUnit(baseUnit))})`
+            label: `${pack.package_name || 'Balení'} (${formatQuantityValue(convertPackageQuantityToBase(product, 1, pack), baseUnit)})`
           })
         })
       const effectivePack = getEffectiveDefaultPackage(product.id)
       if (effectivePack && Number(effectivePack.units_per_package || 0) > 0 && !effectivePack.id && !added.has('package:default')) {
         options.push({
           value: 'package:default',
-          label: `${effectivePack.package_name || 'Balení'} (${formatQuantityValue(Number(effectivePack.units_per_package || 0), getPackageQuantityUnit(baseUnit))})`
+          label: `${effectivePack.package_name || 'Balení'} (${formatQuantityValue(convertPackageQuantityToBase(product, 1, effectivePack), baseUnit)})`
         })
       }
       return options
@@ -13051,7 +13058,7 @@
         <section class="stock-card-v2-metrics">
           <div class="stock-card-v2-metric"><span>Aktuální zásoba</span><strong>${escapeHtml(formatQuantityValue(totalQuantity, product.base_unit || 'ks'))}</strong></div>
           <div class="stock-card-v2-metric"><span>Hodnota zásoby</span><strong>${escapeHtml(formatStockMoney(totalQuantity * Number(costMeta.value || 0)))}</strong></div>
-          <div class="stock-card-v2-metric"><span>Výchozí balení</span><strong>${escapeHtml(defaultPackage ? `${Number(defaultPackage.units_per_package || 0).toLocaleString('cs-CZ')} ${getPackageQuantityUnit(product.base_unit)}` : 'Chybí')}</strong></div>
+          <div class="stock-card-v2-metric"><span>Výchozí balení</span><strong>${escapeHtml(defaultPackage ? formatQuantityValue(convertPackageQuantityToBase(product, 1, defaultPackage), product.base_unit || 'ks') : 'Chybí')}</strong></div>
           <div class="stock-card-v2-metric"><span>Nákup / jednotka</span><strong>${escapeHtml(costMeta.value ? `${costMeta.value.toLocaleString('cs-CZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kč` : '0 Kč')}</strong></div>
         </section>
         <nav class="stock-card-v2-tabs" aria-label="Části karty zásoby"><button class="stock-card-v2-tab active" type="button" data-stock-v2-tab="sales">${getProductKind(product) === 'ingredient' ? 'Spotřeba' : 'Prodej'}</button><button class="stock-card-v2-tab" type="button" data-stock-v2-tab="where">Rozmístění zásob</button><button class="stock-card-v2-tab" type="button" data-stock-v2-tab="catalog">Balení a karta</button><button class="stock-card-v2-tab" type="button" data-stock-v2-tab="history">Historie pohybů</button></nav>
@@ -13059,10 +13066,10 @@
         <section class="stock-card-v2-panel" data-stock-v2-panel="where" hidden><div data-stock-v2-overview>${renderStockCardOverview(product, locationSummaryRows, [])}</div></section>
         <section class="stock-card-v2-panel" data-stock-v2-panel="catalog" hidden><div class="stock-card-v2-catalog"><article class="stock-card-v2-box"><h5>Balení</h5>${renderDetailTable([
           { label: 'Název', render: (row) => `<strong>${escapeHtml(row.package_name || 'Balení')}</strong><span class="subtext">${escapeHtml(row.is_default ? 'Výchozí pro nakládku' : 'Alternativní balení')}</span>` },
-          { label: 'Obsah', render: (row) => `<strong>${escapeHtml(Number(row.units_per_package || 0).toLocaleString('cs-CZ'))} ${escapeHtml(getPackageQuantityUnit(product.base_unit))}</strong>` },
+          { label: 'Obsah', render: (row) => `<strong>${escapeHtml(formatQuantityValue(convertPackageQuantityToBase(product, 1, row), product.base_unit || 'ks'))}</strong>` },
           { label: 'EAN balení', render: (row) => `<strong>${escapeHtml(row.package_barcode || 'Bez EAN')}</strong>` }
         ], packages, 'U položky není vyplněné balení.')}</article><article class="stock-card-v2-box"><h5>Údaje produktu</h5>${renderProductDetailFields([
-          { label: 'SKU', value: product.sku || 'Bez SKU' }, { label: 'EAN', value: product.ean || 'Bez EAN' }, { label: 'Jednotka', value: product.base_unit || 'ks' }, { label: 'Výchozí balení', value: defaultPackage ? `${Number(defaultPackage.units_per_package || 0).toLocaleString('cs-CZ')} ${getPackageQuantityUnit(product.base_unit)}` : 'Chybí' }, { label: 'Nákupní cena', value: costMeta.value ? `${costMeta.value.toFixed(2)} Kč` : '0 Kč' }, { label: 'Expirace', value: getExpiryModeLabel(product.expiry_tracking_mode) }
+          { label: 'SKU', value: product.sku || 'Bez SKU' }, { label: 'EAN', value: product.ean || 'Bez EAN' }, { label: 'Jednotka', value: product.base_unit || 'ks' }, { label: 'Výchozí balení', value: defaultPackage ? formatQuantityValue(convertPackageQuantityToBase(product, 1, defaultPackage), product.base_unit || 'ks') : 'Chybí' }, { label: 'Nákupní cena', value: costMeta.value ? `${costMeta.value.toFixed(2)} Kč` : '0 Kč' }, { label: 'Expirace', value: getExpiryModeLabel(product.expiry_tracking_mode) }
         ])}</article></div></section>
         <section class="stock-card-v2-panel" data-stock-v2-panel="history" hidden><div class="stock-card-v2-history">${renderStockMovementList(recentMovements, product.base_unit || 'ks')}</div></section>
       </div>`
