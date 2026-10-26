@@ -5434,7 +5434,7 @@
       saveCoffeePreparationRecord,
       serializeCoffeePreparation
     } from './mobile-coffee-visit.js?v=20261021-coffee-visit-v1'
-    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261021-coffee-domain-v1'
+    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261026-product-images-v2'
     import {
       persistFoodVisitItem,
       saveFoodProgressRecord,
@@ -5524,6 +5524,29 @@
       activeInstructionId: null,
       activeLocationOperatorMessage: null,
       pendingLocationOperatorMessages: []
+    }
+
+    const PRODUCT_IMAGE_BUCKET = 'product-images'
+    function getMobileProductImageUrl(product) {
+      if (product?.image_url) return product.image_url
+      const path = String(product?.image_path || '').trim()
+      if (!path) return ''
+      if (path.startsWith('static:')) return path.slice('static:'.length)
+      return ''
+    }
+    async function hydrateMobileProductImages(products) {
+      const paths = [...new Set((products || []).map((product) => String(product?.image_path || '').trim()).filter((path) => path && !path.startsWith('static:')))]
+      const signedByPath = new Map()
+      await Promise.all(paths.map(async (path) => {
+        const { data, error } = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(path, 12 * 60 * 60)
+        if (!error && data?.signedUrl) signedByPath.set(path, data.signedUrl)
+      }))
+      return (products || []).map((product) => ({
+        ...product,
+        image_url: String(product?.image_path || '').startsWith('static:')
+          ? String(product.image_path).slice('static:'.length)
+          : signedByPath.get(String(product?.image_path || '').trim()) || ''
+      }))
     }
 
     const {
@@ -12413,7 +12436,7 @@
     async function loadReferenceData() {
       const [vehicles, products, productPackages, locations, machines, businessContacts] = await Promise.all([
         supabase.from('vehicles').select('id, name, plate, current_odometer_km, warehouse_id, active').eq('active', true).order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, sale_price, vat_rate, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, can_be_sold_directly, active').order('name', { ascending: true }).limit(2000),
+        supabase.from('products').select('id, name, sku, ean, base_unit, product_category, usage_type, sale_price, vat_rate, expiry_tracking_mode, expiry_warning_days, requires_batch_tracking, can_be_sold_directly, active, image_path, image_updated_at').order('name', { ascending: true }).limit(2000),
         supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').eq('active', true).order('is_default', { ascending: false }),
         supabase.from('locations').select('id, name, city, active').order('name', { ascending: true }),
         supabase.from('machines').select('id, location_id, name, machine_type, evidence_number, sales_tracking_mode, active').order('name', { ascending: true }),
@@ -12422,7 +12445,7 @@
       if (vehicles.error) throw vehicles.error
       if (products.error) throw products.error
       state.vehicles = vehicles.data || []
-      state.products = products.data || []
+      state.products = await hydrateMobileProductImages(products.data || [])
       if (businessContacts.error) {
         state.businessContacts = []
         state.setupWarnings.push(`Partnery se nepodařilo načíst: ${businessContacts.error.message}`)
