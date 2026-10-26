@@ -18,7 +18,7 @@ assert.match(sql, /P01 2302612387/, 'receipt must use the invoice number')
 assert.match(sql, /DOL2302651477/, 'receipt must use the delivery note number')
 assert.match(sql, /37 150,00 Kč/, 'receipt must preserve the invoice net total')
 assert.match(sql, /41 608,00 Kč/, 'receipt must preserve the invoice gross total')
-assert.match(sql, /date '2026-11-12'/, 'receipt must preserve the due date')
+assert.match(sql, /\[splatnost:2026-11-12\]/, 'receipt must preserve the due date')
 
 for (const item of expected) {
   assert.ok(sql.includes(item.name), `${item.name} must be used on the product card`)
