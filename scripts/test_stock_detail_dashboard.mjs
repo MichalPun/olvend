@@ -17,5 +17,7 @@ assert.match(inventory, /data-stock-location-filter="vehicle"/, 'location overvi
 assert.match(inventory, /data-stock-location-filter="machine"/, 'location overview must filter machines')
 assert.match(inventory, /convertRecipeQuantityToBase\(row\.current, row\.unit, product\.base_unit\)/, 'machine telemetry must be converted into the product base unit')
 assert.match(inventory, /\.in\('movement_type', \['sale', 'consumption'\]\)/, 'chart must support both sales and ingredient consumption')
+assert.match(inventory, /stock-card-modal \.inventory-detail-modal[^}]+display:grid;[^}]+grid-template-rows:auto minmax\(0,1fr\) auto;/, 'stock card modal must keep a bounded scroll layout')
+assert.match(inventory, /stock-card-modal \.inventory-detail-modal > \.modal-body[^}]+overflow-y:auto;/, 'stock card content must remain vertically scrollable')
 
 console.log('OK: stock detail opens on the sales dashboard and keeps locations in a separate searchable tab')
