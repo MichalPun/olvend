@@ -5,5 +5,7 @@ warehouse SKU, so renaming a product does not break its image.
 
 | File | SKU | Product | Source |
 | --- | --- | --- | --- |
+| `44.jpg` | 44 | Staccato 0,5 kg Enzo Bencini | https://b2b.agfoods.hu/3230-carton-enzo-bencini-staccato-500g |
 | `201.jpg` | 201 | Caffé Presto 1 kg | https://www.promatic.cz/peclive-prazena-kava/ |
 | `47.jpg` | 47 | Cocoa 10% Enzo Bencini 1 kg (hnědý obal) | https://www.promatic.cz/enzo-bencini-10--cocoa-1000g/ |
+| `48.jpg` | 48 | Creamer White AG PRO 1 kg | https://tvakava.cz/naplne-pro-kavomat/48-agfoods-creamer-ag-pro-creamer-1-kg.html |

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v230-product-card-images';
+const CACHE_NAME = 'olvend-v231-agfoods-product-images';
 const APP_SHELL = [
   './',
   './index.html',
@@ -61,7 +61,9 @@ const APP_SHELL = [
   './assets/rheavendors-luce-x2.jpg',
   './assets/rheavendors-luce-x2-interior.jpg',
   './assets/cash-security-bag.png',
+  './assets/product-images/44.jpg',
   './assets/product-images/47.jpg',
+  './assets/product-images/48.jpg',
   './assets/product-images/201.jpg',
   './icons/icon-192.png',
   './icons/icon-512.png',

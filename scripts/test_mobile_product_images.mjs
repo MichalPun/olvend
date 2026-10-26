@@ -10,7 +10,7 @@ const inventory = await readFile(path.join(projectRoot, 'inventory.html'), 'utf8
 const serviceWorker = await readFile(path.join(projectRoot, 'sw.js'), 'utf8')
 const migration = await readFile(path.join(projectRoot, 'database', 'product_card_images_v60.sql'), 'utf8')
 
-for (const [sku, filename] of Object.entries({ 47: '47.jpg', 201: '201.jpg' })) {
+for (const [sku, filename] of Object.entries({ 44: '44.jpg', 47: '47.jpg', 48: '48.jpg', 201: '201.jpg' })) {
   const assetPath = `./assets/product-images/${filename}`
   assert.ok(migration.includes(`when '${sku}' then 'static:${assetPath}'`), `SKU ${sku} must be migrated to its product card image`)
   assert.ok(serviceWorker.includes(`'${assetPath}'`), `${filename} must be available in the offline app shell`)

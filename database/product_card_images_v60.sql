@@ -43,12 +43,14 @@ for each row execute function public.guard_product_image_change_v60();
 -- nahrani z aplikace se hodnota nahradi cestou v ulozisti.
 update public.products
 set image_path = case trim(sku)
+  when '44' then 'static:./assets/product-images/44.jpg'
   when '47' then 'static:./assets/product-images/47.jpg'
+  when '48' then 'static:./assets/product-images/48.jpg'
   when '201' then 'static:./assets/product-images/201.jpg'
   else image_path
 end,
 image_updated_at = coalesce(image_updated_at, now())
-where trim(sku) in ('47', '201')
+where trim(sku) in ('44', '47', '48', '201')
   and image_path is null;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
