@@ -58,7 +58,7 @@ begin
   if existing_job_id is not null then perform cron.unschedule(existing_job_id); end if;
   perform cron.schedule(
     'send-monthly-accounting-product-report',
-    '15 6 2 * *',
+    '15 6 * * *',
     $cron$
       select net.http_post(
         url := 'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/send-monthly-accounting-report',

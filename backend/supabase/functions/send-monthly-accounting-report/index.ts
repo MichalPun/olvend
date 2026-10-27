@@ -1,7 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { PDFDocument, rgb } from 'https://esm.sh/pdf-lib@1.17.1'
 import fontkit from 'https://esm.sh/@pdf-lib/fontkit@1.1.1'
-import { aggregateProductRows, periodFromMonth, previousMonthPeriod, reportGroups, reportTotals, zonedMidnightUtc } from './report-core.mjs'
+import { aggregateProductRows, periodFromMonth, pragueDayOfMonth, previousMonthPeriod, reportGroups, reportTotals, zonedMidnightUtc } from './report-core.mjs'
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -178,6 +178,11 @@ Deno.serve(async (req) => {
     const { data: settings, error: settingsError } = await admin.from('accounting_report_settings').select('*').eq('id', 1).single()
     if (settingsError) throw new Error(settingsError.message)
     if (automatic && !settings.enabled) return json({ ok: true, skipped: 'disabled' })
+    const sendDay = Number(settings.send_day || 2)
+    const currentDay = pragueDayOfMonth()
+    if (automatic && (currentDay < sendDay || currentDay > sendDay + 6)) {
+      return json({ ok: true, skipped: 'outside_send_window', current_day: currentDay, send_window: [sendDay, sendDay + 6] })
+    }
     const { data: payroll } = await admin.from('payroll_settings').select('accountant_email').eq('id', 1).maybeSingle()
     const recipient = String(settings.recipient_email || payroll?.accountant_email || '').trim()
     const cc = String(settings.cc_email || '').trim()

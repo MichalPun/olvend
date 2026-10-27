@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { aggregateProductRows, periodFromMonth, previousMonthPeriod, reportGroups, reportTotals, zonedMidnightUtc } from '../backend/supabase/functions/send-monthly-accounting-report/report-core.mjs'
+import { aggregateProductRows, periodFromMonth, pragueDayOfMonth, previousMonthPeriod, reportGroups, reportTotals, zonedMidnightUtc } from '../backend/supabase/functions/send-monthly-accounting-report/report-core.mjs'
 import fs from 'node:fs'
 
 const products = [
@@ -20,7 +20,9 @@ assert.deepEqual(reportTotals(aggregate), { quantity:3, revenue:100, cash:30, ca
 assert.deepEqual(previousMonthPeriod(new Date('2026-10-27T10:00:00Z')), periodFromMonth('2026-09'))
 assert.equal(zonedMidnightUtc('2026-09-01'), '2026-08-31T22:00:00.000Z')
 assert.equal(zonedMidnightUtc('2026-11-01'), '2026-10-31T23:00:00.000Z')
+assert.equal(pragueDayOfMonth(new Date('2026-11-02T06:15:00Z')), 2)
 const functionSource = fs.readFileSync(new URL('../backend/supabase/functions/send-monthly-accounting-report/index.ts', import.meta.url), 'utf8')
 assert.match(functionSource, /index \+= 18[^\n]+slice\(index, index \+ 18\)/, 'PDF stránka musí ponechat bezpečný prostor pro mezisoučet a patičku')
+assert.match(functionSource, /currentDay > sendDay \+ 6/, 'Automatické opakování musí mít omezené sedmidenní okno')
 
 console.log('Monthly accounting report: products, deduplication, grouping, totals, period and Prague boundaries passed.')
