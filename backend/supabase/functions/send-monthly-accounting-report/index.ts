@@ -137,7 +137,7 @@ async function buildPdf(rows: Record<string, unknown>[], period: { label: string
   const detailWidths = [70, 292, 85, 105, 90, 90]
   groups.forEach((group) => {
     const chunks = []
-    for (let index = 0; index < group.rows.length; index += 20) chunks.push(group.rows.slice(index, index + 20))
+    for (let index = 0; index < group.rows.length; index += 18) chunks.push(group.rows.slice(index, index + 18))
     if (!chunks.length) chunks.push([])
     chunks.forEach((chunk, chunkIndex) => {
       const page = addPage('DETAIL PRODUKTŮ')
