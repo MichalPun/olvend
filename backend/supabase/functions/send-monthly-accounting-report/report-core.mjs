@@ -168,6 +168,12 @@ export function previousMonthPeriod(now = new Date()) {
   return periodFromMonth(`${year}-${String(month).padStart(2, '0')}`)
 }
 
+export function pragueDayOfMonth(now = new Date()) {
+  return Number(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Prague', day: '2-digit',
+  }).format(now))
+}
+
 export function zonedMidnightUtc(localDate, timeZone = 'Europe/Prague') {
   const guess = new Date(`${localDate}T00:00:00.000Z`)
   const parts = new Intl.DateTimeFormat('en-CA', {
