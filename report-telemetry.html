@@ -1640,7 +1640,7 @@
       const number = typeof value === 'number' ? value : Number(value);
       if (Number.isFinite(number) && String(value).trim() !== '') {
         const formatted = number.toLocaleString('cs-CZ', { maximumFractionDigits:2 });
-        if (/Tržba|Náklad|Zisk|Hotově|Kartou|Celkem/.test(header) && !/%/.test(header)) return `${formatted} Kč`;
+        if (/Tržba|Náklad|Zisk|Hotově|Kartou|Neurčeno|Rozdíl|Celkem/.test(header) && !/%/.test(header)) return `${formatted} Kč`;
         if (/Marže|Podíl/.test(header)) return `${formatted} %`;
         return formatted;
       }
@@ -1648,6 +1648,187 @@
     }
     function pdfColumns(headers) { return headers; }
     function pdfSummary() { return [['Filtrovaných řádků',String(state.currentOutput.length)],...(state.tableMeta?.totals||[]).slice(0,3).map(([label,value])=>[label,typeof value==='number'?qty(value):value])]; }
+    function productPdfTotals(rows) {
+      return rows.reduce((total, row) => ({
+        quantity: total.quantity + Number(row.quantity || 0),
+        revenue: total.revenue + Number(row.revenue || 0),
+        cash: total.cash + Number(row.cash || 0),
+        cashless: total.cashless + Number(row.cashless || 0),
+        unknown: total.unknown + Number(row.unknown || 0)
+      }), { quantity:0, revenue:0, cash:0, cashless:0, unknown:0 });
+    }
+    function productPdfGroups(rows) {
+      const groups = new Map();
+      rows.filter((row) => !row._summary).forEach((row) => {
+        const label = row.typeLabel || 'Nezařazeno';
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(row);
+      });
+      return [...groups.entries()]
+        .map(([label, groupRows]) => ({
+          label,
+          rows: [...groupRows].sort((a, b) => Number(b.revenue || 0) - Number(a.revenue || 0) || String(a.label || '').localeCompare(String(b.label || ''), 'cs')),
+          totals: productPdfTotals(groupRows)
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'cs'));
+    }
+    function drawPdfBrandBar(doc, sectionLabel = 'ÚČETNÍ PODKLAD') {
+      doc.setFillColor(23, 33, 43);
+      doc.rect(0, 0, 297, 14, 'F');
+      doc.setFont('AptosNarrow', 'bold');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(10);
+      doc.text('OLVEND', 12, 9);
+      doc.setFont('AptosNarrow', 'normal');
+      doc.setFontSize(8);
+      doc.text(sectionLabel, 285, 9, { align:'right' });
+    }
+    function drawProductSalesAccountingPdf(doc, rows, exportRange, exportComparison) {
+      const groups = productPdfGroups(rows);
+      const totals = productPdfTotals(rows);
+      const paymentTotal = totals.cash + totals.cashless + totals.unknown;
+      const paymentDifference = totals.revenue - paymentTotal;
+      const generatedAt = new Date().toLocaleString('cs-CZ', { timeZone:'Europe/Prague', dateStyle:'short', timeStyle:'short' });
+      drawPdfBrandBar(doc);
+      doc.setTextColor(23, 33, 43);
+      doc.setFont('AptosNarrow', 'bold');
+      doc.setFontSize(19);
+      doc.text('Prodej podle produktů', 12, 27);
+      doc.setFont('AptosNarrow', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(95, 107, 124);
+      doc.text(`${formatDate(exportRange.from)} - ${formatDate(exportRange.to)} · Srovnání: ${exportComparison} · Vytvořeno ${generatedAt}`, 12, 33);
+
+      const cards = [
+        ['Položky', rows.length.toLocaleString('cs-CZ')],
+        ['Výdeje', `${qty(totals.quantity)} ks`],
+        ['Tržba s DPH', money(totals.revenue)],
+        ['Hotově', money(totals.cash)],
+        ['Kartou', money(totals.cashless)]
+      ];
+      const cardGap = 3;
+      const cardWidth = (273 - cardGap * (cards.length - 1)) / cards.length;
+      cards.forEach(([label, value], index) => {
+        const x = 12 + index * (cardWidth + cardGap);
+        doc.setFillColor(246,248,250);
+        doc.setDrawColor(220,226,232);
+        doc.roundedRect(x, 38, cardWidth, 19, 2, 2, 'FD');
+        doc.setFont('AptosNarrow','normal');
+        doc.setFontSize(7);
+        doc.setTextColor(95,107,124);
+        doc.text(label.toUpperCase(), x + 3.5, 44);
+        doc.setFont('AptosNarrow','bold');
+        doc.setFontSize(11);
+        doc.setTextColor(23,33,43);
+        doc.text(String(value), x + 3.5, 52);
+      });
+
+      const checkOk = Math.abs(paymentDifference) < 0.01;
+      doc.setFillColor(...(checkOk ? [236, 253, 245] : [255, 247, 237]));
+      doc.setDrawColor(...(checkOk ? [167, 243, 208] : [253, 186, 116]));
+      doc.roundedRect(12, 61, 273, 11, 2, 2, 'FD');
+      doc.setFont('AptosNarrow', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(...(checkOk ? [4, 120, 87] : [194, 65, 12]));
+      doc.text(`Kontrola plateb: hotově ${money(totals.cash)} + kartou ${money(totals.cashless)} + neurčeno ${money(totals.unknown)} = ${money(paymentTotal)} · rozdíl proti tržbě ${money(paymentDifference)}`, 16, 68);
+
+      const overviewBody = groups.map((group) => [
+        group.label,
+        group.rows.length.toLocaleString('cs-CZ'),
+        formatPdfCell('Výdeje ks', group.totals.quantity),
+        formatPdfCell('Tržba Kč', group.totals.revenue),
+        formatPdfCell('Hotově Kč', group.totals.cash),
+        formatPdfCell('Kartou Kč', group.totals.cashless),
+        formatPdfCell('Neurčeno Kč', group.totals.unknown),
+        totals.revenue ? pct(group.totals.revenue / totals.revenue * 100) : '0,0 %'
+      ]);
+      overviewBody.push([
+        'CELKEM',
+        rows.length.toLocaleString('cs-CZ'),
+        formatPdfCell('Výdeje ks', totals.quantity),
+        formatPdfCell('Tržba Kč', totals.revenue),
+        formatPdfCell('Hotově Kč', totals.cash),
+        formatPdfCell('Kartou Kč', totals.cashless),
+        formatPdfCell('Neurčeno Kč', totals.unknown),
+        '100,0 %'
+      ]);
+      doc.setFont('AptosNarrow', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(23,33,43);
+      doc.text('Souhrn podle skupin', 12, 81);
+      doc.autoTable({
+        head:[['Skupina','Položek','Výdeje ks','Tržba s DPH','Hotově','Kartou','Neurčeno','Podíl']],
+        body:overviewBody,
+        startY:85,
+        theme:'grid',
+        styles:{ font:'AptosNarrow', fontSize:8.3, cellPadding:2.2, textColor:[38,49,61], lineColor:[220,226,232], lineWidth:.15, valign:'middle' },
+        headStyles:{ font:'AptosNarrow', fontStyle:'bold', fillColor:[213,16,26], textColor:[255,255,255] },
+        alternateRowStyles:{ fillColor:[246,248,250] },
+        columnStyles:{ 0:{ cellWidth:48 }, 1:{ halign:'right' }, 2:{ halign:'right' }, 3:{ halign:'right' }, 4:{ halign:'right' }, 5:{ halign:'right' }, 6:{ halign:'right' }, 7:{ halign:'right' } },
+        margin:{ left:12, right:12, top:16, bottom:15 },
+        didParseCell:(data) => {
+          if (data.section === 'body' && data.row.index === overviewBody.length - 1) {
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.fillColor = [238, 246, 255];
+          }
+        }
+      });
+      const noteY = Math.min(195, Number(doc.lastAutoTable?.finalY || 145) + 8);
+      doc.setFont('AptosNarrow', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(95,107,124);
+      doc.text('Tržby jsou uvedené včetně DPH. Skupina Nezařazeno obsahuje telemetrické souhrny bez jednoznačného produktu.', 12, noteY);
+
+      groups.forEach((group) => {
+        doc.addPage();
+        const renderSectionHeader = () => {
+          drawPdfBrandBar(doc, 'DETAIL PRODUKTŮ');
+          doc.setFont('AptosNarrow', 'bold');
+          doc.setFontSize(16);
+          doc.setTextColor(23,33,43);
+          doc.text(group.label, 12, 25);
+          doc.setFont('AptosNarrow', 'normal');
+          doc.setFontSize(8.5);
+          doc.setTextColor(95,107,124);
+          doc.text(`${group.rows.length.toLocaleString('cs-CZ')} položek · ${qty(group.totals.quantity)} ks · tržba ${money(group.totals.revenue)}`, 12, 31);
+        };
+        renderSectionHeader();
+        const groupBody = group.rows.map((row) => [
+          row.sku || '',
+          row.label || 'Bez produktu',
+          formatPdfCell('Výdeje ks', row.quantity),
+          formatPdfCell('Tržba Kč', row.revenue),
+          formatPdfCell('Hotově Kč', row.cash),
+          formatPdfCell('Kartou Kč', row.cashless),
+          formatPdfCell('Neurčeno Kč', row.unknown)
+        ]);
+        doc.autoTable({
+          head:[['SKU','Produkt','Výdeje ks','Tržba s DPH','Hotově','Kartou','Neurčeno']],
+          body:groupBody,
+          foot:[['',`Mezisoučet · ${group.label}`,formatPdfCell('Výdeje ks', group.totals.quantity),formatPdfCell('Tržba Kč', group.totals.revenue),formatPdfCell('Hotově Kč', group.totals.cash),formatPdfCell('Kartou Kč', group.totals.cashless),formatPdfCell('Neurčeno Kč', group.totals.unknown)]],
+          showFoot:'lastPage',
+          startY:37,
+          theme:'grid',
+          styles:{ font:'AptosNarrow', fontSize:8, cellPadding:2.1, textColor:[38,49,61], lineColor:[220,226,232], lineWidth:.15, overflow:'linebreak', valign:'middle' },
+          headStyles:{ font:'AptosNarrow', fontStyle:'bold', fillColor:[213,16,26], textColor:[255,255,255] },
+          footStyles:{ font:'AptosNarrow', fontStyle:'bold', fillColor:[238,246,255], textColor:[23,33,43] },
+          alternateRowStyles:{ fillColor:[246,248,250] },
+          columnStyles:{ 0:{ cellWidth:28 }, 1:{ cellWidth:104 }, 2:{ halign:'right' }, 3:{ halign:'right' }, 4:{ halign:'right' }, 5:{ halign:'right' }, 6:{ halign:'right' } },
+          margin:{ left:12, right:12, top:37, bottom:15 },
+          didDrawPage:renderSectionHeader
+        });
+      });
+
+      const pageCount = doc.internal.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        doc.setPage(page);
+        doc.setFont('AptosNarrow', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(95,107,124);
+        doc.text('OLVEND · Účetní podklad · Tržby včetně DPH', 10, 204);
+        doc.text(`Strana ${page} z ${pageCount}`, 287, 204, { align:'right' });
+      }
+    }
     async function exportPdf() {
       if (!state.currentOutput.length) {
         setStatus('Není co exportovat do PDF.', 'error');
@@ -1664,6 +1845,13 @@
         const doc = new JsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
         await addPdfFonts(doc);
         const active = exportReport;
+        if (active.key === 'sales-product') {
+          const productRows = (state.workbookRows || []).filter((row) => !row._summary);
+          drawProductSalesAccountingPdf(doc, productRows, exportRange, exportComparison);
+          doc.save(`olvend-sales-product-accounting-${exportRange.from}-${exportRange.to}.pdf`);
+          setStatus(`Účetní PDF vytvořeno: ${productRows.length.toLocaleString('cs-CZ')} položek v ${productPdfGroups(productRows).length.toLocaleString('cs-CZ')} skupinách.`, 'success');
+          return;
+        }
         const headers = pdfColumns(Object.keys(exportRows[0]));
         const body = exportRows.map((row) => headers.map((header) => formatPdfCell(header, row[header])));
         doc.setFillColor(23, 33, 43);
@@ -1741,6 +1929,6 @@
     els.pdf.addEventListener('click', exportPdf);
     loadData();
   </script>
-  <script src="./pwa.js?v=20260903-telemetry-aggregate-v12" defer></script>
+  <script src="./pwa.js?v=20261027-accounting-product-pdf-v1" defer></script>
 </body>
 </html>
