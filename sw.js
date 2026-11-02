@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v244-water-snack-product-photos';
+const CACHE_NAME = 'olvend-v245-zebra-product-photo-cache-fix';
 const APP_SHELL = [
   './',
   './index.html',
@@ -192,7 +192,7 @@ self.addEventListener('fetch', (event) => {
           caches.match(stableImageRequest).then((cachedResponse) => {
             if (cachedResponse) return cachedResponse;
             return fetch(event.request).then((response) => {
-              if (response?.ok) caches.open(CACHE_NAME).then((cache) => cache.put(stableImageRequest, response.clone()));
+              if (response && response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(stableImageRequest, response.clone()));
               return response;
             });
           })
@@ -215,6 +215,22 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  if (requestUrl.pathname.includes('/assets/product-images/')) {
+    event.respondWith(
+      fetch(event.request).then((response) => {
+        if (response && response.ok) {
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+        }
+        return response;
+      }).catch(() =>
+        caches.match(event.request).then((cachedResponse) =>
+          cachedResponse || caches.match(event.request, { ignoreSearch: true })
+        )
+      )
+    );
+    return;
+  }
+
   const isFreshAsset =
     event.request.mode === 'navigate'
     || ['script', 'style', 'worker'].includes(event.request.destination)
@@ -225,7 +241,7 @@ self.addEventListener('fetch', (event) => {
   if (isFreshAsset) {
     const networkResponse = fetch(event.request)
       .then(async (response) => {
-        if (response?.ok) {
+        if (response && response.ok) {
           const cache = await caches.open(CACHE_NAME);
           await cache.put(event.request, response.clone());
         }
@@ -244,8 +260,10 @@ self.addEventListener('fetch', (event) => {
       if (cachedResponse) return cachedResponse;
 
       return fetch(event.request).then((response) => {
-        const responseClone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        if (response && response.ok) {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        }
         return response;
       });
     })

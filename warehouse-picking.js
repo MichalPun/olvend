@@ -312,10 +312,16 @@ function productFallback(product, item) {
 }
 
 function productImageUrl(product) {
-  if (product?.image_url) return product.image_url
-  const path = String(product?.image_path || '').trim()
-  if (!path) return ''
-  return path.startsWith('static:') ? path.slice('static:'.length) : ''
+  const resolvedUrl = product?.image_url || (() => {
+    const path = String(product?.image_path || '').trim()
+    if (!path) return ''
+    return path.startsWith('static:') ? path.slice('static:'.length) : ''
+  })()
+  if (!resolvedUrl) return ''
+  const imageVersion = String(product?.image_updated_at || '').trim()
+  if (!imageVersion) return resolvedUrl
+  const separator = resolvedUrl.includes('?') ? '&' : '?'
+  return `${resolvedUrl}${separator}olvend_image_v=${encodeURIComponent(imageVersion)}`
 }
 
 async function hydrateProductImages(products) {
@@ -467,8 +473,17 @@ function renderCurrentItem() {
   elements.productPhoto.hidden = true
   elements.productPhoto.alt = `Fotografie ${item.product_name || product.name || 'produktu'}`
   const imageUrl = productImageUrl(product)
-  if (imageUrl) elements.productPhoto.src = imageUrl
-  else elements.productPhoto.removeAttribute('src')
+  if (imageUrl) {
+    elements.productPhoto.src = imageUrl
+    window.setTimeout(() => {
+      if (elements.productPhoto.complete && elements.productPhoto.naturalWidth > 0) {
+        elements.productPhoto.hidden = false
+        elements.productFallback.hidden = true
+      }
+    }, 0)
+  } else {
+    elements.productPhoto.removeAttribute('src')
+  }
   elements.skipPanel.hidden = true
   renderQuantityAndStock()
   showView('pickingView')

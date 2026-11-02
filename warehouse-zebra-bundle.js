@@ -7316,10 +7316,16 @@
     return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
   }
   function productImageUrl(product) {
-    if (product == null ? void 0 : product.image_url) return product.image_url;
-    const path = String((product == null ? void 0 : product.image_path) || "").trim();
-    if (!path) return "";
-    return path.startsWith("static:") ? path.slice("static:".length) : "";
+    const resolvedUrl = (product == null ? void 0 : product.image_url) || (() => {
+      const path = String((product == null ? void 0 : product.image_path) || "").trim();
+      if (!path) return "";
+      return path.startsWith("static:") ? path.slice("static:".length) : "";
+    })();
+    if (!resolvedUrl) return "";
+    const imageVersion = String((product == null ? void 0 : product.image_updated_at) || "").trim();
+    if (!imageVersion) return resolvedUrl;
+    const separator = resolvedUrl.includes("?") ? "&" : "?";
+    return "".concat(resolvedUrl).concat(separator, "olvend_image_v=").concat(encodeURIComponent(imageVersion));
   }
   async function hydrateProductImages(products) {
     const remotePaths = [...new Set((products || []).map((product) => String((product == null ? void 0 : product.image_path) || "").trim()).filter((path) => path && !path.startsWith("static:")))];
@@ -7440,8 +7446,17 @@
     elements.productPhoto.hidden = true;
     elements.productPhoto.alt = "Fotografie ".concat(item.product_name || product.name || "produktu");
     const imageUrl = productImageUrl(product);
-    if (imageUrl) elements.productPhoto.src = imageUrl;
-    else elements.productPhoto.removeAttribute("src");
+    if (imageUrl) {
+      elements.productPhoto.src = imageUrl;
+      window.setTimeout(() => {
+        if (elements.productPhoto.complete && elements.productPhoto.naturalWidth > 0) {
+          elements.productPhoto.hidden = false;
+          elements.productFallback.hidden = true;
+        }
+      }, 0);
+    } else {
+      elements.productPhoto.removeAttribute("src");
+    }
     elements.skipPanel.hidden = true;
     renderQuantityAndStock();
     showView("pickingView");
