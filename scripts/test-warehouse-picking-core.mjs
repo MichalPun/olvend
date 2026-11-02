@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  formatBaseQuantity,
   getItemBaseQuantity,
   getPickingCategory,
   getStoragePosition,
@@ -33,6 +34,9 @@ assert.deepEqual(sorted.map((item) => item.product_id), [3, 2, 1])
 assert.equal(quantityToBase(6, 'Balení', products[2], packages[0]), 72)
 assert.equal(quantityFromBase(72, 'package', products[2], packages[0]), 6)
 assert.equal(getItemBaseQuantity({ product_id: 3, unit: 'Balení', prepared_quantity: 6 }, products[2], packages), 72)
+assert.equal(formatBaseQuantity(72, { base_unit: 'ks' }), '72 ks')
+assert.equal(formatBaseQuantity(18, { base_unit: 'tyčí' }), '18 tyčí')
+assert.equal(formatBaseQuantity(24, { base_unit: 'kelímků' }), '24 kelímků')
 
 const skipped = { requested_quantity: 6, prepared_quantity: 0, note: '[Nevychystáno: Není skladem]' }
 assert.equal(isSkippedItem(skipped), true)

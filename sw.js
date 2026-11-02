@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v246-zebra-shelf-label';
+const CACHE_NAME = 'olvend-v247-vehicle-base-unit';
 const APP_SHELL = [
   './',
   './index.html',

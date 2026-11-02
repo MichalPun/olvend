@@ -6992,6 +6992,9 @@
   function formatQuantity(value, maximumFractionDigits = 2) {
     return Number(value || 0).toLocaleString("cs-CZ", { maximumFractionDigits });
   }
+  function formatBaseQuantity(value, product, fallbackUnit = "ks") {
+    return "".concat(formatQuantity(value), " ").concat((product == null ? void 0 : product.base_unit) || fallbackUnit);
+  }
   function parseQuantity(value, fallback = 0) {
     const parsed = Number(String(value != null ? value : "").replace(",", "."));
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -7433,7 +7436,7 @@
     const reserved = otherReservations(request, item);
     const free = warehouse - reserved - state.quantityPieces;
     elements.warehouseStock.textContent = formatInMode(warehouse, item, product, pack);
-    elements.vehicleStock.textContent = formatInMode(vehicle, item, product, pack);
+    elements.vehicleStock.textContent = formatBaseQuantity(vehicle, product);
     elements.otherReserved.textContent = formatInMode(reserved, item, product, pack);
     elements.freeAfterRequests.textContent = formatInMode(free, item, product, pack);
     elements.freeAfterRequests.parentElement.style.background = free < 0 ? "var(--danger-soft)" : "var(--green-soft)";

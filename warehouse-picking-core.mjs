@@ -19,6 +19,10 @@ export function formatQuantity(value, maximumFractionDigits = 2) {
   return Number(value || 0).toLocaleString('cs-CZ', { maximumFractionDigits })
 }
 
+export function formatBaseQuantity(value, product, fallbackUnit = 'ks') {
+  return `${formatQuantity(value)} ${product?.base_unit || fallbackUnit}`
+}
+
 export function parseQuantity(value, fallback = 0) {
   const parsed = Number(String(value ?? '').replace(',', '.'))
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
