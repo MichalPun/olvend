@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v235-zebra-cache-bypass';
+const CACHE_NAME = 'olvend-v236-zebra-compatible-boot';
 const APP_SHELL = [
   './',
   './index.html',
@@ -31,7 +31,9 @@ const APP_SHELL = [
   './route-add-approval.html',
   './routes-create.html',
   './supabase.js',
+  './supabase-zebra.js',
   './vendor/supabase/supabase-js-2.118.0.bundle.mjs',
+  './vendor/supabase/supabase-js-2.118.0-es2017.bundle.mjs',
   './offline-queue.js',
   './secure-files.js',
   './machines-planogram.css?v=20260913d',
