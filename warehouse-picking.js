@@ -208,18 +208,6 @@ function employeeName(id) {
   return employee ? [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Operátor' : 'Bez operátora'
 }
 
-function roleLabel(role) {
-  const labels = {
-    admin: 'Administrátor',
-    manager: 'Vedoucí',
-    warehouse: 'Sklad',
-    technician: 'Technik',
-    operator: 'Operátor'
-  }
-  const normalized = String(role || '').trim().toLowerCase()
-  return labels[normalized] || role || 'Pracovník OLVEND'
-}
-
 function renderIdentity() {
   const employee = state.me
   if (!employee) return
@@ -230,9 +218,7 @@ function renderIdentity() {
     .join('')
     .slice(0, 2)
     .toUpperCase() || 'OL'
-  if (elements.currentUserName) elements.currentUserName.textContent = fullName
   if (elements.currentUserInitials) elements.currentUserInitials.textContent = initials
-  if (elements.currentUserRole) elements.currentUserRole.textContent = roleLabel(employee.role)
   if (elements.brandUserLabel) elements.brandUserLabel.textContent = `Sklad · ${fullName}`
 }
 
@@ -686,8 +672,9 @@ async function logout() {
   }
   if (elements.logoutBtn) {
     elements.logoutBtn.disabled = true
-    elements.logoutBtn.textContent = 'Odpojuji…'
+    elements.logoutBtn.setAttribute('aria-label', 'Odpojuji přihlášeného pracovníka…')
   }
+  if (elements.currentUserInitials) elements.currentUserInitials.textContent = '…'
   try { await supabase.auth.signOut({ scope: 'local' }) } catch (_) {}
   localStorage.removeItem('sb-rerjlkrhiytgscjerqgs-auth-token')
   localStorage.removeItem('olvendUser')
