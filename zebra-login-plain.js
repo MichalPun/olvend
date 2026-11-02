@@ -140,7 +140,7 @@
 
       storeLogin(session, employee, rememberMeInput.checked)
       setStatus('Přihlášení proběhlo. Otevírám sklad…', 'success')
-      window.location.replace('zebra-sklad.html')
+      window.location.replace('zebra-aplikace.html')
     } catch (error) {
       clearStoredLogin()
       var message = error && error.message ? error.message : 'Přihlášení se nezdařilo.'

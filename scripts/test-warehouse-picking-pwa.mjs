@@ -15,6 +15,11 @@ const zebraHtml = fs.readFileSync(path.join(root, 'zebra-sklad.html'), 'utf8')
 const zebraLogin = fs.readFileSync(path.join(root, 'zebra-login.html'), 'utf8')
 const zebraPlainLogin = fs.readFileSync(path.join(root, 'zebra-prihlaseni.html'), 'utf8')
 const zebraPlainLoginJavascript = fs.readFileSync(path.join(root, 'zebra-login-plain.js'), 'utf8')
+const zebraApplication = fs.readFileSync(path.join(root, 'zebra-aplikace.html'), 'utf8')
+const zebraPolyfills = fs.readFileSync(path.join(root, 'zebra-polyfills.js'), 'utf8')
+const zebraStartup = fs.readFileSync(path.join(root, 'zebra-startup.js'), 'utf8')
+const zebraPwa = fs.readFileSync(path.join(root, 'pwa-zebra.js'), 'utf8')
+const zebraBundle = fs.readFileSync(path.join(root, 'warehouse-zebra-bundle.js'), 'utf8')
 const zebraManifest = JSON.parse(fs.readFileSync(path.join(root, 'zebra-sklad.webmanifest'), 'utf8'))
 
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]))
@@ -24,7 +29,7 @@ assert.deepEqual([...referencedIds].filter((id) => !ids.has(id)), [], 'JavaScrip
 assert.equal(manifest.start_url, '/warehouse-picking.html')
 assert.equal(manifest.display, 'standalone')
 assert.equal(manifest.orientation, 'portrait')
-assert.equal(zebraManifest.start_url, '/zebra-sklad.html')
+assert.equal(zebraManifest.start_url, '/zebra-aplikace.html')
 for (const icon of manifest.icons || []) {
   assert.equal(fs.existsSync(path.join(root, icon.src.replace(/^\//, ''))), true, `Chybí ikona ${icon.src}`)
 }
@@ -40,7 +45,7 @@ for (const required of ['warehouse-picking.html', 'warehouse-picking.js', 'wareh
 assert.equal(supabaseJavascript.includes('https://esm.sh/@supabase'), false, 'Start nesmí záviset na externím esm.sh CDN.')
 assert.equal(supabaseJavascript.includes('./vendor/supabase/supabase-js-2.118.0.bundle.mjs'), true)
 assert.ok(appShellFiles.includes('vendor/supabase/supabase-js-2.118.0.bundle.mjs'), 'Lokální Supabase SDK chybí v APP_SHELL.')
-for (const required of ['zebra-login.html', 'zebra-prihlaseni.html', 'zebra-login-plain.js', 'zebra-sklad.html', 'zebra-sklad.webmanifest']) {
+for (const required of ['zebra-login.html', 'zebra-prihlaseni.html', 'zebra-login-plain.js', 'zebra-sklad.html', 'zebra-aplikace.html', 'zebra-polyfills.js', 'zebra-startup.js', 'pwa-zebra.js', 'warehouse-zebra-bundle.js', 'zebra-sklad.webmanifest']) {
   assert.ok(appShellFiles.includes(required), `${required} chybí v APP_SHELL.`)
 }
 assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v4'), true)
@@ -57,7 +62,17 @@ assert.equal(zebraPlainLogin.includes("import('./supabase"), false)
 assert.equal(zebraPlainLoginJavascript.includes('/auth/v1/token?grant_type=password'), true)
 assert.equal(zebraPlainLoginJavascript.includes('/rest/v1/rpc/security_active_employee'), true)
 assert.equal(zebraPlainLoginJavascript.includes("loginBtn.disabled = false"), true)
+assert.equal(zebraPlainLoginJavascript.includes("window.location.replace('zebra-aplikace.html')"), true)
 assert.equal(zebraHtml.includes("const loginUrl = 'zebra-prihlaseni.html'"), true)
+assert.equal(zebraApplication.includes('type="module"'), false)
+assert.ok(zebraApplication.indexOf('zebra-polyfills.js') < zebraApplication.indexOf('warehouse-zebra-bundle.js'))
+assert.ok(zebraApplication.indexOf('zebra-startup.js') < zebraApplication.indexOf('warehouse-zebra-bundle.js'))
+assert.equal(zebraPolyfills.includes('Promise.prototype.finally'), true)
+assert.equal(zebraPolyfills.includes('window.crypto.randomUUID'), true)
+assert.doesNotMatch(zebraStartup, /\?\.|\?\?|=>/)
+assert.doesNotMatch(zebraPwa, /\?\.|\?\?|=>|\basync\b|\bawait\b/)
+assert.doesNotMatch(zebraBundle, /^\s*(?:import|export)\s/m)
+assert.equal(zebraBundle.includes('warehousePickingApp'), true)
 assert.equal(javascript.includes('setBootStage('), true)
 
 assert.equal(javascript.includes("status: 'ready'"), true)

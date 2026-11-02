@@ -39,11 +39,21 @@ async function offlineAwareFetch(input, init = {}) {
   let lastError = null
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const controller = new AbortController()
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
     const timeoutMs = queueable ? 3000 : (attempt === 0 ? 18000 : 25000)
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+    let timer = null
     try {
-      return await fetch(input, { ...init, signal: init.signal || controller.signal })
+      const requestInit = controller ? { ...init, signal: init.signal || controller.signal } : init
+      const requestPromise = fetch(input, requestInit)
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = window.setTimeout(() => {
+          if (controller) controller.abort()
+          const timeoutError = new Error('Request aborted by timeout')
+          timeoutError.name = 'AbortError'
+          reject(timeoutError)
+        }, timeoutMs)
+      })
+      return await Promise.race([requestPromise, timeoutPromise])
     } catch (error) {
       lastError = error
       const wasAborted = error?.name === 'AbortError' || /abort/i.test(String(error?.message || error || ''))
@@ -53,7 +63,7 @@ async function offlineAwareFetch(input, init = {}) {
       }
       break
     } finally {
-      window.clearTimeout(timer)
+      if (timer !== null) window.clearTimeout(timer)
     }
   }
 
