@@ -13,6 +13,8 @@ const serviceWorker = fs.readFileSync(path.join(root, 'sw.js'), 'utf8')
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'warehouse-picking.webmanifest'), 'utf8'))
 const zebraHtml = fs.readFileSync(path.join(root, 'zebra-sklad.html'), 'utf8')
 const zebraLogin = fs.readFileSync(path.join(root, 'zebra-login.html'), 'utf8')
+const zebraPlainLogin = fs.readFileSync(path.join(root, 'zebra-prihlaseni.html'), 'utf8')
+const zebraPlainLoginJavascript = fs.readFileSync(path.join(root, 'zebra-login-plain.js'), 'utf8')
 const zebraManifest = JSON.parse(fs.readFileSync(path.join(root, 'zebra-sklad.webmanifest'), 'utf8'))
 
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]))
@@ -38,11 +40,10 @@ for (const required of ['warehouse-picking.html', 'warehouse-picking.js', 'wareh
 assert.equal(supabaseJavascript.includes('https://esm.sh/@supabase'), false, 'Start nesmí záviset na externím esm.sh CDN.')
 assert.equal(supabaseJavascript.includes('./vendor/supabase/supabase-js-2.118.0.bundle.mjs'), true)
 assert.ok(appShellFiles.includes('vendor/supabase/supabase-js-2.118.0.bundle.mjs'), 'Lokální Supabase SDK chybí v APP_SHELL.')
-for (const required of ['zebra-login.html', 'zebra-sklad.html', 'zebra-sklad.webmanifest']) {
+for (const required of ['zebra-login.html', 'zebra-prihlaseni.html', 'zebra-login-plain.js', 'zebra-sklad.html', 'zebra-sklad.webmanifest']) {
   assert.ok(appShellFiles.includes(required), `${required} chybí v APP_SHELL.`)
 }
 assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v4'), true)
-assert.equal(zebraHtml.includes('zebra-login.html?next=zebra-sklad.html'), true)
 assert.equal(zebraLogin.includes("import('./supabase-zebra.js?zebra=20261102-v4')"), true)
 assert.equal(supabaseJavascript.includes("'zebra-login.html'"), true)
 assert.equal(zebraSupabaseJavascript.includes('await supabase.auth.getSession()'), true)
@@ -50,8 +51,13 @@ assert.equal(zebraSupabaseJavascript.includes('export async function ensureWareh
 assert.equal(zebraSupabaseJavascript.includes('supabase-js-2.118.0-es2017.bundle.mjs'), true)
 assert.equal(zebraHtml.includes('id="loadingStatus"'), true)
 assert.equal(zebraHtml.includes('expiresAt > Date.now() + 30000'), true)
-assert.equal(zebraHtml.includes('&force=1'), true)
 assert.equal(zebraLogin.includes("initialQuery.get('force') === '1'"), true)
+assert.equal(zebraPlainLogin.includes('zebra-login-plain.js?v=20261102-v5'), true)
+assert.equal(zebraPlainLogin.includes("import('./supabase"), false)
+assert.equal(zebraPlainLoginJavascript.includes('/auth/v1/token?grant_type=password'), true)
+assert.equal(zebraPlainLoginJavascript.includes('/rest/v1/rpc/security_active_employee'), true)
+assert.equal(zebraPlainLoginJavascript.includes("loginBtn.disabled = false"), true)
+assert.equal(zebraHtml.includes("const loginUrl = 'zebra-prihlaseni.html'"), true)
 assert.equal(javascript.includes('setBootStage('), true)
 
 assert.equal(javascript.includes("status: 'ready'"), true)

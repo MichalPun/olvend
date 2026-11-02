@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v236-zebra-compatible-boot';
+const CACHE_NAME = 'olvend-v237-zebra-plain-login';
 const APP_SHELL = [
   './',
   './index.html',
@@ -22,6 +22,8 @@ const APP_SHELL = [
   './warehouse-picking-core.mjs',
   './warehouse-picking.webmanifest',
   './zebra-login.html',
+  './zebra-prihlaseni.html',
+  './zebra-login-plain.js',
   './zebra-sklad.html',
   './zebra-sklad.webmanifest',
   './mobile-personal-zone.js',
