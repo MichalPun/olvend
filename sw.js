@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v240-zebra-spacing';
+const CACHE_NAME = 'olvend-v241-zebra-compact-header';
 const APP_SHELL = [
   './',
   './index.html',
