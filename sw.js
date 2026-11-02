@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v241-zebra-compact-header';
+const CACHE_NAME = 'olvend-v242-zebra-warehouse-context';
 const APP_SHELL = [
   './',
   './index.html',
