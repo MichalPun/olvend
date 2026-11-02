@@ -1,4 +1,4 @@
-import { getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase.js?zebra=20261102-v3'
+import { ensureWarehouseSession, getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase-zebra.js?zebra=20261102-v4'
 import {
   escapeHtml,
   formatQuantity,
@@ -24,6 +24,7 @@ const SNAPSHOT_FIELDS = ['me', 'requests', 'items', 'products', 'packages', 'loc
 
 const state = {
   me: null,
+  authUserId: null,
   requests: [],
   items: [],
   products: [],
@@ -154,6 +155,10 @@ function showView(id) {
   if (id !== 'loadingView') window.__warehousePickingReady = true
   views.forEach((viewId) => { elements[viewId].hidden = viewId !== id })
   window.scrollTo({ top: 0, behavior: 'instant' })
+}
+
+function setBootStage(message) {
+  if (typeof window.__warehouseSetBootStage === 'function') window.__warehouseSetBootStage(message)
 }
 
 function showToast(message, type = '') {
@@ -512,8 +517,7 @@ async function getCurrentEmployee() {
     if (snapshot?.me) return snapshot.me
     throw new Error('Pro první otevření skladu je potřeba internet. Potom bude fungovat i offline.')
   }
-  const { data: sessionData } = await supabase.auth.getSession()
-  const authUserId = sessionData?.session?.user?.id
+  const authUserId = state.authUserId
   if (!authUserId) throw new Error('Přihlášení vypršelo. Přihlas se znovu do OLVEND.')
   const { data, error } = await supabase.from('employees').select('id, name, surname, email, role').eq('auth_user_id', authUserId).maybeSingle()
   if (error) throw error
@@ -523,14 +527,27 @@ async function getCurrentEmployee() {
 
 async function loadData() {
   showView('loadingView')
+  setBootStage('Spouštím skladovou aplikaci…')
+  const hardTimeout = window.setTimeout(() => {
+    if (elements.loadingView.hidden) return
+    elements.errorMessage.textContent = 'Načítání se zastavilo. Zkontroluj připojení a zvol „Přihlásit se znovu“.'
+    showView('errorView')
+  }, 15000)
   try {
     if (!navigator.onLine) {
+      setBootStage('Načítám poslední uložená data…')
       if (!loadSnapshot()) throw new Error('Offline data zatím nejsou uložená. Připoj Zebru k internetu a otevři sklad znovu.')
       renderRequests()
       return
     }
+    setBootStage('Ověřuji uložené přihlášení…')
+    const session = await ensureWarehouseSession()
+    state.authUserId = session && session.user && session.user.id
+    setBootStage('Kontroluji neodeslané změny…')
     await syncQueue()
+    setBootStage('Načítám pracovníka skladu…')
     state.me = await getCurrentEmployee()
+    setBootStage('Načítám požadavky na vychystání…')
     const { data: requests, error: requestsError } = await supabase
       .from('mobile_stock_requests')
       .select('*')
@@ -551,6 +568,7 @@ async function loadData() {
     const employeeIds = [...new Set(state.requests.flatMap((request) => [request.employee_id, request.prepared_by]).filter(Boolean))]
     const vehicleIds = [...new Set(state.requests.map((request) => request.vehicle_id).filter(Boolean))]
     const routeIds = [...new Set(state.requests.map((request) => request.route_plan_id).filter(Boolean))]
+    setBootStage('Načítám položky, vozidla a trasy…')
     const [itemsResult, employeesResult, vehiclesResult, routesResult, locationsResult] = await Promise.all([
       supabase.from('mobile_stock_request_items').select('*').in('request_id', requestIds).order('id', { ascending: true }),
       employeeIds.length ? supabase.from('employee_directory').select('id, name, surname, email').in('id', employeeIds) : Promise.resolve({ data: [], error: null }),
@@ -574,6 +592,7 @@ async function loadData() {
       locationForRequest(request, 'warehouse')?.id,
       locationForRequest(request, 'vehicle')?.id
     ]).filter(Boolean))]
+    setBootStage('Načítám produkty a skladové zásoby…')
     const [productsResult, packagesResult, balancesResult] = await Promise.all([
       productIds.length ? supabase.from('products').select('id, name, sku, product_category, usage_type, base_unit, active, note').in('id', productIds) : Promise.resolve({ data: [], error: null }),
       productIds.length ? supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').in('product_id', productIds).eq('active', true) : Promise.resolve({ data: [], error: null }),
@@ -593,6 +612,8 @@ async function loadData() {
     console.error(error)
     elements.errorMessage.textContent = error?.message || 'Zkus stránku obnovit.'
     showView('errorView')
+  } finally {
+    window.clearTimeout(hardTimeout)
   }
 }
 
