@@ -38,6 +38,8 @@ assert.equal(javascript.includes("from('stock_location_balances').insert"), fals
 assert.equal(javascript.includes('olvendWarehousePickingSnapshotV1'), true)
 assert.equal(javascript.includes('olvendWarehousePickingQueueV1'), true)
 assert.equal(javascript.includes('async function syncQueue()'), true)
+assert.equal(javascript.includes('syncOfflineRequests'), true)
+assert.equal(javascript.includes("window.addEventListener('olvend-offline-queue'"), true)
 assert.match(supabaseJavascript, /if \(navigator\.onLine\)[\s\S]*security_active_employee/)
 
 console.log('warehouse-picking-pwa: OK')

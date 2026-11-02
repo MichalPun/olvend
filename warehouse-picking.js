@@ -1,4 +1,4 @@
-import { supabase } from './supabase.js'
+import { getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase.js'
 import {
   escapeHtml,
   formatQuantity,
@@ -49,6 +49,8 @@ function readJson(key, fallback) {
 }
 
 function readQueue() { return readJson(QUEUE_KEY, []) }
+
+function pendingCount() { return readQueue().length + getOfflineRequestCount() }
 
 function writeQueue(queue) {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue))
@@ -103,10 +105,12 @@ async function updateOrQueue(table, id, payload) {
     return { ...payload, __queued: true }
   }
   try {
-    const { data, error } = await supabase.from(table).update(payload).eq('id', id).select('*').single()
+    const sharedPendingBefore = getOfflineRequestCount()
+    const { error } = await supabase.from(table).update(payload).eq('id', id)
     if (error) throw error
-    updateLocalRow(table, id, data || payload)
-    return data || payload
+    updateLocalRow(table, id, payload)
+    updateConnection()
+    return getOfflineRequestCount() > sharedPendingBefore ? { ...payload, __queued: true } : payload
   } catch (error) {
     if (!isNetworkError(error)) throw error
     queueUpdate(table, id, payload)
@@ -115,9 +119,11 @@ async function updateOrQueue(table, id, payload) {
 }
 
 async function syncQueue() {
-  if (!navigator.onLine || state.syncing) return { synced: 0, pending: readQueue().length }
+  if (!navigator.onLine || state.syncing) return { synced: 0, pending: pendingCount() }
   const queue = readQueue()
-  if (!queue.length) return { synced: 0, pending: 0 }
+  const sharedResult = await syncOfflineRequests()
+  if (sharedResult.pending) return { synced: sharedResult.synced, pending: pendingCount() }
+  if (!queue.length) return { synced: sharedResult.synced, pending: 0 }
   state.syncing = true
   updateConnection()
   let synced = 0
@@ -125,9 +131,9 @@ async function syncQueue() {
   for (let index = 0; index < queue.length; index += 1) {
     const action = queue[index]
     try {
-      const { data, error } = await supabase.from(action.table).update(action.payload).eq('id', action.rowId).select('*').single()
+      const { error } = await supabase.from(action.table).update(action.payload).eq('id', action.rowId)
       if (error) throw error
-      updateLocalRow(action.table, action.rowId, data || action.payload)
+      updateLocalRow(action.table, action.rowId, action.payload)
       synced += 1
     } catch (error) {
       remaining.push(...queue.slice(index))
@@ -138,7 +144,7 @@ async function syncQueue() {
   writeQueue(remaining)
   state.syncing = false
   updateConnection()
-  return { synced, pending: remaining.length }
+  return { synced: synced + sharedResult.synced, pending: remaining.length }
 }
 
 function showView(id) {
@@ -163,7 +169,7 @@ function setBusy(busy) {
 
 function updateConnection() {
   const online = navigator.onLine
-  const pending = readQueue().length
+  const pending = pendingCount()
   elements.connectionState.textContent = state.syncing
     ? `Synchronizuji · ${pending}`
     : online
@@ -479,7 +485,7 @@ async function skipCurrentItem(reason) {
 
 async function finishRequest() {
   let checkedItems = state.activeItems
-  if (navigator.onLine && !readQueue().length) {
+  if (navigator.onLine && !pendingCount()) {
     const { data: freshItems, error: itemsError } = await supabase
       .from('mobile_stock_request_items')
       .select('*')
@@ -649,6 +655,7 @@ window.addEventListener('online', async () => {
   if (!result.pending) await loadData()
 })
 window.addEventListener('offline', updateConnection)
+window.addEventListener('olvend-offline-queue', updateConnection)
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault()
   state.deferredInstallPrompt = event
