@@ -118,12 +118,12 @@ export async function ensureWarehouseSession() {
     )
   } catch (error) {
     localStorage.removeItem('sb-rerjlkrhiytgscjerqgs-auth-token')
-    window.location.replace('zebra-login.html?next=zebra-sklad.html&force=1')
+    window.location.replace('zebra-prihlaseni.html')
     throw error
   }
   const session = sessionResult && sessionResult.data && sessionResult.data.session
   if (!session) {
-    window.location.replace('zebra-login.html?next=zebra-sklad.html')
+    window.location.replace('zebra-prihlaseni.html')
     throw new Error('Přihlášení vypršelo. Přihlas se prosím znovu.')
   }
   if (typeof navigator === 'undefined' || navigator.onLine !== false) {
@@ -134,7 +134,7 @@ export async function ensureWarehouseSession() {
     )
     if (activeResult.error || activeResult.data !== true) {
       if (!activeResult.error || activeResult.error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
-      if (!activeResult.error || activeResult.error.code === '42501') window.location.replace('zebra-login.html?next=zebra-sklad.html')
+      if (!activeResult.error || activeResult.error.code === '42501') window.location.replace('zebra-prihlaseni.html')
       throw activeResult.error || new Error('Přístup vyžaduje aktivní zaměstnanecký účet.')
     }
   }
