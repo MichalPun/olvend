@@ -1,4 +1,4 @@
-import { getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase.js'
+import { getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase.js?zebra=20261102-v3'
 import {
   escapeHtml,
   formatQuantity,
