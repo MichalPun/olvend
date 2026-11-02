@@ -40,6 +40,6 @@ assert.equal(javascript.includes('olvendWarehousePickingQueueV1'), true)
 assert.equal(javascript.includes('async function syncQueue()'), true)
 assert.equal(javascript.includes('syncOfflineRequests'), true)
 assert.equal(javascript.includes("window.addEventListener('olvend-offline-queue'"), true)
-assert.match(supabaseJavascript, /if \(navigator\.onLine\)[\s\S]*security_active_employee/)
+assert.match(supabaseJavascript, /navigator\.onLine !== false[\s\S]*security_active_employee/)
 
 console.log('warehouse-picking-pwa: OK')

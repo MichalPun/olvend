@@ -112,7 +112,7 @@ if (!publicPages.has(pageName)) {
   }
   // An existing local session may open cached PWA data without a network.
   // As soon as the device is online, the employee status is checked server-side again.
-  if (navigator.onLine) {
+  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
     const { data: active, error } = await supabase.rpc('security_active_employee')
     if (error || active !== true) {
       if (!error || error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
