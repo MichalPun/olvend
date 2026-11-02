@@ -120,31 +120,34 @@ async function updateOrQueue(table, id, payload) {
 
 async function syncQueue() {
   if (!navigator.onLine || state.syncing) return { synced: 0, pending: pendingCount() }
-  const queue = readQueue()
-  const sharedResult = await syncOfflineRequests()
-  if (sharedResult.pending) return { synced: sharedResult.synced, pending: pendingCount() }
-  if (!queue.length) return { synced: sharedResult.synced, pending: 0 }
   state.syncing = true
   updateConnection()
-  let synced = 0
-  const remaining = []
-  for (let index = 0; index < queue.length; index += 1) {
-    const action = queue[index]
-    try {
-      const { error } = await supabase.from(action.table).update(action.payload).eq('id', action.rowId)
-      if (error) throw error
-      updateLocalRow(action.table, action.rowId, action.payload)
-      synced += 1
-    } catch (error) {
-      remaining.push(...queue.slice(index))
-      if (!isNetworkError(error)) console.error('Offline frontu se nepodařilo synchronizovat:', error)
-      break
+  try {
+    const queue = readQueue()
+    const sharedResult = await syncOfflineRequests()
+    if (sharedResult.pending) return { synced: sharedResult.synced, pending: pendingCount() }
+    if (!queue.length) return { synced: sharedResult.synced, pending: 0 }
+    let synced = 0
+    const remaining = []
+    for (let index = 0; index < queue.length; index += 1) {
+      const action = queue[index]
+      try {
+        const { error } = await supabase.from(action.table).update(action.payload).eq('id', action.rowId)
+        if (error) throw error
+        updateLocalRow(action.table, action.rowId, action.payload)
+        synced += 1
+      } catch (error) {
+        remaining.push(...queue.slice(index))
+        if (!isNetworkError(error)) console.error('Offline frontu se nepodařilo synchronizovat:', error)
+        break
+      }
     }
+    writeQueue(remaining)
+    return { synced: synced + sharedResult.synced, pending: remaining.length }
+  } finally {
+    state.syncing = false
+    updateConnection()
   }
-  writeQueue(remaining)
-  state.syncing = false
-  updateConnection()
-  return { synced: synced + sharedResult.synced, pending: remaining.length }
 }
 
 function showView(id) {
