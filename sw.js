@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v237-zebra-plain-login';
+const CACHE_NAME = 'olvend-v238-zebra-bundled-app';
 const APP_SHELL = [
   './',
   './index.html',
@@ -25,6 +25,11 @@ const APP_SHELL = [
   './zebra-prihlaseni.html',
   './zebra-login-plain.js',
   './zebra-sklad.html',
+  './zebra-aplikace.html',
+  './zebra-polyfills.js',
+  './zebra-startup.js',
+  './pwa-zebra.js',
+  './warehouse-zebra-bundle.js',
   './zebra-sklad.webmanifest',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
