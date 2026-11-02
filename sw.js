@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v232-coffee-initial-count';
+const CACHE_NAME = 'olvend-v233-warehouse-picking';
 const APP_SHELL = [
   './',
   './index.html',
@@ -17,6 +17,10 @@ const APP_SHELL = [
   './machine-calibration-core.mjs',
   './machine-pricing.html',
   './machine-pricing.js',
+  './warehouse-picking.html',
+  './warehouse-picking.js',
+  './warehouse-picking-core.mjs',
+  './warehouse-picking.webmanifest',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
