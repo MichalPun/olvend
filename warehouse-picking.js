@@ -151,6 +151,7 @@ async function syncQueue() {
 }
 
 function showView(id) {
+  if (id !== 'loadingView') window.__warehousePickingReady = true
   views.forEach((viewId) => { elements[viewId].hidden = viewId !== id })
   window.scrollTo({ top: 0, behavior: 'instant' })
 }
