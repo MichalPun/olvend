@@ -30,6 +30,9 @@ assert.deepEqual(missingAppShellFiles, [], 'V APP_SHELL jsou neexistující soub
 for (const required of ['warehouse-picking.html', 'warehouse-picking.js', 'warehouse-picking-core.mjs', 'warehouse-picking.webmanifest']) {
   assert.ok(appShellFiles.includes(required), `${required} chybí v APP_SHELL.`)
 }
+assert.equal(supabaseJavascript.includes('https://esm.sh/@supabase'), false, 'Start nesmí záviset na externím esm.sh CDN.')
+assert.equal(supabaseJavascript.includes('./vendor/supabase/supabase-js-2.118.0.bundle.mjs'), true)
+assert.ok(appShellFiles.includes('vendor/supabase/supabase-js-2.118.0.bundle.mjs'), 'Lokální Supabase SDK chybí v APP_SHELL.')
 
 assert.equal(javascript.includes("status: 'ready'"), true)
 assert.equal(javascript.includes("from('stock_movements_v13')"), false)

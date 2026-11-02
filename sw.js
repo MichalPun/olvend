@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v233-warehouse-picking';
+const CACHE_NAME = 'olvend-v234-local-supabase';
 const APP_SHELL = [
   './',
   './index.html',
@@ -28,6 +28,7 @@ const APP_SHELL = [
   './route-add-approval.html',
   './routes-create.html',
   './supabase.js',
+  './vendor/supabase/supabase-js-2.118.0.bundle.mjs',
   './offline-queue.js',
   './secure-files.js',
   './machines-planogram.css?v=20260913d',
