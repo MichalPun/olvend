@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from './vendor/supabase/supabase-js-2.118.0.bundle.mjs'
 import { installPrivateFileLinks } from './secure-files.js'
 import { processOfflineQueueInOrder } from './offline-queue.js?v=20261021-stock-visit-integrity-v1'
 
