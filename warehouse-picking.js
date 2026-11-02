@@ -154,6 +154,7 @@ async function syncQueue() {
 function showView(id) {
   if (id !== 'loadingView') window.__warehousePickingReady = true
   views.forEach((viewId) => { elements[viewId].hidden = viewId !== id })
+  if (elements.dashboardTiles) elements.dashboardTiles.hidden = !['requestsView', 'emptyView'].includes(id)
   window.scrollTo({ top: 0, behavior: 'instant' })
 }
 
@@ -185,11 +186,54 @@ function updateConnection() {
       ? (pending ? `Online · čeká ${pending}` : 'Online')
       : (pending ? `Offline · čeká ${pending}` : 'Offline')
   elements.connectionState.classList.toggle('offline', !online)
+  renderDashboardTiles()
+}
+
+function renderDashboardTiles() {
+  if (!elements.dashboardTiles) return
+  const counts = state.requests.reduce((result, request) => {
+    if (request.status === 'requested') result.waiting += 1
+    if (request.status === 'picking') result.picking += 1
+    if (request.status === 'ready') result.ready += 1
+    return result
+  }, { waiting: 0, picking: 0, ready: 0 })
+  elements.waitingRequestCount.textContent = String(counts.waiting)
+  elements.pickingRequestCount.textContent = String(counts.picking)
+  elements.readyRequestCount.textContent = String(counts.ready)
+  elements.pendingSyncCount.textContent = String(pendingCount())
 }
 
 function employeeName(id) {
   const employee = state.employees.find((row) => String(row.id) === String(id))
   return employee ? [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Operátor' : 'Bez operátora'
+}
+
+function roleLabel(role) {
+  const labels = {
+    admin: 'Administrátor',
+    manager: 'Vedoucí',
+    warehouse: 'Sklad',
+    technician: 'Technik',
+    operator: 'Operátor'
+  }
+  const normalized = String(role || '').trim().toLowerCase()
+  return labels[normalized] || role || 'Pracovník OLVEND'
+}
+
+function renderIdentity() {
+  const employee = state.me
+  if (!employee) return
+  const fullName = [employee.name, employee.surname].filter(Boolean).join(' ') || employee.email || 'Pracovník OLVEND'
+  const initials = [employee.name, employee.surname]
+    .filter(Boolean)
+    .map((part) => String(part).trim().charAt(0))
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'OL'
+  if (elements.currentUserName) elements.currentUserName.textContent = fullName
+  if (elements.currentUserInitials) elements.currentUserInitials.textContent = initials
+  if (elements.currentUserRole) elements.currentUserRole.textContent = roleLabel(employee.role)
+  if (elements.brandUserLabel) elements.brandUserLabel.textContent = `Sklad · ${fullName}`
 }
 
 function vehicleName(id) {
@@ -256,6 +300,11 @@ function productFallback(product, item) {
 }
 
 function renderRequests() {
+  renderIdentity()
+  renderDashboardTiles()
+  if (elements.lastRefreshLabel) {
+    elements.lastRefreshLabel.textContent = new Date().toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+  }
   const rows = [...state.requests].sort((left, right) => {
     const readyDifference = Number(left.status === 'ready') - Number(right.status === 'ready')
     if (readyDifference) return readyDifference
@@ -630,6 +679,24 @@ async function runAction(action) {
   }
 }
 
+async function logout() {
+  if (pendingCount()) {
+    showToast('Nejdřív připoj Zebru k internetu a nech odeslat čekající změny.', 'error')
+    return
+  }
+  if (elements.logoutBtn) {
+    elements.logoutBtn.disabled = true
+    elements.logoutBtn.textContent = 'Odpojuji…'
+  }
+  try { await supabase.auth.signOut({ scope: 'local' }) } catch (_) {}
+  localStorage.removeItem('sb-rerjlkrhiytgscjerqgs-auth-token')
+  localStorage.removeItem('olvendUser')
+  localStorage.removeItem(SNAPSHOT_KEY)
+  localStorage.removeItem(QUEUE_KEY)
+  sessionStorage.removeItem('olvendUser')
+  window.location.replace('zebra-prihlaseni.html')
+}
+
 elements.requestList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-request-id]')
   if (button) runAction(() => openRequest(button.dataset.requestId))
@@ -637,6 +704,7 @@ elements.requestList.addEventListener('click', (event) => {
 elements.refreshBtn.addEventListener('click', loadData)
 elements.emptyRefreshBtn.addEventListener('click', loadData)
 elements.errorRetryBtn.addEventListener('click', loadData)
+if (elements.logoutBtn) elements.logoutBtn.addEventListener('click', logout)
 elements.backToRequestsBtn.addEventListener('click', renderRequests)
 elements.successBackBtn.addEventListener('click', loadData)
 elements.readyItemBtn.addEventListener('click', () => runAction(saveCurrentItem))
@@ -692,6 +760,11 @@ elements.installAppBtn.addEventListener('click', async () => {
   await state.deferredInstallPrompt.userChoice
   state.deferredInstallPrompt = null
   elements.installAppBtn.hidden = true
+})
+window.addEventListener('appinstalled', () => {
+  state.deferredInstallPrompt = null
+  elements.installAppBtn.hidden = true
+  showToast('OLVEND Sklad je nainstalovaný na ploše.')
 })
 
 updateConnection()
