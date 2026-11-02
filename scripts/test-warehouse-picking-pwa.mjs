@@ -60,7 +60,7 @@ assert.equal(waterSnackImages.length, 58, 'Očekáváme 58 ověřených fotograf
 for (const image of waterSnackImages) {
   assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
 }
-assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v4'), true)
+assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v5'), true)
 assert.equal(zebraLogin.includes("import('./supabase-zebra.js?zebra=20261102-v4')"), true)
 assert.equal(supabaseJavascript.includes("'zebra-login.html'"), true)
 assert.equal(zebraSupabaseJavascript.includes('await supabase.auth.getSession()'), true)
@@ -109,6 +109,8 @@ assert.equal(javascript.includes('assets/product-images/${encodeURIComponent(ite
 assert.equal(javascript.includes("from('warehouses')"), true)
 assert.equal(javascript.includes("'Hlavní sklad'"), true)
 assert.equal(javascript.includes('Přihlášený pracovník:'), true)
+assert.equal(javascript.includes('elements.vehicleStock.textContent = formatBaseQuantity(vehicle, product)'), true)
+assert.equal(javascript.includes('elements.vehicleStock.textContent = formatInMode(vehicle'), false)
 
 assert.equal(javascript.includes("status: 'ready'"), true)
 assert.equal(javascript.includes("from('stock_movements_v13')"), false)

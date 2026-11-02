@@ -1,6 +1,7 @@
 import { ensureWarehouseSession, getOfflineRequestCount, supabase, syncOfflineRequests } from './supabase-zebra.js?zebra=20261102-v4'
 import {
   escapeHtml,
+  formatBaseQuantity,
   formatQuantity,
   getItemBaseQuantity,
   getPickingCategory,
@@ -460,7 +461,7 @@ function renderQuantityAndStock() {
   const reserved = otherReservations(request, item)
   const free = warehouse - reserved - state.quantityPieces
   elements.warehouseStock.textContent = formatInMode(warehouse, item, product, pack)
-  elements.vehicleStock.textContent = formatInMode(vehicle, item, product, pack)
+  elements.vehicleStock.textContent = formatBaseQuantity(vehicle, product)
   elements.otherReserved.textContent = formatInMode(reserved, item, product, pack)
   elements.freeAfterRequests.textContent = formatInMode(free, item, product, pack)
   elements.freeAfterRequests.parentElement.style.background = free < 0 ? 'var(--danger-soft)' : 'var(--green-soft)'
