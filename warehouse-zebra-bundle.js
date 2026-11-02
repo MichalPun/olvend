@@ -7220,6 +7220,15 @@
       if (button) button.disabled = busy;
     });
   }
+  function setSkipPanelOpen(open) {
+    elements.skipPanel.hidden = !open;
+    elements.skipItemBtn.setAttribute("aria-expanded", String(open));
+    if (open) {
+      window.setTimeout(() => {
+        if (typeof elements.skipPanel.scrollIntoView === "function") elements.skipPanel.scrollIntoView(false);
+      }, 0);
+    }
+  }
   function updateConnection() {
     const online = navigator.onLine;
     const pending = pendingCount();
@@ -7314,6 +7323,11 @@
     const source = String((product == null ? void 0 : product.name) || (item == null ? void 0 : item.product_name) || (item == null ? void 0 : item.sku) || "?").trim();
     const words = source.split(/\s+/).filter(Boolean);
     return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
+  }
+  function storagePositionLabel(product) {
+    const position = getStoragePosition(product);
+    if (!position) return "Pozice ve skladu není uvedena";
+    return /^[a-záčďéěíňóřšťúůýž]$/i.test(position) ? "Regál ".concat(position.toUpperCase()) : position;
   }
   function productImageUrl(product) {
     const resolvedUrl = (product == null ? void 0 : product.image_url) || (() => {
@@ -7440,7 +7454,7 @@
     elements.itemCategory.textContent = category.label;
     elements.productName.textContent = item.product_name || product.name || "Produkt";
     elements.productSku.textContent = [item.sku || product.sku ? "SKU ".concat(item.sku || product.sku) : "", product.base_unit ? "základ ".concat(product.base_unit) : ""].filter(Boolean).join(" · ") || "Bez kódu";
-    elements.productPosition.textContent = getStoragePosition(product) || "Pozice ve skladu není uvedena";
+    elements.productPosition.textContent = storagePositionLabel(product);
     elements.productFallback.textContent = productFallback(product, item);
     elements.productFallback.hidden = false;
     elements.productPhoto.hidden = true;
@@ -7457,7 +7471,7 @@
     } else {
       elements.productPhoto.removeAttribute("src");
     }
-    elements.skipPanel.hidden = true;
+    setSkipPanelOpen(false);
     renderQuantityAndStock();
     showView("pickingView");
   }
@@ -7724,11 +7738,14 @@
   elements.successBackBtn.addEventListener("click", loadData);
   elements.readyItemBtn.addEventListener("click", () => runAction(saveCurrentItem));
   elements.skipItemBtn.addEventListener("click", () => {
-    elements.skipPanel.hidden = !elements.skipPanel.hidden;
+    setSkipPanelOpen(elements.skipPanel.hidden);
   });
   elements.skipPanel.addEventListener("click", (event) => {
     const button = event.target.closest("[data-skip-reason]");
-    if (button) runAction(() => skipCurrentItem(button.dataset.skipReason));
+    if (button) {
+      setSkipPanelOpen(false);
+      runAction(() => skipCurrentItem(button.dataset.skipReason));
+    }
   });
   elements.finishRequestBtn.addEventListener("click", () => runAction(finishRequest));
   elements.reviewItemsBtn.addEventListener("click", () => {
