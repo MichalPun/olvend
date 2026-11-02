@@ -10,6 +10,9 @@ const javascript = fs.readFileSync(path.join(root, 'warehouse-picking.js'), 'utf
 const supabaseJavascript = fs.readFileSync(path.join(root, 'supabase.js'), 'utf8')
 const serviceWorker = fs.readFileSync(path.join(root, 'sw.js'), 'utf8')
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'warehouse-picking.webmanifest'), 'utf8'))
+const zebraHtml = fs.readFileSync(path.join(root, 'zebra-sklad.html'), 'utf8')
+const zebraLogin = fs.readFileSync(path.join(root, 'zebra-login.html'), 'utf8')
+const zebraManifest = JSON.parse(fs.readFileSync(path.join(root, 'zebra-sklad.webmanifest'), 'utf8'))
 
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]))
 const referencedIds = new Set([...javascript.matchAll(/elements\.([A-Za-z0-9_]+)/g)].map((match) => match[1]))
@@ -18,6 +21,7 @@ assert.deepEqual([...referencedIds].filter((id) => !ids.has(id)), [], 'JavaScrip
 assert.equal(manifest.start_url, '/warehouse-picking.html')
 assert.equal(manifest.display, 'standalone')
 assert.equal(manifest.orientation, 'portrait')
+assert.equal(zebraManifest.start_url, '/zebra-sklad.html')
 for (const icon of manifest.icons || []) {
   assert.equal(fs.existsSync(path.join(root, icon.src.replace(/^\//, ''))), true, `Chybí ikona ${icon.src}`)
 }
@@ -33,6 +37,13 @@ for (const required of ['warehouse-picking.html', 'warehouse-picking.js', 'wareh
 assert.equal(supabaseJavascript.includes('https://esm.sh/@supabase'), false, 'Start nesmí záviset na externím esm.sh CDN.')
 assert.equal(supabaseJavascript.includes('./vendor/supabase/supabase-js-2.118.0.bundle.mjs'), true)
 assert.ok(appShellFiles.includes('vendor/supabase/supabase-js-2.118.0.bundle.mjs'), 'Lokální Supabase SDK chybí v APP_SHELL.')
+for (const required of ['zebra-login.html', 'zebra-sklad.html', 'zebra-sklad.webmanifest']) {
+  assert.ok(appShellFiles.includes(required), `${required} chybí v APP_SHELL.`)
+}
+assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v3'), true)
+assert.equal(zebraHtml.includes('zebra-login.html?next=zebra-sklad.html'), true)
+assert.equal(zebraLogin.includes("import('./supabase.js?zebra=20261102-v3')"), true)
+assert.equal(supabaseJavascript.includes("'zebra-login.html'"), true)
 
 assert.equal(javascript.includes("status: 'ready'"), true)
 assert.equal(javascript.includes("from('stock_movements_v13')"), false)

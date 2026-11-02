@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v234-local-supabase';
+const CACHE_NAME = 'olvend-v235-zebra-cache-bypass';
 const APP_SHELL = [
   './',
   './index.html',
@@ -21,6 +21,9 @@ const APP_SHELL = [
   './warehouse-picking.js',
   './warehouse-picking-core.mjs',
   './warehouse-picking.webmanifest',
+  './zebra-login.html',
+  './zebra-sklad.html',
+  './zebra-sklad.webmanifest',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
