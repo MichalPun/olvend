@@ -7067,10 +7067,11 @@
   var views = ["loadingView", "requestsView", "pickingView", "summaryView", "successView", "emptyView", "errorView"];
   var SNAPSHOT_KEY = "olvendWarehousePickingSnapshotV1";
   var QUEUE_KEY = "olvendWarehousePickingQueueV1";
-  var SNAPSHOT_FIELDS = ["me", "requests", "items", "products", "packages", "locations", "balances", "employees", "vehicles", "routes"];
+  var SNAPSHOT_FIELDS = ["me", "warehouses", "requests", "items", "products", "packages", "locations", "balances", "employees", "vehicles", "routes"];
   var state = {
     me: null,
     authUserId: null,
+    warehouses: [],
     requests: [],
     items: [],
     products: [],
@@ -7248,7 +7249,25 @@
     const fullName = [employee.name, employee.surname].filter(Boolean).join(" ") || employee.email || "Pracovník OLVEND";
     const initials = [employee.name, employee.surname].filter(Boolean).map((part) => String(part).trim().charAt(0)).join("").slice(0, 2).toUpperCase() || "OL";
     if (elements.currentUserInitials) elements.currentUserInitials.textContent = initials;
-    if (elements.brandUserLabel) elements.brandUserLabel.textContent = "Sklad · ".concat(fullName);
+    if (elements.logoutBtn) elements.logoutBtn.setAttribute("aria-label", "Přihlášený pracovník: ".concat(fullName, ". Klepnutím odhlásit."));
+  }
+  function activeWarehouse() {
+    var _a2;
+    const requestWarehouseIds = [...new Set(state.requests.map((request) => request.warehouse_id).filter(Boolean).map(String))];
+    const selectedWarehouseId = ((_a2 = state.activeRequest) == null ? void 0 : _a2.warehouse_id) || (requestWarehouseIds.length === 1 ? requestWarehouseIds[0] : null);
+    const selectedWarehouse = selectedWarehouseId ? state.warehouses.find((warehouse) => String(warehouse.id) === String(selectedWarehouseId)) : null;
+    if (selectedWarehouse) return selectedWarehouse;
+    return state.warehouses.find((warehouse) => normalizeText(warehouse.code) === "hlavni") || state.warehouses.find((warehouse) => normalizeText(warehouse.code) !== "automaty") || state.warehouses[0] || null;
+  }
+  function renderWarehouseContext() {
+    if (!elements.brandUserLabel) return;
+    const warehouse = activeWarehouse();
+    if (!warehouse) {
+      elements.brandUserLabel.textContent = "Skladové vychystávání";
+      return;
+    }
+    const prefix = normalizeText(warehouse.code) === "hlavni" ? "Hlavní sklad" : "Sklad";
+    elements.brandUserLabel.textContent = "".concat(prefix, " · ").concat(warehouse.name || warehouse.code);
   }
   function vehicleName(id) {
     const vehicle = state.vehicles.find((row) => String(row.id) === String(id));
@@ -7297,6 +7316,7 @@
   }
   function renderRequests() {
     renderIdentity();
+    renderWarehouseContext();
     renderDashboardTiles();
     if (elements.lastRefreshLabel) {
       elements.lastRefreshLabel.textContent = (/* @__PURE__ */ new Date()).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
@@ -7448,6 +7468,7 @@
     const request = state.requests.find((row) => String(row.id) === String(requestId));
     if (!request) throw new Error("Požadavek už není v načteném seznamu.");
     state.activeRequest = request;
+    renderWarehouseContext();
     state.activeItems = sortPickingItems(requestItems(request.id), new Map(state.products.map((product) => [String(product.id), product])));
     if (request.status === "ready") {
       renderSuccess(request);
@@ -7555,6 +7576,10 @@
       await syncQueue();
       setBootStage("Načítám pracovníka skladu…");
       state.me = await getCurrentEmployee();
+      setBootStage("Načítám sklad…");
+      const { data: warehouses, error: warehousesError } = await supabase.from("warehouses").select("id, name, code, city, active").eq("active", true).order("id", { ascending: true });
+      if (warehousesError) throw warehousesError;
+      state.warehouses = warehouses || [];
       setBootStage("Načítám požadavky na vychystání…");
       const { data: requests, error: requestsError } = await supabase.from("mobile_stock_requests").select("*").in("request_type", ["vehicle_order", "vehicle_load"]).in("status", ["requested", "picking", "ready"]).order("created_at", { ascending: false }).limit(100);
       if (requestsError) throw requestsError;
