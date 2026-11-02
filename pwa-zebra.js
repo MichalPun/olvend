@@ -3,7 +3,7 @@
 
   if (!('serviceWorker' in navigator)) return
   window.addEventListener('load', function () {
-    var version = '20261102-zebra-product-photo-cache-v13'
+    var version = '20261102-zebra-shelf-label-v14'
     var storageKey = 'olvendPwaBootstrapVersion'
     var reloadKey = 'olvendPwaControllerReloadVersion'
     try {
@@ -18,7 +18,7 @@
       window.location.reload()
     })
 
-    navigator.serviceWorker.register('./sw.js?v=20261102-zebra-product-photo-cache-v13')
+    navigator.serviceWorker.register('./sw.js?v=20261102-zebra-shelf-label-v14')
       .then(function (registration) { return registration.update() })
       .catch(function (error) {
         if (window.console && console.error) console.error('PWA registrace service workeru selhala:', error)
