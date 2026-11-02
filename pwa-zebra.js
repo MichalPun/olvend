@@ -3,13 +3,13 @@
 
   if (!('serviceWorker' in navigator)) return
   window.addEventListener('load', function () {
-    var version = '20261102-zebra-product-photos-v11'
+    var version = '20261102-zebra-water-snack-photos-v12'
     var storageKey = 'olvendPwaBootstrapVersion'
     try {
       if (localStorage.getItem(storageKey) !== version) localStorage.setItem(storageKey, version)
     } catch (_) {}
 
-    navigator.serviceWorker.register('./sw.js?v=20261102-zebra-product-photos-v11').catch(function (error) {
+    navigator.serviceWorker.register('./sw.js?v=20261102-zebra-water-snack-photos-v12').catch(function (error) {
       if (window.console && console.error) console.error('PWA registrace service workeru selhala:', error)
     })
   })

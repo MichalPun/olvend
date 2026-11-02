@@ -55,6 +55,11 @@ for (const required of ['zebra-login.html', 'zebra-prihlaseni.html', 'zebra-logi
 for (const image of ['43.webp', '46.webp', '49.webp', '51.webp', '197.webp', '262.webp', '263.webp', 'cups.webp', 'lids.webp']) {
   assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
 }
+const waterSnackImages = fs.readdirSync(path.join(root, 'assets/product-images')).filter((image) => image.startsWith('ean-'))
+assert.equal(waterSnackImages.length, 58, 'Očekáváme 58 ověřených fotografií vod a cukrovinek.')
+for (const image of waterSnackImages) {
+  assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
+}
 assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v4'), true)
 assert.equal(zebraLogin.includes("import('./supabase-zebra.js?zebra=20261102-v4')"), true)
 assert.equal(supabaseJavascript.includes("'zebra-login.html'"), true)
