@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v242-zebra-warehouse-context';
+const CACHE_NAME = 'olvend-v243-zebra-product-photos';
 const APP_SHELL = [
   './',
   './index.html',
@@ -86,6 +86,15 @@ const APP_SHELL = [
   './assets/product-images/47.jpg',
   './assets/product-images/48.jpg',
   './assets/product-images/201.jpg',
+  './assets/product-images/43.webp',
+  './assets/product-images/46.webp',
+  './assets/product-images/49.webp',
+  './assets/product-images/51.webp',
+  './assets/product-images/197.webp',
+  './assets/product-images/262.webp',
+  './assets/product-images/263.webp',
+  './assets/product-images/cups.webp',
+  './assets/product-images/lids.webp',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',

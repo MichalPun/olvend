@@ -7067,6 +7067,7 @@
   var views = ["loadingView", "requestsView", "pickingView", "summaryView", "successView", "emptyView", "errorView"];
   var SNAPSHOT_KEY = "olvendWarehousePickingSnapshotV1";
   var QUEUE_KEY = "olvendWarehousePickingQueueV1";
+  var PRODUCT_IMAGE_BUCKET = "product-images";
   var SNAPSHOT_FIELDS = ["me", "warehouses", "requests", "items", "products", "packages", "locations", "balances", "employees", "vehicles", "routes"];
   var state = {
     me: null,
@@ -7314,6 +7315,23 @@
     const words = source.split(/\s+/).filter(Boolean);
     return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
   }
+  function productImageUrl(product) {
+    if (product == null ? void 0 : product.image_url) return product.image_url;
+    const path = String((product == null ? void 0 : product.image_path) || "").trim();
+    if (!path) return "";
+    return path.startsWith("static:") ? path.slice("static:".length) : "";
+  }
+  async function hydrateProductImages(products) {
+    const remotePaths = [...new Set((products || []).map((product) => String((product == null ? void 0 : product.image_path) || "").trim()).filter((path) => path && !path.startsWith("static:")))];
+    const signedByPath = /* @__PURE__ */ new Map();
+    await Promise.all(remotePaths.map(async (path) => {
+      const { data, error } = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(path, 12 * 60 * 60);
+      if (!error && (data == null ? void 0 : data.signedUrl)) signedByPath.set(path, data.signedUrl);
+    }));
+    return (products || []).map((product) => __spreadProps(__spreadValues({}, product), {
+      image_url: String((product == null ? void 0 : product.image_path) || "").startsWith("static:") ? String(product.image_path).slice("static:".length) : signedByPath.get(String((product == null ? void 0 : product.image_path) || "").trim()) || ""
+    }));
+  }
   function renderRequests() {
     renderIdentity();
     renderWarehouseContext();
@@ -7421,7 +7439,9 @@
     elements.productFallback.hidden = false;
     elements.productPhoto.hidden = true;
     elements.productPhoto.alt = "Fotografie ".concat(item.product_name || product.name || "produktu");
-    elements.productPhoto.src = "assets/product-images/".concat(encodeURIComponent(item.product_id), ".webp");
+    const imageUrl = productImageUrl(product);
+    if (imageUrl) elements.productPhoto.src = imageUrl;
+    else elements.productPhoto.removeAttribute("src");
     elements.skipPanel.hidden = true;
     renderQuantityAndStock();
     showView("pickingView");
@@ -7622,13 +7642,13 @@
       }).filter(Boolean))];
       setBootStage("Načítám produkty a skladové zásoby…");
       const [productsResult, packagesResult, balancesResult] = await Promise.all([
-        productIds.length ? supabase.from("products").select("id, name, sku, product_category, usage_type, base_unit, active, note").in("id", productIds) : Promise.resolve({ data: [], error: null }),
+        productIds.length ? supabase.from("products").select("id, name, sku, product_category, usage_type, base_unit, active, note, image_path, image_updated_at").in("id", productIds) : Promise.resolve({ data: [], error: null }),
         productIds.length ? supabase.from("product_packages").select("id, product_id, package_name, units_per_package, is_default, active").in("product_id", productIds).eq("active", true) : Promise.resolve({ data: [], error: null }),
         relevantLocationIds.length && productIds.length ? supabase.from("stock_location_balances").select("id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity").in("stock_location_id", relevantLocationIds).in("product_id", productIds) : Promise.resolve({ data: [], error: null })
       ]);
       const detailError = (_b = [productsResult, packagesResult, balancesResult].find((result) => result.error)) == null ? void 0 : _b.error;
       if (detailError) throw detailError;
-      state.products = productsResult.data || [];
+      state.products = await hydrateProductImages(productsResult.data || []);
       state.packages = packagesResult.data || [];
       state.balances = balancesResult.data || [];
       state.activeRequest = null;

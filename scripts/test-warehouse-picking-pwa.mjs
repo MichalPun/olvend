@@ -52,6 +52,9 @@ assert.ok(appShellFiles.includes('vendor/supabase/supabase-js-2.118.0.bundle.mjs
 for (const required of ['zebra-login.html', 'zebra-prihlaseni.html', 'zebra-login-plain.js', 'zebra-sklad.html', 'zebra-aplikace.html', 'zebra-polyfills.js', 'zebra-startup.js', 'pwa-zebra.js', 'warehouse-zebra-bundle.js', 'zebra-sklad.webmanifest']) {
   assert.ok(appShellFiles.includes(required), `${required} chybí v APP_SHELL.`)
 }
+for (const image of ['43.webp', '46.webp', '49.webp', '51.webp', '197.webp', '262.webp', '263.webp', 'cups.webp', 'lids.webp']) {
+  assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
+}
 assert.equal(zebraHtml.includes('warehouse-picking.js?zebra=20261102-v4'), true)
 assert.equal(zebraLogin.includes("import('./supabase-zebra.js?zebra=20261102-v4')"), true)
 assert.equal(supabaseJavascript.includes("'zebra-login.html'"), true)
@@ -88,6 +91,10 @@ assert.equal(zebraBundle.includes('currentUserInitials'), true)
 assert.equal(zebraBundle.includes('Hlavní sklad'), true)
 assert.equal(zebraBundle.includes('OLVEND Sklad je nainstalovaný na ploše.'), true)
 assert.equal(javascript.includes('setBootStage('), true)
+assert.equal(javascript.includes("const PRODUCT_IMAGE_BUCKET = 'product-images'"), true)
+assert.equal(javascript.includes('async function hydrateProductImages(products)'), true)
+assert.equal(javascript.includes('image_path, image_updated_at'), true)
+assert.equal(javascript.includes('assets/product-images/${encodeURIComponent(item.product_id)}.webp'), false)
 assert.equal(javascript.includes("from('warehouses')"), true)
 assert.equal(javascript.includes("'Hlavní sklad'"), true)
 assert.equal(javascript.includes('Přihlášený pracovník:'), true)

@@ -20,6 +20,7 @@ const elements = Object.fromEntries([...app.querySelectorAll('[id]')].map((eleme
 const views = ['loadingView', 'requestsView', 'pickingView', 'summaryView', 'successView', 'emptyView', 'errorView']
 const SNAPSHOT_KEY = 'olvendWarehousePickingSnapshotV1'
 const QUEUE_KEY = 'olvendWarehousePickingQueueV1'
+const PRODUCT_IMAGE_BUCKET = 'product-images'
 const SNAPSHOT_FIELDS = ['me', 'warehouses', 'requests', 'items', 'products', 'packages', 'locations', 'balances', 'employees', 'vehicles', 'routes']
 
 const state = {
@@ -310,6 +311,30 @@ function productFallback(product, item) {
   return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase() || '?'
 }
 
+function productImageUrl(product) {
+  if (product?.image_url) return product.image_url
+  const path = String(product?.image_path || '').trim()
+  if (!path) return ''
+  return path.startsWith('static:') ? path.slice('static:'.length) : ''
+}
+
+async function hydrateProductImages(products) {
+  const remotePaths = [...new Set((products || [])
+    .map((product) => String(product?.image_path || '').trim())
+    .filter((path) => path && !path.startsWith('static:')))]
+  const signedByPath = new Map()
+  await Promise.all(remotePaths.map(async (path) => {
+    const { data, error } = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(path, 12 * 60 * 60)
+    if (!error && data?.signedUrl) signedByPath.set(path, data.signedUrl)
+  }))
+  return (products || []).map((product) => ({
+    ...product,
+    image_url: String(product?.image_path || '').startsWith('static:')
+      ? String(product.image_path).slice('static:'.length)
+      : signedByPath.get(String(product?.image_path || '').trim()) || ''
+  }))
+}
+
 function renderRequests() {
   renderIdentity()
   renderWarehouseContext()
@@ -441,7 +466,9 @@ function renderCurrentItem() {
   elements.productFallback.hidden = false
   elements.productPhoto.hidden = true
   elements.productPhoto.alt = `Fotografie ${item.product_name || product.name || 'produktu'}`
-  elements.productPhoto.src = `assets/product-images/${encodeURIComponent(item.product_id)}.webp`
+  const imageUrl = productImageUrl(product)
+  if (imageUrl) elements.productPhoto.src = imageUrl
+  else elements.productPhoto.removeAttribute('src')
   elements.skipPanel.hidden = true
   renderQuantityAndStock()
   showView('pickingView')
@@ -664,13 +691,13 @@ async function loadData() {
     ]).filter(Boolean))]
     setBootStage('Načítám produkty a skladové zásoby…')
     const [productsResult, packagesResult, balancesResult] = await Promise.all([
-      productIds.length ? supabase.from('products').select('id, name, sku, product_category, usage_type, base_unit, active, note').in('id', productIds) : Promise.resolve({ data: [], error: null }),
+      productIds.length ? supabase.from('products').select('id, name, sku, product_category, usage_type, base_unit, active, note, image_path, image_updated_at').in('id', productIds) : Promise.resolve({ data: [], error: null }),
       productIds.length ? supabase.from('product_packages').select('id, product_id, package_name, units_per_package, is_default, active').in('product_id', productIds).eq('active', true) : Promise.resolve({ data: [], error: null }),
       relevantLocationIds.length && productIds.length ? supabase.from('stock_location_balances').select('id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity').in('stock_location_id', relevantLocationIds).in('product_id', productIds) : Promise.resolve({ data: [], error: null })
     ])
     const detailError = [productsResult, packagesResult, balancesResult].find((result) => result.error)?.error
     if (detailError) throw detailError
-    state.products = productsResult.data || []
+    state.products = await hydrateProductImages(productsResult.data || [])
     state.packages = packagesResult.data || []
     state.balances = balancesResult.data || []
     state.activeRequest = null
