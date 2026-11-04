@@ -3737,6 +3737,7 @@
     let vehiclesDirectory = [];
     let bagettePilotProducts = [];
     let loadingCatalogProducts = [];
+    let vehicleAutoLoadProfileByProduct = new Map();
     let warehouseStockByProduct = new Map();
     let vehicleStockByProduct = new Map();
     let currentLoadingSession = null;
@@ -4386,6 +4387,7 @@
       const candidateMap = new Map();
 
       loadingCatalogProducts.forEach((item) => {
+        if (vehicleAutoLoadProfileByProduct.get(String(item.product_id))?.active === false) return;
         const warehouseQty = Number(item?.warehouse_quantities?.[warehouseKey] || 0);
         if (warehouseQty > 0) {
           candidateMap.set(String(item.product_id), {
@@ -4412,6 +4414,7 @@
       });
 
       recentLoadingRecommendations.forEach((stat, productId) => {
+        if (vehicleAutoLoadProfileByProduct.get(String(productId))?.active === false && !draftMap.has(String(productId))) return;
         const productMeta = loadingCatalogProducts.find((row) => String(row.product_id) === String(productId))
           || bagettePilotProducts.find((row) => String(row.product_id) === String(productId));
         if (!productMeta) return;
@@ -7503,7 +7506,7 @@
     }
 
     async function loadSupportData() {
-      const [warehousesResult, vehiclesResult, recurringOrdersResult, recurringItemsResult, suppliersResult, productsResult, bagetteProfilesResult, stockLocationsResult, stockBalancesResult] = await Promise.allSettled([
+      const [warehousesResult, vehiclesResult, recurringOrdersResult, recurringItemsResult, suppliersResult, productsResult, bagetteProfilesResult, stockLocationsResult, stockBalancesResult, autoLoadProfilesResult] = await Promise.allSettled([
         supabase.from('warehouses').select('id, name').eq('active', true).order('name', { ascending: true }),
         supabase.from('vehicles').select('id, plate, brand, model, name, current_odometer_km, assigned_employee_id').eq('active', true).order('plate', { ascending: true }),
         supabase.from('purchase_recurring_orders').select('id, supplier_id, pilot_scope, active').eq('active', true).order('id', { ascending: true }),
@@ -7512,7 +7515,8 @@
         supabase.from('products').select('id, name, base_unit, active').eq('active', true).order('name', { ascending: true }),
         supabase.from('purchase_product_recommendations_v13').select('product_id, product_name, supplier_name, warehouse_qty, available_qty, base_unit').eq('pilot_scope', 'bagette').order('product_name', { ascending: true }),
         supabase.from('stock_locations').select('id, warehouse_id, vehicle_id, location_type, active').eq('active', true),
-        supabase.from('stock_location_balances').select('stock_location_id, product_id, quantity_on_hand').gt('quantity_on_hand', 0)
+        supabase.from('stock_location_balances').select('stock_location_id, product_id, quantity_on_hand').gt('quantity_on_hand', 0),
+        supabase.from('vehicle_auto_load_profiles').select('product_id, active')
       ]);
 
       if (warehousesResult.status === 'fulfilled' && !warehousesResult.value.error) {
@@ -7545,6 +7549,12 @@
       const stockBalances = stockBalancesResult.status === 'fulfilled' && !stockBalancesResult.value.error
         ? (stockBalancesResult.value.data ?? [])
         : [];
+      const autoLoadProfiles = autoLoadProfilesResult.status === 'fulfilled' && !autoLoadProfilesResult.value.error
+        ? (autoLoadProfilesResult.value.data ?? [])
+        : [];
+      vehicleAutoLoadProfileByProduct = new Map(
+        autoLoadProfiles.map((profile) => [String(profile.product_id), profile])
+      );
 
       const recurringOrderMap = new Map(recurringOrders.map((item) => [String(item.id), item]));
       const supplierMap = new Map(suppliers.map((item) => [String(item.id), item.name || 'Dodavatel']));
