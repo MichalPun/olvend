@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import {
   formatBaseQuantity,
+  getAllowedSubstituteSkus,
+  getApprovedSubstituteProducts,
   getItemBaseQuantity,
+  getPreparedItemBaseQuantity,
+  getPreparedProductId,
   getPickingCategory,
   getStoragePosition,
   isHandledItem,
@@ -37,6 +41,23 @@ assert.equal(getItemBaseQuantity({ product_id: 3, unit: 'Balení', prepared_quan
 assert.equal(formatBaseQuantity(72, { base_unit: 'ks' }), '72 ks')
 assert.equal(formatBaseQuantity(18, { base_unit: 'tyčí' }), '18 tyčí')
 assert.equal(formatBaseQuantity(24, { base_unit: 'kelímků' }), '24 kelímků')
+
+const substitutionProducts = [
+  ...products,
+  { id: 4, name: 'Nestea Lemon 0,5l', sku: '275', base_unit: 'ks', active: true },
+  { id: 5, name: 'Nestea Peach 0,5l', sku: '67', base_unit: 'ks', active: true }
+]
+const substitutionRules = [{
+  product_sku: '275',
+  substitution_policy: 'approved_list',
+  allowed_substitutes: 'Nestea Peach 0,5l (SKU 67); Nestea Lemon 0,5l (SKU 275)',
+  active: true
+}]
+assert.deepEqual(getAllowedSubstituteSkus(substitutionRules[0].allowed_substitutes), ['67', '275'])
+assert.deepEqual(getApprovedSubstituteProducts(substitutionProducts[3], substitutionProducts, substitutionRules).map((product) => product.id), [5])
+const substitutedItem = { product_id: 4, unit: 'balení', requested_quantity: 1, prepared_product_id: 5, prepared_unit: 'ks', prepared_quantity: 12 }
+assert.equal(getPreparedProductId(substitutedItem), 5)
+assert.equal(getPreparedItemBaseQuantity(substitutedItem, new Map(substitutionProducts.map((product) => [String(product.id), product])), packages), 12)
 
 const skipped = { requested_quantity: 6, prepared_quantity: 0, note: '[Nevychystáno: Není skladem]' }
 assert.equal(isSkippedItem(skipped), true)

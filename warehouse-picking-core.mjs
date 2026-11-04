@@ -95,6 +95,73 @@ export function getItemBaseQuantity(item, product, packages, field = 'prepared_q
   return quantityToBase(value, item?.unit || product?.base_unit || 'ks', product, pack)
 }
 
+export function hasProductSubstitution(item) {
+  return Boolean(item?.prepared_product_id)
+    && String(item.prepared_product_id) !== String(item?.product_id || '')
+}
+
+export function getPreparedProductId(item) {
+  return hasProductSubstitution(item) ? item.prepared_product_id : item?.product_id
+}
+
+export function getPreparedUnit(item, product) {
+  return hasProductSubstitution(item)
+    ? (item?.prepared_unit || product?.base_unit || 'ks')
+    : (item?.unit || product?.base_unit || 'ks')
+}
+
+export function getPreparedItemBaseQuantity(item, productsById, packages, field = 'prepared_quantity') {
+  const useOriginal = field === 'requested_quantity'
+  const productId = useOriginal ? item?.product_id : getPreparedProductId(item)
+  const product = productsById.get(String(productId)) || null
+  const unit = useOriginal ? (item?.unit || product?.base_unit || 'ks') : getPreparedUnit(item, product)
+  const pack = getPickingPackage({ ...item, product_id: productId, unit }, product, packages)
+  const fallback = field === 'prepared_quantity' ? item?.requested_quantity : 0
+  const value = item?.[field] ?? fallback ?? 0
+  return quantityToBase(value, unit, product, pack)
+}
+
+export function getAllowedSubstituteSkus(value) {
+  const skus = []
+  const pattern = /SKU\s*([A-Za-z0-9_-]+)/gi
+  const source = String(value || '')
+  let match = pattern.exec(source)
+  while (match) {
+    if (match[1]) skus.push(String(match[1]).trim())
+    match = pattern.exec(source)
+  }
+  return skus
+}
+
+export function getApprovedSubstituteProducts(originalProduct, products, rules) {
+  const originalSku = normalizeText(originalProduct?.sku)
+  if (!originalSku) return []
+  const approvedSkus = new Set()
+  const originalRules = (rules || []).filter((rule) => normalizeText(rule?.product_sku) === originalSku)
+  for (const rule of originalRules) {
+    if (rule?.substitution_policy === 'approved_list') {
+      getAllowedSubstituteSkus(rule.allowed_substitutes).forEach((sku) => approvedSkus.add(normalizeText(sku)))
+    }
+    if (rule?.substitution_policy === 'same_family' && normalizeText(rule.product_family)) {
+      const family = normalizeText(rule.product_family)
+      ;(rules || [])
+        .filter((candidate) => candidate?.active !== false && normalizeText(candidate?.product_family) === family)
+        .forEach((candidate) => approvedSkus.add(normalizeText(candidate.product_sku)))
+    }
+  }
+  approvedSkus.delete(originalSku)
+  const seen = new Set()
+  return (products || [])
+    .filter((product) => product?.active !== false && approvedSkus.has(normalizeText(product?.sku)))
+    .filter((product) => {
+      const key = String(product.id)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), 'cs', { numeric: true }))
+}
+
 export function isSkippedItem(item) {
   return Number(item?.prepared_quantity || 0) <= 0
     && Number(item?.requested_quantity || 0) > 0

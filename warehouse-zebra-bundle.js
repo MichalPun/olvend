@@ -81,7 +81,7 @@
     for (a = a << n | o, u += n; u > 0; ) t[r + d] = a & 255, d += m, a /= 256, u -= 8;
     t[r + d - m] |= g * 128;
   }
-  var Gt = typeof Symbol == "function" && typeof Symbol.for == "function" ? Symbol.for("nodejs.util.inspect.custom") : null;
+  var Gt = typeof Symbol == "function" && typeof Symbol.for == "function" ? /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom") : null;
   var Fs = 50;
   var mt = 2147483647;
   p.TYPED_ARRAY_SUPPORT = Hs();
@@ -911,7 +911,7 @@
     if (hr) for (var r of hr(e)) yn.call(e, r) && cr(t, r, e[r]);
     return t;
   };
-  var mn = Symbol.for("@supabase/supabase-js.traceContextExtractor");
+  var mn = /* @__PURE__ */ Symbol.for("@supabase/supabase-js.traceContextExtractor");
   function wn() {
     return globalThis[mn];
   }
@@ -4285,7 +4285,7 @@
     return Math.round(Date.now() / 1e3) + t;
   }
   function ma() {
-    return Symbol("auth-callback");
+    return /* @__PURE__ */ Symbol("auth-callback");
   }
   var $ = () => typeof window != "undefined" && typeof document != "undefined";
   var le = { tested: false, writable: false };
@@ -6744,19 +6744,6 @@
     return r ? parseInt(r[1], 10) <= 20 : false;
   }
   Co() && console.warn("⚠️  Node.js 20 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 22 or later. For more information, visit: https://github.com/orgs/supabase/discussions/45715");
-  /*! Bundled license information:
-  
-  unenv/dist/runtime/node/internal/buffer/ieee754.mjs:
-    (*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> *)
-  
-  unenv/dist/runtime/node/internal/buffer/buffer.mjs:
-    (*!
-    * The buffer module from node.js, for the browser.
-    *
-    * @author   Feross Aboukhadijeh <https://feross.org>
-    * @license  MIT
-    *)
-  */
 
   // secure-files.js
   function privateStoragePath(value, projectUrl) {
@@ -7015,10 +7002,10 @@
     if (["snack_ready", "food_ready"].includes(kind)) return { key: "snacks", label: "Cukrovinky", order: 2 };
     return { key: "ingredients", label: "Suroviny", order: 0 };
   }
-  function sortPickingItems(items, productsById) {
+  function sortPickingItems(items, productsById2) {
     return [...items || []].sort((left, right) => {
-      const productLeft = productsById.get(String(left.product_id)) || {};
-      const productRight = productsById.get(String(right.product_id)) || {};
+      const productLeft = productsById2.get(String(left.product_id)) || {};
+      const productRight = productsById2.get(String(right.product_id)) || {};
       const categoryDifference = getPickingCategory(productLeft).order - getPickingCategory(productRight).order;
       if (categoryDifference) return categoryDifference;
       const positionDifference = normalizeText(getStoragePosition(productLeft)).localeCompare(normalizeText(getStoragePosition(productRight)), "cs", { numeric: true });
@@ -7051,6 +7038,60 @@
     const value = (_b = (_a2 = item == null ? void 0 : item[field]) != null ? _a2 : field === "prepared_quantity" ? item == null ? void 0 : item.requested_quantity : 0) != null ? _b : 0;
     return quantityToBase(value, (item == null ? void 0 : item.unit) || (product == null ? void 0 : product.base_unit) || "ks", product, pack);
   }
+  function hasProductSubstitution(item) {
+    return Boolean(item == null ? void 0 : item.prepared_product_id) && String(item.prepared_product_id) !== String((item == null ? void 0 : item.product_id) || "");
+  }
+  function getPreparedProductId(item) {
+    return hasProductSubstitution(item) ? item.prepared_product_id : item == null ? void 0 : item.product_id;
+  }
+  function getPreparedUnit(item, product) {
+    return hasProductSubstitution(item) ? (item == null ? void 0 : item.prepared_unit) || (product == null ? void 0 : product.base_unit) || "ks" : (item == null ? void 0 : item.unit) || (product == null ? void 0 : product.base_unit) || "ks";
+  }
+  function getPreparedItemBaseQuantity(item, productsById2, packages, field = "prepared_quantity") {
+    var _a2, _b;
+    const useOriginal = field === "requested_quantity";
+    const productId = useOriginal ? item == null ? void 0 : item.product_id : getPreparedProductId(item);
+    const product = productsById2.get(String(productId)) || null;
+    const unit = useOriginal ? (item == null ? void 0 : item.unit) || (product == null ? void 0 : product.base_unit) || "ks" : getPreparedUnit(item, product);
+    const pack = getPickingPackage(__spreadProps(__spreadValues({}, item), { product_id: productId, unit }), product, packages);
+    const fallback = field === "prepared_quantity" ? item == null ? void 0 : item.requested_quantity : 0;
+    const value = (_b = (_a2 = item == null ? void 0 : item[field]) != null ? _a2 : fallback) != null ? _b : 0;
+    return quantityToBase(value, unit, product, pack);
+  }
+  function getAllowedSubstituteSkus(value) {
+    const skus = [];
+    const pattern = /SKU\s*([A-Za-z0-9_-]+)/gi;
+    const source = String(value || "");
+    let match = pattern.exec(source);
+    while (match) {
+      if (match[1]) skus.push(String(match[1]).trim());
+      match = pattern.exec(source);
+    }
+    return skus;
+  }
+  function getApprovedSubstituteProducts(originalProduct, products, rules) {
+    const originalSku = normalizeText(originalProduct == null ? void 0 : originalProduct.sku);
+    if (!originalSku) return [];
+    const approvedSkus = /* @__PURE__ */ new Set();
+    const originalRules = (rules || []).filter((rule) => normalizeText(rule == null ? void 0 : rule.product_sku) === originalSku);
+    for (const rule of originalRules) {
+      if ((rule == null ? void 0 : rule.substitution_policy) === "approved_list") {
+        getAllowedSubstituteSkus(rule.allowed_substitutes).forEach((sku) => approvedSkus.add(normalizeText(sku)));
+      }
+      if ((rule == null ? void 0 : rule.substitution_policy) === "same_family" && normalizeText(rule.product_family)) {
+        const family = normalizeText(rule.product_family);
+        (rules || []).filter((candidate) => (candidate == null ? void 0 : candidate.active) !== false && normalizeText(candidate == null ? void 0 : candidate.product_family) === family).forEach((candidate) => approvedSkus.add(normalizeText(candidate.product_sku)));
+      }
+    }
+    approvedSkus.delete(originalSku);
+    const seen = /* @__PURE__ */ new Set();
+    return (products || []).filter((product) => (product == null ? void 0 : product.active) !== false && approvedSkus.has(normalizeText(product == null ? void 0 : product.sku))).filter((product) => {
+      const key = String(product.id);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), "cs", { numeric: true }));
+  }
   function isSkippedItem(item) {
     return Number((item == null ? void 0 : item.prepared_quantity) || 0) <= 0 && Number((item == null ? void 0 : item.requested_quantity) || 0) > 0 && /\[Nevychystáno:/i.test(String((item == null ? void 0 : item.note) || ""));
   }
@@ -7071,7 +7112,7 @@
   var SNAPSHOT_KEY = "olvendWarehousePickingSnapshotV1";
   var QUEUE_KEY = "olvendWarehousePickingQueueV1";
   var PRODUCT_IMAGE_BUCKET = "product-images";
-  var SNAPSHOT_FIELDS = ["me", "warehouses", "requests", "items", "products", "packages", "locations", "balances", "employees", "vehicles", "routes"];
+  var SNAPSHOT_FIELDS = ["me", "warehouses", "requests", "items", "products", "packages", "locations", "balances", "employees", "vehicles", "routes", "substitutionRules"];
   var state = {
     me: null,
     authUserId: null,
@@ -7085,11 +7126,13 @@
     employees: [],
     vehicles: [],
     routes: [],
+    substitutionRules: [],
     activeRequest: null,
     activeItems: [],
     currentIndex: 0,
     unitMode: "piece",
     quantityPieces: 0,
+    substituteProductId: null,
     deferredInstallPrompt: null,
     busy: false,
     syncing: false
@@ -7219,7 +7262,7 @@
   }
   function setBusy(busy) {
     state.busy = busy;
-    [elements.readyItemBtn, elements.finishRequestBtn, elements.skipItemBtn].forEach((button) => {
+    [elements.readyItemBtn, elements.finishRequestBtn, elements.skipItemBtn, elements.substituteItemBtn].forEach((button) => {
       if (button) button.disabled = busy;
     });
   }
@@ -7229,6 +7272,15 @@
     if (open) {
       window.setTimeout(() => {
         if (typeof elements.skipPanel.scrollIntoView === "function") elements.skipPanel.scrollIntoView(false);
+      }, 0);
+    }
+  }
+  function setSubstitutePanelOpen(open) {
+    elements.substitutePanel.hidden = !open;
+    elements.substituteItemBtn.setAttribute("aria-expanded", String(open));
+    if (open) {
+      window.setTimeout(() => {
+        if (typeof elements.substitutePanel.scrollIntoView === "function") elements.substitutePanel.scrollIntoView(false);
       }, 0);
     }
   }
@@ -7298,6 +7350,22 @@
   function productById(productId) {
     return state.products.find((product) => String(product.id) === String(productId)) || null;
   }
+  function productsById() {
+    return new Map(state.products.map((product) => [String(product.id), product]));
+  }
+  function approvedSubstitutes(item) {
+    return getApprovedSubstituteProducts(productById(item == null ? void 0 : item.product_id), state.products, state.substitutionRules);
+  }
+  function activeProductId(item) {
+    return state.substituteProductId || getPreparedProductId(item);
+  }
+  function activeProduct(item) {
+    return productById(activeProductId(item)) || productById(item == null ? void 0 : item.product_id);
+  }
+  function activeUnitItem(item, product = activeProduct(item)) {
+    if (String((product == null ? void 0 : product.id) || "") === String((item == null ? void 0 : item.product_id) || "")) return item;
+    return __spreadProps(__spreadValues({}, item), { product_id: product == null ? void 0 : product.id, unit: (item == null ? void 0 : item.prepared_unit) || (product == null ? void 0 : product.base_unit) || "ks" });
+  }
   function locationForRequest(request, type) {
     const explicitId = type === "warehouse" ? request.source_stock_location_id : request.target_stock_location_id;
     if (explicitId) return state.locations.find((location2) => String(location2.id) === String(explicitId)) || null;
@@ -7311,10 +7379,10 @@
     return state.balances.filter((balance) => String(balance.stock_location_id) === String(location2.id) && String(balance.product_id) === String(productId)).reduce((total, balance) => total + Number(balance.quantity_on_hand || 0), 0);
   }
   function itemBaseQuantity(item, field = "prepared_quantity") {
-    return getItemBaseQuantity(item, productById(item.product_id), state.packages, field);
+    return getPreparedItemBaseQuantity(item, productsById(), state.packages, field);
   }
-  function otherReservations(request, item) {
-    return state.requests.filter((candidate) => String(candidate.id) !== String(request.id) && ["requested", "picking", "ready"].includes(candidate.status) && String(candidate.warehouse_id || "") === String(request.warehouse_id || "")).flatMap((candidate) => requestItems(candidate.id)).filter((candidateItem) => String(candidateItem.product_id) === String(item.product_id) && !isSkippedItem(candidateItem)).reduce((total, candidateItem) => total + itemBaseQuantity(candidateItem), 0);
+  function otherReservations(request, item, productId = activeProductId(item)) {
+    return state.requests.filter((candidate) => String(candidate.id) !== String(request.id) && ["requested", "picking", "ready"].includes(candidate.status) && String(candidate.warehouse_id || "") === String(request.warehouse_id || "")).flatMap((candidate) => requestItems(candidate.id)).filter((candidateItem) => String(getPreparedProductId(candidateItem)) === String(productId) && !isSkippedItem(candidateItem)).reduce((total, candidateItem) => total + itemBaseQuantity(candidateItem), 0);
   }
   function formatInMode(baseQuantity, item, product, pack) {
     if (state.unitMode === "package" && pack) {
@@ -7408,16 +7476,18 @@
   }
   function setQuantityFromInput() {
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item == null ? void 0 : item.product_id);
-    const pack = getPickingPackage(item, product, state.packages);
+    const product = activeProduct(item);
+    const pack = getPickingPackage(activeUnitItem(item, product), product, state.packages);
     const raw = parseQuantity(elements.quantityInput.value, 0);
     state.quantityPieces = state.unitMode === "package" && pack ? Number((raw * Number(pack.units_per_package || 1)).toFixed(3)) : raw;
   }
   function renderQuantityAndStock() {
     const request = state.activeRequest;
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item.product_id);
-    const pack = getPickingPackage(item, product, state.packages);
+    const product = activeProduct(item);
+    const quantityItem = activeUnitItem(item, product);
+    const productId = (product == null ? void 0 : product.id) || item.product_id;
+    const pack = getPickingPackage(quantityItem, product, state.packages);
     const hasPack = Boolean(pack && Number(pack.units_per_package || 0) > 1);
     if (!hasPack && state.unitMode === "package") state.unitMode = "piece";
     elements.packageModeBtn.disabled = !hasPack;
@@ -7431,9 +7501,9 @@
     elements.packageNote.textContent = hasPack ? "1 ".concat(pack.package_name, " = ").concat(formatQuantity(pack.units_per_package), " ").concat((product == null ? void 0 : product.base_unit) || "ks") : "Základní jednotka položky";
     const warehouseLocation = locationForRequest(request, "warehouse");
     const vehicleLocation = locationForRequest(request, "vehicle");
-    const warehouse = stockAt(warehouseLocation, item.product_id);
-    const vehicle = stockAt(vehicleLocation, item.product_id);
-    const reserved = otherReservations(request, item);
+    const warehouse = stockAt(warehouseLocation, productId);
+    const vehicle = stockAt(vehicleLocation, productId);
+    const reserved = otherReservations(request, item, productId);
     const free = warehouse - reserved - state.quantityPieces;
     elements.warehouseStock.textContent = formatInMode(warehouse, item, product, pack);
     elements.vehicleStock.textContent = formatBaseQuantity(vehicle, product);
@@ -7442,26 +7512,40 @@
     elements.freeAfterRequests.parentElement.style.background = free < 0 ? "var(--danger-soft)" : "var(--green-soft)";
     elements.freeAfterRequests.style.color = free < 0 ? "var(--danger)" : "var(--green)";
   }
+  function renderSubstituteChoices(item) {
+    const warehouseLocation = locationForRequest(state.activeRequest, "warehouse");
+    const candidates = approvedSubstitutes(item);
+    elements.itemActions.classList.toggle("has-substitutes", candidates.length > 0);
+    elements.substituteItemBtn.hidden = candidates.length === 0;
+    elements.substituteItemBtn.textContent = state.substituteProductId ? "Změnit náhradu" : "Vydat náhradu";
+    elements.substituteList.innerHTML = candidates.map((product) => {
+      const stock = stockAt(warehouseLocation, product.id);
+      const reserved = otherReservations(state.activeRequest, item, product.id);
+      const free = stock - reserved;
+      return '<button class="substitute-option" type="button" data-substitute-id="'.concat(escapeHtml(product.id), '" ').concat(free <= 0 ? "disabled" : "", "><span><strong>").concat(escapeHtml(product.name || product.sku || "Náhrada"), "</strong><small>").concat(escapeHtml([product.sku ? "SKU ".concat(product.sku) : "", storagePositionLabel(product)].filter(Boolean).join(" · ")), "</small></span><b>").concat(escapeHtml("".concat(formatQuantity(Math.max(0, free)), " ").concat(product.base_unit || "ks", " volných")), "</b></button>");
+    }).join("") || "<span>Pro tuto položku není nastavená schválená náhrada.</span>";
+  }
   function renderCurrentItem() {
     if (!state.activeItems.length) {
       renderSummary();
       return;
     }
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item.product_id) || {};
-    const category = getPickingCategory(product);
+    const originalProduct = productById(item.product_id) || {};
+    const product = activeProduct(item) || originalProduct;
+    const category = getPickingCategory(originalProduct);
     renderRouteHeader();
     renderProgress();
     renderCategories(category.key);
     elements.itemCounter.textContent = "Položka ".concat(state.currentIndex + 1, " z ").concat(state.activeItems.length);
     elements.itemCategory.textContent = category.label;
-    elements.productName.textContent = item.product_name || product.name || "Produkt";
-    elements.productSku.textContent = [item.sku || product.sku ? "SKU ".concat(item.sku || product.sku) : "", product.base_unit ? "základ ".concat(product.base_unit) : ""].filter(Boolean).join(" · ") || "Bez kódu";
+    elements.productName.textContent = product.name || item.product_name || "Produkt";
+    elements.productSku.textContent = [product.sku ? "SKU ".concat(product.sku) : "", product.base_unit ? "základ ".concat(product.base_unit) : ""].filter(Boolean).join(" · ") || "Bez kódu";
     elements.productPosition.textContent = storagePositionLabel(product);
     elements.productFallback.textContent = productFallback(product, item);
     elements.productFallback.hidden = false;
     elements.productPhoto.hidden = true;
-    elements.productPhoto.alt = "Fotografie ".concat(item.product_name || product.name || "produktu");
+    elements.productPhoto.alt = "Fotografie ".concat(product.name || item.product_name || "produktu");
     const imageUrl = productImageUrl(product);
     if (imageUrl) {
       elements.productPhoto.src = imageUrl;
@@ -7474,6 +7558,11 @@
     } else {
       elements.productPhoto.removeAttribute("src");
     }
+    const isSubstitute = String(product.id || "") !== String(item.product_id || "");
+    elements.substituteNotice.hidden = !isSubstitute;
+    elements.substituteNoticeText.textContent = isSubstitute ? "Místo ".concat(item.product_name || originalProduct.name || "původní položky", " vydáš ").concat(product.name || "náhradu") : "";
+    renderSubstituteChoices(item);
+    setSubstitutePanelOpen(false);
     setSkipPanelOpen(false);
     renderQuantityAndStock();
     showView("pickingView");
@@ -7485,8 +7574,9 @@
   }
   function resetCurrentQuantity() {
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item == null ? void 0 : item.product_id);
-    const pack = getPickingPackage(item, product, state.packages);
+    state.substituteProductId = (item == null ? void 0 : item.prepared_product_id) || null;
+    const product = activeProduct(item);
+    const pack = getPickingPackage(activeUnitItem(item, product), product, state.packages);
     state.quantityPieces = item ? itemBaseQuantity(item) : 0;
     state.unitMode = pack && Number(pack.units_per_package || 0) > 1 ? "package" : "piece";
   }
@@ -7544,31 +7634,40 @@
     setQuantityFromInput();
     if (state.quantityPieces <= 0) throw new Error("Pro nulové množství použij tlačítko Nevychystat.");
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item.product_id) || {};
-    const pack = getPickingPackage(item, product, state.packages);
-    const requestedBase = itemBaseQuantity(item, "requested_quantity");
+    const originalProduct = productById(item.product_id) || {};
+    const product = activeProduct(item) || originalProduct;
+    const isSubstitute = String(product.id || "") !== String(item.product_id || "");
+    const pack = getPickingPackage(activeUnitItem(item, product), product, state.packages);
+    const requestedBase = getItemBaseQuantity(item, originalProduct, state.packages, "requested_quantity");
     const usePackage = state.unitMode === "package" && pack;
     const unit = usePackage ? pack.package_name : product.base_unit || "ks";
     const factor = usePackage ? Number(pack.units_per_package || 1) : 1;
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    const cleanNote = String(item.note || "").replace(/\s*\[Nevychystáno:[^\]]+\]/gi, "").trim() || null;
-    const payload = {
-      unit,
-      requested_quantity: Number((requestedBase / factor).toFixed(3)),
+    const cleanNote = String(item.note || "").replace(/\s*\[Nevychystáno:[^\]]+\]/gi, "").replace(/\s*\[Náhrada:[^\]]+\]/gi, "").trim();
+    const substitutionNote = isSubstitute ? "[Náhrada: ".concat(item.product_name || originalProduct.name || "původní položka", " → ").concat(product.name || "náhradní položka", "]") : "";
+    const payload = __spreadProps(__spreadValues({}, isSubstitute ? {} : { unit, requested_quantity: Number((requestedBase / factor).toFixed(3)) }), {
       prepared_quantity: Number((state.quantityPieces / factor).toFixed(3)),
-      note: cleanNote,
+      prepared_product_id: isSubstitute ? product.id : null,
+      prepared_product_name: isSubstitute ? product.name : null,
+      prepared_sku: isSubstitute ? product.sku : null,
+      prepared_unit: isSubstitute ? unit : null,
+      note: [cleanNote, substitutionNote].filter(Boolean).join(" ") || null,
       warehouse_picked_at: now,
       warehouse_picked_by: ((_a2 = state.me) == null ? void 0 : _a2.id) || null
-    };
+    });
     const data = await updateOrQueue("mobile_stock_request_items", item.id, payload);
-    showToast("".concat(item.product_name || product.name, ": připraveno").concat(data.__queued ? " offline" : "", "."));
+    showToast("".concat(product.name || item.product_name, ": připraveno").concat(isSubstitute ? " jako náhrada" : "").concat(data.__queued ? " offline" : "", "."));
     advanceAfterItem();
   }
   async function skipCurrentItem(reason) {
     const item = state.activeItems[state.currentIndex];
-    const cleanNote = String(item.note || "").replace(/\s*\[Nevychystáno:[^\]]+\]/gi, "").trim();
+    const cleanNote = String(item.note || "").replace(/\s*\[Nevychystáno:[^\]]+\]/gi, "").replace(/\s*\[Náhrada:[^\]]+\]/gi, "").trim();
     const payload = {
       prepared_quantity: 0,
+      prepared_product_id: null,
+      prepared_product_name: null,
+      prepared_sku: null,
+      prepared_unit: null,
       note: [cleanNote, "[Nevychystáno: ".concat(reason, "]")].filter(Boolean).join(" "),
       warehouse_picked_at: null,
       warehouse_picked_by: null
@@ -7647,14 +7746,16 @@
       const vehicleIds = [...new Set(state.requests.map((request) => request.vehicle_id).filter(Boolean))];
       const routeIds = [...new Set(state.requests.map((request) => request.route_plan_id).filter(Boolean))];
       setBootStage("Načítám položky, vozidla a trasy…");
-      const [itemsResult, employeesResult, vehiclesResult, routesResult, locationsResult] = await Promise.all([
+      const [itemsResult, employeesResult, vehiclesResult, routesResult, locationsResult, productsCatalogResult, substitutionRulesResult] = await Promise.all([
         supabase.from("mobile_stock_request_items").select("*").in("request_id", requestIds).order("id", { ascending: true }),
         employeeIds.length ? supabase.from("employee_directory").select("id, name, surname, email").in("id", employeeIds) : Promise.resolve({ data: [], error: null }),
         vehicleIds.length ? supabase.from("vehicles").select("id, name, plate, brand, model, warehouse_id").in("id", vehicleIds) : Promise.resolve({ data: [], error: null }),
         routeIds.length ? supabase.from("route_plans").select("id, title, planning_date").in("id", routeIds) : Promise.resolve({ data: [], error: null }),
-        supabase.from("stock_locations").select("id, name, location_type, warehouse_id, vehicle_id, active").eq("active", true)
+        supabase.from("stock_locations").select("id, name, location_type, warehouse_id, vehicle_id, active").eq("active", true),
+        supabase.from("products").select("id, name, sku, product_category, usage_type, base_unit, active, note").eq("active", true).order("name", { ascending: true }).limit(2e3),
+        supabase.from("machine_planogram_slots").select("product_sku, product_family, substitution_policy, allowed_substitutes, active").eq("active", true).in("substitution_policy", ["approved_list", "same_family"])
       ]);
-      const firstError = (_a2 = [itemsResult, employeesResult, vehiclesResult, routesResult, locationsResult].find((result) => result.error)) == null ? void 0 : _a2.error;
+      const firstError = (_a2 = [itemsResult, employeesResult, vehiclesResult, routesResult, locationsResult, productsCatalogResult, substitutionRulesResult].find((result) => result.error)) == null ? void 0 : _a2.error;
       if (firstError) throw firstError;
       state.items = itemsResult.data || [];
       state.employees = [...employeesResult.data || []];
@@ -7662,7 +7763,12 @@
       state.vehicles = vehiclesResult.data || [];
       state.routes = routesResult.data || [];
       state.locations = locationsResult.data || [];
-      const productIds = [...new Set(state.items.map((item) => item.product_id).filter(Boolean))];
+      state.products = productsCatalogResult.data || [];
+      state.substitutionRules = substitutionRulesResult.data || [];
+      const originalProductIds = [...new Set(state.items.map((item) => item.product_id).filter(Boolean))];
+      const substitutionProductIds = state.items.flatMap((item) => approvedSubstitutes(item).map((product) => product.id));
+      const preparedProductIds = state.items.map((item) => item.prepared_product_id).filter(Boolean);
+      const productIds = [.../* @__PURE__ */ new Set([...originalProductIds, ...substitutionProductIds, ...preparedProductIds])];
       const relevantLocationIds = [...new Set(state.requests.flatMap((request) => {
         var _a3, _b2;
         return [
@@ -7673,14 +7779,14 @@
         ];
       }).filter(Boolean))];
       setBootStage("Načítám produkty a skladové zásoby…");
-      const [productsResult, packagesResult, balancesResult] = await Promise.all([
+      const [productDetailsResult, packagesResult, balancesResult] = await Promise.all([
         productIds.length ? supabase.from("products").select("id, name, sku, product_category, usage_type, base_unit, active, note, image_path, image_updated_at").in("id", productIds) : Promise.resolve({ data: [], error: null }),
         productIds.length ? supabase.from("product_packages").select("id, product_id, package_name, units_per_package, is_default, active").in("product_id", productIds).eq("active", true) : Promise.resolve({ data: [], error: null }),
         relevantLocationIds.length && productIds.length ? supabase.from("stock_location_balances").select("id, stock_location_id, product_id, batch_id, quantity_on_hand, reserved_quantity").in("stock_location_id", relevantLocationIds).in("product_id", productIds) : Promise.resolve({ data: [], error: null })
       ]);
-      const detailError = (_b = [productsResult, packagesResult, balancesResult].find((result) => result.error)) == null ? void 0 : _b.error;
+      const detailError = (_b = [productDetailsResult, packagesResult, balancesResult].find((result) => result.error)) == null ? void 0 : _b.error;
       if (detailError) throw detailError;
-      state.products = await hydrateProductImages(productsResult.data || []);
+      state.products = await hydrateProductImages(productDetailsResult.data || []);
       state.packages = packagesResult.data || [];
       state.balances = balancesResult.data || [];
       state.activeRequest = null;
@@ -7741,7 +7847,27 @@
   elements.successBackBtn.addEventListener("click", loadData);
   elements.readyItemBtn.addEventListener("click", () => runAction(saveCurrentItem));
   elements.skipItemBtn.addEventListener("click", () => {
+    setSubstitutePanelOpen(false);
     setSkipPanelOpen(elements.skipPanel.hidden);
+  });
+  elements.substituteItemBtn.addEventListener("click", () => {
+    setSkipPanelOpen(false);
+    setSubstitutePanelOpen(elements.substitutePanel.hidden);
+  });
+  elements.substituteCancelBtn.addEventListener("click", () => {
+    setSubstitutePanelOpen(false);
+  });
+  elements.substituteList.addEventListener("click", (event) => {
+    var _a2;
+    const button = event.target.closest("[data-substitute-id]");
+    if (!button || button.disabled) return;
+    const item = state.activeItems[state.currentIndex];
+    const requestedBase = getItemBaseQuantity(item, productById(item.product_id), state.packages, "requested_quantity");
+    state.substituteProductId = button.dataset.substituteId;
+    state.quantityPieces = requestedBase;
+    state.unitMode = "piece";
+    renderCurrentItem();
+    showToast("Vybraná náhrada: ".concat(((_a2 = activeProduct(item)) == null ? void 0 : _a2.name) || "produkt", ". Zkontroluj počet kusů."));
   });
   elements.skipPanel.addEventListener("click", (event) => {
     const button = event.target.closest("[data-skip-reason]");
@@ -7758,16 +7884,16 @@
   });
   elements.minusBtn.addEventListener("click", () => {
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item == null ? void 0 : item.product_id);
-    const pack = getPickingPackage(item, product, state.packages);
+    const product = activeProduct(item);
+    const pack = getPickingPackage(activeUnitItem(item, product), product, state.packages);
     const step = state.unitMode === "package" && pack ? Number(pack.units_per_package || 1) : 1;
     state.quantityPieces = Math.max(0, Number((state.quantityPieces - step).toFixed(3)));
     renderQuantityAndStock();
   });
   elements.plusBtn.addEventListener("click", () => {
     const item = state.activeItems[state.currentIndex];
-    const product = productById(item == null ? void 0 : item.product_id);
-    const pack = getPickingPackage(item, product, state.packages);
+    const product = activeProduct(item);
+    const pack = getPickingPackage(activeUnitItem(item, product), product, state.packages);
     const step = state.unitMode === "package" && pack ? Number(pack.units_per_package || 1) : 1;
     state.quantityPieces = Number((state.quantityPieces + step).toFixed(3));
     renderQuantityAndStock();
@@ -7820,3 +7946,16 @@
   updateConnection();
   loadData();
 })();
+/*! Bundled license information:
+
+unenv/dist/runtime/node/internal/buffer/ieee754.mjs:
+  (*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> *)
+
+unenv/dist/runtime/node/internal/buffer/buffer.mjs:
+  (*!
+  * The buffer module from node.js, for the browser.
+  *
+  * @author   Feross Aboukhadijeh <https://feross.org>
+  * @license  MIT
+  *)
+*/
