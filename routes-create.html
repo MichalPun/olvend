@@ -1725,6 +1725,10 @@
     .candidate-machine-id { flex:0 0 auto;padding:3px 6px;border:1px solid rgba(255,255,255,.1);border-radius:5px;color:#c8d1dc;background:rgba(255,255,255,.055);font-size:10px;font-weight:900;line-height:1;letter-spacing:.035em; }
     .candidate-card-title { display:block;min-width:0;font-size:13px;font-weight:850;line-height:1.3;overflow-wrap:anywhere; }
     .candidate-card-place { display:block;margin-top:5px;color:var(--muted);font-size:11px;line-height:1.4; }
+    .candidate-card-last-visit { display:flex;align-items:center;gap:5px;margin-top:4px;color:#b9c4d0;font-size:10.5px;font-weight:750;line-height:1.35; }
+    .candidate-card-last-visit::before { content:'↺';color:#7eb7ef;font-size:12px;font-weight:900;line-height:1; }
+    .candidate-card-last-visit.no-visit { color:var(--muted);font-weight:650; }
+    .candidate-card-last-visit.no-visit::before { color:var(--muted); }
     .candidate-card-badges { display:flex;gap:5px;flex-wrap:wrap;margin-top:7px; }
     .candidate-card-badges .route-badge { padding:4px 7px;border-radius:6px;font-size:10px;line-height:1.2; }
     .candidate-card-actions { display:flex;align-items:center;gap:10px;margin-top:8px; }
@@ -1887,6 +1891,10 @@
     :root[data-olvend-theme="light"] .candidate-list .modern-candidate-card:hover { background:#f8fafc; }
     :root[data-olvend-theme="light"] .modern-candidate-card.selected { border-left-color:var(--accent);background:#fff7f7; }
     :root[data-olvend-theme="light"] .candidate-machine-id { color:#344054;background:#f2f4f7;border-color:#dfe3e8; }
+    :root[data-olvend-theme="light"] .candidate-card-last-visit { color:#475467; }
+    :root[data-olvend-theme="light"] .candidate-card-last-visit::before { color:#175cd3; }
+    :root[data-olvend-theme="light"] .candidate-card-last-visit.no-visit,
+    :root[data-olvend-theme="light"] .candidate-card-last-visit.no-visit::before { color:#98a2b3; }
     :root[data-olvend-theme="light"] .candidate-card-badges .route-badge { border-color:transparent; }
     :root[data-olvend-theme="light"] .candidate-add { color:#175cd3;background:#eff8ff;border-color:#b2ddff; }
     :root[data-olvend-theme="light"] .candidate-detail-slot .stock-detail-table tr { background:#fff;border-color:#e2e7ed;box-shadow:0 1px 2px rgba(15,23,42,.035); }
@@ -3313,6 +3321,54 @@
       return visit?.completed_at || visit?.arrived_at || visit?.synced_at || visit?.created_at || visit?.visit_date || ''
     }
 
+    function getCandidateLastCompletedVisit(candidate) {
+      const machineIds = new Set()
+      const addMachineId = (value) => {
+        if (value == null || value === '') return
+        machineIds.add(String(value))
+      }
+      addMachineId(candidate?.machineId)
+      addMachineId(candidate?.machine_id)
+      ;(candidate?.machineServiceEntries || []).forEach((entry) => addMachineId(entry?.machineId ?? entry?.machine_id))
+
+      let latestVisit = null
+      let latestTimestamp = 0
+      machineIds.forEach((machineId) => {
+        const visit = state.lastCompletedMachineVisits.get(machineId)
+        const timestamp = new Date(getVisitTimestamp(visit) || 0).getTime()
+        if (!visit || Number.isNaN(timestamp) || timestamp <= latestTimestamp) return
+        latestVisit = visit
+        latestTimestamp = timestamp
+      })
+      return latestVisit
+    }
+
+    function formatCandidateLastVisit(candidate) {
+      const visit = getCandidateLastCompletedVisit(candidate)
+      const timestamp = getVisitTimestamp(visit)
+      if (!timestamp) return { label: 'Poslední návštěva: bez dokončeného záznamu', missing: true }
+      const date = new Date(timestamp)
+      if (Number.isNaN(date.getTime())) return { label: 'Poslední návštěva: bez dokončeného záznamu', missing: true }
+      const planningDate = routeDateInput.value ? new Date(`${routeDateInput.value}T12:00:00`) : new Date()
+      const ageDays = Number.isNaN(planningDate.getTime())
+        ? null
+        : Math.round((
+          Date.UTC(planningDate.getFullYear(), planningDate.getMonth(), planningDate.getDate())
+          - Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+        ) / (24 * 60 * 60 * 1000))
+      const ageLabel = ageDays === 0
+        ? 'dnes'
+        : ageDays === 1
+          ? 'před 1 dnem'
+          : ageDays != null && ageDays > 1
+            ? `před ${ageDays} dny`
+            : ''
+      return {
+        label: `Poslední návštěva: ${date.toLocaleDateString('cs-CZ')}${ageLabel ? ` · ${ageLabel}` : ''}`,
+        missing: false,
+      }
+    }
+
     function daysSince(value, baseDateString = routeDateInput.value) {
       if (!value || !baseDateString) return null
       const valueDate = new Date(value)
@@ -4349,6 +4405,7 @@
         const locationLabel = candidate.parentLocationName
           ? `${escapeHtml(candidate.parentLocationName)}${candidate.city ? ` · ${escapeHtml(candidate.city)}` : ''}`
           : escapeHtml(candidate.city || 'Bez města')
+        const lastVisit = formatCandidateLastVisit(candidate)
 
         return `
           <article class="modern-candidate-card ${checked ? 'selected' : ''}" data-candidate-key="${escapeHtml(candidate.key)}" tabindex="0">
@@ -4358,6 +4415,7 @@
                 <span class="candidate-card-title">${escapeHtml(candidate.name)}</span>
               </div>
               <span class="candidate-card-place">${locationLabel} · ${formatNumber(candidate.estimatedServiceMinutes || 0)} min${escapeHtml(ownerNote)}</span>
+              <span class="candidate-card-last-visit${lastVisit.missing ? ' no-visit' : ''}">${escapeHtml(lastVisit.label)}</span>
               <div class="candidate-card-badges">${reasons.join('') || '<span class="candidate-card-empty">Bez upozornění</span>'}</div>
               <div class="candidate-card-actions">
                 ${stockDetailButton}
