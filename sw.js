@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v250-route-last-visit';
+const CACHE_NAME = 'olvend-v251-retired-load-products';
 const APP_SHELL = [
   './',
   './index.html',
