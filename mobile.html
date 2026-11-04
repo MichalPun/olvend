@@ -7837,12 +7837,19 @@
       return `<article class="prepared-receipt" data-prepared-request="${request.id}">
         <div class="stock-flow-info">Skladník připravil doklad #${request.id}. Pokud vše sedí, označ položky najednou. Uprav jen skutečný nesoulad.</div>
         <div class="receipt-summary"><div><span>Připravil/a</span><strong>${escapeHtml(request.prepared_by_name || 'Sklad')}</strong></div><div><span>Pro vozidlo</span><strong>${escapeHtml(state.vehicles.find((vehicle) => String(vehicle.id) === String(request.vehicle_id))?.plate || 'Dnešní auto')}</strong></div></div>
-        <div class="stock-receipt-list">${drafts.map(({ item, draft }) => `<article class="stock-receipt-card ${draft.verified ? 'verified' : ''}" data-receipt-item="${item.id}">
-          <div class="stock-receipt-card-head"><div><strong>${escapeHtml(item.product_name || 'Produkt')}</strong><small>${escapeHtml([item.sku ? `SKU ${item.sku}` : '', 'připraveno skladníkem'].filter(Boolean).join(' · '))}</small></div><div class="stock-receipt-quantity">${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</div></div>
+        <div class="stock-receipt-list">${drafts.map(({ item, draft }) => {
+          const substituted = hasStockRequestSubstitution(item)
+          const preparedProduct = getPreparedStockRequestProduct(item)
+          const preparedName = item.prepared_product_name || preparedProduct?.name || item.product_name || 'Produkt'
+          const preparedSku = item.prepared_sku || preparedProduct?.sku || item.sku
+          const preparedUnit = getPreparedStockRequestUnit(item, preparedProduct)
+          return `<article class="stock-receipt-card ${draft.verified ? 'verified' : ''}" data-receipt-item="${item.id}">
+          <div class="stock-receipt-card-head"><div><strong>${escapeHtml(preparedName)}</strong><small>${escapeHtml([preparedSku ? `SKU ${preparedSku}` : '', 'připraveno skladníkem'].filter(Boolean).join(' · '))}</small>${substituted ? `<div class="attention-box"><strong>Náhrada</strong><span>Místo ${escapeHtml(item.product_name || 'původní položky')} vydáno ${escapeHtml(preparedName)}.</span></div>` : ''}</div><div class="stock-receipt-quantity">${formatNumber(draft.quantity)} ${escapeHtml(preparedUnit)}</div></div>
           <div class="receipt-line-actions"><button class="matches" data-receipt-accept type="button">${draft.verified && !draft.editing ? 'Potvrzeno' : 'Sedí'}</button><button data-receipt-edit type="button">Upravit</button></div>
-          <div class="stock-receipt-stepper ${draft.editing ? '' : 'visually-hidden'}"><button data-receipt-step="-1" type="button">−</button><output>${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</output><button data-receipt-step="1" type="button">+</button></div>
-          ${draft.editing ? `<button class="stock-receipt-remove" data-receipt-accept type="button">Potvrdit ${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</button>` : ''}
-        </article>`).join('')}</div>
+          <div class="stock-receipt-stepper ${draft.editing ? '' : 'visually-hidden'}"><button data-receipt-step="-1" type="button">−</button><output>${formatNumber(draft.quantity)} ${escapeHtml(preparedUnit)}</output><button data-receipt-step="1" type="button">+</button></div>
+          ${draft.editing ? `<button class="stock-receipt-remove" data-receipt-accept type="button">Potvrdit ${formatNumber(draft.quantity)} ${escapeHtml(preparedUnit)}</button>` : ''}
+        </article>`
+        }).join('')}</div>
         <button class="receipt-accept-all" data-receipt-accept-all type="button" ${!items.length || verified === items.length ? 'disabled' : ''}>${items.length && verified === items.length ? `Všechny položky označené · ${verified}/${items.length}` : `Označit vše jako „sedí“ · ${items.length} položek`}</button>
         <div class="receipt-confirmation">Potvrzením se skutečně převzaté množství převede ze skladu do zásoby vozidla.</div>
         <button class="primary-btn" data-stock-request-action="confirm-ready" data-request-id="${request.id}" type="button" ${verified !== items.length || !items.length ? 'disabled' : ''}>${verified === items.length && items.length ? 'Potvrdit převzetí do auta' : `Nejdřív potvrď položky · ${verified}/${items.length}`}</button>
@@ -8010,18 +8017,23 @@
     function getStockRequestItemSummary(requestId) {
       return getStockRequestItems(requestId)
         .slice(0, 3)
-        .map((item) => `${item.product_name || 'Produkt'} ${formatStockRequestItemQuantity(item)}`)
+        .map((item) => hasStockRequestSubstitution(item)
+          ? `${item.product_name || 'Produkt'} → ${item.prepared_product_name || getPreparedStockRequestProduct(item)?.name || 'náhrada'} ${formatStockRequestItemQuantity(item)}`
+          : `${item.product_name || 'Produkt'} ${formatStockRequestItemQuantity(item)}`)
         .join(' / ')
     }
 
     function getStockRequestAdjustmentSummary(requestId) {
       return getStockRequestItems(requestId)
-        .filter((item) => item.prepared_quantity !== null && item.prepared_quantity !== undefined && Number(item.prepared_quantity) !== Number(item.requested_quantity || 0))
+        .filter((item) => hasStockRequestSubstitution(item) || (item.prepared_quantity !== null && item.prepared_quantity !== undefined && Number(item.prepared_quantity) !== Number(item.requested_quantity || 0)))
         .slice(0, 3)
         .map((item) => {
           const before = formatStockRequestItemQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null })
           const after = formatStockRequestItemQuantity(item)
-          return `${item.product_name || 'Produkt'} ${before} → ${after}`
+          const afterName = hasStockRequestSubstitution(item)
+            ? (item.prepared_product_name || getPreparedStockRequestProduct(item)?.name || 'náhrada')
+            : (item.product_name || 'Produkt')
+          return `${item.product_name || 'Produkt'} ${before} → ${afterName} ${after}`
         })
         .join(' / ')
     }
@@ -8280,6 +8292,22 @@
       return state.products.find((product) => String(product.id) === String(item?.product_id))
     }
 
+    function hasStockRequestSubstitution(item) {
+      return Boolean(item?.prepared_product_id)
+        && String(item.prepared_product_id) !== String(item?.product_id || '')
+    }
+
+    function getPreparedStockRequestProduct(item) {
+      if (!hasStockRequestSubstitution(item)) return getStockRequestProduct(item)
+      return state.products.find((product) => String(product.id) === String(item.prepared_product_id)) || null
+    }
+
+    function getPreparedStockRequestUnit(item, product = getPreparedStockRequestProduct(item)) {
+      return hasStockRequestSubstitution(item)
+        ? (item.prepared_unit || product?.base_unit || 'ks')
+        : (item?.unit || product?.base_unit || 'ks')
+    }
+
     function isFoodReadyProduct(product) {
       const name = normalizeText(product?.name || '')
       const category = normalizeText(product?.product_category || '')
@@ -8521,27 +8549,30 @@
       return `${digits.slice(0, 2)}.${digits.slice(2, 4)}.${digits.slice(4)}`
     }
 
-    function getStockRequestUnitPackage(item, product = getStockRequestProduct(item)) {
-      const unit = normalizeText(item?.unit || '')
+    function getStockRequestUnitPackage(item, product = getPreparedStockRequestProduct(item), unitValue = getPreparedStockRequestUnit(item, product)) {
+      const unit = normalizeText(unitValue)
       if (!product || !unit) return null
       return getMobileProductPackages(product.id).find((pack) => normalizeText(pack.package_name || '') === unit) || null
     }
 
     function getStockRequestQuantityBase(item) {
       const quantity = Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
-      const product = getStockRequestProduct(item)
-      const pack = getStockRequestUnitPackage(item, product)
+      const hasPreparedQuantity = item?.confirmed_quantity != null || item?.prepared_quantity != null
+      const product = hasPreparedQuantity ? getPreparedStockRequestProduct(item) : getStockRequestProduct(item)
+      const effectiveUnit = hasPreparedQuantity ? getPreparedStockRequestUnit(item, product) : (item?.unit || product?.base_unit || 'ks')
+      const pack = getStockRequestUnitPackage(item, product, effectiveUnit)
       if (!product && item?.stock_quantity_base_units != null) return Number(item.stock_quantity_base_units || 0)
       return product && pack ? convertMobilePackageQuantityToBase(product, quantity, pack) : quantity
     }
 
     function formatStockRequestItemQuantity(item) {
       const quantity = Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
-      const product = getStockRequestProduct(item)
-      const unit = item?.unit || product?.base_unit || 'ks'
+      const hasPreparedQuantity = item?.confirmed_quantity != null || item?.prepared_quantity != null
+      const product = hasPreparedQuantity ? getPreparedStockRequestProduct(item) : getStockRequestProduct(item)
+      const unit = hasPreparedQuantity ? getPreparedStockRequestUnit(item, product) : (item?.unit || product?.base_unit || 'ks')
       const baseUnit = product?.base_unit || unit || 'ks'
       const baseQuantity = getStockRequestQuantityBase(item)
-      if (product && getStockRequestUnitPackage(item, product)) {
+      if (product && getStockRequestUnitPackage(item, product, unit)) {
         return `${formatNumber(quantity)} ${unit} = ${formatStockQuantityValue(baseQuantity, baseUnit)}`
       }
       return formatStockQuantityValue(quantity, unit)
@@ -18801,12 +18832,13 @@
       if (!vehicleId) return
       const targetDate = request.requested_for_date || todayIso
       for (const item of items) {
-        if (!item.product_id) continue
+        const loadedProductId = hasStockRequestSubstitution(item) ? item.prepared_product_id : item.product_id
+        if (!loadedProductId) continue
         const quantity = getRequestQuantity(item)
         if (quantity <= 0) continue
-        const product = state.products.find((row) => String(row.id) === String(item.product_id))
-        const unit = product?.base_unit || item.unit || 'ks'
-        const needs = await fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, item.product_id)
+        const product = state.products.find((row) => String(row.id) === String(loadedProductId))
+        const unit = product?.base_unit || getPreparedStockRequestUnit(item, product) || 'ks'
+        const needs = await fetchAutoLoadDeferredNeedsForLoadedProduct(vehicleId, loadedProductId)
         let loadedRemaining = quantity
         for (const need of needs) {
           if (loadedRemaining <= 0.0001) break
@@ -18983,7 +19015,9 @@
       }
 
       for (const item of items) {
-        const productId = item.product_id
+        const productId = ['vehicle_order', 'vehicle_load'].includes(request.request_type) && hasStockRequestSubstitution(item)
+          ? item.prepared_product_id
+          : item.product_id
         const quantity = request.request_type === 'vehicle_writeoff'
           ? Number(item?.confirmed_quantity ?? item?.prepared_quantity ?? item?.requested_quantity ?? item?.quantity ?? 0)
           : getRequestQuantity(item)
@@ -18999,7 +19033,9 @@
             toStockLocationId: vehicleLocationId,
             movementType: 'load_vehicle',
             referenceId,
-            note: `Mobilní nakládka #${request.id}`,
+            note: hasStockRequestSubstitution(item)
+              ? `Mobilní nakládka #${request.id} · náhrada za ${item.product_name || item.sku || item.product_id}`
+              : `Mobilní nakládka #${request.id}`,
             allowNegative: true,
             selectedBatchId: item.batch_id || null
           }))
