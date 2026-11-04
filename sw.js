@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v249-partner-gross-rates';
+const CACHE_NAME = 'olvend-v250-route-last-visit';
 const APP_SHELL = [
   './',
   './index.html',
