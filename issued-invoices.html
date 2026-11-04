@@ -977,6 +977,29 @@
     function roundMoney(value) {
       return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100
     }
+    function partnerRateAmounts(quantity, rate, vatRate, rateIncludesVat = false) {
+      const normalizedQuantity = Number(quantity || 0)
+      const normalizedRate = Number(rate || 0)
+      const normalizedVatRate = Number(vatRate || 0)
+      if (rateIncludesVat) {
+        const grossAmount = roundMoney(normalizedQuantity * normalizedRate)
+        const netAmount = roundMoney(grossAmount / (1 + normalizedVatRate / 100))
+        return {
+          netAmount,
+          vatAmount: roundMoney(grossAmount - netAmount),
+          grossAmount,
+          invoiceUnitPrice: normalizedQuantity > 0 ? Number((netAmount / normalizedQuantity).toFixed(10)) : 0
+        }
+      }
+      const netAmount = roundMoney(normalizedQuantity * normalizedRate)
+      const vatAmount = roundMoney(netAmount * normalizedVatRate / 100)
+      return {
+        netAmount,
+        vatAmount,
+        grossAmount: roundMoney(netAmount + vatAmount),
+        invoiceUnitPrice: normalizedRate
+      }
+    }
     function setStatus(message, type = '') {
       statusLine.textContent = message
       statusLine.className = 'status-line'
@@ -1988,7 +2011,13 @@
       const summaryRows = [
         [meta.quantityLabel || 'Vydané porce', `${Number(meta.quantity || 0).toLocaleString('cs-CZ')} ks`, '']
       ]
-      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryRows.push([meta.billingDirection === 'to_partner' ? 'Základ pro fakturu partnera' : 'Doplatek bez DPH', formatMoney(meta.unitNetAmount), ''])
+      if (meta.quantity > 0 && meta.unitNetAmount > 0) summaryRows.push([
+        meta.rateIncludesVat
+          ? (meta.billingDirection === 'to_partner' ? 'Faktura partnera včetně DPH' : 'Dotace včetně DPH')
+          : (meta.billingDirection === 'to_partner' ? 'Základ pro fakturu partnera' : 'Doplatek bez DPH'),
+        formatMoney(meta.rateIncludesVat ? meta.unitNetAmount + meta.unitVatAmount : meta.unitNetAmount),
+        ''
+      ])
       if (meta.fixedAmount > 0) summaryRows.push(['Měsíční fix bez DPH', formatMoney(meta.fixedNetAmount), ''])
       summaryRows.push([meta.billingDirection === 'to_partner' ? 'Partner vyfakturuje OLVENDu' : 'K fakturaci', formatMoney(meta.totalAmount), 'total'])
       partnerBillingSummary.innerHTML = summaryRows
@@ -2010,8 +2039,8 @@
         <div class="partner-billing-breakdown-row${row.total ? ' partner-billing-breakdown-total' : ''}">
           <span>${escapeHtml(row.productName)}</span><strong>${escapeHtml(meta.usesItemizedRates
             ? (row.total
-              ? `${Number(row.quantity || 0).toLocaleString('cs-CZ')} ks · ${formatMoney(meta.unitNetAmount)} bez DPH`
-              : `${Number(row.quantity || 0).toLocaleString('cs-CZ')} × ${formatMoney(row.rate)} = ${formatMoney(row.netAmount)}`)
+              ? `${Number(row.quantity || 0).toLocaleString('cs-CZ')} ks · ${formatMoney(meta.rateIncludesVat ? meta.unitNetAmount + meta.unitVatAmount : meta.unitNetAmount)} ${meta.rateIncludesVat ? 'vč. DPH' : 'bez DPH'}`
+              : `${Number(row.quantity || 0).toLocaleString('cs-CZ')} × ${formatMoney(row.rate)} = ${formatMoney(meta.rateIncludesVat ? row.grossAmount : row.netAmount)} ${meta.rateIncludesVat ? 'vč. DPH' : ''}`.trim())
             : Number(row.quantity || 0).toLocaleString('cs-CZ'))}</strong>
         </div>
       `).join('')
@@ -2162,7 +2191,7 @@
             rate
           }
           current.quantity = roundMoney(current.quantity + quantity)
-          current.netAmount = roundMoney(current.quantity * current.rate)
+          Object.assign(current, partnerRateAmounts(current.quantity, current.rate, setup.unitVatRate, setup.rateIncludesVat))
           productMap.set(productKey, current)
           const source = normalizeText(row.provider).includes('ima') ? 'IMA/DEX' : 'Historický přenos'
           sourceMap.set(source, roundMoney((sourceMap.get(source) || 0) + quantity))
@@ -2189,7 +2218,7 @@
             ? roundMoney(simpleRateGrossAmount / (1 + base.unitVatRate / 100))
             : roundMoney(quantity * base.rate))
         const unitVatAmount = base.usesItemizedRates
-          ? roundMoney(productBreakdown.reduce((sum, row) => sum + roundMoney(Number(row.netAmount || 0) * base.unitVatRate / 100), 0))
+          ? roundMoney(productBreakdown.reduce((sum, row) => sum + Number(row.vatAmount || 0), 0))
           : (base.rateIncludesVat
             ? roundMoney(simpleRateGrossAmount - unitNetAmount)
             : roundMoney(unitNetAmount * base.unitVatRate / 100))
@@ -2414,7 +2443,7 @@
             productName: `${row.productName}${row.productSku ? ` · SKU ${row.productSku}` : ''}`,
             quantity: row.quantity,
             unit: 'ks',
-            unitPrice: row.rate,
+            unitPrice: row.invoiceUnitPrice ?? row.rate,
             unitCost: 0,
             vatRate: meta.unitVatRate
           })
@@ -2425,7 +2454,9 @@
           productName: meta.description,
           quantity: meta.quantity,
           unit: 'ks',
-          unitPrice: meta.rate,
+          unitPrice: meta.rateIncludesVat
+            ? partnerRateAmounts(meta.quantity, meta.rate, meta.unitVatRate, true).invoiceUnitPrice
+            : meta.rate,
           unitCost: 0,
           vatRate: meta.unitVatRate
         })
@@ -4344,8 +4375,8 @@
             doc.text(name, x + 0.5, rowY + 4.3)
             const rowValue = meta.usesItemizedRates
               ? (item.total
-                ? `${quantityText(item.quantity)} ks · ${money(meta.unitNetAmount)}`
-                : `${quantityText(item.quantity)} × ${money(item.rate)} · ${money(item.netAmount)}`)
+                ? `${quantityText(item.quantity)} ks · ${money(meta.rateIncludesVat ? meta.unitNetAmount + meta.unitVatAmount : meta.unitNetAmount)}`
+                : `${quantityText(item.quantity)} × ${money(item.rate)} · ${money(meta.rateIncludesVat ? item.grossAmount : item.netAmount)}`)
               : quantityText(item.quantity)
             doc.text(rowValue, x + columnWidth - 0.5, rowY + 4.3, { align:'right' })
           })
@@ -4376,10 +4407,12 @@
       const calcWidth = pageWidth - margin - calcX
       const calcRows = []
       if (meta.quantity > 0 && meta.usesItemizedRates && meta.unitNetAmount > 0) {
-        calcRows.push(
-          [`Doplatek za ${quantityText(meta.quantity)} ${meta.quantityUnit || 'porcí'} bez DPH`, money(meta.unitNetAmount)],
-          [`DPH ${quantityText(meta.unitVatRate)} % z doplatku`, money(meta.unitVatAmount)]
-        )
+        calcRows.push(meta.rateIncludesVat
+          ? [`Dotace za ${quantityText(meta.quantity)} ${meta.quantityUnit || 'porcí'} včetně DPH`, money(meta.unitNetAmount + meta.unitVatAmount)]
+          : [`Doplatek za ${quantityText(meta.quantity)} ${meta.quantityUnit || 'porcí'} bez DPH`, money(meta.unitNetAmount)])
+        calcRows.push([meta.rateIncludesVat
+          ? `z toho DPH ${quantityText(meta.unitVatRate)} %`
+          : `DPH ${quantityText(meta.unitVatRate)} % z doplatku`, money(meta.unitVatAmount)])
       } else if (meta.quantity > 0 && meta.rate > 0) {
         calcRows.push(meta.rateIncludesVat
           ? [`${quantityText(meta.quantity)} × ${money(meta.rate)} včetně DPH`, money(meta.unitNetAmount + meta.unitVatAmount)]
@@ -4421,8 +4454,8 @@
           .sort((a, b) => a - b)
           .map((rate) => money(rate))
         if (rates.length) noteParts.push(groupsByMachine
-          ? `Sazba bez DPH: ${rates.join(' a ')} podle vyúčtovaného zařízení.`
-          : `Položkové sazby bez DPH: ${rates.join(' a ')} podle druhu nápoje.`)
+          ? `Sazba ${meta.rateIncludesVat ? 'včetně' : 'bez'} DPH: ${rates.join(' a ')} podle vyúčtovaného zařízení.`
+          : `Položkové sazby ${meta.rateIncludesVat ? 'včetně' : 'bez'} DPH: ${rates.join(' a ')} podle druhu nápoje.`)
       } else if (meta.quantity > 0 && meta.rate > 0) {
         noteParts.push(`Sazba činí ${money(meta.rate)} ${meta.rateIncludesVat ? 'včetně' : 'bez'} DPH za jednu ${meta.billingScope === 'product_category' ? 'prodanou bagetu' : 'vydanou porci'}.`)
       }
