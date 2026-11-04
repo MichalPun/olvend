@@ -3,8 +3,17 @@ const html=fs.readFileSync(require('node:path').join(__dirname,'../issued-invoic
 function source(name){const re=new RegExp('    (?:async )?function '+name+'\\(');const start=html.search(re);assert(start>=0,name);const rest=html.slice(start);const end=rest.slice(5).search(/\n    (?:async )?function /);return end<0?rest:rest.slice(0,end+5);}
 const ctx={console,Map,Set,Date,Number,crypto:require('node:crypto').webcrypto};
 vm.createContext(ctx);
-for(const name of ['normalizeText','roundMoney','normalizedPartnerProductName','partnerBillingSlotKey','externalReportDate','externalReportMonth','externalReportIso','normalizeExternalReportSelection','sha256Hex','parseExternalPartnerReport','roundingForTotal','partnerMachineLocationAt','filterPartnerTelemetryByLocation'])vm.runInContext(source(name),ctx);
+for(const name of ['normalizeText','roundMoney','partnerRateAmounts','normalizedPartnerProductName','partnerBillingSlotKey','externalReportDate','externalReportMonth','externalReportIso','normalizeExternalReportSelection','sha256Hex','parseExternalPartnerReport','roundingForTotal','partnerMachineLocationAt','filterPartnerTelemetryByLocation'])vm.runInContext(source(name),ctx);
 (async()=>{
+ const grossRate=ctx.partnerRateAmounts(100,8,21,true);
+ assert.equal(grossRate.grossAmount,800);
+ assert.equal(grossRate.netAmount,661.16);
+ assert.equal(grossRate.vatAmount,138.84);
+ assert.equal(ctx.roundMoney(100*grossRate.invoiceUnitPrice),661.16);
+ const netRate=ctx.partnerRateAmounts(100,8,21,false);
+ assert.equal(netRate.netAmount,800);
+ assert.equal(netRate.vatAmount,168);
+ assert.equal(netRate.grossAmount,968);
  const counts=[['6',12,5],['3',12,11],['14',14,16],['8',14,64],['13',14,23],['9',14,44],['18',20,101],['19',20,24],['11',14,5],['24',20,46],['10',14,7],['20',20,37],['22',20,29],['23',20,22],['21',20,18],['5',12,2],['1',12,17],['17',20,21],['2',12,2],['7',12,5],['15',14,5],['12',14,5],['4',12,6],['21',12,3],['8',15,1]];
  const headers=['ID trn.','Datum a čas','UID','Karta','Volba','Cena kon.','Příjmení','Jméno osoby'];
  const matrix=[headers];let id=0;const slots=new Map();
@@ -25,5 +34,7 @@ for(const name of ['normalizeText','roundMoney','normalizedPartnerProductName','
  const events=[{machine_id:66,source_event_at:'2026-09-03T12:00:00Z'},{machine_id:66,source_event_at:'2026-09-15T12:00:00Z'}];assert.equal(ctx.filterPartnerTelemetryByLocation(events,60,transfers).length,1);
  assert(html.includes('setup.billingMachineTypes.includes(machine?.machine_type)'));
  assert(html.includes('profileMap.set(locationId, { ...profile, ...(profileMap.get(locationId) || {}) })'), 'Saved profile must override built-in defaults');
- console.log('PASS: GP 519 transactions reconcile to 8953 CZK, persisted rates retain totals, duplicate/period checks and transfer boundaries preserved.');
+ assert(html.includes('unitPrice: row.invoiceUnitPrice ?? row.rate'), 'Itemized gross rates must be converted to an invoice net unit price');
+ assert(html.includes("Položkové sazby ${meta.rateIncludesVat ? 'včetně' : 'bez'} DPH"), 'Evidence must label itemized rates with their VAT basis');
+ console.log('PASS: gross itemized 8 CZK remains 8 CZK including VAT; GP precision, duplicate/period checks and transfer boundaries preserved.');
 })().catch(e=>{console.error(e);process.exit(1)});
