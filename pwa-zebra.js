@@ -3,7 +3,7 @@
 
   if (!('serviceWorker' in navigator)) return
   window.addEventListener('load', function () {
-    var version = '20261104-warehouse-substitutions-v1'
+    var version = '20261105-fructal-product-photos-v1'
     var storageKey = 'olvendPwaBootstrapVersion'
     var reloadKey = 'olvendPwaControllerReloadVersion'
     try {
@@ -18,7 +18,7 @@
       window.location.reload()
     })
 
-    navigator.serviceWorker.register('./sw.js?v=20261104-warehouse-substitutions-v1')
+    navigator.serviceWorker.register('./sw.js?v=20261105-fructal-product-photos-v1')
       .then(function (registration) { return registration.update() })
       .catch(function (error) {
         if (window.console && console.error) console.error('PWA registrace service workeru selhala:', error)

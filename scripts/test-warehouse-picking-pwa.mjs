@@ -59,7 +59,7 @@ for (const image of ['43.webp', '46.webp', '49.webp', '51.webp', '197.webp', '26
   assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
 }
 const waterSnackImages = fs.readdirSync(path.join(root, 'assets/product-images')).filter((image) => image.startsWith('ean-'))
-assert.equal(waterSnackImages.length, 58, 'Očekáváme 58 ověřených fotografií vod a cukrovinek.')
+assert.equal(waterSnackImages.length, 66, 'Očekáváme 66 ověřených fotografií vod a cukrovinek.')
 for (const image of waterSnackImages) {
   assert.ok(appShellFiles.includes(`assets/product-images/${image}`), `${image} chybí v offline APP_SHELL.`)
 }

@@ -84,3 +84,21 @@ verified photo is used in the PC inventory and in the Zebra pick card.
 | `ean-8594002072858.webp` | 8594002072858 | VA Arašídy pražené solené 100g | https://www.trafco.cz/ |
 | `ean-5205422270375.jpg` | 5205422270375 | Yoohoo! Vafle kakao+lískový oříšek 50 | https://www.thamhaplus.cz/cs/yoo-hoo-waffle-50g-kakao-a-liskovy-orisek-12--1040693.html |
 | `ean-8594006245067.jpg` | 8594006245067 | ZON 500ml PET různé druhy | https://www.trebicsko-moravskavysocina.cz/regionalni-produkty-z-trebicska/limonady-zon/ |
+
+## Fructal / BRIMEX delivery 202601100
+
+The packshots below are matched to the exact 0.5 l consumer EAN. Except for
+the Aloe Vera variant, the local copies come from Fructal's current official
+product pages. The Aloe Vera photo is the exact EAN-labelled Czech packshot
+distributed by BRIMEX CZ.
+
+| File | EAN | Product | Source |
+| --- | --- | --- | --- |
+| `ean-3838945041713.jpg` | 3838945041713 | Fructal First Aloe Vera & hrozno 0,5 l | https://eshop.agrola.cz/neperlive/1989-ochucena-voda-first-aloe-verahrozny-3838945041713.html |
+| `ean-3838945035293.png` | 3838945035293 | Fructal First Antistress Hruška & levandule 0,5 l | https://www.fructal.si/products/first |
+| `ean-3838945037808.png` | 3838945037808 | Fructal First Protect Citron & citronová tráva 0,5 l | https://www.fructal.si/products/first |
+| `ean-3838945501392.png` | 3838945501392 | FRUC Pomeranč & citron 0,5 l | https://www.fructal.si/products/fruc |
+| `ean-3838945043694.png` | 3838945043694 | FRUC Ice Tea Lesní plody 0,5 l | https://www.fructal.si/products/fruc |
+| `ean-3838945043663.png` | 3838945043663 | FRUC Ice Tea Broskev 0,5 l | https://www.fructal.si/products/fruc |
+| `ean-3838945501248.png` | 3838945501248 | FRUC Multivitamin 0,5 l | https://www.fructal.si/products/fruc |
+| `ean-3838945508094.webp` | 3838945508094 | FRUC Černý rybíz & arónie 0,5 l | https://www.fructal.si/products/fruc |
