@@ -8,7 +8,7 @@ if ('serviceWorker' in navigator) {
           localStorage.setItem(PWA_BOOTSTRAP_KEY, PWA_BOOTSTRAP_VERSION);
         }
 
-        await navigator.serviceWorker.register('./sw.js?v=20261104-warehouse-substitutions-v1');
+        await navigator.serviceWorker.register('./sw.js?v=20261105-fructal-product-photos-v1');
       } catch (error) {
         console.error('PWA registrace service workeru selhala:', error);
       }

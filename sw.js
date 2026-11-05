@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v251-retired-load-products';
+const CACHE_NAME = 'olvend-v252-fructal-product-photos';
 const APP_SHELL = [
   './',
   './index.html',
@@ -153,6 +153,14 @@ const APP_SHELL = [
   './assets/product-images/ean-8594002072858.webp',
   './assets/product-images/ean-5205422270375.jpg',
   './assets/product-images/ean-8594006245067.jpg',
+  './assets/product-images/ean-3838945041713.jpg',
+  './assets/product-images/ean-3838945035293.png',
+  './assets/product-images/ean-3838945037808.png',
+  './assets/product-images/ean-3838945501392.png',
+  './assets/product-images/ean-3838945043694.png',
+  './assets/product-images/ean-3838945043663.png',
+  './assets/product-images/ean-3838945501248.png',
+  './assets/product-images/ean-3838945508094.webp',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
