@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v6';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v7';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -11,6 +11,7 @@ const state = {
   visitDurationSamples: new Map(), actualVisitMinutes: new Map(),
   machineDurationSamples: new Map(), actualMachineMinutes: new Map(), plannedMachineMinutes: new Map(), fallbackMachineMinutes: 20,
   requiredVisits: new Map(), markers: new Map(), depot: DEPOT_FALLBACK,
+  scheduleSettings: new Map(), routeDrafts: new Map(), planningEmployeeId: null, routeRequestId: 0,
   selectedEmployeeId: null, selectedLocationId: null, selectedMachineIds: new Set(),
   drawing: false, drawPoints: [], drawLayer: null, dirty: false, showComparison: false
 };
@@ -29,6 +30,7 @@ const copyAssignments = (source) => new Map([...source].map(([machineId, owners]
 const ownersOfMachine = (assignments, machineId) => [...(assignments.get(String(machineId)) || new Set())].filter(Boolean);
 const number = (value, digits = 1) => Number(value || 0).toFixed(digits).replace('.', ',');
 const dateLabel = (value) => value ? new Intl.DateTimeFormat('cs-CZ').format(new Date(`${value}T12:00:00`)) : 'bez návštěvy';
+const weekDayLabels = ['Po', 'Út', 'St', 'Čt', 'Pá'];
 
 const map = L.map('map', { zoomControl: true }).setView([49.25, 16.9], 7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
@@ -57,6 +59,37 @@ function defaultFund(employee) {
   if (/michal\s+punčochář/i.test(nameOf(employee))) return 24;
   const value = Number(employee.contracted_weekly_hours);
   return Number.isFinite(value) && value > 0 ? value : 40;
+}
+
+function nextMondayValue() {
+  const date = new Date(); date.setHours(12, 0, 0, 0);
+  const shift = ((8 - date.getDay()) % 7) || 7;
+  date.setDate(date.getDate() + shift);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+function defaultSchedule(employee) {
+  const fund = Number(employee.weeklyFund || defaultFund(employee));
+  const name = nameOf(employee);
+  if (/veronika\s+jirdová/i.test(name)) return { pattern: 'custom', recommendedHours: 12, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 3, 5], [1, 3, 5], [1, 3, 4, 5]] };
+  if (/michal\s+punčochář/i.test(name)) return { pattern: 'custom', recommendedHours: 12, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[2, 4], [2, 4], [2, 4]] };
+  if (fund <= 32) return { pattern: '4x10', recommendedHours: 8, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]] };
+  return { pattern: '5x8', recommendedHours: 8, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5]] };
+}
+
+function scheduleFor(employee) {
+  const key = String(employee?.id || '');
+  if (!state.scheduleSettings.has(key)) state.scheduleSettings.set(key, defaultSchedule(employee));
+  return state.scheduleSettings.get(key);
+}
+
+function applyPattern(settings, pattern) {
+  const days = pattern === '4x10' ? [1, 2, 3, 4] : pattern === '3x12' ? [1, 3, 5] : [1, 2, 3, 4, 5];
+  settings.pattern = pattern;
+  if (pattern !== 'custom') settings.weeks = [days.slice(), days.slice(), days.slice()];
+  if (pattern === '5x8') settings.recommendedHours = 8;
+  if (pattern === '4x10') settings.recommendedHours = 10;
+  if (pattern === '3x12') settings.recommendedHours = 12;
 }
 
 function colorFor(employee, index) {
@@ -160,7 +193,7 @@ function routeLength(points) {
   return total + distanceKm(current, state.depot);
 }
 
-function routeDays(employee) { return Math.max(1, Math.min(5, Math.round(Number(employee.weeklyFund || 1) / 12))); }
+function routeDays(employee) { return Math.max(1, scheduleFor(employee).weeks.reduce((sum, days) => sum + days.length, 0) / 3); }
 
 function employeeFrequency(assignments, employeeId, locationId) {
   return machinesAt(locationId).reduce((maximum, machine) => {
@@ -171,7 +204,7 @@ function employeeFrequency(assignments, employeeId, locationId) {
 }
 
 function weeklyKm(employee, assignments) {
-  const days = routeDays(employee);
+  const days = Math.max(1, Math.round(routeDays(employee)));
   const routes = Array.from({ length: days }, () => ({ points: [], locations: new Set(), partial: 0 }));
   const targets = state.locations.map((location) => ({ location, point: pointOf(location), frequency: employeeFrequency(assignments, employee.id, location.id) }))
     .filter((item) => item.point && item.frequency > 0)
@@ -214,8 +247,10 @@ function renderPeople() {
   const stats = statsFor(state.draft);
   $('people').innerHTML = state.employees.map((employee) => {
     const item = stats.get(String(employee.id)) || { hours: 0, km: 0 };
+    const routeDraft = state.routeDrafts.get(String(employee.id));
+    const displayed = routeDraft ? { hours: Number(routeDraft.totalHours || 0) / 3, km: Number(routeDraft.totalKm || 0) / 3 } : item;
     const initials = `${employee.name?.[0] || ''}${employee.surname?.[0] || ''}`.toUpperCase() || '—';
-    return `<button class="person ${String(employee.id) === String(state.selectedEmployeeId) ? 'active' : ''} ${employee.included ? '' : 'excluded'}" data-employee-id="${esc(employee.id)}" style="--person:${employee.color}"><span class="avatar">${esc(initials)}</span><span><b>${esc(nameOf(employee))}</b><small>${number(item.hours)} h · ${Math.round(item.km)} km týdně</small><label class="include-row"><input class="include-input" data-include-id="${esc(employee.id)}" type="checkbox" ${employee.included ? 'checked' : ''}> zahrnout do návrhu</label></span><span class="fund"><span><input class="fund-input" data-fund-id="${esc(employee.id)}" type="number" min="1" max="80" value="${employee.weeklyFund}" ${employee.included ? '' : 'disabled'}> h</span><small>týdně</small></span></button>`;
+    return `<button class="person ${String(employee.id) === String(state.selectedEmployeeId) ? 'active' : ''} ${employee.included ? '' : 'excluded'}" data-employee-id="${esc(employee.id)}" style="--person:${employee.color}"><span class="avatar">${esc(initials)}</span><span><b>${esc(nameOf(employee))}</b><small>${number(displayed.hours)} h · ${Math.round(displayed.km)} km týdně ${routeDraft ? 'po silnici' : '· předběžně'}</small><small class="person-route-state ${routeDraft ? '' : 'pending'}">${routeDraft ? `trasy spočítány · ${number(routeDraft.totalHours)} h / cyklus` : 'trasy ještě nejsou rozvržené'}</small><label class="include-row"><input class="include-input" data-include-id="${esc(employee.id)}" type="checkbox" ${employee.included ? 'checked' : ''}> zahrnout do návrhu</label></span><span class="fund"><span><input class="fund-input" data-fund-id="${esc(employee.id)}" type="number" min="1" max="80" value="${employee.weeklyFund}" ${employee.included ? '' : 'disabled'}> h</span><small>týdně</small></span></button>`;
   }).join('');
   document.querySelectorAll('.person').forEach((button) => button.addEventListener('click', (event) => {
     if (event.target.closest('input')) return;
@@ -225,7 +260,7 @@ function renderPeople() {
   }));
   document.querySelectorAll('.fund-input').forEach((input) => input.addEventListener('change', () => {
     const employee = employeeById(input.dataset.fundId); if (!employee) return;
-    employee.weeklyFund = Math.max(1, Math.min(80, Number(input.value) || 1)); markDirty(); renderAll();
+    employee.weeklyFund = Math.max(1, Math.min(80, Number(input.value) || 1)); state.routeDrafts.delete(String(employee.id)); markDirty(); renderAll();
   }));
   document.querySelectorAll('.include-input').forEach((input) => input.addEventListener('change', () => {
     const employee = employeeById(input.dataset.includeId); if (!employee) return;
@@ -315,38 +350,265 @@ function renderSelected(location) {
 
 function renderSummary() {
   const proposed = statsFor(state.draft), current = statsFor(state.current), people = activeEmployees();
-  const overloaded = people.filter((employee) => proposed.get(String(employee.id)).hours > employee.weeklyFund);
+  const effective = (employee) => { const routeDraft = state.routeDrafts.get(String(employee.id)); return routeDraft ? { hours: Number(routeDraft.totalHours || 0) / 3, km: Number(routeDraft.totalKm || 0) / 3, routed: true } : { ...proposed.get(String(employee.id)), routed: false }; };
+  const overloaded = people.filter((employee) => effective(employee).hours > employee.weeklyFund);
+  const unrouted = people.filter((employee) => assignedMachines(employee).length && !state.routeDrafts.has(String(employee.id)));
+  const hardLimit = people.filter((employee) => { const draft = state.routeDrafts.get(String(employee.id)), settings = scheduleFor(employee); return draft?.routes?.some((route) => Number(route.totalMinutes) > settings.maxHours * 60); });
   const unassigned = state.machines.filter((machine) => ownersOfMachine(state.draft, machine.id).length === 0).length;
   const coverage = people.reduce((count, employee) => count + state.locations.filter((location) => employeeFrequency(state.draft, employee.id, location.id) > routeDays(employee) + .2).length, 0);
   renderSelected(state.locations.find((location) => String(location.id) === String(state.selectedLocationId)));
   const warnings = [];
   if (unassigned) warnings.push(`${unassigned} strojů ještě nemá člověka`);
   if (overloaded.length) warnings.push(`fond překračuje ${overloaded.map(nameOf).join(', ')}`);
+  if (unrouted.length) warnings.push(`silniční trasy ještě nejsou ověřené pro ${unrouted.map(nameOf).join(', ')}`);
+  if (hardLimit.length) warnings.push(`denní maximum překračuje ${hardLimit.map(nameOf).join(', ')}`);
   if (coverage) warnings.push(`${coverage} míst vyžaduje více návštěv, než má člověk jízdních dnů`);
   $('feasibility').classList.toggle('warn', warnings.length > 0);
   $('feasibility').innerHTML = warnings.length ? `<b>⚠ Návrh ještě není hotový</b><br>${esc(warnings.join(' · '))}.` : '<b>✓ Návrh je podle odhadu odjezditelný</b><br>Všechny aktivní stroje mají přiřazenou péči a fondy nejsou překročené.';
   $('metrics').innerHTML = people.map((employee) => {
-    const next = proposed.get(String(employee.id)), now = current.get(String(employee.id)), hours = next.hours - now.hours, km = next.km - now.km;
+    const next = effective(employee), now = current.get(String(employee.id)), hours = next.hours - now.hours, km = next.km - now.km;
     const percent = Math.min(115, Math.round(next.hours / employee.weeklyFund * 100));
     const comparison = state.showComparison ? `<div class="metriccompare"><span>Dnes ${number(now.hours)} h · ${Math.round(now.km)} km</span><b class="${hours > .05 || km > 1 ? 'positive' : hours < -.05 || km < -1 ? 'negative' : ''}">${hours >= 0 ? '+' : ''}${number(hours)} h · ${km >= 0 ? '+' : ''}${Math.round(km)} km</b></div>` : '';
-    return `<div class="metric"><div class="metricline"><span>${esc(employee.name)}</span><b>${number(next.hours)} / ${employee.weeklyFund} h<br>${Math.round(next.km)} km/týden</b></div>${comparison}<div class="bar"><i style="--c:${employee.color};width:${Math.min(100, percent)}%;${percent > 100 ? 'background:#d5101a' : ''}"></i></div></div>`;
+    return `<div class="metric"><div class="metricline"><span>${esc(employee.name)}<br><small>${next.routed ? 'Google Routes · průměr cyklu' : 'předběžný odhad'}</small></span><b>${number(next.hours)} / ${employee.weeklyFund} h<br>${Math.round(next.km)} km/týden</b></div>${comparison}<div class="bar"><i style="--c:${employee.color};width:${Math.min(100, percent)}%;${percent > 100 ? 'background:#d5101a' : ''}"></i></div></div>`;
   }).join('');
+  const employee = selectedEmployee();
+  $('planSelectedEmployee').disabled = !employee || !state.machines.some((machine) => ownersOfMachine(state.draft, machine.id).includes(String(employee.id)));
+  $('planSelectedEmployee').textContent = employee ? `Dokončit rajón · ${employee.name}` : 'Dokončit rajón a rozvrhnout trasy';
 }
 
-function markDirty() { state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 6, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])) }; }
+function localDate(value) { return new Date(`${value}T12:00:00`); }
+function isoDate(value) { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value); }
+function addCalendarDays(value, days) { const next = new Date(value); next.setDate(next.getDate() + days); return next; }
+function dayLabel(value) { return new Intl.DateTimeFormat('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' }).format(localDate(value)); }
+function minutesLabel(value) { const minutes = Math.max(0, Math.round(Number(value) || 0)); return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`; }
+
+function assignedMachines(employee) {
+  return state.machines.filter((machine) => ownersOfMachine(state.draft, machine.id).some((id) => String(id) === String(employee.id)));
+}
+
+function cycleDaysFor(employee, settings) {
+  const start = localDate(settings.cycleStart || nextMondayValue());
+  return settings.weeks.flatMap((days, weekIndex) => [...days].sort((a, b) => a - b).map((day) => ({
+    key: `${weekIndex + 1}-${day}`,
+    weekIndex,
+    day,
+    date: isoDate(addCalendarDays(start, weekIndex * 7 + day - 1)),
+    stops: [],
+    serviceMinutes: 0,
+    driveMinutes: 0,
+    distanceKm: 0,
+    totalMinutes: 0,
+    provider: 'estimate'
+  })));
+}
+
+function buildCycleRoutes(employee, settings) {
+  const routes = cycleDaysFor(employee, settings);
+  if (!routes.length) throw new Error('Vyber alespoň jeden jízdní den v tří­týdenním cyklu.');
+  const machineDistance = (machine) => { const point = pointOf(state.locations.find((location) => String(location.id) === String(machine.location_id))); return point ? distanceKm(state.depot, point) : -1; };
+  const machines = assignedMachines(employee).map((machine) => {
+    const owners = ownersOfMachine(state.draft, machine.id);
+    return { machine, occurrences: Math.max(1, Math.round(requiredVisitsMachine(machine.id) * 3 / Math.max(1, owners.length))) };
+  }).sort((a, b) => b.occurrences - a.occurrences || machineDistance(b.machine) - machineDistance(a.machine));
+  machines.forEach(({ machine, occurrences }) => {
+    const location = state.locations.find((item) => String(item.id) === String(machine.location_id));
+    const point = pointOf(location); if (!point) return;
+    const count = Math.min(occurrences, routes.length);
+    for (let occurrence = 0; occurrence < count; occurrence += 1) {
+      const targetIndex = ((occurrence + .5) * routes.length / count) - .5;
+      const choices = routes.map((route, index) => {
+        const existing = route.stops.find((stop) => String(stop.locationId) === String(location.id));
+        if (route.stops.some((stop) => stop.machineIds.includes(String(machine.id)))) return { route, score: Infinity };
+        const geography = existing ? 0 : Math.min(...route.stops.map((stop) => distanceKm(point, [stop.latitude, stop.longitude])), distanceKm(state.depot, point));
+        const projectedService = route.serviceMinutes + plannedMinutesMachine(machine.id);
+        return { route, score: Math.abs(index - targetIndex) * 8 + geography * .7 + projectedService / Math.max(60, settings.recommendedHours * 60) * 18 - (existing ? 35 : 0) };
+      }).sort((a, b) => a.score - b.score);
+      const route = choices[0].route;
+      let stop = route.stops.find((item) => String(item.locationId) === String(location.id));
+      if (!stop) {
+        stop = { locationId: String(location.id), name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machineIds: [], serviceMinutes: 0 };
+        route.stops.push(stop);
+      }
+      stop.machineIds.push(String(machine.id)); stop.serviceMinutes += plannedMinutesMachine(machine.id); route.serviceMinutes += plannedMinutesMachine(machine.id);
+    }
+  });
+  routes.forEach(estimateRoute);
+  return routes;
+}
+
+function estimateRoute(route) {
+  route.serviceMinutes = route.stops.reduce((sum, stop) => sum + Number(stop.serviceMinutes || 0), 0);
+  route.distanceKm = route.stops.length ? routeLength(route.stops.map((stop) => [stop.latitude, stop.longitude])) : 0;
+  route.driveMinutes = route.distanceKm / 55 * 60;
+  route.totalMinutes = route.serviceMinutes + route.driveMinutes;
+  route.provider = 'estimate';
+  return route;
+}
+
+async function calculateRoadRoute(route, settings) {
+  if (!route.stops.length) return estimateRoute(route);
+  if (route.stops.length > 25) throw new Error(`${dayLabel(route.date)} má ${route.stops.length} zastávek. Přesuň část lokalit do jiného dne.`);
+  const departure = new Date(`${route.date}T${settings.startTime || '06:00'}:00`);
+  const response = await supabase.functions.invoke('google-route-plan', { body: {
+    origin: { latitude: state.depot[0], longitude: state.depot[1], label: 'Sklad Blučina' },
+    stops: route.stops.map((stop) => ({ id: stop.locationId, locationId: stop.locationId, name: stop.name, city: stop.city, address: stop.address, latitude: stop.latitude, longitude: stop.longitude, estimatedServiceMinutes: stop.serviceMinutes })),
+    returnToStart: true,
+    departureTime: departure.toISOString()
+  } });
+  if (response.error || response.data?.error) throw new Error(response.data?.error || response.error?.message || 'Google Routes trasu nevrátil.');
+  const data = response.data;
+  const byId = new Map(route.stops.map((stop) => [String(stop.locationId), stop]));
+  const ordered = (data.orderedStops || []).map((stop) => byId.get(String(stop.locationId || stop.id))).filter(Boolean);
+  if (ordered.length === route.stops.length) route.stops = ordered;
+  route.distanceKm = Number(data.route?.distanceMeters || 0) / 1000;
+  route.driveMinutes = Number(data.route?.durationSeconds || data.route?.staticDurationSeconds || 0) / 60;
+  route.serviceMinutes = route.stops.reduce((sum, stop) => sum + Number(stop.serviceMinutes || 0), 0);
+  route.totalMinutes = route.serviceMinutes + route.driveMinutes;
+  route.provider = 'google_routes';
+  return route;
+}
+
+async function calculateRoadRoutes(routes, settings, requestId, onlyKeys = null) {
+  const targets = routes.filter((route) => route.stops.length && (!onlyKeys || onlyKeys.has(route.key)));
+  for (let index = 0; index < targets.length; index += 3) {
+    if (requestId !== state.routeRequestId) return;
+    const batch = targets.slice(index, index + 3);
+    $('routeProgressText').textContent = `Ověřuji silniční trasy ${Math.min(index + 3, targets.length)} / ${targets.length}…`;
+    await Promise.all(batch.map((route) => calculateRoadRoute(route, settings)));
+  }
+}
+
+function machineNames(machineIds) {
+  return machineIds.map((id) => {
+    const machine = state.machines.find((item) => String(item.id) === String(id));
+    return machine ? `${machine.evidence_number ? `EV ${machine.evidence_number} · ` : ''}${kindOf(machine)}` : 'Automat';
+  }).join(', ');
+}
+
+function routeDraftTotals(routes) {
+  return {
+    totalHours: routes.reduce((sum, route) => sum + route.totalMinutes, 0) / 60,
+    totalKm: routes.reduce((sum, route) => sum + route.distanceKm, 0),
+    driveHours: routes.reduce((sum, route) => sum + route.driveMinutes, 0) / 60,
+    serviceHours: routes.reduce((sum, route) => sum + route.serviceMinutes, 0) / 60
+  };
+}
+
+function renderRouteResults(employee) {
+  const draft = state.routeDrafts.get(String(employee.id));
+  if (!draft) {
+    $('routeResults').innerHTML = '<div class="route-empty"><div><b>Zatím bez rozvržených tras</b>Program nejdřív rozdělí návštěvy mezi zvolené dny a potom každý den ověří přes Google Routes.</div></div>';
+    $('saveRouteDraft').disabled = true; return;
+  }
+  const settings = scheduleFor(employee), totals = routeDraftTotals(draft.routes), cycleFund = Number(employee.weeklyFund) * 3;
+  const hardDays = draft.routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
+  const softDays = draft.routes.filter((route) => route.totalMinutes > settings.recommendedHours * 60 && route.totalMinutes <= settings.maxHours * 60).length;
+  const budgetClass = totals.totalHours > cycleFund ? 'bad' : totals.totalHours > cycleFund * .92 ? 'warn' : '';
+  const hardClass = hardDays ? 'bad' : softDays ? 'warn' : '';
+  const routeOptions = draft.routes.map((route) => `<option value="${esc(route.key)}">${esc(dayLabel(route.date))} · ${minutesLabel(route.totalMinutes)}</option>`).join('');
+  const weeks = [0, 1, 2].map((weekIndex) => {
+    const routes = draft.routes.filter((route) => route.weekIndex === weekIndex), weekMinutes = routes.reduce((sum, route) => sum + route.totalMinutes, 0);
+    return `<section class="route-week"><div class="route-week-title"><h3>Týden ${weekIndex + 1}</h3><span>${minutesLabel(weekMinutes)} · ${Math.round(routes.reduce((sum, route) => sum + route.distanceKm, 0))} km</span></div><div class="route-days">${routes.map((route) => {
+      const hard = route.totalMinutes > settings.maxHours * 60, soft = !hard && route.totalMinutes > settings.recommendedHours * 60;
+      return `<article class="route-day ${hard ? 'hard' : soft ? 'soft' : ''} ${route.stops.length ? '' : 'empty'}"><div class="route-day-head"><div><b>${esc(dayLabel(route.date))}</b><small>${settings.startTime} · sklad → trasa → sklad</small></div><div class="route-day-time"><strong class="${hard ? 'hard-text' : soft ? 'soft-text' : ''}">${minutesLabel(route.totalMinutes)}</strong><small>${Math.round(route.distanceKm)} km · cesta ${minutesLabel(route.driveMinutes)}</small></div></div>${route.stops.length ? route.stops.map((stop, index) => `<div class="route-stop"><span class="route-stop-index">${index + 1}</span><span><b>${esc(stop.name)}</b><small>${esc(machineNames(stop.machineIds))}<br>obsluha ${Math.round(stop.serviceMinutes)} min</small><select class="move-stop" data-route-key="${esc(route.key)}" data-location-id="${esc(stop.locationId)}"><option value="">Přesunout do jiného dne…</option>${routeOptions}</select></span></div>`).join('') : '<div class="route-day-empty">Volný den bez trasy</div>'}</article>`;
+    }).join('')}</div></section>`;
+  }).join('');
+  $('routeResults').innerHTML = `<div class="cycle-summary"><div class="cycle-kpi ${budgetClass}"><span>Celý 3týdenní cyklus</span><b>${number(totals.totalHours)} / ${number(cycleFund)} h</b></div><div class="cycle-kpi"><span>Silniční vzdálenost</span><b>${Math.round(totals.totalKm)} km</b></div><div class="cycle-kpi"><span>Cesta / obsluha</span><b>${number(totals.driveHours)} / ${number(totals.serviceHours)} h</b></div><div class="cycle-kpi ${hardClass}"><span>Denní limity</span><b>${hardDays ? `${hardDays} nad maximum` : softDays ? `${softDays} delší směny` : 'bez překročení'}</b></div></div>${weeks}<div class="route-provider">Silniční km a čas: Google Routes · obsluha: součet nastavených minut jednotlivých automatů · bez skrytých koeficientů</div>`;
+  $('saveRouteDraft').disabled = false;
+  document.querySelectorAll('.move-stop').forEach((select) => select.addEventListener('change', () => { if (select.value) moveRouteStop(employee, select.dataset.routeKey, select.dataset.locationId, select.value); }));
+}
+
+function renderCycleDays(employee) {
+  const settings = scheduleFor(employee);
+  $('cycleDays').innerHTML = settings.weeks.map((days, weekIndex) => `<div class="cycle-week"><div class="cycle-week-head"><b>Týden ${weekIndex + 1}</b><span>${days.length} jízdní ${days.length === 1 ? 'den' : days.length < 5 ? 'dny' : 'dnů'}</span></div><div class="day-switches">${weekDayLabels.map((label, index) => `<button type="button" class="day-switch ${days.includes(index + 1) ? 'on' : ''}" data-cycle-week="${weekIndex}" data-cycle-day="${index + 1}">${label}</button>`).join('')}</div></div>`).join('');
+  document.querySelectorAll('[data-cycle-day]').forEach((button) => button.addEventListener('click', () => {
+    const week = Number(button.dataset.cycleWeek), day = Number(button.dataset.cycleDay), current = new Set(settings.weeks[week]);
+    if (current.has(day)) current.delete(day); else current.add(day);
+    settings.weeks[week] = [...current].sort((a, b) => a - b); settings.pattern = 'custom'; $('workPattern').value = 'custom'; state.routeDrafts.delete(String(employee.id)); markDirty(false); renderCycleDays(employee); renderRouteResults(employee); renderPeople();
+  }));
+}
+
+function renderRouteStage(employee) {
+  const settings = scheduleFor(employee);
+  $('routeTitle').textContent = `Trasy · ${nameOf(employee)}`;
+  $('routeSubtitle').textContent = `Rajón obsahuje ${assignedMachines(employee).length} automatů. Fond se vyhodnocuje za celý tří­týdenní cyklus, ne jako tři stejné týdny.`;
+  $('workPattern').value = settings.pattern;
+  $('routeWeeklyFund').value = employee.weeklyFund;
+  $('routeStartTime').value = settings.startTime;
+  $('routeRecommendedHours').value = settings.recommendedHours;
+  $('routeMaxHours').value = settings.maxHours;
+  $('routeCycleStart').value = settings.cycleStart;
+  renderCycleDays(employee); renderRouteResults(employee);
+}
+
+function openRouteStage() {
+  const employee = selectedEmployee();
+  if (!employee) return say('Nejdřív vyber člověka.', true);
+  if (!assignedMachines(employee).length) return say('Tomuto člověku nejdřív přiděl alespoň jeden automat.', true);
+  state.planningEmployeeId = String(employee.id); $('routeStage').hidden = false; renderRouteStage(employee); $('routeStage').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function syncRouteSettings(employee) {
+  const settings = scheduleFor(employee);
+  employee.weeklyFund = Math.max(1, Math.min(80, Number($('routeWeeklyFund').value) || employee.weeklyFund));
+  settings.startTime = $('routeStartTime').value || '06:00';
+  settings.recommendedHours = Math.max(1, Math.min(16, Number($('routeRecommendedHours').value) || 8));
+  settings.maxHours = Math.max(settings.recommendedHours, Math.min(16, Number($('routeMaxHours').value) || 12));
+  settings.cycleStart = $('routeCycleStart').value || nextMondayValue();
+  return settings;
+}
+
+async function generateRoutes() {
+  const employee = employeeById(state.planningEmployeeId); if (!employee) return;
+  const settings = syncRouteSettings(employee), requestId = ++state.routeRequestId;
+  $('routeProgress').hidden = false; $('generateRoutes').disabled = true; $('routeProgressText').textContent = 'Rozděluji návštěvy mezi pracovní dny…';
+  try {
+    const routes = buildCycleRoutes(employee, settings);
+    await calculateRoadRoutes(routes, settings, requestId);
+    if (requestId !== state.routeRequestId) return;
+    const totals = routeDraftTotals(routes);
+    state.routeDrafts.set(String(employee.id), { routes, generatedAt: new Date().toISOString(), ...totals });
+    markDirty(false); renderPeople(); renderRouteResults(employee);
+    const hardDays = routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
+    say(hardDays ? `Trasy jsou spočítané, ale ${hardDays} směn překračuje maximum. Přesuň některé lokality.` : 'Trasy jsou spočítané po silnici. Delší den můžeš vyrovnat kratším v rámci cyklu.', hardDays > 0);
+  } catch (error) { console.error(error); say(`Trasy nelze spočítat: ${error.message || error}`, true); }
+  finally { if (requestId === state.routeRequestId) { $('routeProgress').hidden = true; $('generateRoutes').disabled = false; } }
+}
+
+async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
+  if (sourceKey === targetKey) return;
+  const draft = state.routeDrafts.get(String(employee.id)), settings = scheduleFor(employee); if (!draft) return;
+  const source = draft.routes.find((route) => route.key === sourceKey), target = draft.routes.find((route) => route.key === targetKey); if (!source || !target) return;
+  const index = source.stops.findIndex((stop) => String(stop.locationId) === String(locationId)); if (index < 0) return;
+  const moved = source.stops.splice(index, 1)[0], existing = target.stops.find((stop) => String(stop.locationId) === String(locationId));
+  if (existing) { existing.machineIds = [...new Set([...existing.machineIds, ...moved.machineIds])]; existing.serviceMinutes += moved.serviceMinutes; } else target.stops.push(moved);
+  estimateRoute(source); estimateRoute(target); const requestId = ++state.routeRequestId;
+  $('routeProgress').hidden = false; $('routeProgressText').textContent = 'Přepočítávám dva změněné dny…';
+  try {
+    await calculateRoadRoutes(draft.routes, settings, requestId, new Set([sourceKey, targetKey]));
+    Object.assign(draft, routeDraftTotals(draft.routes), { generatedAt: new Date().toISOString() }); markDirty(false); renderPeople(); renderRouteResults(employee); say('Lokalita byla přesunuta a oba dny jsou znovu spočítané po silnici.');
+  } catch (error) { say(`Přesun se nepodařilo ověřit: ${error.message || error}`, true); }
+  finally { if (requestId === state.routeRequestId) $('routeProgress').hidden = true; }
+}
+
+function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
+function snapshot() { return { version: 7, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
     else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
-    if (saved.version === 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
+    if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
+    if (saved.version >= 7) {
+      Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
+      Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
+    }
     return true;
   } catch (_) { return false; }
 }
@@ -359,6 +621,7 @@ function resetDraft() {
   state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
   state.requiredVisits = new Map(state.machines.map((machine) => [String(machine.id), recommendationForMachine(machine).visits]));
   state.plannedMachineMinutes = new Map(state.machines.map((machine) => [String(machine.id), 20]));
+  state.scheduleSettings = new Map(); state.routeDrafts = new Map(); state.planningEmployeeId = null; $('routeStage').hidden = true;
   state.selectedLocationId = null; state.selectedMachineIds = new Set(); state.dirty = false; renderAll(); say('Čistý návrh je připraven. Mapa neobsahuje žádné předvyplněné rajóny.');
 }
 
@@ -506,6 +769,17 @@ async function load() {
 
 $('saveDraft').addEventListener('click', saveDraft); $('resetDraft').addEventListener('click', resetDraft);
 $('assignSelected').addEventListener('click', () => applyAssignment(false)); $('shareSelected').addEventListener('click', () => applyAssignment(true)); $('removeSelected').addEventListener('click', removeSelected);
+$('planSelectedEmployee').addEventListener('click', openRouteStage); $('generateRoutes').addEventListener('click', generateRoutes);
+$('closeRouteStage').addEventListener('click', () => { state.routeRequestId += 1; $('routeStage').hidden = true; document.querySelector('.workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+$('saveRouteDraft').addEventListener('click', () => { const employee = employeeById(state.planningEmployeeId); if (employee) syncRouteSettings(employee); saveDraft(); });
+$('workPattern').addEventListener('change', () => {
+  const employee = employeeById(state.planningEmployeeId); if (!employee) return;
+  const settings = scheduleFor(employee); applyPattern(settings, $('workPattern').value); state.routeDrafts.delete(String(employee.id)); markDirty(false); renderRouteStage(employee); renderPeople();
+});
+['routeWeeklyFund', 'routeStartTime', 'routeRecommendedHours', 'routeMaxHours', 'routeCycleStart'].forEach((id) => $(id).addEventListener('change', () => {
+  const employee = employeeById(state.planningEmployeeId); if (!employee) return;
+  syncRouteSettings(employee); state.routeDrafts.delete(String(employee.id)); markDirty(false); renderRouteStage(employee); renderPeople(); renderSummary();
+}));
 $('toggleComparison').addEventListener('click', () => { state.showComparison = !state.showComparison; $('toggleComparison').textContent = state.showComparison ? 'Skrýt současný stav' : 'Porovnat se současným stavem'; renderSummary(); });
 $('fitMap').addEventListener('click', () => renderMap(true)); $('drawArea').addEventListener('click', () => selectedEmployee() ? setDrawing(true) : say('Nejdřív vyber člověka.', true)); $('finishArea').addEventListener('click', finishDrawing); $('cancelArea').addEventListener('click', () => setDrawing(false));
 $('showDetails').addEventListener('click', () => { $('summary').classList.toggle('open'); $('showDetails').textContent = $('summary').classList.contains('open') ? 'Skrýt výpočet' : 'Jak se počítají km a hodiny'; });
