@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v7';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v8';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -61,20 +61,8 @@ function defaultFund(employee) {
   return Number.isFinite(value) && value > 0 ? value : 40;
 }
 
-function nextMondayValue() {
-  const date = new Date(); date.setHours(12, 0, 0, 0);
-  const shift = ((8 - date.getDay()) % 7) || 7;
-  date.setDate(date.getDate() + shift);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
-}
-
 function defaultSchedule(employee) {
-  const fund = Number(employee.weeklyFund || defaultFund(employee));
-  const name = nameOf(employee);
-  if (/veronika\s+jirdová/i.test(name)) return { pattern: 'custom', recommendedHours: 12, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 3, 5], [1, 3, 5], [1, 3, 4, 5]] };
-  if (/michal\s+punčochář/i.test(name)) return { pattern: 'custom', recommendedHours: 12, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[2, 4], [2, 4], [2, 4]] };
-  if (fund <= 32) return { pattern: '4x10', recommendedHours: 8, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]] };
-  return { pattern: '5x8', recommendedHours: 8, maxHours: 12, startTime: '06:00', cycleStart: nextMondayValue(), weeks: [[1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5]] };
+  return { pattern: '', recommendedHours: null, maxHours: null, startTime: '', cycleStart: '', weeks: [[], [], []] };
 }
 
 function scheduleFor(employee) {
@@ -84,6 +72,7 @@ function scheduleFor(employee) {
 }
 
 function applyPattern(settings, pattern) {
+  if (!pattern) { settings.pattern = ''; settings.recommendedHours = null; settings.maxHours = null; settings.weeks = [[], [], []]; return; }
   const days = pattern === '4x10' ? [1, 2, 3, 4] : pattern === '3x12' ? [1, 3, 5] : [1, 2, 3, 4, 5];
   settings.pattern = pattern;
   if (pattern !== 'custom') settings.weeks = [days.slice(), days.slice(), days.slice()];
@@ -193,7 +182,7 @@ function routeLength(points) {
   return total + distanceKm(current, state.depot);
 }
 
-function routeDays(employee) { return Math.max(1, scheduleFor(employee).weeks.reduce((sum, days) => sum + days.length, 0) / 3); }
+function routeDays(employee) { return scheduleFor(employee).weeks.reduce((sum, days) => sum + days.length, 0) / 3; }
 
 function employeeFrequency(assignments, employeeId, locationId) {
   return machinesAt(locationId).reduce((maximum, machine) => {
@@ -204,7 +193,8 @@ function employeeFrequency(assignments, employeeId, locationId) {
 }
 
 function weeklyKm(employee, assignments) {
-  const days = Math.max(1, Math.round(routeDays(employee)));
+  const scheduledDays = routeDays(employee); if (!scheduledDays) return 0;
+  const days = Math.max(1, Math.round(scheduledDays));
   const routes = Array.from({ length: days }, () => ({ points: [], locations: new Set(), partial: 0 }));
   const targets = state.locations.map((location) => ({ location, point: pointOf(location), frequency: employeeFrequency(assignments, employee.id, location.id) }))
     .filter((item) => item.point && item.frequency > 0)
@@ -387,7 +377,7 @@ function assignedMachines(employee) {
 }
 
 function cycleDaysFor(employee, settings) {
-  const start = localDate(settings.cycleStart || nextMondayValue());
+  const start = localDate(settings.cycleStart);
   return settings.weeks.flatMap((days, weekIndex) => [...days].sort((a, b) => a - b).map((day) => ({
     key: `${weekIndex + 1}-${day}`,
     weekIndex,
@@ -448,7 +438,7 @@ function estimateRoute(route) {
 async function calculateRoadRoute(route, settings) {
   if (!route.stops.length) return estimateRoute(route);
   if (route.stops.length > 25) throw new Error(`${dayLabel(route.date)} má ${route.stops.length} zastávek. Přesuň část lokalit do jiného dne.`);
-  const departure = new Date(`${route.date}T${settings.startTime || '06:00'}:00`);
+  const departure = new Date(`${route.date}T${settings.startTime}:00`);
   const response = await supabase.functions.invoke('google-route-plan', { body: {
     origin: { latitude: state.depot[0], longitude: state.depot[1], label: 'Sklad Blučina' },
     stops: route.stops.map((stop) => ({ id: stop.locationId, locationId: stop.locationId, name: stop.name, city: stop.city, address: stop.address, latitude: stop.latitude, longitude: stop.longitude, estimatedServiceMinutes: stop.serviceMinutes })),
@@ -534,10 +524,10 @@ function renderRouteStage(employee) {
   $('routeSubtitle').textContent = `Rajón obsahuje ${assignedMachines(employee).length} automatů. Fond se vyhodnocuje za celý tří­týdenní cyklus, ne jako tři stejné týdny.`;
   $('workPattern').value = settings.pattern;
   $('routeWeeklyFund').value = employee.weeklyFund;
-  $('routeStartTime').value = settings.startTime;
-  $('routeRecommendedHours').value = settings.recommendedHours;
-  $('routeMaxHours').value = settings.maxHours;
-  $('routeCycleStart').value = settings.cycleStart;
+  $('routeStartTime').value = settings.startTime || '';
+  $('routeRecommendedHours').value = settings.recommendedHours ?? '';
+  $('routeMaxHours').value = settings.maxHours ?? '';
+  $('routeCycleStart').value = settings.cycleStart || '';
   renderCycleDays(employee); renderRouteResults(employee);
 }
 
@@ -548,19 +538,29 @@ function openRouteStage() {
   state.planningEmployeeId = String(employee.id); $('routeStage').hidden = false; renderRouteStage(employee); $('routeStage').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function syncRouteSettings(employee) {
+function syncRouteSettings(employee, validate = false) {
   const settings = scheduleFor(employee);
   employee.weeklyFund = Math.max(1, Math.min(80, Number($('routeWeeklyFund').value) || employee.weeklyFund));
-  settings.startTime = $('routeStartTime').value || '06:00';
-  settings.recommendedHours = Math.max(1, Math.min(16, Number($('routeRecommendedHours').value) || 8));
-  settings.maxHours = Math.max(settings.recommendedHours, Math.min(16, Number($('routeMaxHours').value) || 12));
-  settings.cycleStart = $('routeCycleStart').value || nextMondayValue();
+  settings.startTime = $('routeStartTime').value || '';
+  settings.recommendedHours = Number($('routeRecommendedHours').value) || null;
+  settings.maxHours = Number($('routeMaxHours').value) || null;
+  settings.cycleStart = $('routeCycleStart').value || '';
+  if (validate) {
+    if (!settings.startTime) throw new Error('Nastav začátek směny.');
+    if (!settings.recommendedHours) throw new Error('Nastav doporučenou délku směny.');
+    if (!settings.maxHours) throw new Error('Nastav nejvyšší možnou délku směny.');
+    if (settings.maxHours < settings.recommendedHours) throw new Error('Nejvyšší možný den nesmí být kratší než doporučený den.');
+    if (!settings.cycleStart) throw new Error('Nastav začátek tří­týdenního cyklu.');
+    if (!settings.weeks.some((days) => days.length)) throw new Error('Vyber alespoň jeden jízdní den v tří­týdenním cyklu.');
+  }
   return settings;
 }
 
 async function generateRoutes() {
   const employee = employeeById(state.planningEmployeeId); if (!employee) return;
-  const settings = syncRouteSettings(employee), requestId = ++state.routeRequestId;
+  let settings;
+  try { settings = syncRouteSettings(employee, true); } catch (error) { return say(error.message, true); }
+  const requestId = ++state.routeRequestId;
   $('routeProgress').hidden = false; $('generateRoutes').disabled = true; $('routeProgressText').textContent = 'Rozděluji návštěvy mezi pracovní dny…';
   try {
     const routes = buildCycleRoutes(employee, settings);
@@ -592,20 +592,20 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 7, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 8, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
     else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
     if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
-    if (saved.version >= 7) {
+    if (saved.version >= 8) {
       Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
       Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
     }
