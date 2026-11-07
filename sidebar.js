@@ -118,6 +118,13 @@
       versionValue: APP_VERSION,
       versionNote: ""
     },
+    "territory-planner.html": {
+      currentLabel: "Nový plán rajónů",
+      activeKey: "territory-planner",
+      versionLabel: "Aktuální verze",
+      versionValue: APP_VERSION,
+      versionNote: "Pracovní návrhy rajónů"
+    },
     "controlling.html": {
       currentLabel: "Kontrolní trasy",
       activeKey: "controlling",
@@ -413,6 +420,7 @@
             { key: "routes", href: "routes.html", label: "Přehled tras" },
             { key: "route-dispatch", href: "route-dispatch.html", label: "Naplánovat tým" },
             { key: "operator-territories", href: "operator-territories.html", label: "Oblasti operátorů" },
+            { key: "territory-planner", href: "territory-planner.html", label: "Nový plán rajónů" },
             { key: "controlling", href: "controlling.html", label: "Kontrolní trasy" },
             { key: "operations", href: "operations.html", label: "Lokality" },
             { key: "fleet", href: "vehicles.html", label: "Vozový park" }
@@ -598,6 +606,7 @@
     contacts: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
     machine: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 6h8M8 10h8M9 18h6M12 14v4"/>',
     routes: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/>',
+    'territory-planner': '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/>',
     stock: '<path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-.7Z"/><path d="m10 7-8 8a2.1 2.1 0 0 0 3 3l8-8"/><path d="m14 14 6 6"/>',
     finance: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5M9 12h6M9 16h6"/>',
@@ -709,6 +718,11 @@
           <div class="version-value">${meta.versionValue}</div>
           ${meta.versionNote ? `<div class="version-note">${meta.versionNote}</div>` : ""}
           <button class="release-btn" type="button" id="openReleaseNotesButton" style="width:100%;margin-top:8px;padding:8px 10px;color:#fff;background:rgba(255,255,255,.06)">Novinky 1.8</button>
+        </div>
+        <div class="sidebar-account" id="sidebarAccount" aria-label="Přihlášený uživatel">
+          <div class="sidebar-account-avatar" id="sidebarAccountAvatar">OL</div>
+          <div class="sidebar-account-copy"><strong id="sidebarAccountName">Přihlášený uživatel</strong><span id="sidebarAccountRole">Načítám profil…</span></div>
+          <span class="sidebar-account-more" aria-hidden="true">•••</span>
         </div>
       </div>
     `;
@@ -980,6 +994,35 @@
         font-size: 12px;
         line-height: 1.5;
       }
+
+      .sidebar-account {
+        display:grid;
+        grid-template-columns:34px minmax(0,1fr) auto;
+        align-items:center;
+        gap:9px;
+        margin-top:9px;
+        padding:10px 4px 0;
+        border-top:1px solid rgba(255,255,255,.08);
+      }
+
+      .sidebar-account-avatar {
+        width:34px;
+        height:34px;
+        display:grid;
+        place-items:center;
+        border-radius:9px;
+        color:#fff;
+        background:#18202a;
+        font-size:10px;
+        font-weight:900;
+      }
+
+      .sidebar-account-copy { min-width:0; }
+      .sidebar-account-copy strong,
+      .sidebar-account-copy span { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+      .sidebar-account-copy strong { color:#fff;font-size:11px; }
+      .sidebar-account-copy span { margin-top:2px;color:#8d95a3;font-size:9px; }
+      .sidebar-account-more { color:#8d95a3;font-size:10px;letter-spacing:1px; }
 
       .mobile-nav-shell {
         display: none;
@@ -1390,6 +1433,11 @@
         border-color: rgba(15, 23, 42, 0.08) !important;
         color: #667085 !important;
       }
+
+      :root[data-olvend-theme="light"] .sidebar-account { border-color:rgba(15,23,42,.08); }
+      :root[data-olvend-theme="light"] .sidebar-account-copy strong { color:#18202a; }
+      :root[data-olvend-theme="light"] .sidebar-account-copy span,
+      :root[data-olvend-theme="light"] .sidebar-account-more { color:#667085; }
 
       :root[data-olvend-theme="light"] .nav-parent-button {
         color: #18202a !important;
@@ -1979,6 +2027,35 @@
     } catch (_) {}
   }
 
+  async function hydrateSidebarAccount() {
+    const account = document.getElementById("sidebarAccount");
+    if (!account) return;
+    try {
+      const { supabase } = await import("./supabase.js");
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      const authUser = sessionData?.session?.user;
+      if (!authUser) {
+        document.getElementById("sidebarAccountName").textContent = "Nepřihlášený uživatel";
+        document.getElementById("sidebarAccountRole").textContent = "Přihlásit se";
+        return;
+      }
+      const { data: employee, error } = await supabase
+        .from("employees")
+        .select("name,surname,role,email")
+        .eq("auth_user_id", authUser.id)
+        .maybeSingle();
+      if (error) throw error;
+      const fullName = `${employee?.name || ""} ${employee?.surname || ""}`.trim() || authUser.email || "Přihlášený uživatel";
+      const initials = `${employee?.name?.[0] || fullName[0] || "O"}${employee?.surname?.[0] || ""}`.toUpperCase();
+      document.getElementById("sidebarAccountAvatar").textContent = initials;
+      document.getElementById("sidebarAccountName").textContent = fullName;
+      document.getElementById("sidebarAccountRole").textContent = employee?.role || employee?.email || authUser.email || "Uživatel";
+    } catch (_) {
+      document.getElementById("sidebarAccountRole").textContent = "Profil není dostupný";
+    }
+  }
+
   initTheme();
   initializeCompactSidebar();
 
@@ -1989,6 +2066,7 @@
     setupSidebarCollapsing(sidebar);
     sidebar.querySelector("#openReleaseNotesButton")?.addEventListener("click", () => setupReleaseNotes(true));
     refreshMailUnreadBadge();
+    hydrateSidebarAccount();
   }
 
   window.addEventListener("olvend-mail-unread-changed", () => refreshMailUnreadBadge(false));
