@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v10';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v11';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -405,11 +405,9 @@ function machineSpacingViolations(routes, employee) {
     visits.push(localDate(route.date)); visitsByMachine.set(key, visits);
   })));
   return assignedMachines(employee).reduce((violations, machine) => {
-    const owners = Math.max(1, ownersOfMachine(state.draft, machine.id).length);
-    const weeklyFrequency = requiredVisitsMachine(machine.id) / owners;
-    const minimumGapDays = weeklyFrequency <= 3.01 ? 2 : 1;
     const visits = (visitsByMachine.get(String(machine.id)) || []).sort((a, b) => a - b);
     if (visits.length < 2) return violations;
+    const minimumGapDays = Math.max(1, Math.floor(21 / visits.length));
     for (let index = 1; index < visits.length; index += 1) {
       const gap = Math.round((visits[index] - visits[index - 1]) / 86400000);
       if (gap < minimumGapDays) violations += 1;
@@ -417,6 +415,57 @@ function machineSpacingViolations(routes, employee) {
     const cycleGap = Math.round((addCalendarDays(visits[0], 21) - visits[visits.length - 1]) / 86400000);
     return violations + (cycleGap < minimumGapDays ? 1 : 0);
   }, 0);
+}
+
+function locationSpacingViolations(routes) {
+  const visitsByLocation = new Map();
+  routes.forEach((route) => route.stops.forEach((stop) => {
+    const key = String(stop.locationId), visits = visitsByLocation.get(key) || [];
+    visits.push(localDate(route.date)); visitsByLocation.set(key, visits);
+  }));
+  return [...visitsByLocation.values()].reduce((violations, visits) => {
+    visits.sort((a, b) => a - b);
+    if (visits.length < 2) return violations;
+    const minimumGapDays = Math.max(1, Math.floor(21 / visits.length));
+    for (let index = 1; index < visits.length; index += 1) {
+      if (Math.round((visits[index] - visits[index - 1]) / 86400000) < minimumGapDays) violations += 1;
+    }
+    const cycleGap = Math.round((addCalendarDays(visits[0], 21) - visits[visits.length - 1]) / 86400000);
+    return violations + (cycleGap < minimumGapDays ? 1 : 0);
+  }, 0);
+}
+
+function planningSpacingViolations(routes, employee) {
+  return machineSpacingViolations(routes, employee) + locationSpacingViolations(routes);
+}
+
+function temporalRouteScore(selectedRoutes) {
+  if (selectedRoutes.length < 2) return 0;
+  const days = selectedRoutes.map((route) => Math.round((localDate(route.date) - localDate(selectedRoutes[0].date)) / 86400000)).sort((a, b) => a - b);
+  const idealGap = 21 / days.length, minimumGap = Math.max(1, Math.floor(idealGap));
+  return days.reduce((score, day, index) => {
+    const next = index === days.length - 1 ? days[0] + 21 : days[index + 1];
+    const gap = next - day;
+    return score + Math.max(0, minimumGap - gap) * 100000000 + ((gap - idealGap) ** 2) * 10000;
+  }, 0);
+}
+
+function bestRoutesForMachine(routes, count, location, point, serviceMinutes, settings) {
+  const routeSets = combinations(routes, count);
+  return routeSets.reduce((best, selectedRoutes) => {
+    const operationalScore = selectedRoutes.reduce((score, route) => {
+      const existing = route.stops.find((stop) => String(stop.locationId) === String(location.id));
+      const geography = existing ? 0 : Math.min(...route.stops.map((stop) => distanceKm(point, [stop.latitude, stop.longitude])), distanceKm(state.depot, point));
+      const projectedService = route.serviceMinutes + serviceMinutes;
+      const projectedStops = existing ? route.stops : [...route.stops, { latitude: point[0], longitude: point[1] }];
+      const projectedDrive = projectedStops.length ? routeLength(projectedStops.map((stop) => [stop.latitude, stop.longitude])) / 55 * 60 : 0;
+      const projectedTotal = projectedService + projectedDrive, maximum = Math.max(60, Number(settings.maxHours || 12) * 60);
+      const overtime = Math.max(0, projectedTotal - maximum);
+      return score + overtime ** 2 * 1000 + projectedTotal ** 2 / maximum * 2 + geography * .7 - (existing ? 35 : 0);
+    }, 0);
+    const score = temporalRouteScore(selectedRoutes) + operationalScore;
+    return !best || score < best.score ? { routes: selectedRoutes, score } : best;
+  }, null)?.routes || [];
 }
 
 function rhythmCandidates(employee, settings) {
@@ -431,7 +480,7 @@ function rhythmCandidates(employee, settings) {
       const totals = routeDraftTotals(routes), longest = Math.max(...routes.map((route) => route.totalMinutes), 0);
       const overMaximum = routes.reduce((sum, route) => sum + Math.max(0, route.totalMinutes - settings.maxHours * 60), 0);
       const overFund = Math.max(0, totals.totalHours - employee.weeklyFund * 3) * 60;
-      const spacingViolations = machineSpacingViolations(routes, employee), spreadPenalty = weekdaySpreadPenalty(days);
+      const spacingViolations = planningSpacingViolations(routes, employee), spreadPenalty = weekdaySpreadPenalty(days);
       return { days, routes, totals, longest, spacingViolations, spreadPenalty, penalty: spacingViolations * 1000000000 + overMaximum * 1000000 + overFund * 1000000 + spreadPenalty * 10000 + routes.reduce((sum, route) => sum + route.totalMinutes, 0) };
     }).sort((a, b) => a.penalty - b.penalty);
     if (variants[0]) candidates.push(variants[0]);
@@ -447,27 +496,27 @@ function buildCycleRoutes(employee, settings) {
     const owners = ownersOfMachine(state.draft, machine.id);
     return { machine, occurrences: Math.max(1, Math.round(requiredVisitsMachine(machine.id) * 3 / Math.max(1, owners.length))) };
   }).sort((a, b) => b.occurrences - a.occurrences || machineDistance(b.machine) - machineDistance(a.machine));
-  machines.forEach(({ machine, occurrences }) => {
-    const location = state.locations.find((item) => String(item.id) === String(machine.location_id));
+  const locationPlans = [...machines.reduce((plans, machinePlan) => {
+    const key = String(machinePlan.machine.location_id), plan = plans.get(key) || { locationId: key, machines: [], occurrences: 0 };
+    plan.machines.push(machinePlan); plan.occurrences = Math.max(plan.occurrences, machinePlan.occurrences); plans.set(key, plan); return plans;
+  }, new Map()).values()].sort((a, b) => b.occurrences - a.occurrences || machineDistance(b.machines[0].machine) - machineDistance(a.machines[0].machine));
+  locationPlans.forEach((plan) => {
+    const location = state.locations.find((item) => String(item.id) === plan.locationId);
     const point = pointOf(location); if (!point) return;
-    const count = Math.min(occurrences, routes.length);
-    for (let occurrence = 0; occurrence < count; occurrence += 1) {
-      const targetIndex = ((occurrence + .5) * routes.length / count) - .5;
-      const choices = routes.map((route, index) => {
-        const existing = route.stops.find((stop) => String(stop.locationId) === String(location.id));
-        if (route.stops.some((stop) => stop.machineIds.includes(String(machine.id)))) return { route, score: Infinity };
-        const geography = existing ? 0 : Math.min(...route.stops.map((stop) => distanceKm(point, [stop.latitude, stop.longitude])), distanceKm(state.depot, point));
-        const projectedService = route.serviceMinutes + plannedMinutesMachine(machine.id);
-        return { route, score: Math.abs(index - targetIndex) * 8 + geography * .7 + projectedService / Math.max(60, (settings.recommendedHours || settings.maxHours || 12) * 60) * 18 - (existing ? 35 : 0) };
-      }).sort((a, b) => a.score - b.score);
-      const route = choices[0].route;
-      let stop = route.stops.find((item) => String(item.locationId) === String(location.id));
-      if (!stop) {
-        stop = { locationId: String(location.id), name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machineIds: [], serviceMinutes: 0 };
-        route.stops.push(stop);
-      }
-      stop.machineIds.push(String(machine.id)); stop.serviceMinutes += plannedMinutesMachine(machine.id); route.serviceMinutes += plannedMinutesMachine(machine.id);
-    }
+    const visitCount = Math.min(plan.occurrences, routes.length);
+    const averageService = plan.machines.reduce((sum, item) => sum + plannedMinutesMachine(item.machine.id) * Math.min(item.occurrences, visitCount), 0) / visitCount;
+    const locationRoutes = bestRoutesForMachine(routes, visitCount, location, point, averageService, settings);
+    plan.machines.sort((a, b) => b.occurrences - a.occurrences).forEach(({ machine, occurrences }) => {
+      const machineRoutes = bestRoutesForMachine(locationRoutes, Math.min(occurrences, locationRoutes.length), location, point, plannedMinutesMachine(machine.id), settings);
+      machineRoutes.forEach((route) => {
+        let stop = route.stops.find((item) => String(item.locationId) === String(location.id));
+        if (!stop) {
+          stop = { locationId: String(location.id), name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machineIds: [], serviceMinutes: 0 };
+          route.stops.push(stop);
+        }
+        stop.machineIds.push(String(machine.id)); stop.serviceMinutes += plannedMinutesMachine(machine.id); route.serviceMinutes += plannedMinutesMachine(machine.id);
+      });
+    });
   });
   routes.forEach(estimateRoute);
   return routes;
@@ -539,7 +588,7 @@ function renderRouteResults(employee) {
   }
   const settings = scheduleFor(employee), totals = routeDraftTotals(draft.routes), cycleFund = Number(employee.weeklyFund) * 3;
   const hardDays = draft.routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
-  const spacingViolations = machineSpacingViolations(draft.routes, employee);
+  const spacingViolations = planningSpacingViolations(draft.routes, employee);
   const softDays = draft.routes.filter((route) => route.totalMinutes > settings.recommendedHours * 60 && route.totalMinutes <= settings.maxHours * 60).length;
   const budgetClass = totals.totalHours > cycleFund ? 'bad' : totals.totalHours > cycleFund * .92 ? 'warn' : '';
   const hardClass = hardDays ? 'bad' : softDays ? 'warn' : '';
@@ -616,8 +665,12 @@ async function generateRoutes() {
         await calculateRoadRoutes(candidate.routes, settings, requestId);
         if (requestId !== state.routeRequestId) return;
         const totals = routeDraftTotals(candidate.routes), hardDays = candidate.routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
-        const spacingViolations = machineSpacingViolations(candidate.routes, employee);
-        selected = { ...candidate, routes: candidate.routes, totals, hardDays, spacingViolations };
+        const spacingViolations = planningSpacingViolations(candidate.routes, employee);
+        const overtimeMinutes = candidate.routes.reduce((sum, route) => sum + Math.max(0, route.totalMinutes - settings.maxHours * 60), 0);
+        const fundOvertimeMinutes = Math.max(0, totals.totalHours - employee.weeklyFund * 3) * 60;
+        const selectionScore = spacingViolations * 1000000000000 + overtimeMinutes * 100000000 + fundOvertimeMinutes * 1000000 + candidate.routes.reduce((sum, route) => sum + route.totalMinutes ** 2, 0);
+        const evaluated = { ...candidate, routes: candidate.routes, totals, hardDays, spacingViolations, overtimeMinutes, selectionScore };
+        if (!selected || evaluated.selectionScore < selected.selectionScore) selected = evaluated;
         if (!spacingViolations && !hardDays && totals.totalHours <= employee.weeklyFund * 3) break;
       } catch (error) { lastError = error; }
     }
@@ -652,20 +705,20 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 10, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 11, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
     else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
     if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
-    if (saved.version >= 10) {
+    if (saved.version >= 11) {
       Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
       Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
     }
