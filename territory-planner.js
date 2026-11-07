@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v11';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v12';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -446,26 +446,68 @@ function temporalRouteScore(selectedRoutes) {
   return days.reduce((score, day, index) => {
     const next = index === days.length - 1 ? days[0] + 21 : days[index + 1];
     const gap = next - day;
-    return score + Math.max(0, minimumGap - gap) * 100000000 + ((gap - idealGap) ** 2) * 10000;
+    return score + Math.max(0, minimumGap - gap) * 1000000000000 + ((gap - idealGap) ** 2) * 10000;
   }, 0);
+}
+
+function operationalRouteSetScore(selectedRoutes, location, point, serviceMinutes, settings) {
+  return selectedRoutes.reduce((score, route) => {
+    const existing = route.stops.find((stop) => String(stop.locationId) === String(location.id));
+    const projectedService = route.serviceMinutes + serviceMinutes;
+    const projectedStops = existing ? route.stops : [...route.stops, { latitude: point[0], longitude: point[1] }];
+    const projectedDrive = projectedStops.length ? routeLength(projectedStops.map((stop) => [stop.latitude, stop.longitude])) / 55 * 60 : 0;
+    const projectedTotal = projectedService + projectedDrive, maximum = Math.max(60, Number(settings.maxHours || 12) * 60);
+    const overtime = Math.max(0, projectedTotal - maximum);
+    return score + overtime ** 2 * 1000000 + projectedTotal ** 2 * 10 + projectedDrive * 500;
+  }, 0);
+}
+
+function bestTemporalSubsetScore(routes, count) {
+  if (count >= routes.length) return temporalRouteScore(routes);
+  return combinations(routes, count).reduce((best, selectedRoutes) => Math.min(best, temporalRouteScore(selectedRoutes)), Infinity);
 }
 
 function bestRoutesForMachine(routes, count, location, point, serviceMinutes, settings) {
   const routeSets = combinations(routes, count);
   return routeSets.reduce((best, selectedRoutes) => {
-    const operationalScore = selectedRoutes.reduce((score, route) => {
-      const existing = route.stops.find((stop) => String(stop.locationId) === String(location.id));
-      const geography = existing ? 0 : Math.min(...route.stops.map((stop) => distanceKm(point, [stop.latitude, stop.longitude])), distanceKm(state.depot, point));
-      const projectedService = route.serviceMinutes + serviceMinutes;
-      const projectedStops = existing ? route.stops : [...route.stops, { latitude: point[0], longitude: point[1] }];
-      const projectedDrive = projectedStops.length ? routeLength(projectedStops.map((stop) => [stop.latitude, stop.longitude])) / 55 * 60 : 0;
-      const projectedTotal = projectedService + projectedDrive, maximum = Math.max(60, Number(settings.maxHours || 12) * 60);
-      const overtime = Math.max(0, projectedTotal - maximum);
-      return score + overtime ** 2 * 1000 + projectedTotal ** 2 / maximum * 2 + geography * .7 - (existing ? 35 : 0);
-    }, 0);
-    const score = temporalRouteScore(selectedRoutes) + operationalScore;
+    const score = temporalRouteScore(selectedRoutes) + operationalRouteSetScore(selectedRoutes, location, point, serviceMinutes, settings);
     return !best || score < best.score ? { routes: selectedRoutes, score } : best;
   }, null)?.routes || [];
+}
+
+function bestRoutesForLocation(routes, plan, location, point, settings) {
+  const visitCount = Math.min(plan.occurrences, routes.length);
+  const averageService = plan.machines.reduce((sum, item) => sum + plannedMinutesMachine(item.machine.id) * Math.min(item.occurrences, visitCount), 0) / visitCount;
+  return combinations(routes, visitCount).reduce((best, selectedRoutes) => {
+    const compatibility = plan.machines.reduce((score, item) => score + bestTemporalSubsetScore(selectedRoutes, Math.min(item.occurrences, selectedRoutes.length)), 0);
+    const score = temporalRouteScore(selectedRoutes) + compatibility + operationalRouteSetScore(selectedRoutes, location, point, averageService, settings);
+    return !best || score < best.score ? { routes: selectedRoutes, score } : best;
+  }, null)?.routes || [];
+}
+
+function removeLocationFromRoutes(routes, locationId) {
+  routes.forEach((route) => {
+    route.stops = route.stops.filter((stop) => String(stop.locationId) !== String(locationId));
+    estimateRoute(route);
+  });
+}
+
+function assignLocationPlan(routes, plan, settings) {
+  const location = state.locations.find((item) => String(item.id) === plan.locationId), point = pointOf(location);
+  if (!point) return;
+  const locationRoutes = bestRoutesForLocation(routes, plan, location, point, settings);
+  plan.machines.sort((a, b) => b.occurrences - a.occurrences).forEach(({ machine, occurrences }) => {
+    const machineRoutes = bestRoutesForMachine(locationRoutes, Math.min(occurrences, locationRoutes.length), location, point, plannedMinutesMachine(machine.id), settings);
+    machineRoutes.forEach((route) => {
+      let stop = route.stops.find((item) => String(item.locationId) === String(location.id));
+      if (!stop) {
+        stop = { locationId: String(location.id), name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machineIds: [], serviceMinutes: 0 };
+        route.stops.push(stop);
+      }
+      stop.machineIds.push(String(machine.id)); stop.serviceMinutes += plannedMinutesMachine(machine.id); route.serviceMinutes += plannedMinutesMachine(machine.id);
+    });
+  });
+  routes.forEach(estimateRoute);
 }
 
 function rhythmCandidates(employee, settings) {
@@ -500,24 +542,11 @@ function buildCycleRoutes(employee, settings) {
     const key = String(machinePlan.machine.location_id), plan = plans.get(key) || { locationId: key, machines: [], occurrences: 0 };
     plan.machines.push(machinePlan); plan.occurrences = Math.max(plan.occurrences, machinePlan.occurrences); plans.set(key, plan); return plans;
   }, new Map()).values()].sort((a, b) => b.occurrences - a.occurrences || machineDistance(b.machines[0].machine) - machineDistance(a.machines[0].machine));
-  locationPlans.forEach((plan) => {
-    const location = state.locations.find((item) => String(item.id) === plan.locationId);
-    const point = pointOf(location); if (!point) return;
-    const visitCount = Math.min(plan.occurrences, routes.length);
-    const averageService = plan.machines.reduce((sum, item) => sum + plannedMinutesMachine(item.machine.id) * Math.min(item.occurrences, visitCount), 0) / visitCount;
-    const locationRoutes = bestRoutesForMachine(routes, visitCount, location, point, averageService, settings);
-    plan.machines.sort((a, b) => b.occurrences - a.occurrences).forEach(({ machine, occurrences }) => {
-      const machineRoutes = bestRoutesForMachine(locationRoutes, Math.min(occurrences, locationRoutes.length), location, point, plannedMinutesMachine(machine.id), settings);
-      machineRoutes.forEach((route) => {
-        let stop = route.stops.find((item) => String(item.locationId) === String(location.id));
-        if (!stop) {
-          stop = { locationId: String(location.id), name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machineIds: [], serviceMinutes: 0 };
-          route.stops.push(stop);
-        }
-        stop.machineIds.push(String(machine.id)); stop.serviceMinutes += plannedMinutesMachine(machine.id); route.serviceMinutes += plannedMinutesMachine(machine.id);
-      });
-    });
-  });
+  locationPlans.forEach((plan) => assignLocationPlan(routes, plan, settings));
+  for (let pass = 0; pass < 2; pass += 1) {
+    const plans = pass % 2 ? [...locationPlans].reverse() : locationPlans;
+    plans.forEach((plan) => { removeLocationFromRoutes(routes, plan.locationId); assignLocationPlan(routes, plan, settings); });
+  }
   routes.forEach(estimateRoute);
   return routes;
 }
@@ -705,20 +734,20 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 11, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 12, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
     else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
     if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
-    if (saved.version >= 11) {
+    if (saved.version >= 12) {
       Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
       Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
     }
