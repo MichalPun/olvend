@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v14';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v15';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -271,20 +271,56 @@ function primaryOwnerOf(assignments, demand) {
   return demand.machines.flatMap((machine) => ownersOfMachine(assignments, machine.id))[0] || null;
 }
 
+function territoryGeography(assignments, profiles) {
+  const groups = new Map(profiles.map((profile) => [String(profile.employee.id), []]));
+  const locationItems = [];
+  state.locations.forEach((location) => {
+    const point = pointOf(location); if (!point) return;
+    const owners = ownerIdsAt(assignments, location.id).filter((id) => groups.has(String(id)));
+    if (!owners.length) return;
+    const fullWeight = Math.max(.25, requiredVisitsLocation(location.id)), weight = fullWeight / owners.length;
+    locationItems.push({ point, owners: new Set(owners.map(String)), weight: fullWeight });
+    owners.forEach((ownerId) => groups.get(String(ownerId)).push({ point, weight }));
+  });
+  const centroids = new Map([...groups].map(([employeeId, items]) => {
+    const total = items.reduce((sum, item) => sum + item.weight, 0);
+    if (!total) return [employeeId, state.depot];
+    return [employeeId, [items.reduce((sum, item) => sum + item.point[0] * item.weight, 0) / total, items.reduce((sum, item) => sum + item.point[1] * item.weight, 0) / total]];
+  }));
+  let dispersion = 0, isolation = 0, boundaryCut = 0;
+  groups.forEach((items, employeeId) => items.forEach((item, index) => {
+    dispersion += distanceKm(item.point, centroids.get(employeeId)) * item.weight;
+    const ownDistances = items.filter((_, candidate) => candidate !== index).map((candidate) => distanceKm(item.point, candidate.point));
+    const otherDistances = [...groups].filter(([otherId]) => otherId !== employeeId).flatMap(([, candidates]) => candidates.map((candidate) => distanceKm(item.point, candidate.point)));
+    const nearestOwn = ownDistances.length ? Math.min(...ownDistances) : distanceKm(item.point, state.depot);
+    const nearestOther = otherDistances.length ? Math.min(...otherDistances) : Infinity;
+    isolation += Math.max(0, nearestOwn - nearestOther) * item.weight;
+  }));
+  locationItems.forEach((item, index) => locationItems.slice(index + 1).forEach((other) => {
+    const sharedOwner = [...item.owners].some((ownerId) => other.owners.has(ownerId));
+    if (sharedOwner) return;
+    const gap = distanceKm(item.point, other.point);
+    boundaryCut += Math.max(0, 55 - gap) * Math.min(item.weight, other.weight);
+  }));
+  return { dispersion, isolation, boundaryCut };
+}
+
 function assignmentEvaluation(assignments, profiles) {
   const stats = profiles.map((profile) => ({ profile, ...employeeStats(profile.employee, assignments) }));
   const overloads = stats.map((item) => Math.max(0, item.hours - Number(item.profile.employee.weeklyFund || 0)));
   const ratios = stats.map((item) => item.hours / Math.max(1, Number(item.profile.employee.weeklyFund || 0)));
   const averageRatio = ratios.reduce((sum, value) => sum + value, 0) / Math.max(1, ratios.length);
+  const utilizationDeviation = ratios.reduce((sum, value) => sum + Math.max(0, Math.abs(value - averageRatio) - .18) ** 2, 0);
   const maxOverload = Math.max(0, ...overloads);
   const overloadSquares = overloads.reduce((sum, value) => sum + value ** 2, 0);
   const imbalance = ratios.reduce((sum, value) => sum + (value - averageRatio) ** 2, 0);
   const totalKm = stats.reduce((sum, item) => sum + item.km, 0);
+  const geography = territoryGeography(assignments, profiles);
   return {
     stats,
     maxOverload,
     totalOverload: overloads.reduce((sum, value) => sum + value, 0),
-    score: maxOverload ** 2 * 1e12 + overloadSquares * 1e10 + imbalance * 1e7 + totalKm * 100
+    score: maxOverload ** 2 * 1e12 + overloadSquares * 1e10 + utilizationDeviation * 200000000 + geography.boundaryCut * 200000 + geography.isolation * 20000 + geography.dispersion * 1000 + totalKm * 5000 + imbalance * 50000
   };
 }
 
@@ -946,14 +982,14 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 14, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 15, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
