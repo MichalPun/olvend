@@ -1,42 +1,30 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v1';
-const MICHAL_EMPLOYEE_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
-const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f', '#9b3659'];
-const preferredColors = [
-  [/michal\s+punčochář/i, '#3478bf'],
-  [/veronika\s+jirdová/i, '#258463'],
-  [/kristýna\s+dvořáková/i, '#7d62ad']
-];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v2';
+const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
+const DEPOT_FALLBACK = [49.054, 16.646];
+const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
 const state = {
-  employees: [],
-  locations: [],
-  machines: [],
-  currentAssignments: new Map(),
-  draftAssignments: new Map(),
-  visitCounts: new Map(),
-  markers: new Map(),
-  selectedEmployeeId: null,
-  selectedLocationId: null,
-  drawing: false,
-  drawPoints: [],
-  drawLayer: null,
-  dirty: false
+  employees: [], locations: [], machines: [], current: new Map(), draft: new Map(),
+  visitDates: new Map(), lastVisits: new Map(), markers: new Map(), depot: DEPOT_FALLBACK,
+  selectedEmployeeId: null, selectedLocationId: null, selectedMachineIds: new Set(),
+  drawing: false, drawPoints: [], drawLayer: null, dirty: false
 };
-
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const employeeName = (employee) => `${employee?.name || ''} ${employee?.surname || ''}`.trim() || 'Bez operátora';
-const initials = (employee) => `${employee?.name?.[0] || ''}${employee?.surname?.[0] || ''}`.toUpperCase() || '—';
+const nameOf = (employee) => `${employee?.name || ''} ${employee?.surname || ''}`.trim() || 'Bez operátora';
 const employeeById = (id) => state.employees.find((employee) => String(employee.id) === String(id || '')) || null;
-const includedEmployees = () => state.employees.filter((employee) => employee.included);
+const activeEmployees = () => state.employees.filter((employee) => employee.included);
 const selectedEmployee = () => employeeById(state.selectedEmployeeId);
-const machineCountFor = (locationId) => state.machines.filter((machine) => String(machine.location_id) === String(locationId)).length;
-const mapPointFor = (location) => {
-  const lat = Number(location.latitude), lng = Number(location.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 48.2 || lat > 51.2 || lng < 11.8 || lng > 19.3) return null;
-  return [lat, lng];
+const machinesAt = (locationId) => state.machines.filter((machine) => String(machine.location_id) === String(locationId));
+const pointOf = (location) => {
+  const lat = Number(location?.latitude), lng = Number(location?.longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 48.2 && lat <= 51.2 && lng >= 11.8 && lng <= 19.3 ? [lat, lng] : null;
 };
+const copyAssignments = (source) => new Map([...source].map(([machineId, owners]) => [String(machineId), new Set(owners || [])]));
+const ownersOfMachine = (assignments, machineId) => [...(assignments.get(String(machineId)) || new Set())].filter(Boolean);
+const number = (value, digits = 1) => Number(value || 0).toFixed(digits).replace('.', ',');
+const dateLabel = (value) => value ? new Intl.DateTimeFormat('cs-CZ').format(new Date(`${value}T12:00:00`)) : 'bez návštěvy';
 
 const map = L.map('map', { zoomControl: true }).setView([49.25, 16.9], 7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
@@ -47,396 +35,344 @@ function say(message, error = false) {
   $('toast').textContent = message;
   $('toast').classList.toggle('error', error);
   $('toast').classList.add('show');
-  toastTimer = setTimeout(() => $('toast').classList.remove('show'), 2800);
+  toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3200);
 }
 
 async function requireManager() {
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError) throw userError;
-  if (!user) {
-    location.href = 'index.html';
-    throw new Error('Nejste přihlášený.');
-  }
-  const { data: employee, error } = await supabase.from('employees').select('id,role,active').eq('auth_user_id', user.id).maybeSingle();
+  const { data: { user }, error } = await supabase.auth.getUser();
   if (error) throw error;
-  if (employee?.active === false || !/admin|manager|manaž|manaz|vedouc|majitel/i.test(String(employee?.role || ''))) {
-    location.href = 'mobile.html';
-    throw new Error('Tato stránka je určená pro vedení.');
+  if (!user) { location.href = 'index.html'; throw new Error('Nejste přihlášený.'); }
+  const profile = await supabase.from('employees').select('role,active').eq('auth_user_id', user.id).maybeSingle();
+  if (profile.error) throw profile.error;
+  if (profile.data?.active === false || !/admin|manager|manaž|manaz|vedouc|majitel/i.test(String(profile.data?.role || ''))) {
+    location.href = 'mobile.html'; throw new Error('Tato stránka je určená pro vedení.');
   }
+}
+
+function defaultFund(employee) {
+  if (/michal\s+punčochář/i.test(nameOf(employee))) return 24;
+  const value = Number(employee.contracted_weekly_hours);
+  return Number.isFinite(value) && value > 0 ? value : 40;
 }
 
 function colorFor(employee, index) {
-  const name = employeeName(employee);
-  return preferredColors.find(([pattern]) => pattern.test(name))?.[1] || palette[index % palette.length];
+  const name = nameOf(employee);
+  if (/michal\s+punčochář/i.test(name)) return '#3478bf';
+  if (/veronika\s+jirdová/i.test(name)) return '#258463';
+  if (/kristýna\s+dvořáková/i.test(name)) return '#7d62ad';
+  return palette[index % palette.length];
 }
 
-function defaultWeeklyFund(employee) {
-  const name = employeeName(employee);
-  if (/michal\s+punčochář/i.test(name)) return 24;
-  const databaseFund = Number(employee.contracted_weekly_hours);
-  return Number.isFinite(databaseFund) && databaseFund > 0 ? databaseFund : 40;
+function kindOf(machine) {
+  const source = `${machine.machine_type || ''} ${machine.name || ''}`;
+  if (/food|snack|potrav|fas|saphir|aria|vitality/i.test(source)) return 'Potravinový automat';
+  if (/coffee|káva|kav|jetinno|luce|lei|bianchi/i.test(source)) return 'Kávový automat';
+  return 'Automat';
 }
 
-function weeklyVisitsFor(locationId) {
-  const count = Number(state.visitCounts.get(String(locationId)) || 0);
-  return count > 0 ? Math.max(.25, count / 13) : .25;
+function weeklyVisitsMachine(machineId) {
+  const count = state.visitDates.get(String(machineId))?.size || 0;
+  return count ? count / 13 : .25;
 }
 
-function estimatedHoursFor(location) {
-  const visits = weeklyVisitsFor(location.id);
-  const machines = Math.max(1, machineCountFor(location.id));
-  const servicePerVisit = .42 + machines * .18;
-  const travelAllowance = .42 * visits;
-  return Math.max(.35, visits * servicePerVisit + travelAllowance);
+function weeklyVisitsLocation(locationId) {
+  const dates = new Set();
+  machinesAt(locationId).forEach((machine) => (state.visitDates.get(String(machine.id)) || new Set()).forEach((date) => dates.add(date)));
+  return dates.size ? dates.size / 13 : .25;
 }
 
-function assignmentFor(locationId) {
-  return state.draftAssignments.get(String(locationId)) || null;
+function lastVisitLocation(locationId) {
+  return machinesAt(locationId).map((machine) => state.lastVisits.get(String(machine.id))).filter(Boolean).sort().at(-1) || null;
 }
 
-function employeeLoads() {
-  const loads = new Map(includedEmployees().map((employee) => [String(employee.id), 0]));
-  state.locations.forEach((location) => {
-    const ownerId = assignmentFor(location.id);
-    if (ownerId && loads.has(String(ownerId))) loads.set(String(ownerId), loads.get(String(ownerId)) + estimatedHoursFor(location));
+function ownerIdsAt(assignments, locationId) {
+  const ids = new Set();
+  machinesAt(locationId).forEach((machine) => ownersOfMachine(assignments, machine.id).forEach((id) => ids.add(String(id))));
+  return [...ids];
+}
+
+function ownerNamesAt(assignments, locationId) {
+  const names = ownerIdsAt(assignments, locationId).map((id) => nameOf(employeeById(id)));
+  return names.length ? names.join(', ') : 'bez operátora';
+}
+
+function distanceKm(a, b) {
+  const rad = (value) => value * Math.PI / 180;
+  const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
+  return 12742 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function routeLength(points) {
+  const remaining = [...points]; let current = state.depot; let total = 0;
+  while (remaining.length) {
+    let index = 0; let best = Infinity;
+    remaining.forEach((point, candidate) => { const value = distanceKm(current, point); if (value < best) { best = value; index = candidate; } });
+    total += best; current = remaining.splice(index, 1)[0];
+  }
+  return total + distanceKm(current, state.depot);
+}
+
+function routeDays(employee) { return Math.max(1, Math.min(5, Math.round(Number(employee.weeklyFund || 1) / 12))); }
+
+function employeeFrequency(assignments, employeeId, locationId) {
+  return machinesAt(locationId).reduce((maximum, machine) => {
+    const owners = ownersOfMachine(assignments, machine.id);
+    if (!owners.some((id) => String(id) === String(employeeId))) return maximum;
+    return Math.max(maximum, weeklyVisitsMachine(machine.id) / Math.max(1, owners.length));
+  }, 0);
+}
+
+function weeklyKm(employee, assignments) {
+  const days = routeDays(employee);
+  const routes = Array.from({ length: days }, () => ({ points: [], locations: new Set(), partial: 0 }));
+  const targets = state.locations.map((location) => ({ location, point: pointOf(location), frequency: employeeFrequency(assignments, employee.id, location.id) }))
+    .filter((item) => item.point && item.frequency > 0)
+    .sort((a, b) => distanceKm(state.depot, b.point) - distanceKm(state.depot, a.point));
+  targets.forEach(({ location, point, frequency }) => {
+    const capped = Math.min(days, frequency), whole = Math.floor(capped), fraction = capped - whole;
+    for (let i = 0; i < whole; i += 1) {
+      const target = routes.map((route) => ({ route, increase: route.locations.has(String(location.id)) ? Infinity : routeLength([...route.points, point]) - routeLength(route.points) })).sort((a, b) => a.increase - b.increase)[0].route;
+      target.points.push(point); target.locations.add(String(location.id));
+    }
+    if (fraction > .01) {
+      const target = routes.map((route) => ({ route, increase: routeLength([...route.points, point]) - routeLength(route.points) })).sort((a, b) => a.increase - b.increase)[0];
+      target.route.partial += target.increase * fraction;
+    }
   });
-  return loads;
+  return routes.reduce((sum, route) => sum + routeLength(route.points) + route.partial, 0);
 }
+
+function employeeStats(employee, assignments) {
+  let service = 0, machineCount = 0; const locations = new Set();
+  state.machines.forEach((machine) => {
+    const owners = ownersOfMachine(assignments, machine.id);
+    if (!owners.some((id) => String(id) === String(employee.id))) return;
+    machineCount += 1; locations.add(String(machine.location_id));
+    service += weeklyVisitsMachine(machine.id) * (/Potravin/.test(kindOf(machine)) ? .45 : .37) / Math.max(1, owners.length);
+  });
+  const km = weeklyKm(employee, assignments);
+  const admin = [...locations].reduce((sum, locationId) => sum + employeeFrequency(assignments, employee.id, locationId) * .12, 0);
+  return { hours: service + admin + km / 55, km, machineCount, locationCount: locations.size };
+}
+
+function statsFor(assignments) { return new Map(state.employees.map((employee) => [String(employee.id), employeeStats(employee, assignments)])); }
 
 function markerIcon(location) {
-  const owner = employeeById(assignmentFor(location.id));
-  const color = owner?.included ? owner.color : '#8a94a6';
-  const label = machineCountFor(location.id) || '•';
-  return L.divIcon({ className: 'marker-label', html: `<span style="display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:${color}">${label}</span>`, iconSize: [28, 28], iconAnchor: [14, 14] });
+  const colors = [...new Set(ownerIdsAt(state.draft, location.id).map(employeeById).filter((employee) => employee?.included).map((employee) => employee.color))];
+  const background = colors.length > 1 ? `conic-gradient(${colors.map((color, i) => `${color} ${i / colors.length * 100}% ${(i + 1) / colors.length * 100}%`).join(',')})` : (colors[0] || '#8a94a6');
+  return L.divIcon({ className: 'marker-label', html: `<span style="display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:${background}">${machinesAt(location.id).length}</span>`, iconSize: [28, 28], iconAnchor: [14, 14] });
 }
 
 function renderPeople() {
-  const loads = employeeLoads();
+  const stats = statsFor(state.draft);
   $('people').innerHTML = state.employees.map((employee) => {
-    const load = loads.get(String(employee.id)) || 0;
-    const active = String(employee.id) === String(state.selectedEmployeeId);
-    return `<button class="person ${active ? 'active' : ''} ${employee.included ? '' : 'excluded'}" data-employee-id="${esc(employee.id)}" style="--person:${employee.color}"><span class="avatar">${esc(initials(employee))}</span><span><b>${esc(employeeName(employee))}</b><small>${load.toFixed(1).replace('.', ',')} h odhad v návrhu</small><label class="include-row"><input class="include-input" data-include-id="${esc(employee.id)}" type="checkbox" ${employee.included ? 'checked' : ''}> zahrnout do návrhu</label></span><span class="fund"><span><input class="fund-input" data-fund-id="${esc(employee.id)}" type="number" min="1" max="80" step="1" value="${employee.weeklyFund}" ${employee.included ? '' : 'disabled'} aria-label="Týdenní fond ${esc(employeeName(employee))}"> h</span><small>týdně</small></span></button>`;
+    const item = stats.get(String(employee.id)) || { hours: 0, km: 0 };
+    const initials = `${employee.name?.[0] || ''}${employee.surname?.[0] || ''}`.toUpperCase() || '—';
+    return `<button class="person ${String(employee.id) === String(state.selectedEmployeeId) ? 'active' : ''} ${employee.included ? '' : 'excluded'}" data-employee-id="${esc(employee.id)}" style="--person:${employee.color}"><span class="avatar">${esc(initials)}</span><span><b>${esc(nameOf(employee))}</b><small>${number(item.hours)} h · ${Math.round(item.km)} km týdně</small><label class="include-row"><input class="include-input" data-include-id="${esc(employee.id)}" type="checkbox" ${employee.included ? 'checked' : ''}> zahrnout do návrhu</label></span><span class="fund"><span><input class="fund-input" data-fund-id="${esc(employee.id)}" type="number" min="1" max="80" value="${employee.weeklyFund}" ${employee.included ? '' : 'disabled'}> h</span><small>týdně</small></span></button>`;
   }).join('');
   document.querySelectorAll('.person').forEach((button) => button.addEventListener('click', (event) => {
     if (event.target.closest('input')) return;
     const employee = employeeById(button.dataset.employeeId);
     if (!employee?.included) return say('Nejdřív tohoto člověka zařaď do návrhu.', true);
-    state.selectedEmployeeId = button.dataset.employeeId;
-    renderPeople();
-    renderPaintMode();
+    state.selectedEmployeeId = employee.id; renderPeople(); renderPaintMode(); renderSummary();
   }));
   document.querySelectorAll('.fund-input').forEach((input) => input.addEventListener('change', () => {
-    const employee = employeeById(input.dataset.fundId);
-    if (!employee) return;
-    employee.weeklyFund = Math.max(1, Math.min(80, Number(input.value) || 1));
-    markDirty();
-    renderPeople();
-    renderSummary();
+    const employee = employeeById(input.dataset.fundId); if (!employee) return;
+    employee.weeklyFund = Math.max(1, Math.min(80, Number(input.value) || 1)); markDirty(); renderAll();
   }));
   document.querySelectorAll('.include-input').forEach((input) => input.addEventListener('change', () => {
-    const employee = employeeById(input.dataset.includeId);
-    if (!employee) return;
+    const employee = employeeById(input.dataset.includeId); if (!employee) return;
     employee.included = input.checked;
     if (!employee.included) {
-      state.draftAssignments.forEach((ownerId, locationId) => {
-        if (String(ownerId || '') === String(employee.id)) state.draftAssignments.set(locationId, null);
-      });
-      if (String(state.selectedEmployeeId) === String(employee.id)) state.selectedEmployeeId = includedEmployees()[0]?.id || null;
-    } else if (!state.selectedEmployeeId) {
-      state.selectedEmployeeId = employee.id;
+      state.draft.forEach((owners, machineId) => state.draft.set(machineId, new Set([...owners].filter((id) => String(id) !== String(employee.id)))));
+      if (String(state.selectedEmployeeId) === String(employee.id)) state.selectedEmployeeId = activeEmployees()[0]?.id || null;
     }
-    markDirty();
-    renderAll();
+    markDirty(); renderAll();
   }));
 }
 
-function renderPaintMode() {
-  const employee = selectedEmployee();
-  $('paintMode').textContent = employee ? `Právě přiřazuješ: ${employeeName(employee)}` : 'Nejdřív vyber operátora';
-}
-
-function renderLegend() {
-  $('legend').innerHTML = includedEmployees().map((employee) => `<span><i class="dot" style="--c:${employee.color}"></i>${esc(employee.name || employeeName(employee))}</span>`).join('') + '<span><i class="dot" style="--c:#8a94a6"></i>Bez operátora</span>';
-}
+function renderPaintMode() { $('paintMode').textContent = selectedEmployee() ? `Právě plánuješ pro: ${nameOf(selectedEmployee())}` : 'Nejdřív vyber člověka'; }
+function renderLegend() { $('legend').innerHTML = activeEmployees().map((employee) => `<span><i class="dot" style="--c:${employee.color}"></i>${esc(employee.name)}</span>`).join('') + '<span><i class="dot" style="--c:#8a94a6"></i>Bez operátora</span>'; }
 
 function renderMap(fit = false) {
   const bounds = [];
   state.locations.forEach((location) => {
-    const point = mapPointFor(location);
-    if (!point) return;
+    const point = pointOf(location); if (!point) return;
     let marker = state.markers.get(String(location.id));
-    const owner = employeeById(assignmentFor(location.id));
-    const tooltip = `${location.name || 'Lokalita'} · ${owner?.included ? employeeName(owner) : 'bez operátora'}`;
-    if (!marker) {
-      marker = L.marker(point, { icon: markerIcon(location), bubblingMouseEvents: false }).addTo(map);
-      marker.on('click', () => selectAndAssignLocation(location.id));
-      state.markers.set(String(location.id), marker);
-    } else {
-      marker.setLatLng(point).setIcon(markerIcon(location));
-    }
-    marker.unbindTooltip().bindTooltip(tooltip, { direction: 'top', offset: [0, -13] });
-    bounds.push(point);
+    if (!marker) { marker = L.marker(point, { icon: markerIcon(location), bubblingMouseEvents: false }).addTo(map); marker.on('click', () => selectLocation(location.id)); state.markers.set(String(location.id), marker); }
+    else marker.setIcon(markerIcon(location));
+    marker.unbindTooltip().bindTooltip(`${location.name} · ${ownerNamesAt(state.draft, location.id)}`, { direction: 'top', offset: [0, -13] }); bounds.push(point);
   });
   if (fit && bounds.length) map.fitBounds(bounds, { padding: [26, 26] });
-  setTimeout(() => map.invalidateSize(), 50);
+  setTimeout(() => map.invalidateSize(), 30);
 }
 
-function selectAndAssignLocation(locationId) {
-  const location = state.locations.find((item) => String(item.id) === String(locationId));
-  if (!location) return;
-  state.selectedLocationId = location.id;
-  if (state.selectedEmployeeId) {
-    state.draftAssignments.set(String(location.id), state.selectedEmployeeId);
-    markDirty();
-    renderMap(false);
-    renderPeople();
-  }
+function selectLocation(locationId) {
+  state.selectedLocationId = locationId;
+  state.selectedMachineIds = new Set(machinesAt(locationId).map((machine) => String(machine.id)));
   renderSummary();
 }
 
-function renderSummary() {
-  const loads = employeeLoads();
-  const activePeople = includedEmployees();
-  const remaining = activePeople.reduce((sum, employee) => sum + Math.max(0, employee.weeklyFund - (loads.get(String(employee.id)) || 0)), 0);
-  const overloaded = activePeople.filter((employee) => (loads.get(String(employee.id)) || 0) > employee.weeklyFund);
-  const selected = state.locations.find((location) => String(location.id) === String(state.selectedLocationId));
-  if (selected) {
-    const owner = employeeById(assignmentFor(selected.id));
-    $('selectedName').textContent = selected.name || 'Lokalita bez názvu';
-    $('selectedMeta').textContent = `${selected.city || 'Bez města'} · ${machineCountFor(selected.id)} automatů · ${weeklyVisitsFor(selected.id).toFixed(1).replace('.', ',')} návštěvy týdně · ${owner?.included ? employeeName(owner) : 'bez operátora'}`;
-  } else {
-    $('selectedName').textContent = 'Zatím nic nevybráno';
-    $('selectedMeta').textContent = 'Klikni na bod v mapě. Barva bodu označuje operátora v tomto návrhu.';
+function selectedImpact() {
+  const employee = selectedEmployee(); if (!employee || !state.selectedMachineIds.size) return null;
+  const before = employeeStats(employee, state.draft), simulated = copyAssignments(state.draft);
+  state.selectedMachineIds.forEach((machineId) => simulated.set(String(machineId), new Set([String(employee.id)])));
+  const after = employeeStats(employee, simulated);
+  return { hours: after.hours - before.hours, km: after.km - before.km };
+}
+
+function renderSelected(location) {
+  if (!location) {
+    $('selectedName').textContent = 'Zatím nic nevybráno'; $('selectedMeta').textContent = 'Klikni na bod v mapě. Nic se nepřiřadí bez potvrzení.';
+    $('selectedFacts').hidden = true; $('selectedActions').hidden = true; return;
   }
-  $('feasibility').classList.toggle('warn', overloaded.length > 0);
-  $('feasibility').innerHTML = overloaded.length
-    ? `<b>⚠ Návrh překračuje fond</b><br>${esc(overloaded.map(employeeName).join(', '))} · uprav rozdělení nebo fond hodin.`
-    : `<b>✓ Návrh je podle odhadu odjezditelný</b><br>Celková rezerva je přibližně ${remaining.toFixed(1).replace('.', ',')} hodiny týdně.`;
-  $('metrics').innerHTML = activePeople.map((employee) => {
-    const load = loads.get(String(employee.id)) || 0;
-    const percent = Math.min(115, Math.round(load / employee.weeklyFund * 100));
-    return `<div class="metric"><div class="metricline"><span>${esc(employee.name || employeeName(employee))}</span><b>${load.toFixed(1).replace('.', ',')} / ${employee.weeklyFund} h</b></div><div class="bar"><i style="--c:${employee.color};width:${Math.min(100, percent)}%;${percent > 100 ? 'background:#d5101a' : ''}"></i></div></div>`;
+  const machines = machinesAt(location.id), employee = selectedEmployee(), impact = selectedImpact();
+  $('selectedName').textContent = location.name || 'Lokalita bez názvu';
+  $('selectedMeta').textContent = `${location.city || 'Bez města'} · ${machines.length} aktivní ${machines.length === 1 ? 'automat' : 'automaty'}`;
+  $('selectedFacts').hidden = false;
+  $('selectedFacts').innerHTML = `
+    <div class="fact-row"><span>Skutečná četnost</span><b>${number(weeklyVisitsLocation(location.id))}× týdně</b></div>
+    <div class="fact-row"><span>Poslední návštěva</span><b>${esc(dateLabel(lastVisitLocation(location.id)))}</b></div>
+    <div class="fact-row"><span>Současný stav</span><b>${esc(ownerNamesAt(state.current, location.id))}</b></div>
+    <div class="fact-row"><span>V tomto návrhu</span><b>${esc(ownerNamesAt(state.draft, location.id))}</b></div>
+    ${employee && impact ? `<div class="fact-row"><span>Dopad pro ${esc(employee.name)}</span><b>${impact.hours >= 0 ? '+' : ''}${number(impact.hours)} h · ${impact.km >= 0 ? '+' : ''}${Math.round(impact.km)} km/týden</b></div>` : ''}
+    <div class="machine-picker"><div class="machine-picker-title"><span>Vyber stroje k přidělení</span><button type="button" id="toggleMachines">Vybrat / zrušit vše</button></div>
+    ${machines.map((machine) => {
+      const owners = ownersOfMachine(state.draft, machine.id).map(employeeById).filter(Boolean);
+      return `<label class="machine-option"><input type="checkbox" data-selected-machine="${machine.id}" ${state.selectedMachineIds.has(String(machine.id)) ? 'checked' : ''}><span><strong>${esc(machine.evidence_number ? `EV ${machine.evidence_number} · ` : '')}${esc(machine.name || kindOf(machine))}</strong><small>${kindOf(machine)} · ${number(weeklyVisitsMachine(machine.id))}× týdně · naposledy ${dateLabel(state.lastVisits.get(String(machine.id)))}</small><small>${esc(owners.length ? owners.map(nameOf).join(', ') : 'bez operátora')} <span class="owner-dots">${owners.map((owner) => `<i style="--c:${owner.color}"></i>`).join('')}</span></small></span></label>`;
+    }).join('')}</div>`;
+  $('selectedActions').hidden = !employee;
+  if (employee) { $('assignSelected').textContent = `Přidělit vybrané · ${employee.name}`; $('shareSelected').textContent = `Přidat ${employee.name} jako výpomoc`; }
+  document.querySelectorAll('[data-selected-machine]').forEach((input) => input.addEventListener('change', () => {
+    if (input.checked) state.selectedMachineIds.add(String(input.dataset.selectedMachine)); else state.selectedMachineIds.delete(String(input.dataset.selectedMachine)); renderSelected(location);
+  }));
+  $('toggleMachines')?.addEventListener('click', () => { const ids = machines.map((machine) => String(machine.id)); state.selectedMachineIds = state.selectedMachineIds.size === ids.length ? new Set() : new Set(ids); renderSelected(location); });
+}
+
+function renderSummary() {
+  const proposed = statsFor(state.draft), current = statsFor(state.current), people = activeEmployees();
+  const overloaded = people.filter((employee) => proposed.get(String(employee.id)).hours > employee.weeklyFund);
+  const unassigned = state.machines.filter((machine) => ownersOfMachine(state.draft, machine.id).length === 0).length;
+  const coverage = people.reduce((count, employee) => count + state.locations.filter((location) => employeeFrequency(state.draft, employee.id, location.id) > routeDays(employee) + .2).length, 0);
+  renderSelected(state.locations.find((location) => String(location.id) === String(state.selectedLocationId)));
+  const warnings = [];
+  if (unassigned) warnings.push(`${unassigned} strojů ještě nemá člověka`);
+  if (overloaded.length) warnings.push(`fond překračuje ${overloaded.map(nameOf).join(', ')}`);
+  if (coverage) warnings.push(`${coverage} míst vyžaduje více návštěv, než má člověk jízdních dnů`);
+  $('feasibility').classList.toggle('warn', warnings.length > 0);
+  $('feasibility').innerHTML = warnings.length ? `<b>⚠ Návrh ještě není hotový</b><br>${esc(warnings.join(' · '))}.` : '<b>✓ Návrh je podle odhadu odjezditelný</b><br>Všechny aktivní stroje mají přiřazenou péči a fondy nejsou překročené.';
+  $('metrics').innerHTML = people.map((employee) => {
+    const next = proposed.get(String(employee.id)), now = current.get(String(employee.id)), hours = next.hours - now.hours, km = next.km - now.km;
+    const percent = Math.min(115, Math.round(next.hours / employee.weeklyFund * 100));
+    return `<div class="metric"><div class="metricline"><span>${esc(employee.name)}</span><b>${number(next.hours)} / ${employee.weeklyFund} h<br>${Math.round(next.km)} km/týden</b></div><div class="metriccompare"><span>Dnes ${number(now.hours)} h · ${Math.round(now.km)} km</span><b class="${hours > .05 || km > 1 ? 'positive' : hours < -.05 || km < -1 ? 'negative' : ''}">${hours >= 0 ? '+' : ''}${number(hours)} h · ${km >= 0 ? '+' : ''}${Math.round(km)} km</b></div><div class="bar"><i style="--c:${employee.color};width:${Math.min(100, percent)}%;${percent > 100 ? 'background:#d5101a' : ''}"></i></div></div>`;
   }).join('');
 }
 
-function markDirty() {
-  state.dirty = true;
-  $('saveDraft').textContent = 'Uložit návrh';
-}
+function markDirty() { state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
+function snapshot() { return { version: 2, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])) }; }
+function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
-function snapshot() {
-  return {
-    version: 1,
-    savedAt: new Date().toISOString(),
-    assignments: Object.fromEntries(state.draftAssignments),
-    funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])),
-    included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included]))
-  };
-}
-
-function saveDraft() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot()));
-  state.dirty = false;
-  $('saveDraft').textContent = 'Uloženo ✓';
-  say('Pracovní návrh byl uložen v tomto prohlížeči. Ostré rajóny se nezměnily.');
-  setTimeout(() => { if (!state.dirty) $('saveDraft').textContent = 'Uložit návrh'; }, 1800);
-}
-
-function loadSavedDraft() {
+function loadDraft() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-    if (!saved || saved.version !== 1) return false;
-    Object.entries(saved.assignments || {}).forEach(([locationId, employeeId]) => {
-      if (employeeById(employeeId)) state.draftAssignments.set(String(locationId), employeeId);
-    });
-    state.employees.forEach((employee) => {
-      const fund = Number(saved.funds?.[employee.id]);
-      if (Number.isFinite(fund) && fund > 0) employee.weeklyFund = fund;
-      if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id];
-    });
+    localStorage.removeItem('olvend-territory-planner-draft-v1');
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (saved?.version !== 2) return false;
+    state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
+    Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     return true;
-  } catch (_) {
-    return false;
-  }
+  } catch (_) { return false; }
 }
 
 function resetDraft() {
-  if (state.dirty && !window.confirm('Zahodit neuložené úpravy tohoto návrhu?')) return;
+  if (state.dirty && !confirm('Zahodit neuložené úpravy tohoto návrhu?')) return;
   localStorage.removeItem(STORAGE_KEY);
-  state.employees.forEach((employee) => {
-    employee.weeklyFund = defaultWeeklyFund(employee);
-    employee.included = !/david\s+boudný/i.test(employeeName(employee));
-  });
-  state.draftAssignments = new Map([...state.currentAssignments].map(([locationId, employeeId]) => [locationId, employeeById(employeeId)?.included ? employeeId : null]));
-  state.dirty = false;
-  renderAll();
-  say('Návrh byl vrácen na současné ostré rozdělení.');
+  state.employees.forEach((employee) => { employee.weeklyFund = defaultFund(employee); employee.included = !/david\s+boudný/i.test(nameOf(employee)); });
+  state.draft = copyAssignments(state.current);
+  state.draft.forEach((owners, id) => state.draft.set(id, new Set([...owners].filter((owner) => employeeById(owner)?.included))));
+  state.selectedLocationId = null; state.selectedMachineIds = new Set(); state.dirty = false; renderAll(); say('Návrh byl vrácen na dnešní stav. Stroje po Davidovi čekají na nové přidělení.');
 }
 
-function distanceKm(a, b) {
-  const toRad = (value) => value * Math.PI / 180;
-  const dLat = toRad(b[0] - a[0]), dLng = toRad(b[1] - a[1]);
-  const value = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dLng / 2) ** 2;
-  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+function applyAssignment(shared) {
+  const employee = selectedEmployee(), location = state.locations.find((item) => String(item.id) === String(state.selectedLocationId));
+  if (!employee || !location) return say('Nejdřív vyber člověka a lokalitu.', true);
+  if (!state.selectedMachineIds.size) return say('Vyber alespoň jeden automat.', true);
+  state.selectedMachineIds.forEach((machineId) => { const owners = shared ? new Set(ownersOfMachine(state.draft, machineId)) : new Set(); owners.add(String(employee.id)); state.draft.set(String(machineId), owners); });
+  markDirty(); renderAll(); say(shared ? `${employee.name} je přidán jako výpomoc pro ${state.selectedMachineIds.size} strojů.` : `${state.selectedMachineIds.size} strojů bylo přiděleno: ${nameOf(employee)}.`);
 }
 
-function suggestAssignments() {
-  const activePeople = includedEmployees();
-  if (!activePeople.length) return say('Vyber alespoň jednoho člověka do návrhu.', true);
-  const centroids = new Map();
-  activePeople.forEach((employee) => {
-    const points = state.locations.filter((location) => String(state.currentAssignments.get(String(location.id)) || '') === String(employee.id)).map(mapPointFor).filter(Boolean);
-    centroids.set(String(employee.id), points.length ? points.reduce((sum, point) => [sum[0] + point[0] / points.length, sum[1] + point[1] / points.length], [0, 0]) : [49.05, 16.65]);
-  });
-  const loads = new Map(activePeople.map((employee) => [String(employee.id), 0]));
-  const next = new Map();
-  [...state.locations].sort((a, b) => estimatedHoursFor(b) - estimatedHoursFor(a)).forEach((location) => {
-    const point = mapPointFor(location);
-    const currentOwner = state.currentAssignments.get(String(location.id));
-    const ranked = activePeople.map((employee) => {
-      const currentLoad = loads.get(String(employee.id)) || 0;
-      const loadScore = currentLoad / Math.max(1, employee.weeklyFund);
-      const distanceScore = point ? distanceKm(point, centroids.get(String(employee.id))) / 280 : .3;
-      const continuityBonus = String(currentOwner || '') === String(employee.id) ? -.18 : 0;
-      return { employee, score: loadScore * 1.35 + distanceScore + continuityBonus };
-    }).sort((a, b) => a.score - b.score);
-    const chosen = ranked[0].employee;
-    next.set(String(location.id), chosen.id);
-    loads.set(String(chosen.id), (loads.get(String(chosen.id)) || 0) + estimatedHoursFor(location));
-  });
-  state.draftAssignments = next;
-  markDirty();
-  renderAll();
-  say('Program připravil návrh podle polohy, historie návštěv a fondů hodin.');
+function restoreSelected() {
+  const location = state.locations.find((item) => String(item.id) === String(state.selectedLocationId)); if (!location) return;
+  machinesAt(location.id).forEach((machine) => state.draft.set(String(machine.id), new Set(ownersOfMachine(state.current, machine.id)))); markDirty(); renderAll(); say('Lokalita je v návrhu zpět podle dnešního stavu.');
 }
 
 function pointInPolygon(point, polygon) {
-  const x = point[1], y = point[0];
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i][1], yi = polygon[i][0], xj = polygon[j][1], yj = polygon[j][0];
-    const intersects = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) || .0000001) + xi);
-    if (intersects) inside = !inside;
-  }
+  const x = point[1], y = point[0]; let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const xi = polygon[i][1], yi = polygon[i][0], xj = polygon[j][1], yj = polygon[j][0]; if (((yi > y) !== (yj > y)) && x < (xj - xi) * (y - yi) / ((yj - yi) || .000001) + xi) inside = !inside; }
   return inside;
 }
 
 function setDrawing(active) {
-  state.drawing = active;
-  $('mapWrap').classList.toggle('drawing', active);
-  $('drawArea').hidden = active;
-  $('finishArea').hidden = !active;
-  $('cancelArea').hidden = !active;
-  if (!active) {
-    state.drawPoints = [];
-    if (state.drawLayer) state.drawLayer.remove();
-    state.drawLayer = null;
-  }
-}
-
-function startDrawing() {
-  if (!state.selectedEmployeeId) return say('Nejdřív vyber operátora.', true);
-  setDrawing(true);
+  state.drawing = active; $('mapWrap').classList.toggle('drawing', active); $('drawArea').hidden = active; $('finishArea').hidden = !active; $('cancelArea').hidden = !active;
+  if (!active) { state.drawPoints = []; state.drawLayer?.remove(); state.drawLayer = null; }
 }
 
 function finishDrawing() {
   if (state.drawPoints.length < 3) return say('Pro oblast klikni do mapy alespoň třikrát.', true);
-  const inside = state.locations.filter((location) => {
-    const point = mapPointFor(location);
-    return point && pointInPolygon(point, state.drawPoints);
-  });
-  inside.forEach((location) => state.draftAssignments.set(String(location.id), state.selectedEmployeeId));
-  setDrawing(false);
-  if (!inside.length) return say('V nakreslené oblasti není žádná lokalita.', true);
-  markDirty();
-  renderAll();
-  say(`Přiřazeno ${inside.length} lokalit operátorovi ${employeeName(selectedEmployee())}.`);
+  const locations = state.locations.filter((location) => pointInPolygon(pointOf(location), state.drawPoints)); const employee = selectedEmployee();
+  if (!locations.length) return say('V oblasti není žádná lokalita se strojem.', true);
+  if (!confirm(`Přidělit všechny stroje v ${locations.length} lokalitách člověku ${nameOf(employee)}?`)) return;
+  locations.forEach((location) => machinesAt(location.id).forEach((machine) => state.draft.set(String(machine.id), new Set([String(employee.id)])))); setDrawing(false); markDirty(); renderAll();
 }
 
 map.on('click', (event) => {
-  if (!state.drawing) return;
-  state.drawPoints.push([event.latlng.lat, event.latlng.lng]);
-  if (state.drawLayer) state.drawLayer.remove();
-  state.drawLayer = state.drawPoints.length >= 3
-    ? L.polygon(state.drawPoints, { color: selectedEmployee()?.color || '#d5101a', weight: 3, fillOpacity: .08 }).addTo(map)
-    : L.polyline(state.drawPoints, { color: selectedEmployee()?.color || '#d5101a', weight: 3, dashArray: '6 5' }).addTo(map);
+  if (!state.drawing) return; state.drawPoints.push([event.latlng.lat, event.latlng.lng]); state.drawLayer?.remove();
+  state.drawLayer = state.drawPoints.length >= 3 ? L.polygon(state.drawPoints, { color: selectedEmployee()?.color || '#d5101a', weight: 3, fillOpacity: .08 }).addTo(map) : L.polyline(state.drawPoints, { color: selectedEmployee()?.color || '#d5101a', weight: 3 }).addTo(map);
 });
 
-async function loadRouteHistory() {
-  const since = new Date();
-  since.setDate(since.getDate() - 91);
-  const date = since.toISOString().slice(0, 10);
-  const { data: plans, error: plansError } = await supabase.from('route_plans').select('id').gte('planning_date', date).neq('execution_status', 'cancelled');
-  if (plansError) throw plansError;
-  const ids = (plans || []).map((plan) => plan.id);
-  const counts = new Map();
-  for (let index = 0; index < ids.length; index += 200) {
-    const chunk = ids.slice(index, index + 200);
-    if (!chunk.length) continue;
-    const { data: stops, error } = await supabase.from('route_plan_stops').select('location_id,status,completed_at').in('route_plan_id', chunk).not('location_id', 'is', null);
-    if (error) throw error;
-    (stops || []).forEach((stop) => {
-      if (stop.status === 'skipped') return;
-      const key = String(stop.location_id);
-      counts.set(key, (counts.get(key) || 0) + 1);
-    });
-  }
-  state.visitCounts = counts;
+async function loadVisitHistory() {
+  const since = new Date(); since.setDate(since.getDate() - 91);
+  const result = await supabase.from('route_machine_visits').select('machine_id,visit_date,status').gte('visit_date', since.toISOString().slice(0, 10)).eq('status', 'completed');
+  if (result.error) throw result.error;
+  (result.data || []).forEach((visit) => { if (!visit.machine_id || !visit.visit_date) return; const id = String(visit.machine_id); if (!state.visitDates.has(id)) state.visitDates.set(id, new Set()); state.visitDates.get(id).add(visit.visit_date); if (!state.lastVisits.get(id) || visit.visit_date > state.lastVisits.get(id)) state.lastVisits.set(id, visit.visit_date); });
 }
 
-function renderAll() {
-  renderPeople();
-  renderPaintMode();
-  renderLegend();
-  renderMap(false);
-  renderSummary();
+function buildAssignments(rows) {
+  const byLocation = new Map((rows || []).map((row) => [String(row.location_id), row])); const result = new Map();
+  state.machines.forEach((machine) => {
+    const row = byLocation.get(String(machine.location_id)), owners = new Set(), selected = Array.isArray(row?.selected_machine_ids) ? row.selected_machine_ids.map(String) : [];
+    const scoped = /selected|machine|stroj/i.test(String(row?.assignment_scope || '')) && selected.length;
+    if (row?.primary_employee_id && (!scoped || selected.includes(String(machine.id)))) owners.add(String(row.primary_employee_id));
+    else if (row?.backup_employee_id && scoped) owners.add(String(row.backup_employee_id));
+    result.set(String(machine.id), owners);
+  }); return result;
 }
+
+function renderAll() { renderPeople(); renderPaintMode(); renderLegend(); renderMap(); renderSummary(); }
 
 async function load() {
   await requireManager();
   const [employees, locations, machines, assignments] = await Promise.all([
-    supabase.from('employees').select('id,name,surname,role,active,bonus_eligible,contracted_weekly_hours').eq('active', true).order('surname'),
+    supabase.from('employees').select('id,name,surname,role,active,contracted_weekly_hours').eq('active', true).order('surname'),
     supabase.from('locations').select('id,name,city,address,latitude,longitude,active').eq('active', true).order('name'),
     supabase.from('machines').select('id,location_id,evidence_number,name,machine_type,active,status').eq('active', true),
     supabase.rpc('get_operator_territories_v51', { p_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) })
   ]);
-  const failed = [employees, locations, machines, assignments].find((result) => result.error);
-  if (failed) throw failed.error;
-  state.employees = (employees.data || [])
-    .filter((employee) => /operator|operátor/i.test(String(employee.role || '')) || String(employee.id) === MICHAL_EMPLOYEE_ID)
-    .map((employee, index) => ({ ...employee, color: colorFor(employee, index), weeklyFund: defaultWeeklyFund(employee), included: !/david\s+boudný/i.test(employeeName(employee)) }));
-  if (!state.employees.length) {
-    state.employees = (employees.data || []).filter((employee) => /operator|operátor|admin|manager/i.test(String(employee.role || ''))).map((employee, index) => ({ ...employee, color: colorFor(employee, index), weeklyFund: defaultWeeklyFund(employee), included: true }));
-  }
-  state.locations = (locations.data || []).filter(mapPointFor);
+  const failed = [employees, locations, machines, assignments].find((result) => result.error); if (failed) throw failed.error;
+  state.employees = (employees.data || []).filter((employee) => /operator|operátor/i.test(String(employee.role || '')) || String(employee.id) === MICHAL_ID).map((employee, index) => ({ ...employee, color: colorFor(employee, index), weeklyFund: defaultFund(employee), included: !/david\s+boudný/i.test(nameOf(employee)) }));
   state.machines = (machines.data || []).filter((machine) => machine.location_id && !/warehouse|sklad|reserve|rezerv/i.test(String(machine.status || '')));
-  state.currentAssignments = new Map((assignments.data || []).map((assignment) => [String(assignment.location_id), assignment.primary_employee_id || null]));
-  state.draftAssignments = new Map([...state.currentAssignments].map(([locationId, employeeId]) => [locationId, employeeById(employeeId)?.included ? employeeId : null]));
-  await loadRouteHistory();
-  const restored = loadSavedDraft();
-  state.selectedEmployeeId = includedEmployees()[0]?.id || null;
-  renderAll();
-  renderMap(true);
-  $('loading').hidden = true;
-  if (restored) say('Načetl jsem poslední uložený pracovní návrh.');
+  const allLocations = (locations.data || []).filter(pointOf), depot = allLocations.find((location) => /olmika/i.test(String(location.name)) && /blu/i.test(String(location.city)));
+  state.depot = pointOf(depot) || DEPOT_FALLBACK; state.locations = allLocations.filter((location) => machinesAt(location.id).length > 0);
+  state.current = buildAssignments(assignments.data); state.draft = copyAssignments(state.current);
+  state.draft.forEach((owners, id) => state.draft.set(id, new Set([...owners].filter((owner) => employeeById(owner)?.included))));
+  await loadVisitHistory(); const restored = loadDraft(); state.selectedEmployeeId = activeEmployees()[0]?.id || null;
+  renderAll(); renderMap(true); $('loading').hidden = true; if (restored) say('Načetl jsem poslední uložený pracovní návrh.');
 }
 
-$('saveDraft').addEventListener('click', saveDraft);
-$('resetDraft').addEventListener('click', resetDraft);
-$('suggest').addEventListener('click', suggestAssignments);
-$('fitMap').addEventListener('click', () => renderMap(true));
-$('drawArea').addEventListener('click', startDrawing);
-$('finishArea').addEventListener('click', finishDrawing);
-$('cancelArea').addEventListener('click', () => setDrawing(false));
-$('showDetails').addEventListener('click', () => {
-  $('summary').classList.toggle('open');
-  $('showDetails').textContent = $('summary').classList.contains('open') ? 'Skrýt podrobnosti výpočtu' : 'Zobrazit podrobnosti výpočtu';
-});
+$('saveDraft').addEventListener('click', saveDraft); $('resetDraft').addEventListener('click', resetDraft);
+$('assignSelected').addEventListener('click', () => applyAssignment(false)); $('shareSelected').addEventListener('click', () => applyAssignment(true)); $('restoreSelected').addEventListener('click', restoreSelected);
+$('fitMap').addEventListener('click', () => renderMap(true)); $('drawArea').addEventListener('click', () => selectedEmployee() ? setDrawing(true) : say('Nejdřív vyber člověka.', true)); $('finishArea').addEventListener('click', finishDrawing); $('cancelArea').addEventListener('click', () => setDrawing(false));
+$('showDetails').addEventListener('click', () => { $('summary').classList.toggle('open'); $('showDetails').textContent = $('summary').classList.contains('open') ? 'Skrýt výpočet' : 'Jak se počítají km a hodiny'; });
 $('openCurrent').addEventListener('click', () => { location.href = 'operator-territories.html'; });
 window.addEventListener('beforeunload', (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
 
-load().catch((error) => {
-  console.error(error);
-  $('loading').hidden = true;
-  say(`Data nelze načíst: ${error.message || error}`, true);
-});
+load().catch((error) => { console.error(error); $('loading').hidden = true; say(`Data nelze načíst: ${error.message || error}`, true); });
