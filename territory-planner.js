@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v16';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v15', 'olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v17';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v16', 'olvend-territory-planner-draft-v15', 'olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const TERRITORY_SOLVER_URL = 'https://olvend-telemetry-proxy.onrender.com/territory-route-solver';
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
@@ -336,18 +336,26 @@ function assignmentCentroids(assignments, profiles) {
   }));
 }
 
-function geographicallyAdjacentMove(demand, currentOwner, candidateOwner, centroids) {
+function nearestTerritoryDistance(assignments, employeeId, demand) {
+  const points = state.locations
+    .filter((location) => String(location.id) !== String(demand.location.id) && ownerIdsAt(assignments, location.id).includes(String(employeeId)))
+    .map(pointOf)
+    .filter(Boolean);
+  return points.length ? Math.min(...points.map((point) => distanceKm(demand.point, point))) : distanceKm(demand.point, state.depot);
+}
+
+function geographicallyAdjacentMove(assignments, demand, currentOwner, candidateOwner) {
   if (!currentOwner || !demand.point) return true;
-  const currentDistance = distanceKm(demand.point, centroids.get(String(currentOwner)) || state.depot);
-  const candidateDistance = distanceKm(demand.point, centroids.get(String(candidateOwner)) || state.depot);
-  // A boundary may move, an isolated island hundreds of kilometres away may not.
-  return candidateDistance <= currentDistance * 1.35 + 18;
+  const currentDistance = nearestTerritoryDistance(assignments, currentOwner, demand);
+  const candidateDistance = nearestTerritoryDistance(assignments, candidateOwner, demand);
+  // Přesun je povolen pouze přes skutečnou hranici dvou rajónů. Vyrovnání fondu
+  // nesmí vytvořit osamocený bod desítky až stovky kilometrů od zbytku rajónu.
+  return candidateDistance <= 65 && candidateDistance <= currentDistance * 1.15 + 8;
 }
 
 function rebalanceAssignments(assignments, demands, profiles) {
   let evaluation = assignmentEvaluation(assignments, profiles);
   for (let pass = 0; pass < 12; pass += 1) {
-    const centroids = assignmentCentroids(assignments, profiles);
     let changed = false;
     const ordered = [...demands].sort((a, b) => {
       const ownerA = primaryOwnerOf(assignments, a), ownerB = primaryOwnerOf(assignments, b);
@@ -365,7 +373,7 @@ function rebalanceAssignments(assignments, demands, profiles) {
         const employeeId = String(profile.employee.id);
         if (employeeId === String(currentOwner)) return;
         if (feasibleExists && Math.ceil(profile.drivingDays) < Math.ceil(demand.frequency - .001)) return;
-        if (!geographicallyAdjacentMove(demand, currentOwner, employeeId, centroids)) return;
+        if (!geographicallyAdjacentMove(assignments, demand, currentOwner, employeeId)) return;
         const simulated = copyAssignments(assignments);
         setLocationOwner(simulated, demand, employeeId);
         const candidate = assignmentEvaluation(simulated, profiles);
@@ -393,7 +401,6 @@ function addSharedLocationOwner(assignments, demand, employeeId) {
 function rebalanceBySharing(assignments, demands, profiles) {
   let evaluation = assignmentEvaluation(assignments, profiles);
   for (let pass = 0; pass < profiles.length * 2 && evaluation.totalOverload > .05; pass += 1) {
-    const centroids = assignmentCentroids(assignments, profiles);
     let best = { assignments, evaluation };
     demands.forEach((demand) => profiles.forEach((profile) => {
       const existingOwners = new Set(demand.machines.flatMap((machine) => ownersOfMachine(assignments, machine.id)));
@@ -402,10 +409,10 @@ function rebalanceBySharing(assignments, demands, profiles) {
       const sharedFrequency = demand.frequency / (existingOwners.size + 1);
       if (sharedFrequency > Math.ceil(profile.drivingDays) + .001) return;
       const nearestExisting = [...existingOwners].reduce((best, ownerId) => {
-        const distance = distanceKm(demand.point, centroids.get(String(ownerId)) || state.depot);
+        const distance = nearestTerritoryDistance(assignments, ownerId, demand);
         return distance < best.distance ? { ownerId, distance } : best;
       }, { ownerId: null, distance: Infinity });
-      if (!geographicallyAdjacentMove(demand, nearestExisting.ownerId, employeeId, centroids)) return;
+      if (!geographicallyAdjacentMove(assignments, demand, nearestExisting.ownerId, employeeId)) return;
       const simulated = copyAssignments(assignments);
       addSharedLocationOwner(simulated, demand, employeeId);
       const candidate = assignmentEvaluation(simulated, profiles);
@@ -1102,14 +1109,15 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 16, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 17, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
-    const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(saved?.version)) return false;
+    // V17 záměrně neobnovuje pracovní návrhy starého plánovače. Jeho heuristické
+    // rozvrhy nebyly výsledkem OR-Tools a nesmějí se tvářit jako nový výpočet.
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (saved?.version !== 17) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
@@ -1117,7 +1125,7 @@ function loadDraft() {
     if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
     if (saved.version >= 13) {
       Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
-      if (saved.version >= 16) Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
+      Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes) && draft?.solverProvider === 'google_or_tools') state.routeDrafts.set(String(employeeId), draft); });
     }
     return true;
   } catch (_) { return false; }
