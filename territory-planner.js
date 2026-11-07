@@ -1,12 +1,13 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v3';
+const STORAGE_KEY = 'olvend-territory-planner-draft-v4';
+const LEGACY_STORAGE_KEY = 'olvend-territory-planner-draft-v3';
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
 const state = {
   employees: [], locations: [], machines: [], current: new Map(), draft: new Map(),
-  visitDates: new Map(), lastVisits: new Map(), requiredVisits: new Map(), markers: new Map(), depot: DEPOT_FALLBACK,
+  visitDates: new Map(), lastVisits: new Map(), locationVisitDates: new Map(), lastLocationVisits: new Map(), requiredVisits: new Map(), markers: new Map(), depot: DEPOT_FALLBACK,
   selectedEmployeeId: null, selectedLocationId: null, selectedMachineIds: new Set(),
   drawing: false, drawPoints: [], drawLayer: null, dirty: false, showComparison: false
 };
@@ -76,24 +77,31 @@ function weeklyVisitsMachine(machineId) {
 }
 
 function weeklyVisitsLocation(locationId) {
+  const recorded = state.locationVisitDates.get(String(locationId));
+  if (recorded?.size) return recorded.size / 13;
   const dates = new Set();
   machinesAt(locationId).forEach((machine) => (state.visitDates.get(String(machine.id)) || new Set()).forEach((date) => dates.add(date)));
   return dates.size ? dates.size / 13 : .25;
 }
 
-function requiredVisitsLocation(locationId) {
-  return Math.max(.7, Number(state.requiredVisits.get(String(locationId)) || .7));
+function recommendationForMachine(machine) {
+  const actual = weeklyVisitsMachine(machine.id);
+  const food = /Potravin/.test(kindOf(machine));
+  const rounded = actual >= 1 ? Math.round(actual * 2) / 2 : Math.round(actual * 10) / 10;
+  const minimum = food ? 2 : .7;
+  return {
+    visits: Math.min(7, Math.max(minimum, rounded)),
+    reason: food ? 'podle posledních 13 týdnů; potravinový automat nejméně 2×' : 'podle skutečné četnosti za posledních 13 týdnů'
+  };
 }
 
-function recommendationFor(locationId) {
-  const machines = machinesAt(locationId);
-  const foodCount = machines.filter((machine) => /Potravin/.test(kindOf(machine))).length;
-  const coffeeCount = machines.filter((machine) => /Kávový/.test(kindOf(machine))).length;
-  if (foodCount >= 2) return { visits: 3, reason: `${foodCount} potravinové automaty · čerstvost a rychlejší obrátka` };
-  if (foodCount === 1) return { visits: 2, reason: 'potravinový automat · čerstvost a rychlejší obrátka' };
-  if (coffeeCount >= 5) return { visits: 2, reason: `${coffeeCount} kávových automatů v jednom areálu` };
-  if (coffeeCount >= 2) return { visits: 1, reason: `${coffeeCount} kávové automaty · společná návštěva areálu` };
-  return { visits: .7, reason: 'nejdelší dovolený interval 10 dní' };
+function requiredVisitsMachine(machineId) {
+  const machine = state.machines.find((item) => String(item.id) === String(machineId));
+  return Math.max(.1, Number(state.requiredVisits.get(String(machineId)) || (machine ? recommendationForMachine(machine).visits : .7)));
+}
+
+function requiredVisitsLocation(locationId) {
+  return Math.max(...machinesAt(locationId).map((machine) => requiredVisitsMachine(machine.id)), 0);
 }
 
 function daysSince(value) {
@@ -103,7 +111,7 @@ function daysSince(value) {
 }
 
 function lastVisitLocation(locationId) {
-  return machinesAt(locationId).map((machine) => state.lastVisits.get(String(machine.id))).filter(Boolean).sort().at(-1) || null;
+  return state.lastLocationVisits.get(String(locationId)) || machinesAt(locationId).map((machine) => state.lastVisits.get(String(machine.id))).filter(Boolean).sort().at(-1) || null;
 }
 
 function ownerIdsAt(assignments, locationId) {
@@ -140,7 +148,7 @@ function employeeFrequency(assignments, employeeId, locationId) {
   return machinesAt(locationId).reduce((maximum, machine) => {
     const owners = ownersOfMachine(assignments, machine.id);
     if (!owners.some((id) => String(id) === String(employeeId))) return maximum;
-    return Math.max(maximum, requiredVisitsLocation(locationId) / Math.max(1, owners.length));
+    return Math.max(maximum, requiredVisitsMachine(machine.id) / Math.max(1, owners.length));
   }, 0);
 }
 
@@ -170,7 +178,7 @@ function employeeStats(employee, assignments) {
     const owners = ownersOfMachine(assignments, machine.id);
     if (!owners.some((id) => String(id) === String(employee.id))) return;
     machineCount += 1; locations.add(String(machine.location_id));
-    service += requiredVisitsLocation(machine.location_id) * (/Potravin/.test(kindOf(machine)) ? .75 : .58) / Math.max(1, owners.length);
+    service += requiredVisitsMachine(machine.id) * (/Potravin/.test(kindOf(machine)) ? .75 : .58) / Math.max(1, owners.length);
   });
   const km = weeklyKm(employee, assignments);
   const admin = [...locations].reduce((sum, locationId) => sum + employeeFrequency(assignments, employee.id, locationId) * .12, 0);
@@ -254,9 +262,8 @@ function renderSelected(location) {
   $('selectedMeta').textContent = `${location.city || 'Bez města'} · ${machines.length} aktivní ${machines.length === 1 ? 'automat' : 'automaty'}`;
   $('selectedFacts').hidden = false;
   $('selectedFacts').innerHTML = `
-    <div class="fact-row"><span>Nyní skutečně jezdíme</span><b>${number(weeklyVisitsLocation(location.id))}× týdně</b></div>
-    <div class="fact-row"><span>Doporučuji</span><b>${number(recommendationFor(location.id).visits)}× týdně<br><small>${esc(recommendationFor(location.id).reason)}</small></b></div>
-    <div class="fact-row"><span>Pro návrh počítat</span><b><input class="frequency-input" id="requiredFrequency" type="number" min="0.7" max="7" step="0.1" value="${requiredVisitsLocation(location.id).toFixed(1)}"> × týdně</b></div>
+    <div class="fact-row"><span>Nyní lokalitu skutečně navštěvujeme</span><b>${number(weeklyVisitsLocation(location.id))}× týdně</b></div>
+    <div class="fact-row"><span>Pro dopravu počítám</span><b>${number(requiredVisitsLocation(location.id))}× týdně<br><small>nejvyšší četnost ze zdejších automatů</small></b></div>
     <div class="fact-row"><span>Poslední návštěva</span><b class="${overdue ? 'overdue' : ''}">${esc(dateLabel(lastVisit))}${Number.isFinite(age) ? ` · ${age} dní` : ''}${overdue ? ' · PO TERMÍNU' : ''}</b></div>
     ${state.showComparison ? `<div class="fact-row"><span>Současný stav</span><b>${esc(ownerNamesAt(state.current, location.id))}</b></div>` : ''}
     <div class="fact-row"><span>V tomto návrhu</span><b>${esc(ownerNamesAt(state.draft, location.id))}</b></div>
@@ -264,7 +271,8 @@ function renderSelected(location) {
     <div class="machine-picker"><div class="machine-picker-title"><span>Vyber stroje k přidělení</span><button type="button" id="toggleMachines">Vybrat / zrušit vše</button></div>
     ${machines.map((machine) => {
       const owners = ownersOfMachine(state.draft, machine.id).map(employeeById).filter(Boolean);
-      return `<label class="machine-option"><input type="checkbox" data-selected-machine="${machine.id}" ${state.selectedMachineIds.has(String(machine.id)) ? 'checked' : ''}><span><strong>${esc(machine.evidence_number ? `EV ${machine.evidence_number} · ` : '')}${esc(machine.name || kindOf(machine))}</strong><small>${kindOf(machine)} · ${number(weeklyVisitsMachine(machine.id))}× týdně · naposledy ${dateLabel(state.lastVisits.get(String(machine.id)))}</small><small>${esc(owners.length ? owners.map(nameOf).join(', ') : 'bez operátora')} <span class="owner-dots">${owners.map((owner) => `<i style="--c:${owner.color}"></i>`).join('')}</span></small></span></label>`;
+      const recommendation = recommendationForMachine(machine);
+      return `<div class="machine-option"><input type="checkbox" data-selected-machine="${machine.id}" ${state.selectedMachineIds.has(String(machine.id)) ? 'checked' : ''}><span><strong>${esc(machine.evidence_number ? `EV ${machine.evidence_number} · ` : '')}${esc(machine.name || kindOf(machine))}</strong><small>${kindOf(machine)} · nyní ${number(weeklyVisitsMachine(machine.id))}× týdně · naposledy ${dateLabel(state.lastVisits.get(String(machine.id)) || lastVisit)}</small><small>${esc(owners.length ? owners.map(nameOf).join(', ') : 'bez operátora')} <span class="owner-dots">${owners.map((owner) => `<i style="--c:${owner.color}"></i>`).join('')}</span></small><span class="machine-frequency"><span>Doporučuji <b>${number(recommendation.visits)}×</b><small>${esc(recommendation.reason)}</small></span><label>Pro návrh <input class="frequency-input" data-machine-frequency="${machine.id}" type="number" min="0.1" max="7" step="0.1" value="${requiredVisitsMachine(machine.id).toFixed(1)}"> × týdně</label></span></span></div>`;
     }).join('')}</div>`;
   $('selectedActions').hidden = !employee;
   if (employee) { $('assignSelected').textContent = `Přidělit vybrané · ${employee.name}`; $('shareSelected').textContent = `Přidat ${employee.name} jako výpomoc`; }
@@ -272,10 +280,10 @@ function renderSelected(location) {
     if (input.checked) state.selectedMachineIds.add(String(input.dataset.selectedMachine)); else state.selectedMachineIds.delete(String(input.dataset.selectedMachine)); renderSelected(location);
   }));
   $('toggleMachines')?.addEventListener('click', () => { const ids = machines.map((machine) => String(machine.id)); state.selectedMachineIds = state.selectedMachineIds.size === ids.length ? new Set() : new Set(ids); renderSelected(location); });
-  $('requiredFrequency')?.addEventListener('change', (event) => {
-    state.requiredVisits.set(String(location.id), Math.max(.7, Math.min(7, Number(event.target.value) || .7)));
+  document.querySelectorAll('[data-machine-frequency]').forEach((input) => input.addEventListener('change', (event) => {
+    state.requiredVisits.set(String(event.target.dataset.machineFrequency), Math.max(.1, Math.min(7, Number(event.target.value) || .1)));
     markDirty(); renderAll();
-  });
+  }));
 }
 
 function renderSummary() {
@@ -299,16 +307,17 @@ function renderSummary() {
 }
 
 function markDirty() { state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 3, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisits: Object.fromEntries(state.requiredVisits), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])) }; }
+function snapshot() { return { version: 4, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); if (saved?.version !== 3) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY) || 'null'); if (![3, 4].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
-    Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => state.requiredVisits.set(String(locationId), Math.max(.7, Number(visits) || .7)));
+    if (saved.version === 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
+    else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
     return true;
   } catch (_) { return false; }
 }
@@ -316,9 +325,10 @@ function loadDraft() {
 function resetDraft() {
   if (state.dirty && !confirm('Zahodit neuložené úpravy tohoto návrhu?')) return;
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LEGACY_STORAGE_KEY);
   state.employees.forEach((employee) => { employee.weeklyFund = defaultFund(employee); employee.included = !/david\s+boudný/i.test(nameOf(employee)); });
   state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
-  state.requiredVisits = new Map(state.locations.map((location) => [String(location.id), recommendationFor(location.id).visits]));
+  state.requiredVisits = new Map(state.machines.map((machine) => [String(machine.id), recommendationForMachine(machine).visits]));
   state.selectedLocationId = null; state.selectedMachineIds = new Set(); state.dirty = false; renderAll(); say('Čistý návrh je připraven. Mapa neobsahuje žádné předvyplněné rajóny.');
 }
 
@@ -363,13 +373,39 @@ map.on('click', (event) => {
 
 async function loadVisitHistory() {
   const since = new Date(); since.setDate(since.getDate() - 91);
-  const plans = await supabase.from('route_plans').select('id,title,route_payload,execution_status').gte('planning_date', since.toISOString().slice(0, 10)).eq('execution_status', 'done');
+  state.visitDates = new Map(); state.lastVisits = new Map(); state.locationVisitDates = new Map(); state.lastLocationVisits = new Map();
+  const plans = await supabase.from('route_plans').select('id,title,route_payload,execution_status,planning_date').gte('planning_date', since.toISOString().slice(0, 10)).eq('execution_status', 'done');
   if (plans.error) throw plans.error;
-  const ids = (plans.data || []).filter((plan) => plan.route_payload?.test_mode !== true && !/^\s*\[?TEST/i.test(String(plan.title || ''))).map((plan) => plan.id);
-  for (let index = 0; index < ids.length; index += 200) {
-    const result = await supabase.from('route_machine_visits').select('machine_id,visit_date,status,completed_at').in('route_plan_id', ids.slice(index, index + 200)).eq('status', 'completed').not('completed_at', 'is', null);
-    if (result.error) throw result.error;
-    (result.data || []).forEach((visit) => { if (!visit.machine_id || !visit.visit_date) return; const id = String(visit.machine_id); if (!state.visitDates.has(id)) state.visitDates.set(id, new Set()); state.visitDates.get(id).add(visit.visit_date); if (!state.lastVisits.get(id) || visit.visit_date > state.lastVisits.get(id)) state.lastVisits.set(id, visit.visit_date); });
+  const validPlans = (plans.data || []).filter((plan) => plan.route_payload?.test_mode !== true && !/^\s*\[?TEST/i.test(String(plan.title || '')));
+  const planDates = new Map(validPlans.map((plan) => [String(plan.id), plan.planning_date]));
+  const machineLocations = new Map(state.machines.map((machine) => [String(machine.id), String(machine.location_id)]));
+  const record = (machineId, locationId, date) => {
+    if (!date) return;
+    const machineKey = machineId ? String(machineId) : null;
+    const locationKey = locationId ? String(locationId) : machineLocations.get(machineKey);
+    if (machineKey) {
+      if (!state.visitDates.has(machineKey)) state.visitDates.set(machineKey, new Set());
+      state.visitDates.get(machineKey).add(date);
+      if (!state.lastVisits.get(machineKey) || date > state.lastVisits.get(machineKey)) state.lastVisits.set(machineKey, date);
+    }
+    if (locationKey) {
+      if (!state.locationVisitDates.has(locationKey)) state.locationVisitDates.set(locationKey, new Set());
+      state.locationVisitDates.get(locationKey).add(date);
+      if (!state.lastLocationVisits.get(locationKey) || date > state.lastLocationVisits.get(locationKey)) state.lastLocationVisits.set(locationKey, date);
+    }
+  };
+  const ids = validPlans.map((plan) => plan.id);
+  // API vrací nejvýše 1 000 řádků. Velká dávka dříve u všech lokalit odřízla nejnovější návštěvy.
+  for (let index = 0; index < ids.length; index += 15) {
+    const chunk = ids.slice(index, index + 15);
+    const [visits, stops] = await Promise.all([
+      supabase.from('route_machine_visits').select('route_plan_id,machine_id,visit_date,status,completed_at').in('route_plan_id', chunk).eq('status', 'completed'),
+      supabase.from('route_plan_stops').select('route_plan_id,machine_id,location_id,status,completed_at').in('route_plan_id', chunk).in('status', ['done', 'completed'])
+    ]);
+    if (visits.error) throw visits.error;
+    if (stops.error) throw stops.error;
+    (visits.data || []).forEach((visit) => record(visit.machine_id, null, visit.completed_at?.slice(0, 10) || visit.visit_date || planDates.get(String(visit.route_plan_id))));
+    (stops.data || []).forEach((stop) => record(stop.machine_id, stop.location_id, stop.completed_at?.slice(0, 10) || planDates.get(String(stop.route_plan_id))));
   }
 }
 
@@ -402,7 +438,7 @@ async function load() {
   state.current = buildAssignments(assignments.data);
   state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
   await loadVisitHistory();
-  state.requiredVisits = new Map(state.locations.map((location) => [String(location.id), recommendationFor(location.id).visits]));
+  state.requiredVisits = new Map(state.machines.map((machine) => [String(machine.id), recommendationForMachine(machine).visits]));
   const restored = loadDraft(); state.selectedEmployeeId = activeEmployees()[0]?.id || null;
   renderAll(); renderMap(true); $('loading').hidden = true; if (restored) say('Načetl jsem poslední uložený pracovní návrh.');
 }
