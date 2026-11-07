@@ -1,7 +1,7 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v13';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v14';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -263,6 +263,97 @@ function weightedCentroid(items, fallback) {
   return [valid.reduce((sum, item) => sum + item.point[0] * Math.max(1, item.workload), 0) / total, valid.reduce((sum, item) => sum + item.point[1] * Math.max(1, item.workload), 0) / total];
 }
 
+function setLocationOwner(assignments, demand, employeeId) {
+  demand.machines.forEach((machine) => assignments.set(String(machine.id), new Set([String(employeeId)])));
+}
+
+function primaryOwnerOf(assignments, demand) {
+  return demand.machines.flatMap((machine) => ownersOfMachine(assignments, machine.id))[0] || null;
+}
+
+function assignmentEvaluation(assignments, profiles) {
+  const stats = profiles.map((profile) => ({ profile, ...employeeStats(profile.employee, assignments) }));
+  const overloads = stats.map((item) => Math.max(0, item.hours - Number(item.profile.employee.weeklyFund || 0)));
+  const ratios = stats.map((item) => item.hours / Math.max(1, Number(item.profile.employee.weeklyFund || 0)));
+  const averageRatio = ratios.reduce((sum, value) => sum + value, 0) / Math.max(1, ratios.length);
+  const maxOverload = Math.max(0, ...overloads);
+  const overloadSquares = overloads.reduce((sum, value) => sum + value ** 2, 0);
+  const imbalance = ratios.reduce((sum, value) => sum + (value - averageRatio) ** 2, 0);
+  const totalKm = stats.reduce((sum, item) => sum + item.km, 0);
+  return {
+    stats,
+    maxOverload,
+    totalOverload: overloads.reduce((sum, value) => sum + value, 0),
+    score: maxOverload ** 2 * 1e12 + overloadSquares * 1e10 + imbalance * 1e7 + totalKm * 100
+  };
+}
+
+function rebalanceAssignments(assignments, demands, profiles) {
+  let evaluation = assignmentEvaluation(assignments, profiles);
+  for (let pass = 0; pass < 12; pass += 1) {
+    let changed = false;
+    const ordered = [...demands].sort((a, b) => {
+      const ownerA = primaryOwnerOf(assignments, a), ownerB = primaryOwnerOf(assignments, b);
+      const statA = evaluation.stats.find((item) => String(item.profile.employee.id) === String(ownerA));
+      const statB = evaluation.stats.find((item) => String(item.profile.employee.id) === String(ownerB));
+      const pressureA = statA ? statA.hours / Math.max(1, statA.profile.employee.weeklyFund) : 0;
+      const pressureB = statB ? statB.hours / Math.max(1, statB.profile.employee.weeklyFund) : 0;
+      return pressureB - pressureA || b.workload - a.workload;
+    });
+    ordered.forEach((demand) => {
+      const currentOwner = primaryOwnerOf(assignments, demand);
+      const feasibleExists = profiles.some((profile) => Math.ceil(profile.drivingDays) >= Math.ceil(demand.frequency - .001));
+      let best = { assignments, evaluation };
+      profiles.forEach((profile) => {
+        const employeeId = String(profile.employee.id);
+        if (employeeId === String(currentOwner)) return;
+        if (feasibleExists && Math.ceil(profile.drivingDays) < Math.ceil(demand.frequency - .001)) return;
+        const simulated = copyAssignments(assignments);
+        setLocationOwner(simulated, demand, employeeId);
+        const candidate = assignmentEvaluation(simulated, profiles);
+        if (candidate.score + .01 < best.evaluation.score) best = { assignments: simulated, evaluation: candidate };
+      });
+      if (best.assignments !== assignments) {
+        assignments = best.assignments;
+        evaluation = best.evaluation;
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+  return { assignments, evaluation };
+}
+
+function addSharedLocationOwner(assignments, demand, employeeId) {
+  demand.machines.forEach((machine) => {
+    const owners = new Set(ownersOfMachine(assignments, machine.id));
+    owners.add(String(employeeId));
+    assignments.set(String(machine.id), owners);
+  });
+}
+
+function rebalanceBySharing(assignments, demands, profiles) {
+  let evaluation = assignmentEvaluation(assignments, profiles);
+  for (let pass = 0; pass < profiles.length * 2 && evaluation.totalOverload > .05; pass += 1) {
+    let best = { assignments, evaluation };
+    demands.forEach((demand) => profiles.forEach((profile) => {
+      const existingOwners = new Set(demand.machines.flatMap((machine) => ownersOfMachine(assignments, machine.id)));
+      const employeeId = String(profile.employee.id);
+      if (existingOwners.has(employeeId)) return;
+      const sharedFrequency = demand.frequency / (existingOwners.size + 1);
+      if (sharedFrequency > Math.ceil(profile.drivingDays) + .001) return;
+      const simulated = copyAssignments(assignments);
+      addSharedLocationOwner(simulated, demand, employeeId);
+      const candidate = assignmentEvaluation(simulated, profiles);
+      if (candidate.score + .01 < best.evaluation.score) best = { assignments: simulated, evaluation: candidate };
+    }));
+    if (best.assignments === assignments) break;
+    assignments = best.assignments;
+    evaluation = best.evaluation;
+  }
+  return { assignments, evaluation };
+}
+
 function automaticAssignment() {
   const profiles = activeEmployees().map(prepareAutomaticSchedule);
   if (!profiles.length) return say('Zařaď do návrhu alespoň jednoho člověka.', true);
@@ -294,7 +385,7 @@ function automaticAssignment() {
         const utilization = projected / Math.max(1, profile.maxMinutes), overload = Math.max(0, utilization - 1);
         const geographic = distanceKm(centroids.get(key) || state.depot, demand.point) * Math.max(1, demand.frequency);
         const frequencyPenalty = feasibleExists && Math.ceil(profile.drivingDays) < Math.ceil(demand.frequency - .001) ? 1000000 : 0;
-        const score = frequencyPenalty + geographic * 7 + utilization ** 2 * 700 + overload ** 2 * 20000;
+        const score = frequencyPenalty + geographic * 7 + utilization ** 2 * 700 + overload ** 2 * 1000000000;
         return !best || score < best.score ? { profile, score } : best;
       }, null).profile;
       const key = String(selected.employee.id); groups.get(key).push(demand); loads.set(key, (loads.get(key) || 0) + demand.workload);
@@ -304,9 +395,14 @@ function automaticAssignment() {
     }));
   }
 
-  state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
-  profiles.forEach((profile) => (groups.get(String(profile.employee.id)) || []).forEach((demand) => demand.machines.forEach((machine) => {
-    const owners = [profile], frequency = requiredVisitsMachine(machine.id);
+  let preliminary = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
+  profiles.forEach((profile) => (groups.get(String(profile.employee.id)) || []).forEach((demand) => setLocationOwner(preliminary, demand, profile.employee.id)));
+  const balanced = rebalanceAssignments(preliminary, demands, profiles);
+  state.draft = balanced.assignments;
+  demands.forEach((demand) => demand.machines.forEach((machine) => {
+    const primary = profiles.find((profile) => String(profile.employee.id) === String(primaryOwnerOf(state.draft, demand)));
+    if (!primary) return;
+    const owners = [primary], frequency = requiredVisitsMachine(machine.id);
     while (owners.some((owner) => frequency / owners.length > Math.ceil(owner.drivingDays) + .001) && owners.length < profiles.length) {
       const candidates = profiles.filter((candidate) => !owners.includes(candidate));
       if (!candidates.length) break;
@@ -317,10 +413,14 @@ function automaticAssignment() {
       owners.push(candidates[0]);
     }
     state.draft.set(String(machine.id), new Set(owners.map((owner) => String(owner.employee.id))));
-  })));
+  }));
+  const sharedBalance = rebalanceBySharing(state.draft, demands, profiles);
+  state.draft = sharedBalance.assignments;
+  const finalEvaluation = sharedBalance.evaluation;
   markDirty(); renderAll();
   const summary = profiles.map((profile) => `${profile.employee.name}: ${rhythmText(profile.drivingDays)}`).join(' · ');
-  say(`Automatický návrh je připraven. ${summary}. Teď můžeš lokality ručně doladit.`);
+  const overloaded = finalEvaluation.stats.filter((item) => item.hours > item.profile.employee.weeklyFund + .05);
+  say(overloaded.length ? `Kapacita stále nevychází: ${overloaded.map((item) => `${item.profile.employee.name} ${number(item.hours)}/${number(item.profile.employee.weeklyFund)} h`).join(', ')}. Část lokalit je nutné přerozdělit nebo změnit četnost.` : `Automatický návrh je kapacitně vyvážený. ${summary}. Teď můžeš lokality ručně doladit.`, overloaded.length > 0);
 }
 
 function markerIcon(location) {
@@ -738,8 +838,10 @@ function renderRouteResults(employee) {
   }).join('');
   const activeRoutes = draft.routes.filter((route) => route.stops.length), average = activeRoutes.length ? totals.totalHours / activeRoutes.length : 0, longest = Math.max(...activeRoutes.map((route) => route.totalMinutes), 0);
   const rhythmDescription = Array.isArray(draft.weekDayCounts) ? `${draft.weekDayCounts.join(' + ')} jízdních dnů v týdnech cyklu` : rhythmText(draft.rhythmDays);
-  $('routeResults').innerHTML = `<div class="route-recommendation ${spacingViolations ? 'bad' : ''}"><div><b>Doporučuji ${rhythmDescription}</b><p>${spacingViolations ? `Pozor: ${spacingViolations} opakovaných návštěv je příliš blízko po sobě. Přesuň je do vzdálenějšího dne.` : `Opakované návštěvy jsou rozložené v týdnu; četnost 2× týdně není naplánovaná ve dvou sousedních dnech.`} Jednotlivé týdny se mohou lišit podle četností automatů.</p></div><span class="pill">průměr ${number(average)} h/den · nejdelší ${minutesLabel(longest)}</span></div><div class="cycle-summary"><div class="cycle-kpi ${budgetClass}"><span>Celý 3týdenní cyklus</span><b>${number(totals.totalHours)} / ${number(cycleFund)} h</b></div><div class="cycle-kpi"><span>Silniční vzdálenost</span><b>${Math.round(totals.totalKm)} km</b></div><div class="cycle-kpi"><span>Cesta / obsluha</span><b>${number(totals.driveHours)} / ${number(totals.serviceHours)} h</b></div><div class="cycle-kpi ${hardClass}"><span>Denní limity</span><b>${hardDays ? `${hardDays} nad maximum` : softDays ? `${softDays} delší směny` : 'bez překročení'}</b></div></div>${weeks}<div class="route-provider">Silniční km a čas: Google Routes · obsluha: součet nastavených minut jednotlivých automatů · bez skrytých koeficientů</div>`;
-  $('saveRouteDraft').disabled = false;
+  const overFund = totals.totalHours > cycleFund + .05, invalid = spacingViolations > 0 || hardDays > 0 || overFund;
+  const problems = [overFund ? `fond je překročen o ${number(totals.totalHours - cycleFund)} h` : '', hardDays ? `${hardDays} směny jsou nad denním maximem` : '', spacingViolations ? `${spacingViolations} návštěvy jsou příliš blízko po sobě` : ''].filter(Boolean);
+  $('routeResults').innerHTML = `<div class="route-recommendation ${invalid ? 'bad' : ''}"><div><b>${invalid ? 'Tento rajón není v této podobě odjezditelný' : `Doporučuji ${rhythmDescription}`}</b><p>${invalid ? `${problems.join(' · ')}. Vrať se k mapě a část lokalit přesuň jinému člověku; tento výsledek nelze uložit jako hotový.` : `Opakované návštěvy jsou rozložené v týdnu; četnost 2× týdně není naplánovaná ve dvou sousedních dnech. Jednotlivé týdny se mohou lišit podle četností automatů.`}</p></div><span class="pill">průměr ${number(average)} h/den · nejdelší ${minutesLabel(longest)}</span></div><div class="cycle-summary"><div class="cycle-kpi ${budgetClass}"><span>Celý 3týdenní cyklus</span><b>${number(totals.totalHours)} / ${number(cycleFund)} h</b></div><div class="cycle-kpi"><span>Silniční vzdálenost</span><b>${Math.round(totals.totalKm)} km</b></div><div class="cycle-kpi"><span>Cesta / obsluha</span><b>${number(totals.driveHours)} / ${number(totals.serviceHours)} h</b></div><div class="cycle-kpi ${hardClass}"><span>Denní limity</span><b>${hardDays ? `${hardDays} nad maximum` : softDays ? `${softDays} delší směny` : 'bez překročení'}</b></div></div>${weeks}<div class="route-provider">Silniční km a čas: Google Routes · obsluha: součet nastavených minut jednotlivých automatů · bez skrytých koeficientů</div>`;
+  $('saveRouteDraft').disabled = invalid;
   document.querySelectorAll('.move-stop').forEach((select) => select.addEventListener('change', () => { if (select.value) moveRouteStop(employee, select.dataset.routeKey, select.dataset.locationId, select.value); }));
 }
 
@@ -844,7 +946,7 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 13, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 14, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
