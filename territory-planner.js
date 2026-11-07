@@ -1,7 +1,8 @@
 import { supabase } from './supabase.js';
 
-const STORAGE_KEY = 'olvend-territory-planner-draft-v15';
-const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const STORAGE_KEY = 'olvend-territory-planner-draft-v16';
+const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v15', 'olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
+const TERRITORY_SOLVER_URL = 'https://olvend-telemetry-proxy.onrender.com/territory-route-solver';
 const MICHAL_ID = 'abad3293-29a0-4668-97c5-0c6fa08ece0f';
 const DEPOT_FALLBACK = [49.054, 16.646];
 const palette = ['#3478bf', '#258463', '#7d62ad', '#d5101a', '#b46b00', '#00838f'];
@@ -324,9 +325,29 @@ function assignmentEvaluation(assignments, profiles) {
   };
 }
 
+function assignmentCentroids(assignments, profiles) {
+  return new Map(profiles.map((profile) => {
+    const employeeId = String(profile.employee.id);
+    const items = state.locations.map((location) => {
+      const point = pointOf(location), frequency = employeeFrequency(assignments, employeeId, location.id);
+      return point && frequency > 0 ? { point, workload: Math.max(.25, frequency) } : null;
+    }).filter(Boolean);
+    return [employeeId, weightedCentroid(items, state.depot)];
+  }));
+}
+
+function geographicallyAdjacentMove(demand, currentOwner, candidateOwner, centroids) {
+  if (!currentOwner || !demand.point) return true;
+  const currentDistance = distanceKm(demand.point, centroids.get(String(currentOwner)) || state.depot);
+  const candidateDistance = distanceKm(demand.point, centroids.get(String(candidateOwner)) || state.depot);
+  // A boundary may move, an isolated island hundreds of kilometres away may not.
+  return candidateDistance <= currentDistance * 1.35 + 18;
+}
+
 function rebalanceAssignments(assignments, demands, profiles) {
   let evaluation = assignmentEvaluation(assignments, profiles);
   for (let pass = 0; pass < 12; pass += 1) {
+    const centroids = assignmentCentroids(assignments, profiles);
     let changed = false;
     const ordered = [...demands].sort((a, b) => {
       const ownerA = primaryOwnerOf(assignments, a), ownerB = primaryOwnerOf(assignments, b);
@@ -344,6 +365,7 @@ function rebalanceAssignments(assignments, demands, profiles) {
         const employeeId = String(profile.employee.id);
         if (employeeId === String(currentOwner)) return;
         if (feasibleExists && Math.ceil(profile.drivingDays) < Math.ceil(demand.frequency - .001)) return;
+        if (!geographicallyAdjacentMove(demand, currentOwner, employeeId, centroids)) return;
         const simulated = copyAssignments(assignments);
         setLocationOwner(simulated, demand, employeeId);
         const candidate = assignmentEvaluation(simulated, profiles);
@@ -371,6 +393,7 @@ function addSharedLocationOwner(assignments, demand, employeeId) {
 function rebalanceBySharing(assignments, demands, profiles) {
   let evaluation = assignmentEvaluation(assignments, profiles);
   for (let pass = 0; pass < profiles.length * 2 && evaluation.totalOverload > .05; pass += 1) {
+    const centroids = assignmentCentroids(assignments, profiles);
     let best = { assignments, evaluation };
     demands.forEach((demand) => profiles.forEach((profile) => {
       const existingOwners = new Set(demand.machines.flatMap((machine) => ownersOfMachine(assignments, machine.id)));
@@ -378,6 +401,11 @@ function rebalanceBySharing(assignments, demands, profiles) {
       if (existingOwners.has(employeeId)) return;
       const sharedFrequency = demand.frequency / (existingOwners.size + 1);
       if (sharedFrequency > Math.ceil(profile.drivingDays) + .001) return;
+      const nearestExisting = [...existingOwners].reduce((best, ownerId) => {
+        const distance = distanceKm(demand.point, centroids.get(String(ownerId)) || state.depot);
+        return distance < best.distance ? { ownerId, distance } : best;
+      }, { ownerId: null, distance: Infinity });
+      if (!geographicallyAdjacentMove(demand, nearestExisting.ownerId, employeeId, centroids)) return;
       const simulated = copyAssignments(assignments);
       addSharedLocationOwner(simulated, demand, employeeId);
       const candidate = assignmentEvaluation(simulated, profiles);
@@ -421,7 +449,7 @@ function automaticAssignment() {
         const utilization = projected / Math.max(1, profile.maxMinutes), overload = Math.max(0, utilization - 1);
         const geographic = distanceKm(centroids.get(key) || state.depot, demand.point) * Math.max(1, demand.frequency);
         const frequencyPenalty = feasibleExists && Math.ceil(profile.drivingDays) < Math.ceil(demand.frequency - .001) ? 1000000 : 0;
-        const score = frequencyPenalty + geographic * 7 + utilization ** 2 * 700 + overload ** 2 * 1000000000;
+        const score = frequencyPenalty + geographic * 20 + utilization ** 2 * 1200 + overload ** 2 * 500000;
         return !best || score < best.score ? { profile, score } : best;
       }, null).profile;
       const key = String(selected.employee.id); groups.get(key).push(demand); loads.set(key, (loads.get(key) || 0) + demand.workload);
@@ -874,9 +902,9 @@ function renderRouteResults(employee) {
   }).join('');
   const activeRoutes = draft.routes.filter((route) => route.stops.length), average = activeRoutes.length ? totals.totalHours / activeRoutes.length : 0, longest = Math.max(...activeRoutes.map((route) => route.totalMinutes), 0);
   const rhythmDescription = Array.isArray(draft.weekDayCounts) ? `${draft.weekDayCounts.join(' + ')} jízdních dnů v týdnech cyklu` : rhythmText(draft.rhythmDays);
-  const overFund = totals.totalHours > cycleFund + .05, invalid = spacingViolations > 0 || hardDays > 0 || overFund;
-  const problems = [overFund ? `fond je překročen o ${number(totals.totalHours - cycleFund)} h` : '', hardDays ? `${hardDays} směny jsou nad denním maximem` : '', spacingViolations ? `${spacingViolations} návštěvy jsou příliš blízko po sobě` : ''].filter(Boolean);
-  $('routeResults').innerHTML = `<div class="route-recommendation ${invalid ? 'bad' : ''}"><div><b>${invalid ? 'Tento rajón není v této podobě odjezditelný' : `Doporučuji ${rhythmDescription}`}</b><p>${invalid ? `${problems.join(' · ')}. Vrať se k mapě a část lokalit přesuň jinému člověku; tento výsledek nelze uložit jako hotový.` : `Opakované návštěvy jsou rozložené v týdnu; četnost 2× týdně není naplánovaná ve dvou sousedních dnech. Jednotlivé týdny se mohou lišit podle četností automatů.`}</p></div><span class="pill">průměr ${number(average)} h/den · nejdelší ${minutesLabel(longest)}</span></div><div class="cycle-summary"><div class="cycle-kpi ${budgetClass}"><span>Celý 3týdenní cyklus</span><b>${number(totals.totalHours)} / ${number(cycleFund)} h</b></div><div class="cycle-kpi"><span>Silniční vzdálenost</span><b>${Math.round(totals.totalKm)} km</b></div><div class="cycle-kpi"><span>Cesta / obsluha</span><b>${number(totals.driveHours)} / ${number(totals.serviceHours)} h</b></div><div class="cycle-kpi ${hardClass}"><span>Denní limity</span><b>${hardDays ? `${hardDays} nad maximum` : softDays ? `${softDays} delší směny` : 'bez překročení'}</b></div></div>${weeks}<div class="route-provider">Silniční km a čas: Google Routes · obsluha: součet nastavených minut jednotlivých automatů · bez skrytých koeficientů</div>`;
+  const overFund = totals.totalHours > cycleFund + .05, invalid = draft.solverFeasible === false || spacingViolations > 0 || hardDays > 0 || overFund;
+  const problems = [overFund ? `fond je překročen o ${number(totals.totalHours - cycleFund)} h` : '', hardDays ? `${hardDays} směny jsou nad denním maximem` : '', spacingViolations ? `${spacingViolations} návštěvy jsou příliš blízko po sobě` : '', draft.solverFeasible === false && !overFund && !hardDays ? 'solver nenašel proveditelnou variantu' : ''].filter(Boolean);
+  $('routeResults').innerHTML = `<div class="route-recommendation ${invalid ? 'bad' : ''}"><div><b>${invalid ? 'Tento rajón není v této podobě odjezditelný' : `Doporučuji ${rhythmDescription}`}</b><p>${invalid ? `${problems.join(' · ')}. Vrať se k mapě a část lokalit přesuň jinému člověku; tento výsledek nelze uložit jako hotový.` : `Opakované návštěvy jsou rozložené v týdnu; četnost 2× týdně není naplánovaná ve dvou sousedních dnech. Jednotlivé týdny se mohou lišit podle četností automatů.`}</p></div><span class="pill">průměr ${number(average)} h/den · nejdelší ${minutesLabel(longest)}</span></div><div class="cycle-summary"><div class="cycle-kpi ${budgetClass}"><span>Celý 3týdenní cyklus</span><b>${number(totals.totalHours)} / ${number(cycleFund)} h</b></div><div class="cycle-kpi"><span>Silniční vzdálenost</span><b>${Math.round(totals.totalKm)} km</b></div><div class="cycle-kpi"><span>Cesta / obsluha</span><b>${number(totals.driveHours)} / ${number(totals.serviceHours)} h</b></div><div class="cycle-kpi ${hardClass}"><span>Denní limity</span><b>${hardDays ? `${hardDays} nad maximum` : softDays ? `${softDays} delší směny` : 'bez překročení'}</b></div></div>${weeks}<div class="route-provider">Optimalizace: Google OR-Tools · silniční časy a km: Google Routes Matrix · obsluha: přesný součet nastavených minut automatů</div>`;
   $('saveRouteDraft').disabled = invalid;
   document.querySelectorAll('.move-stop').forEach((select) => select.addEventListener('change', () => { if (select.value) moveRouteStop(employee, select.dataset.routeKey, select.dataset.locationId, select.value); }));
 }
@@ -923,46 +951,138 @@ function syncRouteSettings(employee, validate = false) {
   return settings;
 }
 
+function solverDaySlots(settings) {
+  const start = localDate(settings.cycleStart);
+  const available = [...new Set(settings.availableDays || [1, 2, 3, 4, 5])].filter((day) => day >= 1 && day <= 5).sort((a, b) => a - b);
+  return [0, 1, 2].flatMap((weekIndex) => available.map((weekday) => ({
+    key: `${weekIndex + 1}-${weekday}`,
+    date: isoDate(addCalendarDays(start, weekIndex * 7 + weekday - 1)),
+    weekIndex,
+    weekday,
+    cycleDay: weekIndex * 7 + weekday - 1
+  })));
+}
+
+function solverLocations(employee, dayCount) {
+  const grouped = new Map();
+  assignedMachines(employee).forEach((machine) => {
+    const location = state.locations.find((item) => String(item.id) === String(machine.location_id));
+    const point = pointOf(location); if (!location || !point) return;
+    const owners = ownersOfMachine(state.draft, machine.id);
+    const occurrences = Math.max(1, Math.round(requiredVisitsMachine(machine.id) * 3 / Math.max(1, owners.length)));
+    if (occurrences > dayCount) throw new Error(`${location.name}: požadovaná četnost ${occurrences} návštěv se nevejde do ${dayCount} povolených dnů.`);
+    const key = String(location.id), item = grouped.get(key) || {
+      id: key, name: location.name || 'Lokalita', city: location.city || '', address: location.address || '', latitude: point[0], longitude: point[1], machines: []
+    };
+    item.machines.push({ id: String(machine.id), serviceMinutes: plannedMinutesMachine(machine.id), occurrences });
+    grouped.set(key, item);
+  });
+  return [...grouped.values()].sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+}
+
+async function googleRoadMatrix(locations, settings) {
+  const departure = new Date(`${settings.cycleStart}T${settings.startTime || '06:00'}:00`);
+  const departureTime = departure.getTime() > Date.now() + 60000 ? departure.toISOString() : new Date(Date.now() + 120000).toISOString();
+  const points = [
+    { latitude: state.depot[0], longitude: state.depot[1], label: 'Sklad Blučina' },
+    ...locations.map((location) => ({ latitude: location.latitude, longitude: location.longitude, label: location.name }))
+  ];
+  const response = await supabase.functions.invoke('google-route-plan', { body: {
+    mode: 'matrix', origin: points[0], points, departureTime
+  } });
+  if (response.error || response.data?.error) throw new Error(response.data?.error || response.error?.message || 'Google Routes nevrátil silniční matici.');
+  if (!Array.isArray(response.data?.durationSeconds) || !Array.isArray(response.data?.distanceMeters)) throw new Error('Google Routes vrátil neúplnou silniční matici.');
+  return response.data;
+}
+
+async function runTerritorySolver(payload) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Přihlášení vypršelo. Přihlas se prosím znovu.');
+  const controller = new AbortController(), timer = window.setTimeout(() => controller.abort(), 90000);
+  try {
+    const response = await fetch(TERRITORY_SOLVER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) throw new Error(data?.error || `Optimalizační služba odpověděla ${response.status}.`);
+    return data;
+  } finally { window.clearTimeout(timer); }
+}
+
+function routesFromSolver(result, locations) {
+  const byId = new Map(locations.map((location) => [String(location.id), location]));
+  return (result.days || []).filter((day) => Array.isArray(day.stops) && day.stops.length).map((day) => ({
+    key: String(day.key),
+    weekIndex: Number(day.weekIndex),
+    day: Number(day.weekday),
+    date: day.date,
+    stops: day.stops.map((stop) => {
+      const location = byId.get(String(stop.locationId));
+      return {
+        locationId: String(stop.locationId), name: location?.name || stop.name || 'Lokalita', city: location?.city || '', address: location?.address || '',
+        latitude: location?.latitude, longitude: location?.longitude, machineIds: (stop.machineIds || []).map(String), serviceMinutes: Number(stop.serviceMinutes || 0)
+      };
+    }),
+    serviceMinutes: Number(day.serviceSeconds || 0) / 60,
+    driveMinutes: Number(day.driveSeconds || 0) / 60,
+    distanceKm: Number(day.distanceMeters || 0) / 1000,
+    totalMinutes: Number(day.totalSeconds || 0) / 60,
+    provider: 'google_or_tools'
+  }));
+}
+
 async function generateRoutes() {
   const employee = employeeById(state.planningEmployeeId); if (!employee) return;
   let settings;
   try { settings = syncRouteSettings(employee, true); } catch (error) { return say(error.message, true); }
   const requestId = ++state.routeRequestId;
-  $('routeProgress').hidden = false; $('generateRoutes').disabled = true; $('routeProgressText').textContent = 'Rozděluji návštěvy mezi pracovní dny…';
+  $('routeProgress').hidden = false; $('generateRoutes').disabled = true;
   try {
-    const candidates = rhythmCandidates(employee, settings);
-    if (!candidates.length) throw new Error('V povolených dnech nelze sestavit žádnou variantu.');
-    let selected = null, lastError = null;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]; settings.weeks = candidate.weeks.map((days) => days.slice());
-      $('routeProgressText').textContent = `Ověřuji variantu ${candidate.weeks.map((days) => days.length).join(' + ')} jízdních dnů…`;
-      try {
-        candidate.routes = buildCycleRoutes(employee, { ...settings, recommendedHours: settings.maxHours, weeks: candidate.weeks.map((days) => days.slice()) });
-        await calculateRoadRoutes(candidate.routes, settings, requestId);
-        if (requestId !== state.routeRequestId) return;
-        const totals = routeDraftTotals(candidate.routes), hardDays = candidate.routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
-        const spacingViolations = planningSpacingViolations(candidate.routes, employee);
-        const overtimeMinutes = candidate.routes.reduce((sum, route) => sum + Math.max(0, route.totalMinutes - settings.maxHours * 60), 0);
-        const fundOvertimeMinutes = Math.max(0, totals.totalHours - employee.weeklyFund * 3) * 60;
-        const selectionScore = spacingViolations * 1000000000000 + overtimeMinutes * 100000000 + fundOvertimeMinutes * 1000000 + candidate.routes.reduce((sum, route) => sum + route.totalMinutes ** 2, 0);
-        const evaluated = { ...candidate, routes: candidate.routes, totals, hardDays, spacingViolations, overtimeMinutes, selectionScore };
-        if (!selected || evaluated.selectionScore < selected.selectionScore) selected = evaluated;
-        if (!spacingViolations && !hardDays && totals.totalHours <= employee.weeklyFund * 3) break;
-      } catch (error) { lastError = error; }
-    }
-    if (!selected) throw lastError || new Error('Silniční trasy nelze sestavit.');
-    const routes = selected.routes;
+    const daySlots = solverDaySlots(settings), locations = solverLocations(employee, daySlots.length);
+    if (!locations.length) throw new Error('Rajón neobsahuje žádnou lokalitu s platnými souřadnicemi.');
+    $('routeProgressText').textContent = `Načítám skutečné silniční časy pro ${locations.length} lokalit…`;
+    const matrix = await googleRoadMatrix(locations, settings);
     if (requestId !== state.routeRequestId) return;
-    const totals = routeDraftTotals(routes);
+    $('routeProgressText').textContent = 'Google OR-Tools hledá nejlepší rozložení návštěv a tras…';
+    const result = await runTerritorySolver({
+      durationMatrix: matrix.durationSeconds,
+      distanceMatrix: matrix.distanceMeters,
+      daySlots,
+      locations: locations.map(({ id, name, machines }) => ({ id, name, machines })),
+      capacityMinutes: Number(settings.maxHours) * 60,
+      fundMinutes: Number(employee.weeklyFund) * 3 * 60,
+      seed: 20261107
+    });
+    if (requestId !== state.routeRequestId) return;
+    const routes = routesFromSolver(result, locations), totals = routeDraftTotals(routes);
+    settings.weeks = [0, 1, 2].map((weekIndex) => routes.filter((route) => route.weekIndex === weekIndex).map((route) => route.day).sort((a, b) => a - b));
     const activeRoutes = routes.filter((route) => route.stops.length);
     settings.recommendedHours = Math.min(settings.maxHours, Math.ceil((totals.totalHours / Math.max(1, activeRoutes.length)) * 2) / 2);
-    state.routeDrafts.set(String(employee.id), { routes, rhythmDays: selected.averageDays, weekDayCounts: selected.weeks.map((days) => days.length), spacingViolations: selected.spacingViolations, generatedAt: new Date().toISOString(), ...totals });
+    const spacingViolations = planningSpacingViolations(routes, employee);
+    state.routeDrafts.set(String(employee.id), {
+      routes,
+      rhythmDays: routes.length / 3,
+      weekDayCounts: settings.weeks.map((days) => days.length),
+      spacingViolations,
+      solverFeasible: result.feasible === true,
+      solverProvider: result.provider,
+      generatedAt: new Date().toISOString(),
+      ...totals
+    });
     markDirty(false); renderPeople(); renderRouteResults(employee);
     const hardDays = routes.filter((route) => route.totalMinutes > settings.maxHours * 60).length;
-    const rhythm = selected.weeks.map((days) => days.length).join(' + ');
-    say(selected.spacingViolations ? `Návrh má ještě ${selected.spacingViolations} návštěv příliš blízko po sobě. Rajón bude potřeba upravit.` : hardDays ? `Nejlepší nalezená varianta má ještě ${hardDays} směn nad maximem. Rajón bude potřeba upravit.` : `Doporučený rytmus: ${rhythm} jízdních dnů v třítýdenním cyklu. Opakované návštěvy mají správný rozestup a trasy jsou ověřené po silnici.`, selected.spacingViolations > 0 || hardDays > 0);
-  } catch (error) { console.error(error); say(`Trasy nelze spočítat: ${error.message || error}`, true); }
-  finally { if (requestId === state.routeRequestId) { $('routeProgress').hidden = true; $('generateRoutes').disabled = false; } }
+    const invalid = !result.feasible || spacingViolations > 0 || hardDays > 0;
+    say(invalid
+      ? 'Solver potvrdil, že tento rajón v zadaném fondu nebo denním limitu není odjezditelný. Přesuň část lokalit jinému člověku.'
+      : `OR-Tools našel odjezditelný rytmus ${settings.weeks.map((days) => days.length).join(' + ')} dní. Trasy i rozestupy jsou ověřené po skutečných silnicích.`, invalid);
+  } catch (error) {
+    console.error(error);
+    const message = error?.name === 'AbortError' ? 'Optimalizační výpočet překročil 90 sekund.' : (error.message || error);
+    say(`Trasy nelze spočítat: ${message}`, true);
+  } finally { if (requestId === state.routeRequestId) { $('routeProgress').hidden = true; $('generateRoutes').disabled = false; } }
 }
 
 async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
@@ -982,14 +1102,14 @@ async function moveRouteStop(employee, sourceKey, locationId, targetKey) {
 }
 
 function markDirty(clearRoutes = true) { if (clearRoutes) state.routeDrafts.clear(); state.dirty = true; $('saveDraft').textContent = 'Uložit návrh'; }
-function snapshot() { return { version: 15, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
+function snapshot() { return { version: 16, savedAt: new Date().toISOString(), machineAssignments: Object.fromEntries([...state.draft].map(([id, owners]) => [id, [...owners]])), requiredVisitsByMachine: Object.fromEntries(state.requiredVisits), plannedMachineMinutes: Object.fromEntries(state.plannedMachineMinutes), funds: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.weeklyFund])), included: Object.fromEntries(state.employees.map((employee) => [employee.id, employee.included])), scheduleSettings: Object.fromEntries(state.scheduleSettings), routeDrafts: Object.fromEntries(state.routeDrafts) }; }
 function saveDraft() { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot())); state.dirty = false; $('saveDraft').textContent = 'Uloženo ✓'; say('Návrh je uložen jen v tomto prohlížeči. Ostré rajóny se nezměnily.'); }
 
 function loadDraft() {
   try {
     localStorage.removeItem('olvend-territory-planner-draft-v1'); localStorage.removeItem('olvend-territory-planner-draft-v2');
     const legacy = LEGACY_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(saved?.version)) return false;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || legacy || 'null'); if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(saved?.version)) return false;
     state.employees.forEach((employee) => { if (Number(saved.funds?.[employee.id]) > 0) employee.weeklyFund = Number(saved.funds[employee.id]); if (typeof saved.included?.[employee.id] === 'boolean') employee.included = saved.included[employee.id]; });
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
@@ -997,7 +1117,7 @@ function loadDraft() {
     if (saved.version >= 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
     if (saved.version >= 13) {
       Object.entries(saved.scheduleSettings || {}).forEach(([employeeId, settings]) => { if (employeeById(employeeId) && Array.isArray(settings?.weeks)) state.scheduleSettings.set(String(employeeId), settings); });
-      Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
+      if (saved.version >= 16) Object.entries(saved.routeDrafts || {}).forEach(([employeeId, draft]) => { if (employeeById(employeeId) && Array.isArray(draft?.routes)) state.routeDrafts.set(String(employeeId), draft); });
     }
     return true;
   } catch (_) { return false; }

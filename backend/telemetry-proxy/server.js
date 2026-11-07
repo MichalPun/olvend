@@ -1,5 +1,6 @@
 import http from 'node:http'
 import { createImaA5Synchronizer } from './ima-a5-sync.mjs'
+import { solveTerritoryRoutes } from './territory-solver.mjs'
 
 const PORT = Number(process.env.PORT || 10000)
 const PROXY_PATH = process.env.TELEMETRY_PROXY_PATH || '/gp-vendsoft-telemetry'
@@ -7,6 +8,10 @@ const TARGET_URL = process.env.SUPABASE_TELEMETRY_URL || 'https://rerjlkrhiytgsc
 const INGEST_TOKEN = process.env.TELEMETRY_INGEST_TOKEN || ''
 const PROXY_TOKEN = process.env.TELEMETRY_PROXY_TOKEN || ''
 const BODY_LIMIT_BYTES = Number(process.env.TELEMETRY_BODY_LIMIT_BYTES || 5 * 1024 * 1024)
+const TERRITORY_SOLVER_PATH = '/territory-route-solver'
+const TERRITORY_SOLVER_ORIGIN = process.env.TERRITORY_SOLVER_ORIGIN || 'https://olvend.onrender.com'
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://rerjlkrhiytgscjerqgs.supabase.co'
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_A8OxCcapdNXAzQLjLsW5iA_XtGvBZ0S'
 const VENDSOFT_SYNC_URL = process.env.VENDSOFT_SYNC_URL ||
   'https://rerjlkrhiytgscjerqgs.supabase.co/functions/v1/vendsoft-food-sync'
 const VENDSOFT_SYNC_INTERVAL_MS = Math.max(60_000, Number(process.env.VENDSOFT_SYNC_INTERVAL_MS || 60_000))
@@ -22,14 +27,14 @@ function send(res, status, body, headers = {}) {
   res.end(text)
 }
 
-function readBody(req) {
+function readBody(req, limit = BODY_LIMIT_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > BODY_LIMIT_BYTES) {
-        reject(new Error(`Payload is too large. Limit is ${BODY_LIMIT_BYTES} bytes.`))
+      if (size > limit) {
+        reject(new Error(`Payload is too large. Limit is ${limit} bytes.`))
         req.destroy()
         return
       }
@@ -38,6 +43,30 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
+}
+
+function territoryCors(origin) {
+  return {
+    'Access-Control-Allow-Origin': origin === TERRITORY_SOLVER_ORIGIN ? origin : TERRITORY_SOLVER_ORIGIN,
+    'Access-Control-Allow-Headers': 'authorization, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Vary': 'Origin'
+  }
+}
+
+async function isManager(req) {
+  const authorization = String(req.headers.authorization || '')
+  if (!authorization.startsWith('Bearer ')) return false
+  const headers = { apikey: SUPABASE_ANON_KEY, authorization }
+  const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers })
+  if (!userResponse.ok) return false
+  const user = await userResponse.json()
+  if (!user?.id) return false
+  const query = new URLSearchParams({ select: 'role,active', auth_user_id: `eq.${user.id}`, limit: '1' })
+  const profileResponse = await fetch(`${SUPABASE_URL}/rest/v1/employees?${query}`, { headers })
+  if (!profileResponse.ok) return false
+  const [profile] = await profileResponse.json()
+  return profile?.active !== false && /admin|manager|manaž|manaz|vedouc|majitel/i.test(String(profile?.role || ''))
 }
 
 function isAuthorized(req, url) {
@@ -75,8 +104,35 @@ async function forwardToSupabase(body, req) {
   }
 }
 
+let territorySolveRunning = false
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
+
+  if (url.pathname === TERRITORY_SOLVER_PATH) {
+    const origin = String(req.headers.origin || '')
+    const cors = territoryCors(origin)
+    if (req.method === 'OPTIONS') {
+      if (origin && origin !== TERRITORY_SOLVER_ORIGIN) return send(res, 403, { error: 'Origin není povolen.' }, cors)
+      res.writeHead(204, cors)
+      return res.end()
+    }
+    if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed.' }, cors)
+    if (origin && origin !== TERRITORY_SOLVER_ORIGIN) return send(res, 403, { error: 'Origin není povolen.' }, cors)
+    if (!await isManager(req)) return send(res, 403, { error: 'Výpočet smí spustit pouze přihlášené vedení.' }, cors)
+    if (territorySolveRunning) return send(res, 429, { error: 'Jiný optimalizační výpočet právě běží. Zkus to za chvíli znovu.' }, cors)
+    territorySolveRunning = true
+    try {
+      const body = await readBody(req, 2 * 1024 * 1024)
+      const payload = JSON.parse(body.toString('utf8'))
+      return send(res, 200, await solveTerritoryRoutes(payload), cors)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Optimalizaci se nepodařilo dokončit.'
+      return send(res, 400, { error: message }, cors)
+    } finally {
+      territorySolveRunning = false
+    }
+  }
 
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/healthz')) {
     return send(res, 200, {

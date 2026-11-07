@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     nss \
     ttf-freefont
 
-COPY server.js ima-a5-sync.mjs ./
+COPY server.js ima-a5-sync.mjs territory-solver.mjs ./
 
 ENV PORT=10000
 ENV CHROMIUM_PATH=/usr/bin/chromium-browser
