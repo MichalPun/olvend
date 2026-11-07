@@ -115,7 +115,7 @@ function median(values) {
 }
 
 function plannedMinutesMachine(machineId) {
-  return Math.max(1, Number(state.plannedMachineMinutes.get(String(machineId)) || state.actualMachineMinutes.get(String(machineId)) || state.fallbackMachineMinutes));
+  return Math.max(1, Number(state.plannedMachineMinutes.get(String(machineId)) || 20));
 }
 
 function plannedMinutesLocation(locationId) {
@@ -295,7 +295,7 @@ function renderSelected(location) {
       const recommendation = recommendationForMachine(machine);
       const machineMinutes = state.actualMachineMinutes.get(String(machine.id));
       const machineSamples = state.machineDurationSamples.get(String(machine.id))?.length || 0;
-      return `<div class="machine-option"><input type="checkbox" data-selected-machine="${machine.id}" ${state.selectedMachineIds.has(String(machine.id)) ? 'checked' : ''}><span><strong>${esc(machine.evidence_number ? `EV ${machine.evidence_number} · ` : '')}${esc(machine.name || kindOf(machine))}</strong><small>${kindOf(machine)} · nyní ${number(weeklyVisitsMachine(machine.id))}× týdně · naposledy ${dateLabel(state.lastVisits.get(String(machine.id)) || lastVisit)}</small><small>${esc(owners.length ? owners.map(nameOf).join(', ') : 'bez operátora')} <span class="owner-dots">${owners.map((owner) => `<i style="--c:${owner.color}"></i>`).join('')}</span></small><span class="machine-frequency"><span>Doporučuji <b>${number(recommendation.visits)}×</b><small>${esc(recommendation.reason)}</small></span><label>Pro návrh <input class="frequency-input" data-machine-frequency="${machine.id}" type="number" min="0.1" max="7" step="0.1" value="${requiredVisitsMachine(machine.id).toFixed(1)}"> × týdně</label></span><span class="machine-duration"><span>Skutečný čas <b>${machineMinutes ? `${number(machineMinutes)} min` : 'bez historie'}</b><small>${machineSamples ? `${machineSamples} měření` : `výchozí medián ${number(state.fallbackMachineMinutes)} min`}</small></span><label>Pro výpočet <input class="frequency-input" data-machine-minutes="${machine.id}" type="number" min="1" max="180" step="1" value="${Math.round(plannedMinutesMachine(machine.id))}"> min</label></span></span></div>`;
+      return `<div class="machine-option"><input type="checkbox" data-selected-machine="${machine.id}" ${state.selectedMachineIds.has(String(machine.id)) ? 'checked' : ''}><span><strong>${esc(machine.evidence_number ? `EV ${machine.evidence_number} · ` : '')}${esc(machine.name || kindOf(machine))}</strong><small>${kindOf(machine)} · nyní ${number(weeklyVisitsMachine(machine.id))}× týdně · naposledy ${dateLabel(state.lastVisits.get(String(machine.id)) || lastVisit)}</small><small>${esc(owners.length ? owners.map(nameOf).join(', ') : 'bez operátora')} <span class="owner-dots">${owners.map((owner) => `<i style="--c:${owner.color}"></i>`).join('')}</span></small><span class="machine-frequency"><span>Doporučuji <b>${number(recommendation.visits)}×</b><small>${esc(recommendation.reason)}</small></span><label>Pro návrh <input class="frequency-input" data-machine-frequency="${machine.id}" type="number" min="0.1" max="7" step="0.1" value="${requiredVisitsMachine(machine.id).toFixed(1)}"> × týdně</label></span><span class="machine-duration"><span>Skutečný čas <b>${machineMinutes ? `${number(machineMinutes)} min` : 'bez historie'}</b><small>${machineSamples ? `${machineSamples} měření` : 'bez historického měření'}</small></span><label>Pro výpočet <input class="frequency-input" data-machine-minutes="${machine.id}" type="number" min="1" max="180" step="1" value="${Math.round(plannedMinutesMachine(machine.id))}"> min</label></span></span></div>`;
     }).join('')}</div>`;
   $('selectedActions').hidden = !employee;
   if (employee) { $('assignSelected').textContent = `Přidělit vybrané · ${employee.name}`; $('shareSelected').textContent = `Přidat ${employee.name} jako výpomoc`; }
@@ -308,7 +308,7 @@ function renderSelected(location) {
     markDirty(); renderAll();
   }));
   document.querySelectorAll('[data-machine-minutes]').forEach((input) => input.addEventListener('change', (event) => {
-    state.plannedMachineMinutes.set(String(event.target.dataset.machineMinutes), Math.max(1, Math.min(180, Number(event.target.value) || state.fallbackMachineMinutes)));
+    state.plannedMachineMinutes.set(String(event.target.dataset.machineMinutes), Math.max(1, Math.min(180, Number(event.target.value) || 20)));
     markDirty(); renderAll();
   }));
 }
@@ -346,11 +346,7 @@ function loadDraft() {
     Object.entries(saved.machineAssignments || {}).forEach(([machineId, owners]) => { if (state.machines.some((machine) => String(machine.id) === String(machineId))) state.draft.set(String(machineId), new Set((owners || []).filter((id) => employeeById(id)?.included))); });
     if (saved.version >= 4) Object.entries(saved.requiredVisitsByMachine || {}).forEach(([machineId, visits]) => state.requiredVisits.set(String(machineId), Math.max(.1, Number(visits) || .1)));
     else Object.entries(saved.requiredVisits || {}).forEach(([locationId, visits]) => machinesAt(locationId).forEach((machine) => state.requiredVisits.set(String(machine.id), Math.max(.1, Number(visits) || .1))));
-    if (saved.version === 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || state.fallbackMachineMinutes))));
-    else Object.entries(saved.plannedVisitMinutesByLocation || {}).forEach(([locationId, totalMinutes]) => {
-      const machines = machinesAt(locationId), defaultTotal = machines.reduce((sum, machine) => sum + plannedMinutesMachine(machine.id), 0) || 1;
-      machines.forEach((machine) => state.plannedMachineMinutes.set(String(machine.id), Math.max(1, Number(totalMinutes) * plannedMinutesMachine(machine.id) / defaultTotal)));
-    });
+    if (saved.version === 6) Object.entries(saved.plannedMachineMinutes || {}).forEach(([machineId, minutes]) => state.plannedMachineMinutes.set(String(machineId), Math.max(1, Math.min(180, Number(minutes) || 20))));
     return true;
   } catch (_) { return false; }
 }
@@ -362,7 +358,7 @@ function resetDraft() {
   state.employees.forEach((employee) => { employee.weeklyFund = defaultFund(employee); employee.included = !/david\s+boudný/i.test(nameOf(employee)); });
   state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
   state.requiredVisits = new Map(state.machines.map((machine) => [String(machine.id), recommendationForMachine(machine).visits]));
-  state.plannedMachineMinutes = new Map(state.machines.map((machine) => [String(machine.id), state.actualMachineMinutes.get(String(machine.id)) || state.fallbackMachineMinutes]));
+  state.plannedMachineMinutes = new Map(state.machines.map((machine) => [String(machine.id), 20]));
   state.selectedLocationId = null; state.selectedMachineIds = new Set(); state.dirty = false; renderAll(); say('Čistý návrh je připraven. Mapa neobsahuje žádné předvyplněné rajóny.');
 }
 
@@ -503,7 +499,7 @@ async function load() {
   state.draft = new Map(state.machines.map((machine) => [String(machine.id), new Set()]));
   await loadVisitHistory();
   state.requiredVisits = new Map(state.machines.map((machine) => [String(machine.id), recommendationForMachine(machine).visits]));
-  state.plannedMachineMinutes = new Map(state.machines.map((machine) => [String(machine.id), state.actualMachineMinutes.get(String(machine.id)) || state.fallbackMachineMinutes]));
+  state.plannedMachineMinutes = new Map(state.machines.map((machine) => [String(machine.id), 20]));
   const restored = loadDraft(); state.selectedEmployeeId = activeEmployees()[0]?.id || null;
   renderAll(); renderMap(true); $('loading').hidden = true; if (restored) say('Načetl jsem poslední uložený pracovní návrh.');
 }
