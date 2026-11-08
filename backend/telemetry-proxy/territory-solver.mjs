@@ -9,7 +9,8 @@ setCloudNoticeEnabled(false)
 
 const MAX_LOCATIONS = 90
 const MAX_DAYS = 15
-const MAX_PATTERN_CANDIDATES = 72
+const MAX_PATTERN_CANDIDATES = 36
+const MAX_EXACT_ORDER_STOPS = 12
 
 function integer(value, label, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
   const parsed = Math.round(Number(value))
@@ -225,7 +226,7 @@ function choosePatterns(problem) {
   const impossible = candidates.findIndex((items) => !items.length)
   if (impossible >= 0) throw new Error(`${problem.locations[impossible].name}: požadovanou četnost nelze rozložit do povolených dnů.`)
   let globalBest = null
-  for (let restart = 0; restart < 5; restart += 1) {
+  for (let restart = 0; restart < 3; restart += 1) {
     const random = seededRandom(problem.seed + restart * 997)
     const order = problem.locations.map((_, index) => index).sort((a, b) => {
       const frequency = problem.locations[b].occurrences - problem.locations[a].occurrences
@@ -242,7 +243,7 @@ function choosePatterns(problem) {
       selected[locationIndex] = best.pattern
     })
     let current = scheduleScore(problem, selected)
-    for (let pass = 0; pass < 6; pass += 1) {
+    for (let pass = 0; pass < 4; pass += 1) {
       let changed = false
       order.sort(() => random() - .5).forEach((locationIndex) => {
         const original = selected[locationIndex]
@@ -265,13 +266,16 @@ function choosePatterns(problem) {
 
 async function exactDayOrder(day, problem) {
   if (day.stops.length < 2) return summarizeDay(day, problem)
+  // U velkých dnů je 2-opt velmi blízko výsledku TSP a na rozdíl od WASM
+  // nehrozí, že server zůstane minuty uzamčený v jednom výpočtu.
+  if (day.stops.length > MAX_EXACT_ORDER_STOPS) return summarizeDay(day, problem)
   const nodes = [0, ...day.stops.map((stop) => stop.matrixIndex)]
   const matrix = nodes.map((from) => nodes.map((to) => problem.durationMatrix[from][to]))
   const manager = new RoutingIndexManager(nodes.length, 1, 0)
   const routing = new RoutingModel(manager)
   const transit = routing.registerTransitMatrix(matrix)
   routing.setArcCostEvaluatorOfAllVehicles(transit)
-  const result = await routing.solve({ executor: 'direct', firstSolutionStrategy: FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION, solutionLimit: 3000 })
+  const result = await routing.solve({ executor: 'direct', firstSolutionStrategy: FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION, solutionLimit: 250 })
   if (!result.assignment) return summarizeDay(day, problem)
   const order = []
   let index = routing.start(0)
