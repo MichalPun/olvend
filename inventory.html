@@ -9409,6 +9409,22 @@
         return normalizeText(a.product_name || productA?.name || '').localeCompare(normalizeText(b.product_name || productB?.name || ''), 'cs', { numeric:true })
       })
     }
+    function getMobilePickTotalLabel(items, requested = false) {
+      const totals = new Map()
+      ;(items || []).forEach((item) => {
+        const quantityItem = requested
+          ? { ...item, prepared_quantity:null, confirmed_quantity:null }
+          : item
+        const product = getMobilePickEffectiveProduct(quantityItem)
+        const unit = product?.base_unit || quantityItem.unit || 'ks'
+        const quantity = getMobilePickStockQuantity(quantityItem)
+        totals.set(unit, Number((Number(totals.get(unit) || 0) + Number(quantity || 0)).toFixed(3)))
+      })
+      const entries = [...totals.entries()].filter(([, quantity]) => Math.abs(quantity) > 0.0001)
+      return entries.length
+        ? entries.map(([unit, quantity]) => formatQuantityValue(quantity, unit)).join(' + ')
+        : '0 ks'
+    }
     function renderMobilePickRequests() {
       if (!mobilePickRequestsBody) return
       const allRows = getMobilePickRequestRows()
@@ -9472,14 +9488,14 @@
         const detailOpen = mobilePickOpenDetailIds.has(String(row.id))
         const hasNoItems = !row.items.length
         const stockAlreadyApplied = Boolean(row.stock_applied_at || row.stock_applied_detected_at)
-        const isPreparedSnapshot = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type)
-        const isHistoricalDocument = stockAlreadyApplied || row.status === 'confirmed' || isPreparedSnapshot
+        const awaitingOperatorReceipt = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type)
+        const isHistoricalDocument = stockAlreadyApplied || row.status === 'confirmed'
         const pendingStockFinalization = row.status !== 'confirmed'
           && row.status !== 'cancelled'
           && isMobileStockApprovalFlow(row.request_type)
           && stockAlreadyApplied
         const needsStockApply = row.status === 'confirmed' && isMobileStockApprovalFlow(row.request_type) && !row.stock_applied_at
-        const readyAction = row.status === 'ready' && isMobileStockApprovalFlow(row.request_type) ? 'confirm' : 'ready'
+        const readyAction = 'ready'
         const isMachineReturn = row.request_type === 'vehicle_return' || row.request_type === 'vehicle_writeoff'
         const statusBadge = hasNoItems ? 'bad' : (needsStockApply || pendingStockFinalization) ? 'warn' : getMobileStockStatusBadge(row.status)
         const statusLabel = hasNoItems ? 'Bez položek' : pendingStockFinalization ? 'Sklad propsán' : needsStockApply ? 'Bez skladu' : getMobileStockStatusLabel(row.status)
@@ -9488,14 +9504,12 @@
           ? 'Dokončit doklad'
           : needsStockApply
           ? 'Propsat sklad'
-          : readyAction === 'confirm' && !['vehicle_return', 'vehicle_writeoff'].includes(row.request_type)
-            ? 'Potvrdit doklad'
           : flow.readyAction
         const shortages = isHistoricalDocument ? [] : getMobilePickShortages(row)
         const physicalWriteoff = row.request_type === 'vehicle_writeoff'
         const blocksReady = row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && (hasNoItems || (!physicalWriteoff && !['vehicle_order', 'vehicle_load'].includes(row.request_type) && shortages.length > 0))
-        const requestedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity({ ...item, prepared_quantity: null, confirmed_quantity: null }), 0)
-        const preparedTotal = row.items.reduce((sum, item) => sum + getMobilePickStockQuantity(item), 0)
+        const requestedTotalLabel = getMobilePickTotalLabel(row.items, true)
+        const preparedTotalLabel = getMobilePickTotalLabel(row.items)
         const checklistItems = row.items.filter((item) => getMobilePickStockQuantity(item) > 0.0001)
         const checklistPicked = checklistItems.filter((item) => Boolean(item.warehouse_picked_at)).length
         const checklistComplete = checklistItems.length > 0 && checklistPicked === checklistItems.length
@@ -9582,8 +9596,8 @@
                   <span class="mobile-pick-meta-label">Položky</span>
                   <span class="mobile-pick-meta-value">${escapeHtml(row.items.length)} řádků</span>
                   <div class="mobile-pick-summary-line">
-                    <span class="mobile-pick-chip">${escapeHtml(formatQuantityValue(preparedTotal, ''))} vychystáno</span>
-                    <span class="mobile-pick-chip muted">${escapeHtml(formatQuantityValue(requestedTotal, ''))} požadováno</span>
+                    <span class="mobile-pick-chip">${escapeHtml(preparedTotalLabel)} vychystáno</span>
+                    <span class="mobile-pick-chip muted">${escapeHtml(requestedTotalLabel)} požadováno</span>
                     <span class="mobile-pick-chip ${checklistComplete ? 'good' : 'muted'}">✓ řádky ${escapeHtml(String(checklistPicked))}/${escapeHtml(String(checklistItems.length))}</span>
                     ${shortages.length ? `<span class="mobile-pick-chip muted">Nedostatek ${escapeHtml(String(shortages.length))}</span>` : ''}
                   </div>
@@ -9591,7 +9605,8 @@
                 <div class="mobile-pick-card-actions">
                   ${row.status === 'requested' ? `<button class="btn secondary" type="button" data-mobile-pick-action="start" data-request-id="${escapeHtml(String(row.id))}">Převzít</button>` : ''}
                   ${needsStockApply || pendingStockFinalization ? `<button class="btn" type="button" data-mobile-pick-action="confirm" data-request-id="${escapeHtml(String(row.id))}">${escapeHtml(actionLabel)}</button>` : ''}
-                  ${row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}" ${blocksReady ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>` : ''}
+                  ${row.status !== 'confirmed' && row.status !== 'cancelled' && !pendingStockFinalization && !awaitingOperatorReceipt ? `<button class="btn" type="button" data-mobile-pick-action="${escapeHtml(readyAction)}" data-request-id="${escapeHtml(String(row.id))}" ${blocksReady ? 'disabled' : ''}>${escapeHtml(actionLabel)}</button>` : ''}
+                  ${awaitingOperatorReceipt ? '<span class="mobile-pick-chip good">Čeká na převzetí operátorkou</span>' : ''}
                   ${row.status !== 'cancelled' && !stockAlreadyApplied && (row.status !== 'confirmed' || needsStockApply) ? `<button class="btn secondary" type="button" data-mobile-pick-action="cancel" data-request-id="${escapeHtml(String(row.id))}">Zrušit</button>` : ''}
                   <span class="mobile-pick-meta-note">${row.created_at ? escapeHtml(new Date(row.created_at).toLocaleString('cs-CZ')) : 'Bez data'}${row.requested_for_date ? ` · ${escapeHtml(row.requested_for_date)}` : ''}</span>
                   ${blocksReady ? `<span class="mobile-pick-action-blocked">${escapeHtml(hasNoItems ? 'Doklad nemá žádné položky. Přidej řádek nebo doklad zruš.' : 'Nejdřív uprav množství nebo odeber položky bez zásoby.')}</span>` : ''}
@@ -9602,7 +9617,7 @@
           <tr class="mobile-pick-detail-row">
             <td colspan="7" data-label="${escapeHtml(flow.detailsLabel)}">
               <details class="mobile-pick-detail" data-mobile-pick-detail data-request-id="${escapeHtml(String(row.id))}" ${detailOpen ? 'open' : ''}>
-                <summary><span>${escapeHtml(flow.summaryLabel)}</span><span>${escapeHtml(row.items.length)} ř. · ✓ ${escapeHtml(String(checklistPicked))}/${escapeHtml(String(checklistItems.length))} · ${escapeHtml(formatQuantityValue(preparedTotal, ''))} / ${escapeHtml(formatQuantityValue(requestedTotal, ''))}</span></summary>
+                <summary><span>${escapeHtml(flow.summaryLabel)}</span><span>${escapeHtml(row.items.length)} ř. · ✓ ${escapeHtml(String(checklistPicked))}/${escapeHtml(String(checklistItems.length))} · ${escapeHtml(preparedTotalLabel)} / ${escapeHtml(requestedTotalLabel)}</span></summary>
                 ${detailRows ? `
                   <table class="mini-excel-table mobile-pick-lines-table">
                     <thead>
@@ -14381,7 +14396,7 @@
       try {
         await saveMobilePickPreparedItem(item.id, checklistSensitiveChanged)
         setStockV13Status(batchInput ? 'Expirace v objednávce je uložená.' : 'Množství v objednávce je uložené.', 'success')
-        if (unitInput || batchInput) renderMobilePickRequests()
+        if (unitInput || qtyInput || batchInput) renderMobilePickRequests()
       } catch (error) {
         console.error(error)
         setStockV13Status(`Množství se nepodařilo uložit: ${error.message}`, 'error')
