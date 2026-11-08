@@ -46,3 +46,27 @@ test('a result above the daily maximum is explicitly infeasible', async () => {
   assert.ok(result.overtimeSeconds > 0)
 })
 
+test('a day with many stops finishes without an unbounded exact TSP search', async () => {
+  const slots = daySlots().slice(0, 2)
+  const locations = Array.from({ length: 13 }, (_, index) => ({
+    id: `location-${index}`,
+    name: `Lokalita ${index}`,
+    machines: [{ id: `machine-${index}`, serviceMinutes: 20, occurrences: 2 }]
+  }))
+  const size = locations.length + 1
+  const durationMatrix = Array.from({ length: size }, (_, from) => Array.from({ length: size }, (_, to) => from === to ? 0 : 300 + Math.abs(from - to) * 15))
+  const distanceMatrix = durationMatrix.map((row) => row.map((seconds) => seconds * 12))
+
+  const result = await solveTerritoryRoutes({
+    durationMatrix,
+    distanceMatrix,
+    daySlots: slots,
+    locations,
+    capacityMinutes: 720,
+    fundMinutes: 2_400
+  })
+
+  assert.equal(result.days.length, 2)
+  assert.ok(result.days.every((day) => day.stops.length === 13))
+})
+

@@ -1,4 +1,4 @@
-import { supabase } from './supabase.js';
+import { supabase, supabaseAnonKey, supabaseUrl } from './supabase.js';
 
 const STORAGE_KEY = 'olvend-territory-planner-draft-v17';
 const LEGACY_STORAGE_KEYS = ['olvend-territory-planner-draft-v16', 'olvend-territory-planner-draft-v15', 'olvend-territory-planner-draft-v14', 'olvend-territory-planner-draft-v13', 'olvend-territory-planner-draft-v12', 'olvend-territory-planner-draft-v11', 'olvend-territory-planner-draft-v10', 'olvend-territory-planner-draft-v9', 'olvend-territory-planner-draft-v8', 'olvend-territory-planner-draft-v7', 'olvend-territory-planner-draft-v6', 'olvend-territory-planner-draft-v5', 'olvend-territory-planner-draft-v4', 'olvend-territory-planner-draft-v3'];
@@ -43,6 +43,33 @@ function say(message, error = false) {
   $('toast').classList.toggle('error', error);
   $('toast').classList.add('show');
   toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3200);
+}
+
+async function invokeGoogleRoutePlan(body, timeoutMs = 60000) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Přihlášení vypršelo. Přihlas se prosím znovu.');
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/google-route-plan`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${session.access_token}`
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) throw new Error(data?.error || `Google Routes odpověděl ${response.status}.`);
+    return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('Google Routes nedokončil výpočet do 60 sekund. Zkus výpočet spustit znovu.');
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function requireManager() {
@@ -842,14 +869,12 @@ async function calculateRoadRoute(route, settings) {
   if (!route.stops.length) return estimateRoute(route);
   if (route.stops.length > 25) throw new Error(`${dayLabel(route.date)} má ${route.stops.length} zastávek. Přesuň část lokalit do jiného dne.`);
   const departure = new Date(`${route.date}T${settings.startTime}:00`);
-  const response = await supabase.functions.invoke('google-route-plan', { body: {
+  const data = await invokeGoogleRoutePlan({
     origin: { latitude: state.depot[0], longitude: state.depot[1], label: 'Sklad Blučina' },
     stops: route.stops.map((stop) => ({ id: stop.locationId, locationId: stop.locationId, name: stop.name, city: stop.city, address: stop.address, latitude: stop.latitude, longitude: stop.longitude, estimatedServiceMinutes: stop.serviceMinutes })),
     returnToStart: true,
     departureTime: departure.toISOString()
-  } });
-  if (response.error || response.data?.error) throw new Error(response.data?.error || response.error?.message || 'Google Routes trasu nevrátil.');
-  const data = response.data;
+  });
   const byId = new Map(route.stops.map((stop) => [String(stop.locationId), stop]));
   const ordered = (data.orderedStops || []).map((stop) => byId.get(String(stop.locationId || stop.id))).filter(Boolean);
   if (ordered.length === route.stops.length) route.stops = ordered;
@@ -994,12 +1019,11 @@ async function googleRoadMatrix(locations, settings) {
     { latitude: state.depot[0], longitude: state.depot[1], label: 'Sklad Blučina' },
     ...locations.map((location) => ({ latitude: location.latitude, longitude: location.longitude, label: location.name }))
   ];
-  const response = await supabase.functions.invoke('google-route-plan', { body: {
+  const data = await invokeGoogleRoutePlan({
     mode: 'matrix', origin: points[0], points, departureTime
-  } });
-  if (response.error || response.data?.error) throw new Error(response.data?.error || response.error?.message || 'Google Routes nevrátil silniční matici.');
-  if (!Array.isArray(response.data?.durationSeconds) || !Array.isArray(response.data?.distanceMeters)) throw new Error('Google Routes vrátil neúplnou silniční matici.');
-  return response.data;
+  });
+  if (!Array.isArray(data?.durationSeconds) || !Array.isArray(data?.distanceMeters)) throw new Error('Google Routes vrátil neúplnou silniční matici.');
+  return data;
 }
 
 async function runTerritorySolver(payload) {
