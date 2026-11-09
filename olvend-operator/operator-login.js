@@ -150,7 +150,7 @@
       attemptFinished = true
       window.clearTimeout(attemptWatchdog)
       setStatus('Přihlášení proběhlo. Otevírám aplikaci…', 'success')
-      window.location.replace('./')
+      window.location.replace('./uvod.html')
     }).catch(function (error) {
       if (attemptFinished) return
       attemptFinished = true
