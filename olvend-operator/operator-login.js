@@ -7,6 +7,8 @@
   var statusLine = document.getElementById('statusLine')
   var loginForm = document.getElementById('loginForm')
   var loginButton = document.getElementById('loginButton')
+  var emailInput = document.getElementById('email')
+  var passwordInput = document.getElementById('password')
 
   function setStatus(message, type) {
     statusLine.textContent = message
@@ -108,13 +110,21 @@
 
   loginForm.addEventListener('submit', function (event) {
     event.preventDefault()
+    var attemptFinished = false
+    var attemptWatchdog = window.setTimeout(function () {
+      attemptFinished = true
+      clearLogin()
+      setStatus('Přihlášení se nepodařilo dokončit. Zkontroluj připojení a zkus to znovu.', 'error')
+      loginButton.disabled = false
+      loginButton.textContent = 'Zkusit znovu'
+    }, 25000)
     loginButton.disabled = true
     loginButton.textContent = 'Přihlašuji…'
-    setStatus('Ověřuji přihlášení…')
-    var formData = new FormData(loginForm)
-    var email = String(formData.get('email') || '').trim().toLowerCase()
-    var password = String(formData.get('password') || '')
+    setStatus('Ověřuji e-mail a heslo…')
+    var email = String(emailInput.value || '').trim().toLowerCase()
+    var password = String(passwordInput.value || '')
     if (!email || !password) {
+      window.clearTimeout(attemptWatchdog)
       setStatus('Vyplň e-mail i heslo.', 'error')
       loginButton.disabled = false
       loginButton.textContent = 'Přihlásit se'
@@ -122,18 +132,29 @@
     }
 
     signIn(email, password).then(function (session) {
+      if (attemptFinished) return null
       if (!session || !session.access_token || !session.user || !session.user.id) throw new Error('Server nevrátil platné přihlášení.')
       setStatus('Kontroluji zaměstnanecký účet…')
-      return verifyActiveEmployee(session.access_token).then(function () {
-        return loadEmployee(session.user.id, session.access_token)
-      }).then(function (employee) {
+      return Promise.all([
+        verifyActiveEmployee(session.access_token),
+        loadEmployee(session.user.id, session.access_token)
+      ]).then(function (results) {
+        if (attemptFinished) return null
+        var employee = results[1]
         if (!employee) throw new Error('K účtu není přiřazený aktivní zaměstnanec.')
         storeLogin(session, employee)
+        return true
       })
-    }).then(function () {
+    }).then(function (completed) {
+      if (!completed || attemptFinished) return
+      attemptFinished = true
+      window.clearTimeout(attemptWatchdog)
       setStatus('Přihlášení proběhlo. Otevírám aplikaci…', 'success')
       window.location.replace('./')
     }).catch(function (error) {
+      if (attemptFinished) return
+      attemptFinished = true
+      window.clearTimeout(attemptWatchdog)
       clearLogin()
       var message = error && error.message ? error.message : 'Přihlášení se nezdařilo.'
       if (/invalid login credentials/i.test(message)) message = 'Nesprávný e-mail nebo heslo.'
