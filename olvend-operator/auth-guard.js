@@ -8,6 +8,9 @@
   var gateMessage = document.getElementById('operatorAuthMessage')
   var gateActions = document.getElementById('operatorAuthActions')
   var userButton = document.querySelector('.og-user')
+  var gateWatchdog = window.setTimeout(function () {
+    showGateError('Ověření se nepodařilo dokončit. Zkontroluj připojení a zkus to znovu.')
+  }, 15000)
 
   function clearLogin() {
     localStorage.removeItem(authStorageKey)
@@ -64,6 +67,7 @@
   }
 
   function revealApp() {
+    window.clearTimeout(gateWatchdog)
     document.body.classList.remove('auth-pending')
     if (gate) gate.hidden = true
     try {
@@ -78,11 +82,14 @@
   }
 
   function showGateError(message) {
+    window.clearTimeout(gateWatchdog)
     if (gateMessage) gateMessage.textContent = message
     if (gateActions) gateActions.hidden = false
+    if (gate) gate.setAttribute('aria-busy', 'false')
   }
 
   function goToLogin() {
+    window.clearTimeout(gateWatchdog)
     window.location.replace('./prihlaseni.html')
   }
 
