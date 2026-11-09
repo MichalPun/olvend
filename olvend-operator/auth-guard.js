@@ -7,7 +7,7 @@
   var gate = document.getElementById('operatorAuthGate')
   var gateMessage = document.getElementById('operatorAuthMessage')
   var gateActions = document.getElementById('operatorAuthActions')
-  var userButton = document.querySelector('.og-user')
+  var userButtons = document.querySelectorAll('.og-user,.ot-user')
   var gateWatchdog = window.setTimeout(function () {
     showGateError('Ověření se nepodařilo dokončit. Zkontroluj připojení a zkus to znovu.')
   }, 15000)
@@ -68,17 +68,25 @@
 
   function revealApp() {
     window.clearTimeout(gateWatchdog)
+    if (/\/olvend-operator\/$/.test(window.location.pathname) || /\/index\.html$/.test(window.location.pathname)) {
+      window.location.replace('./uvod.html')
+      return
+    }
     document.body.classList.remove('auth-pending')
     if (gate) gate.hidden = true
+    var employee = null
     try {
-      var employee = JSON.parse(sessionStorage.getItem('olvendUser') || localStorage.getItem('olvendUser') || 'null')
-      if (employee && userButton) {
+      employee = JSON.parse(sessionStorage.getItem('olvendUser') || localStorage.getItem('olvendUser') || 'null')
+      if (employee && userButtons.length) {
         var first = String(employee.name || '').charAt(0)
         var last = String(employee.surname || '').charAt(0)
-        userButton.textContent = (first + last).toUpperCase() || 'OP'
-        userButton.setAttribute('aria-label', 'Odhlásit ' + [employee.name, employee.surname].join(' ').trim())
+        Array.prototype.forEach.call(userButtons, function (button) {
+          button.textContent = (first + last).toUpperCase() || 'OP'
+          button.setAttribute('aria-label', 'Odhlásit ' + [employee.name, employee.surname].join(' ').trim())
+        })
       }
     } catch (_) {}
+    if (typeof window.operatorApprovedHomeStart === 'function') window.operatorApprovedHomeStart(session, employee)
   }
 
   function showGateError(message) {
@@ -140,7 +148,9 @@
   var readySession = sessionIsUsable(session) ? Promise.resolve(session) : refreshSession(session)
   readySession.then(function (activeSession) {
     session = activeSession
-    if (userButton) userButton.addEventListener('click', function () { logout(session) })
+    Array.prototype.forEach.call(userButtons, function (button) {
+      button.addEventListener('click', function () { logout(session) })
+    })
     if (navigator.onLine === false) {
       revealApp()
       return null
