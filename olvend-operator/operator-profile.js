@@ -772,8 +772,9 @@
     var pending = requests.filter(function (row) { return row.status === 'pending' }).length
     root.querySelector('#op-request-summary').textContent = (vacation.total ? vacation.remaining + ' dní dovolené' : 'Volno a žádosti') + (pending ? ' · ' + pending + ' čeká' : '')
     var requestBadge = root.querySelector('#op-request-badge')
-    requestBadge.textContent = pending ? String(pending) : '✓'
-    requestBadge.classList.toggle('ok', !pending)
+    requestBadge.hidden = !pending
+    requestBadge.textContent = pending ? String(pending) : ''
+    requestBadge.classList.remove('ok')
     var nextMeeting = meetings.filter(function (item) { return ['pending', 'approved'].indexOf(item.status) !== -1 && new Date(item.starts_at).getTime() >= Date.now() }).sort(function (a, b) { return String(a.starts_at).localeCompare(String(b.starts_at)) })[0]
     root.querySelector('#op-meeting-summary').textContent = nextMeeting
       ? new Date(nextMeeting.starts_at).toLocaleString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' · ' + (nextMeeting.status === 'approved' ? 'potvrzeno' : 'čeká na potvrzení')
@@ -856,6 +857,7 @@
     var daysContainer = root.querySelector('#op-meeting-days')
     var timesContainer = root.querySelector('#op-meeting-slots')
     var timesBlock = root.querySelector('#op-meeting-times')
+    var timesLabel = root.querySelector('#op-meeting-times-label')
     daysContainer.innerHTML = ''
     timesContainer.innerHTML = ''
     if (!meetingSlots.length) {
@@ -895,6 +897,7 @@
         selectedMeetingDay = key
         selectedMeetingSlot = null
         renderMeetingSlots()
+        window.setTimeout(function () { timesBlock.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, 30)
       })
       daysContainer.appendChild(button)
     })
@@ -904,6 +907,9 @@
       updateMeetingSubmit()
       return
     }
+
+    var selectedDate = new Date(grouped[selectedMeetingDay][0].slot_start)
+    timesLabel.textContent = 'Volné časy · ' + selectedDate.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: 'Europe/Prague' })
 
     grouped[selectedMeetingDay].forEach(function (slot) {
       var button = document.createElement('button')
