@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v19'
+  var CACHE_NAME = 'olvend-operator-v20'
   var APP_SHELL = [
     './',
     './index.html',
@@ -10,6 +10,7 @@
     './profil.html',
     './pokyny.html',
     './vozidlo.html',
+    './potravinovy-automat-preview.html',
     './prihlaseni.html',
     './manifest.webmanifest',
     './operator-login.js',
@@ -23,7 +24,18 @@
     './pwa.js',
     './icon-192.png',
     './icon-512.png',
-    './icon-maskable-512.png'
+    './icon-maskable-512.png',
+    './assets/product-images/201.jpg',
+    './assets/product-images/bagette-hamka.jpg',
+    './assets/product-images/bagette-porizek.jpg',
+    './assets/product-images/bagette-svacinka.jpg',
+    './assets/product-images/ean-3838945043694.png',
+    './assets/product-images/ean-5949040204427.jpg',
+    './assets/product-images/ean-7622201390648.jpg',
+    './assets/product-images/ean-8000500073698.jpg',
+    './assets/product-images/ean-8586018180863.jpg',
+    './assets/product-images/ean-8594002072858.webp',
+    './assets/product-images/ean-9002490200091.webp'
   ]
 
   self.addEventListener('install', function (event) {
