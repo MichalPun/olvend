@@ -355,19 +355,6 @@
     })
   }
 
-  function openProfilePanel() {
-    showPanel('Přihlášený operátor', [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil', function (body) {
-      addCard(body, 'Dnešní role', employee.role || 'operátor')
-      addCard(body, 'Stav připojení', navigator.onLine === false ? 'Offline · změny se odešlou po připojení' : 'Online')
-      var button = document.createElement('button')
-      button.className = 'ot-panel-action secondary'
-      button.type = 'button'
-      button.textContent = 'Odhlásit se'
-      button.addEventListener('click', function () { root.querySelector('.ot-user').click() })
-      body.appendChild(button)
-    })
-  }
-
   function setBusy(active, label) {
     root.querySelector('#ot-busy-label').textContent = label || 'Ukládám…'
     root.querySelector('#ot-busy').hidden = !active
@@ -438,7 +425,7 @@
     var overlay = root.querySelector('#ot-overlay')
     root.querySelector('#ot-route').addEventListener('click', openRoutePanel)
     root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
-    root.querySelector('#ot-profile').addEventListener('click', openProfilePanel)
+    root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
       if (!instruction) {
         showPanel('Pokyny', 'Dnes není nový pokyn', function (body) { addCard(body, 'Vše je v pořádku', 'Pro dnešní směnu není žádný nový povinný pokyn.') })
