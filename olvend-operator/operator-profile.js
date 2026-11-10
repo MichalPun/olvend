@@ -13,6 +13,11 @@
   var payslips = []
   var bonusSummaries = []
   var inventories = []
+  var inventoryItems = []
+  var meetings = []
+  var meetingSlots = []
+  var selectedMeetingSlot = null
+  var activeInventoryId = null
   var currentView = 'overview'
   var territoryMaps = {}
   var territoryBounds = null
@@ -284,7 +289,31 @@
     var fields = 'id,audit_date,scope_type,assigned_employee_id,status,difference_quantity_total,difference_value_total,evaluated_at,closed_at,responsibility_status,responsibility_decision_note,bonus_impact_amount,bonus_period,created_at,audit_origin'
     var url = supabaseUrl + '/rest/v1/inventory_audits?select=' + encodeURIComponent(fields)
       + '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&scope_type=eq.vehicle&order=created_at.desc&limit=30'
-    return requestJson(url).then(function (rows) { inventories = Array.isArray(rows) ? rows : [] })
+    return requestJson(url).then(function (rows) {
+      inventories = Array.isArray(rows) ? rows : []
+      var ids = inventories.map(function (item) { return item.id }).filter(Boolean)
+      if (!ids.length) { inventoryItems = []; return }
+      var itemFields = 'id,audit_id,book_quantity,counted_quantity,difference_quantity,difference_value,reported_book_quantity,reported_difference_quantity,reported_difference_value,counted_at,products(id,name,sku,base_unit)'
+      var itemsUrl = supabaseUrl + '/rest/v1/inventory_audit_items?select=' + encodeURIComponent(itemFields)
+        + '&audit_id=in.(' + ids.map(encodeURIComponent).join(',') + ')&order=id.asc'
+      return requestJson(itemsUrl).then(function (rows) { inventoryItems = Array.isArray(rows) ? rows : [] })
+    })
+  }
+
+  function loadMeetings() {
+    var from = todayIso()
+    var end = new Date()
+    end.setDate(end.getDate() + 21)
+    var slotsRequest = requestJson(supabaseUrl + '/rest/v1/rpc/my_meeting_slots', {
+      method: 'POST', body: JSON.stringify({ p_from: from, p_to: todayIso(end) })
+    })
+    var fields = 'id,direction,starts_at,ends_at,meeting_mode,topic,message,status,response_note,created_at'
+    var meetingsUrl = supabaseUrl + '/rest/v1/employee_meetings?select=' + encodeURIComponent(fields)
+      + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&order=starts_at.desc&limit=20'
+    return Promise.all([slotsRequest, requestJson(meetingsUrl)]).then(function (results) {
+      meetingSlots = Array.isArray(results[0]) ? results[0] : []
+      meetings = Array.isArray(results[1]) ? results[1] : []
+    })
   }
 
   function locationPoint(location) {
@@ -602,8 +631,11 @@
     inventories.forEach(function (item) {
       var status = inventoryStatus(item)
       var kind = inventoryKind(item)
-      var row = document.createElement('article')
+      var row = document.createElement('button')
+      row.type = 'button'
       row.className = 'op-inventory-row ' + kind
+      row.setAttribute('aria-label', 'Otevřít detail inventury auta ' + item.id)
+      row.addEventListener('click', function () { openInventoryDetail(item.id) })
       var symbol = document.createElement('span')
       symbol.className = 'op-inventory-symbol'
       symbol.textContent = kind === 'action' ? '!' : kind === 'review' ? '…' : '✓'
@@ -626,6 +658,97 @@
     })
   }
 
+  function openInventoryDetail(id) {
+    activeInventoryId = String(id)
+    renderInventoryDetail()
+    openView('inventory-detail')
+  }
+
+  function formatQuantity(value) {
+    return Number(value || 0).toLocaleString('cs-CZ', { maximumFractionDigits: 3 })
+  }
+
+  function renderInventoryDetail() {
+    var container = root.querySelector('#op-inventory-detail')
+    container.innerHTML = ''
+    var audit = inventories.find(function (item) { return String(item.id) === String(activeInventoryId) })
+    if (!audit) { addEmpty(container, 'Inventuru se nepodařilo najít.'); return }
+    var items = inventoryItems.filter(function (item) { return String(item.audit_id) === String(audit.id) })
+    var differences = items.filter(function (item) {
+      var difference = item.reported_difference_quantity != null ? item.reported_difference_quantity : item.difference_quantity
+      return Math.abs(Number(difference || 0)) > 0.0005
+    })
+    var counted = items.filter(function (item) { return item.counted_at || item.counted_quantity != null }).length
+    var kind = inventoryKind(audit)
+    var status = inventoryStatus(audit)
+    var head = document.createElement('div')
+    head.className = 'op-inventory-detail-head'
+    var label = document.createElement('small')
+    var title = document.createElement('strong')
+    var meta = document.createElement('span')
+    label.textContent = status.label
+    title.textContent = 'Inventura auta #' + audit.id
+    meta.textContent = formatDate(audit.audit_date || audit.created_at) + (audit.audit_origin === 'post_route_exception' ? ' · vytvořeno po trase' : '')
+    head.appendChild(label); head.appendChild(title); head.appendChild(meta); container.appendChild(head)
+    var stats = document.createElement('div')
+    stats.className = 'op-inventory-detail-grid'
+    ;[
+      ['Položky', items.length || '—'],
+      ['Spočítáno', items.length ? counted + '/' + items.length : '—'],
+      ['Rozdíly', kind === 'action' ? 'Skryto' : differences.length]
+    ].forEach(function (value) {
+      var box = document.createElement('div')
+      var small = document.createElement('span')
+      var strong = document.createElement('strong')
+      small.textContent = value[0]; strong.textContent = String(value[1]); box.appendChild(small); box.appendChild(strong); stats.appendChild(box)
+    })
+    container.appendChild(stats)
+    if (kind === 'action') {
+      var actionNote = document.createElement('div')
+      actionNote.className = 'op-inventory-note'
+      actionNote.textContent = 'Evidenční množství se před počítáním nezobrazuje. Inventuru otevřete v pracovním postupu trasy a potvrďte skutečné počty.'
+      var route = document.createElement('button')
+      route.type = 'button'; route.className = 'op-primary'; route.style.marginTop = '11px'; route.textContent = 'Přejít do trasy'
+      route.addEventListener('click', function () { window.location.href = './trasa.html' })
+      container.appendChild(actionNote); container.appendChild(route); return
+    }
+    var section = document.createElement('div')
+    section.className = 'op-section-title'
+    var heading = document.createElement('h2')
+    var count = document.createElement('span')
+    heading.textContent = differences.length ? 'Nalezené rozdíly' : 'Výsledek kontroly'
+    count.textContent = differences.length + (differences.length === 1 ? ' rozdíl' : differences.length > 1 && differences.length < 5 ? ' rozdíly' : ' rozdílů')
+    section.appendChild(heading); section.appendChild(count); container.appendChild(section)
+    if (!differences.length) {
+      var ok = document.createElement('div')
+      ok.className = 'op-inventory-focus clear'
+      var okTitle = document.createElement('strong')
+      var okCopy = document.createElement('span')
+      okTitle.textContent = 'Všechno sedí'; okCopy.textContent = 'Fyzické stavy odpovídají evidenci.'
+      ok.appendChild(okTitle); ok.appendChild(okCopy); container.appendChild(ok)
+    } else {
+      differences.forEach(function (item) {
+        var row = document.createElement('div')
+        row.className = 'op-difference-row'
+        var product = item.products || {}
+        var rowTitle = document.createElement('strong')
+        var values = document.createElement('span')
+        rowTitle.textContent = product.name || 'Produkt'
+        var bookQuantity = item.reported_book_quantity != null ? item.reported_book_quantity : item.book_quantity
+        var differenceQuantity = item.reported_difference_quantity != null ? item.reported_difference_quantity : item.difference_quantity
+        values.textContent = 'Evidence ' + formatQuantity(bookQuantity) + ' → napočítáno ' + formatQuantity(item.counted_quantity) + ' ' + (product.base_unit || 'ks') + ' · rozdíl ' + (Number(differenceQuantity || 0) > 0 ? '+' : '') + formatQuantity(differenceQuantity)
+        row.appendChild(rowTitle); row.appendChild(values); container.appendChild(row)
+      })
+    }
+    var decision = document.createElement('div')
+    decision.className = 'op-inventory-note'
+    if (kind === 'review') decision.textContent = 'Výsledek nyní prověřuje vedoucí. Zatím není rozhodnuto o odpovědnosti ani dopadu do prémie.'
+    else if (audit.responsibility_status === 'not_operator') decision.textContent = 'Kontrola byla uzavřena bez odpovědnosti operátora.'
+    else if (audit.bonus_impact_amount != null) decision.textContent = 'Schválený dopad do prémie: ' + formatMoney(audit.bonus_impact_amount) + ' · ' + formatMonth(audit.bonus_period) + (audit.responsibility_decision_note ? ' · ' + audit.responsibility_decision_note : '')
+    else decision.textContent = 'Kontrola je uzavřená bez schváleného dopadu do prémie.'
+    container.appendChild(decision)
+  }
+
   function renderOverview() {
     var fullName = [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil'
     var mark = initials(employee)
@@ -643,10 +766,17 @@
     root.querySelector('#op-week-hours').textContent = (minutes / 60).toLocaleString('cs-CZ', { minimumFractionDigits: 0, maximumFractionDigits: 1 }) + (contracted ? ' / ' + contracted.toLocaleString('cs-CZ') : '') + ' h'
 
     var vacation = vacationMeta()
-    root.querySelector('#op-vacation').textContent = vacation.total ? vacation.remaining + ' / ' + vacation.total + ' dní' : vacation.approved + ' dní'
-    root.querySelector('#op-vacation-note').textContent = vacation.total ? 'zbývá z nároku' : 'schváleno letos'
-    root.querySelector('#op-today-label').textContent = new Date().toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' })
-    root.querySelector('#op-next-shift').textContent = shifts.length ? formatDate(shifts[0].plan_date, true) + ' · ' + shiftTime(shifts[0]) : 'Žádná publikovaná směna na dalších 28 dní'
+    root.querySelector('#op-shift-card-value').textContent = shifts.length ? formatDate(shifts[0].plan_date, true) : '—'
+    root.querySelector('#op-shift-card-note').textContent = shifts.length ? shiftTime(shifts[0]) : 'žádná publikovaná směna'
+    var pending = requests.filter(function (row) { return row.status === 'pending' }).length
+    root.querySelector('#op-request-summary').textContent = (vacation.total ? vacation.remaining + ' dní dovolené' : 'Volno a žádosti') + (pending ? ' · ' + pending + ' čeká' : '')
+    var requestBadge = root.querySelector('#op-request-badge')
+    requestBadge.textContent = pending ? String(pending) : '✓'
+    requestBadge.classList.toggle('ok', !pending)
+    var nextMeeting = meetings.filter(function (item) { return ['pending', 'approved'].indexOf(item.status) !== -1 && new Date(item.starts_at).getTime() >= Date.now() }).sort(function (a, b) { return String(a.starts_at).localeCompare(String(b.starts_at)) })[0]
+    root.querySelector('#op-meeting-summary').textContent = nextMeeting
+      ? new Date(nextMeeting.starts_at).toLocaleString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' · ' + (nextMeeting.status === 'approved' ? 'potvrzeno' : 'čeká na potvrzení')
+      : 'Vybrat volný termín'
   }
 
   function shiftTime(row) {
@@ -706,6 +836,73 @@
     })
   }
 
+  function meetingStatus(value) {
+    var map = {
+      pending: { label: 'Čeká na potvrzení', cls: 'pending' }, approved: { label: 'Potvrzeno', cls: 'approved' },
+      rejected: { label: 'Zamítnuto', cls: 'rejected' }, reschedule_requested: { label: 'Navržen jiný termín', cls: 'pending' },
+      cancelled: { label: 'Zrušeno', cls: '' }
+    }
+    return map[String(value || '')] || map.pending
+  }
+
+  function renderMeetingSlots() {
+    var container = root.querySelector('#op-meeting-slots')
+    container.innerHTML = ''
+    if (!meetingSlots.length) { addEmpty(container, 'V následujících třech týdnech není zveřejněný volný termín.'); return }
+    meetingSlots.slice(0, 18).forEach(function (slot) {
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'op-meeting-slot' + (selectedMeetingSlot && selectedMeetingSlot.slot_start === slot.slot_start ? ' selected' : '')
+      button.textContent = new Date(slot.slot_start).toLocaleString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      button.addEventListener('click', function () { selectedMeetingSlot = slot; renderMeetingSlots() })
+      container.appendChild(button)
+    })
+  }
+
+  function renderMeetings() {
+    var list = root.querySelector('#op-meeting-list')
+    list.innerHTML = ''
+    var relevant = meetings.filter(function (item) { return ['pending', 'approved', 'reschedule_requested'].indexOf(item.status) !== -1 }).slice(0, 4)
+    if (!relevant.length) addEmpty(list, 'Nemáte žádnou čekající ani potvrzenou schůzku.')
+    relevant.forEach(function (item) {
+      var status = meetingStatus(item.status)
+      var card = document.createElement('article')
+      card.className = 'op-card'
+      var head = document.createElement('div')
+      head.className = 'op-card-head'
+      var copy = document.createElement('div')
+      var title = document.createElement('strong')
+      var meta = document.createElement('p')
+      var badge = document.createElement('span')
+      badge.className = 'op-status ' + status.cls
+      title.textContent = new Date(item.starts_at).toLocaleString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      meta.textContent = item.meeting_mode === 'phone' ? 'Telefonicky' : item.meeting_mode === 'video' ? 'Videohovor' : 'Osobně v Blučině'
+      badge.textContent = status.label
+      copy.appendChild(title); copy.appendChild(meta); head.appendChild(copy); head.appendChild(badge); card.appendChild(head)
+      if (item.response_note) { var note = document.createElement('p'); note.textContent = item.response_note; card.appendChild(note) }
+      list.appendChild(card)
+    })
+    renderMeetingSlots()
+  }
+
+  function saveMeeting(event) {
+    event.preventDefault()
+    if (!selectedMeetingSlot) { toast('Nejdřív vyberte volný termín.', true); return }
+    var payload = {
+      p_starts_at: selectedMeetingSlot.slot_start,
+      p_ends_at: selectedMeetingSlot.slot_end,
+      p_meeting_mode: root.querySelector('#op-meeting-mode').value,
+      p_topic: root.querySelector('#op-meeting-topic').value,
+      p_message: root.querySelector('#op-meeting-message').value.trim() || null
+    }
+    showBusy(true, 'Odesílám žádost o schůzku…')
+    requestJson(supabaseUrl + '/rest/v1/rpc/request_my_meeting', { method: 'POST', body: JSON.stringify(payload) })
+      .then(function () { selectedMeetingSlot = null; root.querySelector('#op-meeting-message').value = ''; return loadMeetings() })
+      .then(function () { renderMeetings(); renderOverview(); toast('Žádost o schůzku byla odeslána.') })
+      .catch(function (error) { toast(error.message || 'Žádost o schůzku se nepodařilo odeslat.', true) })
+      .then(function () { showBusy(false) })
+  }
+
   function renderPersonal() {
     var data = root.querySelector('#op-personal-data')
     data.innerHTML = ''
@@ -736,6 +933,7 @@
     renderTerritory()
     renderBonuses()
     renderInventories()
+    renderMeetings()
     renderPayslips()
     renderShifts()
     renderRequests()
@@ -803,6 +1001,7 @@
       if (!to.value || to.value < event.target.value) to.value = event.target.value
     })
     root.querySelector('#op-request-form').addEventListener('submit', saveRequest)
+    root.querySelector('#op-meeting-form').addEventListener('submit', saveMeeting)
     root.querySelector('#op-map-fit').addEventListener('click', function () { fitTerritoryMap(territoryMaps.detail, 12) })
   }
 
@@ -814,7 +1013,7 @@
     employee = activeEmployee || {}
     if (!employee.id && !(session && session.user && session.user.id)) { showBusy(false); toast('Profil zaměstnance se nepodařilo načíst.', true); return }
     loadEmployee().then(function () {
-      return Promise.allSettled([loadAttendance(), loadRequests(), loadShifts(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories()])
+      return Promise.allSettled([loadAttendance(), loadRequests(), loadShifts(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories(), loadMeetings()])
     }).then(function (results) {
       var failed = results.filter(function (result) { return result.status === 'rejected' })
       renderAll()
