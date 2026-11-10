@@ -232,12 +232,23 @@
   function renderHistory() {
     var rows = []
     logs.slice(0, 12).forEach(function (row) {
-      if (row.start_odometer_km != null || row.end_odometer_km != null) rows.push({ at: row.updated_at || row.log_date, icon: 'KM', title: row.status === 'closed' ? 'Ukončená jízda' : 'Jízda vozidla', copy: formatDate(row.log_date) + ' · start ' + (row.start_odometer_km == null ? '—' : Number(row.start_odometer_km).toLocaleString('cs-CZ') + ' km'), value: row.distance_km == null ? 'Probíhá' : Number(row.distance_km).toLocaleString('cs-CZ') + ' km' })
-      if (Number(row.fuel_liters || 0) > 0) rows.push({ at: row.updated_at || row.log_date, icon: 'PHM', title: 'Tankování', copy: formatDate(row.log_date) + (row.fuel_receipt_url ? ' · účtenka přiložena' : ' · bez účtenky'), value: Number(row.fuel_liters).toLocaleString('cs-CZ') + ' l' })
+      if (row.start_odometer_km != null || row.end_odometer_km != null) rows.push({ at: row.updated_at || row.log_date, icon: 'odometer', title: row.status === 'closed' ? 'Ukončená jízda' : 'Jízda vozidla', copy: formatDate(row.log_date) + ' · start ' + (row.start_odometer_km == null ? '—' : Number(row.start_odometer_km).toLocaleString('cs-CZ') + ' km'), value: row.distance_km == null ? 'Probíhá' : Number(row.distance_km).toLocaleString('cs-CZ') + ' km' })
+      if (Number(row.fuel_liters || 0) > 0) rows.push({ at: row.updated_at || row.log_date, icon: 'fuel', title: 'Tankování', copy: formatDate(row.log_date) + (row.fuel_receipt_url ? ' · účtenka přiložena' : ' · bez účtenky'), value: Number(row.fuel_liters).toLocaleString('cs-CZ') + ' l' })
     })
-    requests.forEach(function (row) { var meta = statusMeta(row.status); rows.push({ at: row.updated_at || row.created_at, icon: row.request_kind === 'vehicle_service' ? 'S' : 'V', title: row.title, copy: (row.request_kind === 'vehicle_service' ? 'Servis' : 'Vybavení') + ' · ' + formatDateTime(row.created_at), value: meta[0] }) })
+    requests.forEach(function (row) { var meta = statusMeta(row.status); rows.push({ at: row.updated_at || row.created_at, icon: row.request_kind === 'vehicle_service' ? 'service' : 'equipment', title: row.title, copy: (row.request_kind === 'vehicle_service' ? 'Servis' : 'Vybavení') + ' · ' + formatDateTime(row.created_at), value: meta[0] }) })
     rows.sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')) })
-    document.querySelector('#ov-history-list').innerHTML = rows.length ? rows.slice(0, 20).map(function (row) { return '<article class="ov-history"><span class="ov-history-icon">' + escapeHtml(row.icon) + '</span><div><strong>' + escapeHtml(row.title) + '</strong><span>' + escapeHtml(row.copy) + '</span></div><b>' + escapeHtml(row.value) + '</b></article>' }).join('') : '<article class="ov-history"><span class="ov-history-icon">—</span><div><strong>Zatím bez historie</strong><span>První jízda nebo požadavek se objeví tady.</span></div></article>'
+    document.querySelector('#ov-history-list').innerHTML = rows.length ? rows.slice(0, 20).map(function (row) { return '<article class="ov-history"><span class="ov-history-icon">' + historyIcon(row.icon) + '</span><div><strong>' + escapeHtml(row.title) + '</strong><span>' + escapeHtml(row.copy) + '</span></div><b>' + escapeHtml(row.value) + '</b></article>' }).join('') : '<article class="ov-history"><span class="ov-history-icon">' + historyIcon('history') + '</span><div><strong>Zatím bez historie</strong><span>První jízda nebo požadavek se objeví tady.</span></div></article>'
+  }
+
+  function historyIcon(type) {
+    var paths = {
+      odometer: '<path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 12l3-3"/><path d="M8 17h8"/><path d="M6.5 12.5l-1.5-1M17.5 12.5l1.5-1M12 8V6"/>',
+      fuel: '<path d="M5 21V4h10v17"/><path d="M4 21h12"/><path d="M8 8h4"/><path d="M15 7h2l2 2v7a1.5 1.5 0 0 0 3 0v-5l-2-2"/>',
+      service: '<path d="M14.7 6.3a4 4 0 0 0-5-5L12 3.6 9.6 6 7.3 3.7a4 4 0 0 0 5 5L20 16.4a2.1 2.1 0 0 1-3 3l-7.7-7.7"/>',
+      equipment: '<path d="M4 7h16v13H4z"/><path d="M8 7V4h8v3"/><path d="M4 12h16"/><path d="M10 12v2h4v-2"/>',
+      history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>'
+    }
+    return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (paths[type] || paths.history) + '</svg>'
   }
 
   function bindDynamicOpenButtons() {
