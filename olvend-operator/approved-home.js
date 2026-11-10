@@ -424,7 +424,7 @@
   function bindInteractions() {
     var overlay = root.querySelector('#ot-overlay')
     root.querySelector('#ot-route').addEventListener('click', openRoutePanel)
-    root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
+    root.querySelector('#ot-vehicle').addEventListener('click', function () { window.location.href = './vozidlo.html' })
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
       window.location.href = './pokyny.html'
