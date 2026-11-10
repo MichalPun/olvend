@@ -7,7 +7,8 @@
   var gate = document.getElementById('operatorAuthGate')
   var gateMessage = document.getElementById('operatorAuthMessage')
   var gateActions = document.getElementById('operatorAuthActions')
-  var userButtons = document.querySelectorAll('.og-user,.ot-user,.os-user')
+  var userButtons = document.querySelectorAll('.og-user,.ot-user,.os-user,.op-user')
+  var logoutButtons = document.querySelectorAll('[data-operator-logout]')
   var gateWatchdog = window.setTimeout(function () {
     showGateError('Ověření se nepodařilo dokončit. Zkontroluj připojení a zkus to znovu.')
   }, 15000)
@@ -82,12 +83,13 @@
         var last = String(employee.surname || '').charAt(0)
         Array.prototype.forEach.call(userButtons, function (button) {
           button.textContent = (first + last).toUpperCase() || 'OP'
-          button.setAttribute('aria-label', 'Odhlásit ' + [employee.name, employee.surname].join(' ').trim())
+          button.setAttribute('aria-label', 'Otevřít profil ' + [employee.name, employee.surname].join(' ').trim())
         })
       }
     } catch (_) {}
     if (typeof window.operatorApprovedHomeStart === 'function') window.operatorApprovedHomeStart(session, employee)
     if (typeof window.operatorRouteStart === 'function') window.operatorRouteStart(session, employee)
+    if (typeof window.operatorProfileStart === 'function') window.operatorProfileStart(session, employee)
   }
 
   function showGateError(message) {
@@ -150,6 +152,11 @@
   readySession.then(function (activeSession) {
     session = activeSession
     Array.prototype.forEach.call(userButtons, function (button) {
+      button.addEventListener('click', function () {
+        if (!/\/profil\.html$/.test(window.location.pathname)) window.location.href = './profil.html'
+      })
+    })
+    Array.prototype.forEach.call(logoutButtons, function (button) {
       button.addEventListener('click', function () { logout(session) })
     })
     if (navigator.onLine === false) {
