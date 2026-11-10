@@ -989,7 +989,6 @@
   }
 
   function bind() {
-    root.querySelector('#op-home').addEventListener('click', function () { window.location.href = './uvod.html' })
     root.querySelector('.op-user').addEventListener('click', function () { openView('overview') })
     Array.prototype.forEach.call(root.querySelectorAll('[data-open-view]'), function (button) {
       button.addEventListener('click', function () { openView(button.getAttribute('data-open-view')) })
