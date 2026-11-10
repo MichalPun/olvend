@@ -119,9 +119,12 @@
   }
 
   function loadVehicle(vehicleId) {
-    if (!vehicleId) return Promise.resolve(null)
-    var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent('id,name,plate,current_odometer_km,warehouse_id')
-      + '&id=eq.' + encodeURIComponent(vehicleId) + '&limit=1'
+    var fields = 'id,name,plate,current_odometer_km,warehouse_id,assigned_employee_id'
+    var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields)
+      + (vehicleId
+        ? '&id=eq.' + encodeURIComponent(vehicleId)
+        : '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&active=eq.true&order=id&limit=1')
+    if (vehicleId) url += '&limit=1'
     return apiRequest(url, {}, 8000).then(function (rows) { return Array.isArray(rows) && rows.length ? rows[0] : null }).catch(function () { return null })
   }
 
@@ -464,7 +467,8 @@
       routePlan = results[0]
       instruction = results[1]
       attendanceDay = results[2]
-      return Promise.all([loadVehicle(routePlan && routePlan.vehicle_id), loadInstructionAcknowledgement()])
+      var resolvedVehicleId = attendanceDay && attendanceDay.vehicle_id || routePlan && routePlan.vehicle_id
+      return Promise.all([loadVehicle(resolvedVehicleId), loadInstructionAcknowledgement()])
     }).then(function (results) {
       vehicle = results[0]
       instructionConfirmed = results[1]
