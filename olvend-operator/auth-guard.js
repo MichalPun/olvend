@@ -80,7 +80,10 @@
 
   function revealApp() {
     window.clearTimeout(gateWatchdog)
-    if (/\/olvend-operator\/$/.test(window.location.pathname) || /\/index\.html$/.test(window.location.pathname)) {
+    var entryParams = new URLSearchParams(window.location.search)
+    var operatorMachineWorkflow = /\/index\.html$/.test(window.location.pathname)
+      && (entryParams.get('live') === '1' || entryParams.get('preview') === 'route197')
+    if (/\/olvend-operator\/$/.test(window.location.pathname) || (/\/index\.html$/.test(window.location.pathname) && !operatorMachineWorkflow)) {
       window.location.replace('./uvod.html')
       return
     }
