@@ -90,6 +90,7 @@
     if (typeof window.operatorApprovedHomeStart === 'function') window.operatorApprovedHomeStart(session, employee)
     if (typeof window.operatorRouteStart === 'function') window.operatorRouteStart(session, employee)
     if (typeof window.operatorProfileStart === 'function') window.operatorProfileStart(session, employee)
+    if (typeof window.operatorInstructionsStart === 'function') window.operatorInstructionsStart(session, employee)
   }
 
   function showGateError(message) {
