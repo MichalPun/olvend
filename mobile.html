@@ -5434,7 +5434,7 @@
       saveCoffeePreparationRecord,
       serializeCoffeePreparation
     } from './mobile-coffee-visit.js?v=20261021-coffee-visit-v1'
-    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261026-initial-count-v3'
+    import { createCoffeeDomain } from './mobile-coffee-domain.js?v=20261110-operator-bridge-v1'
     import {
       persistFoodVisitItem,
       saveFoodProgressRecord,
@@ -11278,7 +11278,7 @@
       if (workSlots.some((slot) => !getFoodSlotDraft(stopId, slot).accepted)) return 'refill'
       if ((detail?.slots || []).some((slot) => !getFoodSlotDraft(stopId, slot).accepted)) return 'refill'
       const cash = detail?.cash
-      const cashResolved = cash && (cash.collection_required ? cash.operator_collected_confirmed : cash.retained_for_next_visit)
+      const cashResolved = cash && (cash.operator_collected_confirmed || cash.retained_for_next_visit)
       if (!cashResolved) return 'cash'
       if (getFoodGuidedCheckRows(detail).some((row) => row.status !== 'done')) return 'check'
       return 'finish'
@@ -14303,7 +14303,7 @@
           const missingCheck = requiredChecks.find((key) => detail.checks?.[key] !== 'done')
           if (missingCheck) throw new Error('Před odjezdem potvrď všechny kontrolní body.')
         }
-        const cashResolved = detail.cash && (detail.cash.collection_required ? detail.cash.operator_collected_confirmed : detail.cash.retained_for_next_visit)
+        const cashResolved = detail.cash && (detail.cash.operator_collected_confirmed || detail.cash.retained_for_next_visit)
         if (!cashResolved && !detail.cash?.operator_collected_at && !detail.draft?.cashDecision) throw new Error('Před odjezdem dokonči pokyn k hotovosti.')
         const operatorNote = els.routeMachineContent?.querySelector(`[data-coffee-visit-note][data-stop-id="${CSS.escape(String(stop.id))}"]`)?.value?.trim() || null
         if (operatorNote) {
@@ -14330,9 +14330,7 @@
         }
         const missingCheck = getFoodGuidedCheckRows(foodDetail).find((row) => row.required !== false && row.status !== 'done')
         if (missingCheck) throw new Error(`Nejdřív dokonči povinnost: ${missingCheck.label}.`)
-        const cashResolved = foodDetail.cash && (foodDetail.cash.collection_required
-          ? foodDetail.cash.operator_collected_confirmed
-          : foodDetail.cash.retained_for_next_visit)
+        const cashResolved = foodDetail.cash && (foodDetail.cash.operator_collected_confirmed || foodDetail.cash.retained_for_next_visit)
         if (!cashResolved) {
           throw new Error('Před odjezdem ulož výběr hotovosti nebo rozhodnutí nevybírat.')
         }
@@ -20466,6 +20464,362 @@
       showMessage(message || 'Akci se nepodařilo provést.', 'error')
     }
 
+    function buildOperatorFoodEngineSnapshot() {
+      if (!operatorRouteStopId) return { ready: false, error: 'Chybí zastávka trasy.' }
+      const { plan, stop } = findRouteStop(operatorRouteStopId)
+      const detail = stop ? getFoodDetail(stop.id) : null
+      if (!plan || !stop) return { ready: false, error: 'Zastávka není v dnešní trase.' }
+      if (!detail || detail.loading) return { ready: false, loading: true }
+      if (detail.error) return { ready: false, error: detail.error }
+      const machine = getRouteStopMachine(stop)
+      const location = state.locations.find((item) => String(item.id) === String(machine?.location_id))
+      const productsById = new Map(state.products.map((product) => [String(product.id), product]))
+      const slots = (detail.slots || []).map((slot) => {
+        const draft = getFoodSlotDraft(stop.id, slot)
+        const suggestion = getFoodPickSuggestion(detail, stop.id, slot)
+        const selectedProduct = productsById.get(String(draft.fillItems[0]?.productId || draft.selectedProductId || ''))
+          || state.products.find((product) => String(product.sku || '') === String(slot.product_sku || ''))
+        const options = getFoodSlotProductOptions(slot).map((product) => ({
+          id: product.id,
+          sku: product.sku || '',
+          name: product.name || product.sku || 'Produkt',
+          photo: getMobileProductImageUrl(product),
+          car: getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, product.id),
+          price: Number(slot.customer_price_czk ?? slot.price_czk ?? 0)
+        }))
+        return {
+          id: slot.id,
+          choice: slot.slot_code || String(slot.id),
+          slot: slot.id,
+          name: selectedProduct?.name || slot.product_name || slot.product_sku || 'Produkt',
+          sku: selectedProduct?.sku || slot.product_sku || '',
+          photo: getMobileProductImageUrl(selectedProduct),
+          qty: Number(suggestion?.desired ?? getFoodRequiredFillQuantity(slot, detail) ?? 0),
+          pickQty: Number(draft.pickedQuantity || 0),
+          current: Number(slot.current_units || 0),
+          actualBefore: Number(draft.actualBefore || 0),
+          actualAdd: Number(draft.actualAdd || 0),
+          capacity: Number(draft.capacityUnits || slot.capacity_units || 0),
+          plannedCapacity: Number(slot.capacity_units || 0),
+          car: selectedProduct ? getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, selectedProduct.id) : 0,
+          price: Number(slot.customer_price_czk ?? slot.price_czk ?? 0),
+          plannedPrice: Number(slot.customer_price_czk ?? slot.price_czk ?? 0),
+          policy: options.length > 1 ? 'approved_list' : 'exact',
+          selectedProductId: selectedProduct?.id || null,
+          accepted: Boolean(draft.accepted),
+          pickConfirmed: Boolean(draft.pickConfirmed),
+          skipped: Boolean(draft.skipped),
+          skipReason: draft.skipReason || '',
+          alternatives: options.map((option) => ({ ...option, key: String(option.id) })),
+          contents: [{
+            name: selectedProduct?.name || slot.product_name || 'Produkt',
+            qty: Number(draft.actualBefore || slot.current_units || 0),
+            expiry: draft.existingExpiryDate || slot.expiry_date || '',
+            photo: getMobileProductImageUrl(selectedProduct)
+          }],
+          transferPlan: draft.transferRecommendation?.available ? {
+            quantity: Number(draft.transferQuantity || draft.transferRecommendation.quantity || 0),
+            product: selectedProduct?.name || slot.product_name || 'Produkt',
+            target: draft.transferRecommendation.targetTitle || '',
+            machine: draft.transferRecommendation.targetEvidence ? `EV ${draft.transferRecommendation.targetEvidence}` : '',
+            choice: draft.transferRecommendation.targetSlotCode || ''
+          } : null
+        }
+      })
+      return {
+        ready: true,
+        stopId: stop.id,
+        visitId: detail.visitId,
+        stage: getFoodGuidedStage(stop.id, detail, false),
+        title: location?.name || getRouteStopTitle(stop),
+        address: getRouteStopAddress(stop),
+        machine: machine?.name || 'Potravinový automat',
+        evidenceNumber: machine?.evidence_number || machine?.id || '',
+        openedAt: getRouteVisitForStop(stop)?.arrived_at || stop.arrived_at || '',
+        slots,
+        cash: detail.cash ? {
+          id: detail.cash.id,
+          required: Boolean(detail.cash.collection_required),
+          bagCode: detail.cash.short_bag_code || detail.guidance?.suggested_bag_code || '----',
+          collected: Boolean(detail.cash.operator_collected_confirmed),
+          deferred: Boolean(detail.cash.retained_for_next_visit)
+        } : null,
+        checks: getFoodGuidedCheckRows(detail).map((row) => ({
+          key: row.check_key,
+          label: row.label,
+          done: row.status === 'done'
+        }))
+      }
+    }
+
+    function buildOperatorCoffeeEngineSnapshot() {
+      if (!operatorRouteStopId) return { ready: false, error: 'Chybí zastávka trasy.' }
+      const { plan, stop } = findRouteStop(operatorRouteStopId)
+      const detail = stop ? getCoffeeDetail(stop.id) : null
+      if (!plan || !stop) return { ready: false, error: 'Zastávka není v dnešní trase.' }
+      if (!detail || detail.loading) return { ready: false, loading: true }
+      if (detail.error) return { ready: false, error: detail.error }
+      const machine = getRouteStopMachine(stop)
+      const location = getRouteStopLocation(stop)
+      const containers = getCoffeeContainersInBagOrder(detail).map((container) => {
+        const draft = detail.draft?.containers?.[String(container.id)] || {}
+        const product = state.products.find((item) => String(item.id) === String(container.product_id || ''))
+        const packages = getCoffeeActualPackages(stop.id, container)
+        return {
+          id: container.id,
+          code: container.container_code || String(container.id),
+          name: container.product_name || product?.name || 'Surovina',
+          photo: getMobileProductImageUrl(product),
+          unit: container.unit || 'g',
+          current: Number(container.current_quantity || 0),
+          actualBefore: getCoffeeActualBeforeQuantity(stop.id, container),
+          capacity: Number(container.capacity_quantity || 0),
+          packages,
+          suggestedPackages: getCoffeeSuggestedPackages(container),
+          packageQuantity: getCoffeeRefillPackageQuantity(container),
+          vehiclePackages: getCoffeeVehicleAvailablePackages(stop.id, container),
+          picked: Boolean(draft.picked),
+          accepted: Boolean(draft.accepted),
+          physicalChecked: Boolean(draft.physicalChecked),
+          calibrated: isCoffeeContainerCalibrated(stop.id, container),
+          addedOutsidePicklist: Boolean(draft.addedOutsidePicklist)
+        }
+      })
+      return {
+        ready: true,
+        stopId: stop.id,
+        visitId: detail.visitId,
+        stage: getCoffeeGuidedStage(stop.id, detail, false),
+        needsCalibration: Boolean(detail.needsCalibration),
+        title: location?.name || getRouteStopTitle(stop),
+        machine: machine?.name || 'Kávový automat',
+        evidenceNumber: machine?.evidence_number || machine?.id || '',
+        containers,
+        cash: detail.cash ? {
+          id: detail.cash.id,
+          required: Boolean(detail.cash.collection_required),
+          bagCode: detail.cash.short_bag_code || detail.guidance?.suggested_bag_code || '----',
+          collected: Boolean(detail.cash.operator_collected_confirmed),
+          deferred: Boolean(detail.cash.retained_for_next_visit)
+        } : null,
+        checks: getCoffeeGuidedCheckRows(detail).map((row) => ({
+          key: row.check_key,
+          label: row.label,
+          done: row.status === 'done',
+          section: row.assigned_payload?.section || '',
+          product: row.assigned_payload?.product_name || '',
+          selection: row.assigned_payload?.selection_code || ''
+        }))
+      }
+    }
+
+    function exposeOperatorCoffeeEngine() {
+      if (!operatorRouteStopId || mobileUrlParams.get('operator_engine') !== '1') return
+      const { stop } = findRouteStop(operatorRouteStopId)
+      if (!stop || getMachineKind(getRouteStopMachine(stop)) !== 'coffee') return
+      const fakeTarget = (containerId, data = {}) => ({ dataset: { stopId: String(operatorRouteStopId), containerId: String(containerId || ''), ...data } })
+      window.olvendOperatorCoffeeEngine = {
+        snapshot: () => buildOperatorCoffeeEngineSnapshot(),
+        async setPackages(containerId, packages) {
+          const detail = getCoffeeDetail(operatorRouteStopId)
+          const container = getCoffeeContainer(operatorRouteStopId, containerId)
+          if (!detail || !container) throw new Error('Zásobník už není dostupný.')
+          const next = Math.max(0, Math.min(Number(packages || 0), getCoffeeSelectableMaxPackages(operatorRouteStopId, container)))
+          detail.draft.containers[String(container.id)] = {
+            ...(detail.draft.containers[String(container.id)] || {}),
+            packages: next,
+            packagesManuallyAdjusted: true,
+            picked: false,
+            accepted: false
+          }
+          await saveCoffeePreparation(operatorRouteStopId, 'picklist')
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async confirmPick(containerId) {
+          await handleCoffeeAction('guided-pick-take', operatorRouteStopId, fakeTarget(containerId))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async skipPick(containerId, reason) {
+          await handleCoffeeAction('guided-pick-skip-reason', operatorRouteStopId, fakeTarget(containerId, { reason: reason || 'Dnes nedoplňuji' }))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async openMachine() {
+          await handleCoffeeAction('open-machine', operatorRouteStopId, fakeTarget(''))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async updateContainer(containerId, actualBefore, packages) {
+          const detail = getCoffeeDetail(operatorRouteStopId)
+          const container = getCoffeeContainer(operatorRouteStopId, containerId)
+          if (!detail || !container) throw new Error('Zásobník už není dostupný.')
+          detail.draft.containers[String(container.id)] = {
+            ...(detail.draft.containers[String(container.id)] || {}),
+            actualBeforeQuantity: Math.max(0, Math.min(Number(container.capacity_quantity || Infinity), Number(actualBefore || 0))),
+            packages: Math.max(0, Number(packages || 0)),
+            packagesManuallyAdjusted: true,
+            accepted: false
+          }
+          await saveCoffeePreparation(operatorRouteStopId, 'machine')
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async addExtraContainer(containerId, actualBefore, packages) {
+          const detail = getCoffeeDetail(operatorRouteStopId)
+          const container = getCoffeeContainer(operatorRouteStopId, containerId)
+          if (!detail || !container) throw new Error('Zásobník už není dostupný.')
+          detail.draft.extraContainerId = String(container.id)
+          detail.draft.extraContainerBeforeQuantity = Math.max(0, Number(actualBefore || 0))
+          detail.draft.extraContainerPackages = Math.max(0, Number(packages || 0))
+          detail.draft.extraContainerCorrectionOnly = false
+          await handleCoffeeAction('guided-add-extra-container', operatorRouteStopId, fakeTarget(containerId))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async saveCalibration(containerId, actualQuantity) {
+          const container = getCoffeeContainer(operatorRouteStopId, containerId)
+          if (!container) throw new Error('Zásobník už není dostupný.')
+          await saveCoffeeContainerCalibration(
+            operatorRouteStopId,
+            container,
+            Math.max(0, Math.min(Number(container.capacity_quantity || Infinity), Number(actualQuantity || 0))),
+            'První ruční načtení stavu v OLVEND Operátor'
+          )
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async confirmContainer(containerId) {
+          await handleCoffeeAction('accept-container', operatorRouteStopId, fakeTarget(containerId))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async saveCash() {
+          await handleCoffeeAction('guided-save-cash', operatorRouteStopId, fakeTarget(''))
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async deferCash(reason) {
+          const detail = getCoffeeDetail(operatorRouteStopId)
+          const cash = detail?.cash
+          if (!cash?.id) throw new Error('Pokyn k hotovosti ještě není připravený.')
+          const update = {
+            operator_collected_confirmed: false,
+            operator_collected_at: null,
+            retained_for_next_visit: true,
+            note: `Nevybráno – chybí sáček${reason ? ` (${String(reason)})` : ''}. Povinně vybrat při příští návštěvě.`
+          }
+          const { data, error } = await supabase.from('route_machine_cash_reports').update(update).eq('id', cash.id).select('*').single()
+          if (error && navigator.onLine) throw error
+          detail.cash = data?.id ? data : { ...cash, ...update, _offlinePending: true }
+          persistMobileSnapshot()
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async saveCheck(checkKey, kind) {
+          if (kind === 'test') await saveGuidedCoffeeTestDrink(operatorRouteStopId, checkKey)
+          else await saveCoffeeCheck(operatorRouteStopId, checkKey, true)
+          return buildOperatorCoffeeEngineSnapshot()
+        },
+        async complete() {
+          await completeRouteStop(operatorRouteStopId)
+          return { completed: true }
+        }
+      }
+      window.dispatchEvent(new CustomEvent('olvend-operator-coffee-engine-exposed'))
+    }
+
+    function exposeOperatorFoodEngine() {
+      if (!operatorRouteStopId || mobileUrlParams.get('operator_engine') !== '1') return
+      const { stop } = findRouteStop(operatorRouteStopId)
+      if (!stop || getMachineKind(getRouteStopMachine(stop)) !== 'food') return
+      const fakeTarget = (slotId, data = {}) => ({ dataset: { stopId: String(operatorRouteStopId), slotId: String(slotId || ''), ...data } })
+      window.olvendOperatorFoodEngine = {
+        snapshot: () => buildOperatorFoodEngineSnapshot(),
+        async setPick(slotId, quantity, productId) {
+          const detail = getFoodDetail(operatorRouteStopId)
+          const slot = getFoodSlot(operatorRouteStopId, slotId)
+          if (!detail || !slot) throw new Error('Pozice už není dostupná.')
+          await refreshFoodVehicleBalances(detail)
+          const current = getFoodSlotDraft(operatorRouteStopId, slot)
+          const selectedProductId = productId || current.selectedProductId || current.fillItems[0]?.productId
+          const available = getFoodAvailableVehicleQuantity(detail, operatorRouteStopId, slot.id, selectedProductId)
+          const nextQuantity = Math.max(0, Math.min(Math.round(Number(quantity || 0)), available, Math.max(1, Number(slot.capacity_units || 0))))
+          const fillItems = allocateFoodFillForSlot(detail, operatorRouteStopId, slot.id, selectedProductId, nextQuantity)
+          updateFoodSlotDraft(operatorRouteStopId, slot.id, {
+            selectedProductId,
+            fillItems,
+            pickedQuantity: nextQuantity,
+            preparedQuantity: nextQuantity,
+            basePreparedQuantity: nextQuantity,
+            extraVehicleQuantity: 0,
+            actualAdd: nextQuantity,
+            picked: nextQuantity > 0,
+            skipped: nextQuantity <= 0,
+            skipReason: nextQuantity <= 0 ? 'not_in_vehicle' : '',
+            pickConfirmed: false,
+            accepted: false,
+            manualProductChoice: Boolean(productId)
+          })
+          scheduleFoodWorkProgressSave(operatorRouteStopId)
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async confirmPick(slotId) {
+          await handleFoodAction('confirm-pick', operatorRouteStopId, fakeTarget(slotId))
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async openMachine() {
+          await handleFoodAction('open-machine', operatorRouteStopId, fakeTarget(''))
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async updateSlot(slotId, patch) {
+          const slot = getFoodSlot(operatorRouteStopId, slotId)
+          if (!slot) throw new Error('Pozice už není dostupná.')
+          const safe = {}
+          if (patch.actualBefore != null) safe.actualBefore = Math.max(0, Number(patch.actualBefore || 0))
+          if (patch.actualAdd != null) {
+            setFoodActualAddQuantity(operatorRouteStopId, slot, Math.max(0, Number(patch.actualAdd || 0)))
+          }
+          if (patch.capacityUnits != null) safe.capacityUnits = Math.max(1, Math.round(Number(patch.capacityUnits || 1)))
+          if (patch.existingExpiryDate != null) safe.existingExpiryDate = String(patch.existingExpiryDate || '')
+          if (patch.operatorProposedPrice != null) safe.operatorProposedPrice = Number(patch.operatorProposedPrice)
+          if (patch.operatorPriceNote != null) safe.operatorPriceNote = String(patch.operatorPriceNote || '')
+          if (patch.operatorPriceConfirmed != null) safe.operatorPriceConfirmed = Boolean(patch.operatorPriceConfirmed)
+          updateFoodSlotDraft(operatorRouteStopId, slot.id, { ...safe, accepted: false })
+          scheduleFoodWorkProgressSave(operatorRouteStopId)
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async confirmSlot(slotId) {
+          await handleFoodAction('confirm-slot', operatorRouteStopId, fakeTarget(slotId))
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async completeRefill() {
+          await handleFoodAction('guided-food-complete-refill', operatorRouteStopId, fakeTarget(''))
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async saveCash() {
+          await handleFoodAction('guided-food-save-cash', operatorRouteStopId, fakeTarget(''))
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async deferCash(reason) {
+          const detail = getFoodDetail(operatorRouteStopId)
+          const cash = detail?.cash
+          if (!cash?.id) throw new Error('Pokyn k hotovosti ještě není připravený.')
+          const update = {
+            operator_collected_confirmed: false,
+            operator_collected_at: null,
+            retained_for_next_visit: true,
+            note: `Nevybráno – chybí sáček${reason ? ` (${String(reason)})` : ''}. Povinně vybrat při příští návštěvě.`
+          }
+          const { data, error } = await supabase.from('route_machine_cash_reports').update(update).eq('id', cash.id).select('*').single()
+          if (error && navigator.onLine) throw error
+          detail.cash = data?.id ? data : { ...cash, ...update, _offlinePending: true }
+          persistMobileSnapshot()
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async saveCheck(checkKey) {
+          await saveFoodCheck(operatorRouteStopId, checkKey, true)
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async complete() {
+          await completeRouteStop(operatorRouteStopId)
+          return { completed: true }
+        }
+      }
+      window.dispatchEvent(new CustomEvent('olvend-operator-engine-exposed'))
+    }
+
     async function init() {
       bindEvents()
       window.addEventListener('offline', showConnectivityState)
@@ -20494,6 +20848,11 @@
         if (navigator.onLine && getCombinedOfflineRequestCount()) await syncPendingOfflineChanges({ announce:false, reload:false })
         if(operatorRouteStopId)await openRouteStop(operatorRouteStopId)
         else openScreen(getStartupScreen())
+        exposeOperatorFoodEngine()
+        exposeOperatorCoffeeEngine()
+        if (window.olvendOperatorFoodEngine || window.olvendOperatorCoffeeEngine) {
+          window.parent?.postMessage({ type: 'olvend-operator-food-engine-ready', stopId: String(operatorRouteStopId) }, location.origin)
+        }
         showStartupMessage()
         if (!navigator.onLine) showConnectivityState()
         window.setInterval(() => {

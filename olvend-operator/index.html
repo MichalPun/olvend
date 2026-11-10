@@ -76,7 +76,7 @@
   <section class="og-phone" aria-label="OLVEND Operátor – vedená obsluha EV 123">
     <div class="og-appbar"><div class="og-appbrand"><span class="og-appmark" aria-label="Logo OLVEND Operátor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h6.5a3.5 3.5 0 0 0 0-7h-8a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg></span><div><strong><b>OLVEND</b> Operátor</strong><span>Aktivní směna · 2BC 8456</span></div></div><div class="og-appactions"><span class="og-online">Online</span><button class="og-user" type="button" aria-label="Profil Michal Punčochář">MP</button></div></div>
     <button class="og-install-app" type="button" data-install-app hidden>Nainstalovat OLVEND Operátor na plochu</button>
-    <header class="og-guided-head"><button class="og-guided-back" type="button">‹ Zpět na trasu</button><div class="og-guided-title"><div><h1>RIGUM, s.r.o.</h1><p>EV 123 · Rheavendors Luce X2 I · otevřen 15:45</p></div><span class="og-guided-badge">Podle plánu</span></div><nav class="og-steps" aria-label="Kroky obsluhy"><button class="og-step active" type="button" data-view="pick">Suroviny</button><button class="og-step" type="button" data-view="refill">Doplnění</button><button class="og-step" type="button" data-view="cash">Hotovost</button><button class="og-step" type="button" data-view="check">Kontrola</button></nav></header>
+    <header class="og-guided-head"><button class="og-guided-back" type="button">‹ Zpět na trasu</button><div class="og-guided-title"><div><h1 data-location-title>RIGUM, s.r.o.</h1><p data-location-meta>EV 123 · Rheavendors Luce X2 I · otevřen 15:45</p></div><span class="og-guided-badge">Podle plánu</span></div><nav class="og-steps" aria-label="Kroky obsluhy"><button class="og-step active" type="button" data-view="pick">Suroviny</button><button class="og-step" type="button" data-view="refill">Doplnění</button><button class="og-step" type="button" data-view="cash">Hotovost</button><button class="og-step" type="button" data-view="check">Kontrola</button></nav></header>
     <main class="og-main">
       <section class="og-machine"><div><strong data-machine-title>Příprava surovin EV 123</strong><span data-machine-meta>Položka 1 ze 4</span></div><b data-machine-status>1 / 4</b></section>
       <section class="og-refill hidden">
@@ -118,6 +118,16 @@
   <script>
     (() => {
       const root = document.getElementById('olvend-guided-refill');
+      const liveQuery=new URLSearchParams(window.location.search);
+      const liveMode=liveQuery.get('live')==='1';
+      const liveStopId=liveQuery.get('stop_id')||'';
+      let liveEngine=null;
+      let currentLiveStage='';
+      let currentEvidenceNumber=liveQuery.get('ev')||'123';
+      const liveCall=(method,...args)=>{
+        if(!liveMode||!liveEngine||typeof liveEngine[method]!=='function')return Promise.resolve(null);
+        return Promise.resolve(liveEngine[method](...args)).then(snapshot=>{if(snapshot&&snapshot.ready)applyCoffeeSnapshot(snapshot);return snapshot}).catch(error=>{window.alert(error&&error.message?error.message:'Akci se nepodařilo uložit.');throw error});
+      };
       const runLoading=(button,label,action,delay=520)=>{
         if(!button||button.getAttribute('aria-busy')==='true')return;
         const original=button.innerHTML;
@@ -254,8 +264,10 @@
       range.addEventListener('input',renderCalibration);
       root.querySelector('[data-cal-save]').addEventListener('click',event=>{
         runLoading(event.currentTarget,'Ukládám stav…',()=>{
-          items[activeIndex].current=Number(range.value);
+          const item=items[activeIndex];
+          item.current=Number(range.value);
           renderItem();
+          if(liveMode&&currentLiveStage==='calibration')liveCall('saveCalibration',item.id,item.current).catch(()=>{});
         });
       });
       root.querySelector('[data-prev-item]').addEventListener('click',()=>{
@@ -265,16 +277,18 @@
         const list=root.querySelector('[data-extra-list]');
         list.replaceChildren();
         extraItems.forEach(item=>{
+          const capacityPackages=Math.max(0,Math.floor((item.capacity-item.current)/item.packageQty));
           const card=document.createElement('button'); card.type='button'; card.className='og-extra-card'; card.disabled=item.vehicleStock===0||item.added;
-          const img=document.createElement('img'); img.src=photos[item.photoKey]; img.alt=item.name;
+          const img=document.createElement('img'); img.src=item.photo||photos[item.photoKey]||photos.creamer; img.alt=item.name;
           const copy=document.createElement('span'); copy.className='og-extra-copy';
           const strong=document.createElement('strong'); strong.textContent=item.name;
           const meta=document.createElement('span'); meta.textContent=`Zásobník ${item.code} · nyní ${Math.round(item.current/item.capacity*100)} %`;
-          const stock=document.createElement('span'); stock.className='og-extra-stock'; stock.textContent=item.added?'Přidáno':item.vehicleStock?`V autě ${item.vehicleStock}×`:'Na autě není';
+          const stock=document.createElement('span'); stock.className='og-extra-stock'; stock.textContent=item.added?'Přidáno':capacityPackages===0?'Ověřit skutečný stav':item.vehicleStock?`V autě ${item.vehicleStock}×`:'Na autě není';
           copy.append(strong,meta); card.append(img,copy,stock);
           card.addEventListener('click',()=>{
             item.added=true;
-            items.splice(activeIndex,0,{...item,photo:photos[item.photoKey],extra:true});
+            const prepared=Math.max(1,Math.min(item.vehicleStock,capacityPackages));
+            items.splice(activeIndex,0,{...item,prepared,photo:item.photo||photos[item.photoKey]||photos.creamer,extra:true});
             extra.hidden=true; refill.classList.remove('hidden');
             renderItem(); prepareCalibration(); work.classList.add('calibrating'); renderCalibration();
           });
@@ -295,6 +309,15 @@
         cash:['Hotovost EV 123','Sáček pro tuto návštěvu · 4826','Povinné'],
         check:['Kontrola EV 123','0 z 5 bodů hotovo','Krok 4 / 4']
       };
+      if(!liveMode&&(liveQuery.get('ev')||liveQuery.get('location')||liveQuery.get('machine'))){
+        const previewEv=liveQuery.get('ev')||'—',previewLocation=liveQuery.get('location')||'Lokalita',previewMachine=liveQuery.get('machine')||'Kávový automat';
+        currentEvidenceNumber=previewEv;
+        root.querySelector('.og-phone').setAttribute('aria-label',`OLVEND Operátor – vedená obsluha EV ${previewEv}`);
+        root.querySelector('[data-location-title]').textContent=previewLocation;
+        root.querySelector('[data-location-meta]').textContent=`EV ${previewEv} · ${previewMachine}`;
+        root.querySelector('.og-extra-head p').textContent=`Zobrazují se skutečné zásobníky EV ${previewEv} a dostupná celá balení ve vozidle.`;
+        machineContent.pick[0]=`Příprava surovin EV ${previewEv}`;machineContent.refill[0]=`Skutečné zásoby EV ${previewEv}`;machineContent.cash[0]=`Hotovost EV ${previewEv}`;machineContent.check[0]=`Kontrola EV ${previewEv}`;
+      }
       const cashMain=root.querySelector('[data-cash-main]');
       const cashDeferPanel=root.querySelector('[data-cash-defer-panel]');
       const showCashMain=()=>{cashMain.hidden=false;cashDeferPanel.hidden=true;};
@@ -312,12 +335,47 @@
       let testVendDone=false;
       let operatorNote='';
       let cashDeferred=false;
+      const applyCoffeeSnapshot=snapshot=>{
+        if(!snapshot||!snapshot.ready)return;
+        currentLiveStage=snapshot.stage||'';
+        currentEvidenceNumber=String(snapshot.evidenceNumber||currentEvidenceNumber);
+        root.querySelector('.og-phone').setAttribute('aria-label',`OLVEND Operátor – vedená obsluha EV ${currentEvidenceNumber}`);
+        root.querySelector('[data-location-title]').textContent=snapshot.title||'Kávový automat';
+        root.querySelector('[data-location-meta]').textContent=`EV ${snapshot.evidenceNumber} · ${snapshot.machine||'Kávový automat'}`;
+        root.querySelector('.og-extra-head p').textContent=`Zobrazují se skutečné zásobníky EV ${currentEvidenceNumber} a dostupná celá balení ve vozidle.`;
+        const mapped=(snapshot.containers||[]).map(container=>({
+          id:container.id,code:container.code,name:container.name,short:container.name,photo:container.photo||photos.creamer,
+          current:Number(container.actualBefore??container.current??0),capacity:Number(container.capacity||0),packageQty:Math.max(1,Number(container.packageQuantity||1)),
+          prepared:Number(container.packages??container.suggestedPackages??0),vehicleStock:Number.isFinite(Number(container.vehiclePackages))?Number(container.vehiclePackages):99,
+          unit:container.unit||'g',step:container.unit==='g'?50:5,vehicleAfter:'Skutečná zásoba vozidla se uloží při potvrzení',accepted:Boolean(container.accepted),picked:Boolean(container.picked),calibrated:Boolean(container.calibrated),addedOutsidePicklist:Boolean(container.addedOutsidePicklist)
+        }));
+        const planned=mapped.filter(item=>item.prepared>0||item.picked||item.accepted);const chosen=snapshot.stage==='calibration'?mapped:(planned.length?planned:mapped);
+        items.splice(0,items.length,...chosen);extraItems.splice(0,extraItems.length,...mapped.filter(item=>!chosen.some(chosenItem=>String(chosenItem.id)===String(item.id))));
+        pickDecisions.clear();items.forEach((item,index)=>{if(item.picked)pickDecisions.set(index,{status:item.prepared>0?'taken':'skipped'})});
+        pickIndex=items.findIndex(item=>!item.picked);if(pickIndex<0)pickIndex=items.length;
+        activeIndex=snapshot.stage==='calibration'?items.findIndex(item=>!item.calibrated):items.findIndex(item=>!item.accepted);if(activeIndex<0)activeIndex=Math.max(0,items.length-1);
+        const cash=snapshot.cash;if(cash){const code=String(cash.bagCode||'----');root.querySelector('.og-bag-code').textContent=code;root.querySelector('.og-bag-machine').textContent=`EV ${snapshot.evidenceNumber}`;root.querySelector('[data-cash-confirm]').textContent=`Hotovost je v sáčku ${code}`;cashDeferred=Boolean(cash.deferred)}
+        operatorChecks.splice(0,operatorChecks.length,...(snapshot.checks||[]).filter(check=>check.section!=='test').map(check=>({id:check.key,label:check.label})));
+        operatorCheckDone.clear();(snapshot.checks||[]).forEach(check=>{if(check.done&&check.section!=='test')operatorCheckDone.add(check.key)});
+        const test=(snapshot.checks||[]).find(check=>check.section==='test');if(test){assignedTestDrink.product=test.product||test.label;assignedTestDrink.selection=test.selection||'—';testVendDone=Boolean(test.done)}
+        machineContent.pick=[`Příprava surovin EV ${snapshot.evidenceNumber}`,`Položka ${Math.min(pickIndex+1,items.length)} ze ${items.length}`,`${Math.min(pickIndex+1,items.length)} / ${items.length}`];
+        machineContent.refill=[`Skutečné zásoby EV ${snapshot.evidenceNumber}`,'Živý stav automatu','Aktuální'];
+        machineContent.cash=[`Hotovost EV ${snapshot.evidenceNumber}`,cash?`Sáček pro tuto návštěvu · ${cash.bagCode}`:'Načítám pokyn','Povinné'];
+        machineContent.check=[`Kontrola EV ${snapshot.evidenceNumber}`,'Kontrolní body návštěvy','Krok 4 / 4'];
+        if(items.length){renderItem();if(snapshot.stage==='calibration'){prepareCalibration();work.classList.add('calibrating');renderCalibration()}}renderPickList();renderQuality();
+        const stageView={goods:'pick',calibration:'refill',refill:'refill',cash:'cash',check:'check',finish:'check'}[snapshot.stage];if(stageView)showView(stageView)
+      };
+      const initCoffeeEngine=()=>{
+        if(!liveMode)return;if(!liveStopId){window.alert('V odkazu chybí zastávka trasy.');return}
+        const frame=document.createElement('iframe');frame.hidden=true;frame.setAttribute('aria-hidden','true');frame.src=`../mobile.html?operator_engine=1&operator_stop_id=${encodeURIComponent(liveStopId)}`;document.body.appendChild(frame);
+        let attempts=0;const timer=window.setInterval(()=>{attempts+=1;try{const engine=frame.contentWindow&&frame.contentWindow.olvendOperatorCoffeeEngine;if(engine){window.clearInterval(timer);liveEngine=engine;const snapshot=engine.snapshot();if(snapshot&&snapshot.ready)applyCoffeeSnapshot(snapshot);else if(snapshot&&snapshot.error)window.alert(snapshot.error)}else if(attempts>240){window.clearInterval(timer);window.alert('Živá data se nepodařilo načíst. Zkus obrazovku obnovit.')}}catch(error){if(attempts>240){window.clearInterval(timer);window.alert('Živá data se nepodařilo načíst.')}}},250)
+      };
       const operatorEsc=value=>String(value==null?'':value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
       const renderQuality=()=>{
         const total=operatorChecks.length+1;
         const done=operatorCheckDone.size+(testVendDone?1:0);
         root.querySelector('[data-quality-cash-state]').hidden=!cashDeferred;
-        root.querySelector('[data-machine-title]').textContent='Kontrola EV 123';
+        root.querySelector('[data-machine-title]').textContent=`Kontrola EV ${currentEvidenceNumber}`;
         root.querySelector('[data-machine-meta]').textContent=`${done} z ${total} bodů hotovo`;
         root.querySelector('[data-machine-status]').textContent=quality.classList.contains('finished')?'Hotovo':'Krok 4 / 4';
         if(quality.classList.contains('finished'))return;
@@ -417,14 +475,35 @@
       root.querySelector('[data-quality-complete]').addEventListener('click',event=>{
         runLoading(event.currentTarget,'Ukládám návštěvu…',()=>{
           root.querySelector('[data-quality-finish-title]').textContent='Návštěva je dokončena';
-          root.querySelector('[data-quality-finish-copy]').textContent='Vše je uloženo. EV 123 je připravený k provozu.';
+          root.querySelector('[data-quality-finish-copy]').textContent=`Vše je uloženo. EV ${currentEvidenceNumber} je připravený k provozu.`;
           root.querySelector('[data-quality-complete]').textContent='Uloženo · zpět na trasu';
           root.querySelector('[data-machine-meta]').textContent='Návštěva dokončena';
         },700);
       });
+      root.querySelector('.og-guided-back').addEventListener('click',()=>{window.location.href='./trasa.html'});
+      root.querySelector('[data-pick-live]').addEventListener('click',event=>{
+        if(!liveMode)return;const button=event.target.closest('[data-pick-action]');if(!button)return;const item=items[pickIndex];
+        if(button.dataset.pickAction==='take'&&item)liveCall('setPackages',item.id,item.prepared).then(()=>liveCall('confirmPick',item.id)).catch(()=>{});
+        if(button.dataset.pickAction==='skip'&&item)liveCall('skipPick',item.id,'Dnes nedoplňuji').catch(()=>{});
+        if(button.dataset.pickAction==='next')liveCall('openMachine').catch(()=>showView('pick'));
+      });
+      root.querySelector('[data-confirm]').addEventListener('click',()=>{
+        if(!liveMode||!items[activeIndex])return;const item=items[activeIndex];const before=Number(range.value||item.current||0);const packages=packageCount(item,before);
+        const save=item.extra&&!item.addedOutsidePicklist?liveCall('addExtraContainer',item.id,before,packages):liveCall('updateContainer',item.id,before,packages);
+        save.then(()=>liveCall('confirmContainer',item.id)).catch(()=>{});
+      });
+      root.querySelector('[data-cash-confirm]').addEventListener('click',()=>{if(liveMode)liveCall('saveCash').catch(()=>{})});
+      root.querySelector('[data-cash-defer-confirm]').addEventListener('click',()=>{if(liveMode)liveCall('deferCash','Operátor nemá sáček').catch(()=>{})});
+      qualityLive.addEventListener('change',event=>{if(liveMode&&event.target.dataset.operatorCheck&&event.target.checked)liveCall('saveCheck',event.target.dataset.operatorCheck,'check').catch(()=>{})});
+      qualityLive.addEventListener('click',event=>{
+        if(!liveMode)return;const testButton=event.target.closest('[data-operator-test]');if(testButton){const test=(liveEngine.snapshot().checks||[]).find(check=>check.section==='test'&&!check.done);if(test)liveCall('saveCheck',test.key,'test').catch(()=>{});return}
+        if(event.target.closest('[data-operator-complete]'))liveCall('complete').then(result=>{if(result&&result.completed)window.location.href='./trasa.html'}).catch(()=>{})
+      });
+      root.querySelector('[data-quality-complete]').addEventListener('click',()=>{if(liveMode)liveCall('complete').then(result=>{if(result&&result.completed)window.location.href='./trasa.html'}).catch(()=>{})});
       renderItem();
       renderQuality();
       showView('pick');
+      initCoffeeEngine();
     })();
   </script>
 </div>
