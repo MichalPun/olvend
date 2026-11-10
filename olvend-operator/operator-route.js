@@ -277,6 +277,15 @@
       row.disabled = !active
       row.addEventListener('click', function () {
         var isCoffee = /coffee|ká|kav/i.test(stop.view.machineType)
+        if (!preview) {
+          var liveParams = new URLSearchParams({
+            operator_stop_id: String(stop.id),
+            operator_return: '1',
+            operator_live: '20261110'
+          })
+          window.location.href = '../mobile.html?' + liveParams.toString()
+          return
+        }
         if (isCoffee) {
           showToast('Kávový automat ' + (stop.view.evidenceNumber ? 'EV ' + stop.view.evidenceNumber : stop.view.machineName) + ' naváže na odsouhlasený kávový postup.')
           return
