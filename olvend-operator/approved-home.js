@@ -427,11 +427,7 @@
     root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
-      if (!instruction) {
-        showPanel('Pokyny', 'Dnes není nový pokyn', function (body) { addCard(body, 'Vše je v pořádku', 'Pro dnešní směnu není žádný nový povinný pokyn.') })
-        return
-      }
-      overlay.hidden = false
+      window.location.href = './pokyny.html'
     })
     root.querySelector('#ot-close').addEventListener('click', function () { overlay.hidden = true })
     root.querySelector('#ot-confirm').addEventListener('click', function () {
