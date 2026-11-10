@@ -16,6 +16,7 @@
   var inventoryItems = []
   var meetings = []
   var meetingSlots = []
+  var selectedMeetingDay = null
   var selectedMeetingSlot = null
   var activeInventoryId = null
   var currentView = 'overview'
@@ -845,26 +846,75 @@
     return map[String(value || '')] || map.pending
   }
 
+  function meetingDayKey(value) {
+    var date = new Date(value)
+    try { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Prague' }).format(date) }
+    catch (_) { return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0') }
+  }
+
   function renderMeetingSlots() {
-    var container = root.querySelector('#op-meeting-slots')
-    container.innerHTML = ''
+    var daysContainer = root.querySelector('#op-meeting-days')
+    var timesContainer = root.querySelector('#op-meeting-slots')
+    var timesBlock = root.querySelector('#op-meeting-times')
+    daysContainer.innerHTML = ''
+    timesContainer.innerHTML = ''
     if (!meetingSlots.length) {
-      addEmpty(container, 'V následujících třech týdnech není zveřejněný volný termín.')
+      addEmpty(daysContainer, 'V následujících třech týdnech není zveřejněný volný termín.')
+      timesBlock.hidden = true
       updateMeetingSubmit()
       return
     }
-    meetingSlots.slice(0, 18).forEach(function (slot) {
+
+    var grouped = {}
+    var dayKeys = []
+    meetingSlots.forEach(function (slot) {
+      var key = meetingDayKey(slot.slot_start)
+      if (!grouped[key]) { grouped[key] = []; dayKeys.push(key) }
+      grouped[key].push(slot)
+    })
+
+    if (selectedMeetingDay && !grouped[selectedMeetingDay]) {
+      selectedMeetingDay = null
+      selectedMeetingSlot = null
+    }
+
+    dayKeys.forEach(function (key) {
+      var slots = grouped[key]
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'op-meeting-day' + (selectedMeetingDay === key ? ' selected' : '')
+      var date = new Date(slots[0].slot_start)
+      var weekday = document.createElement('small')
+      var day = document.createElement('strong')
+      var count = document.createElement('span')
+      weekday.textContent = date.toLocaleDateString('cs-CZ', { weekday: 'long', timeZone: 'Europe/Prague' })
+      day.textContent = date.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric', timeZone: 'Europe/Prague' })
+      count.textContent = slots.length + (slots.length === 1 ? ' čas' : slots.length < 5 ? ' časy' : ' časů')
+      button.appendChild(weekday); button.appendChild(day); button.appendChild(count)
+      button.addEventListener('click', function () {
+        selectedMeetingDay = key
+        selectedMeetingSlot = null
+        renderMeetingSlots()
+      })
+      daysContainer.appendChild(button)
+    })
+
+    timesBlock.hidden = !selectedMeetingDay
+    if (!selectedMeetingDay) {
+      updateMeetingSubmit()
+      return
+    }
+
+    grouped[selectedMeetingDay].forEach(function (slot) {
       var button = document.createElement('button')
       button.type = 'button'
       button.className = 'op-meeting-slot' + (selectedMeetingSlot && selectedMeetingSlot.slot_start === slot.slot_start ? ' selected' : '')
       var date = new Date(slot.slot_start)
-      var day = document.createElement('small')
       var time = document.createElement('strong')
-      day.textContent = date.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
-      time.textContent = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
-      button.appendChild(day); button.appendChild(time)
+      time.textContent = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Prague' })
+      button.appendChild(time)
       button.addEventListener('click', function () { selectedMeetingSlot = slot; renderMeetingSlots() })
-      container.appendChild(button)
+      timesContainer.appendChild(button)
     })
     updateMeetingSubmit()
   }
@@ -935,7 +985,7 @@
     }
     showBusy(true, 'Odesílám žádost o schůzku…')
     requestJson(supabaseUrl + '/rest/v1/rpc/request_my_meeting', { method: 'POST', body: JSON.stringify(payload) })
-      .then(function () { selectedMeetingSlot = null; root.querySelector('#op-meeting-message').value = ''; return loadMeetings() })
+      .then(function () { selectedMeetingDay = null; selectedMeetingSlot = null; root.querySelector('#op-meeting-message').value = ''; return loadMeetings() })
       .then(function () { renderMeetings(); renderOverview(); toast('Žádost o schůzku byla odeslána.') })
       .catch(function (error) { toast(error.message || 'Žádost o schůzku se nepodařilo odeslat.', true) })
       .then(function () { showBusy(false) })
