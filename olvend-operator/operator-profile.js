@@ -561,11 +561,7 @@
   function renderInventories() {
     var action = inventories.filter(function (item) { return inventoryKind(item) === 'action' })
     var review = inventories.filter(function (item) { return inventoryKind(item) === 'review' })
-    var closed = inventories.filter(function (item) { return inventoryKind(item) === 'closed' })
     var attention = action.length
-    root.querySelector('#op-inventory-action').textContent = String(action.length)
-    root.querySelector('#op-inventory-review').textContent = String(review.length)
-    root.querySelector('#op-inventory-closed').textContent = String(closed.length)
     root.querySelector('#op-inventory-total').textContent = inventories.length + (inventories.length === 1 ? ' záznam' : inventories.length > 1 && inventories.length < 5 ? ' záznamy' : ' záznamů')
     root.querySelector('#op-inventory-summary').textContent = attention
       ? (attention === 1 ? '1 inventura čeká na dokončení' : attention + ' inventury čekají na dokončení')
@@ -573,32 +569,60 @@
     var badge = root.querySelector('#op-inventory-badge')
     badge.textContent = attention ? String(attention) : '✓'
     badge.classList.toggle('ok', !attention)
+    var focus = root.querySelector('#op-inventory-focus')
+    focus.innerHTML = ''
+    var focusLabel = document.createElement('small')
+    var focusTitle = document.createElement('strong')
+    var focusCopy = document.createElement('span')
+    if (attention) {
+      focus.className = 'op-inventory-focus'
+      focusLabel.textContent = 'Vyžaduje pozornost'
+      focusTitle.textContent = attention === 1 ? 'Čeká 1 inventura' : 'Čekají ' + attention + ' inventury'
+      focusCopy.textContent = 'Přepočítání je součástí pracovního postupu. Dokončete ho v průběhu směny.'
+      var routeButton = document.createElement('button')
+      routeButton.type = 'button'; routeButton.textContent = 'Přejít do trasy'
+      routeButton.addEventListener('click', function () { window.location.href = './trasa.html' })
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy); focus.appendChild(routeButton)
+    } else if (review.length) {
+      focus.className = 'op-inventory-focus review'
+      focusLabel.textContent = 'Kontrola probíhá'
+      focusTitle.textContent = review.length === 1 ? '1 inventura se prověřuje' : review.length + ' inventury se prověřují'
+      focusCopy.textContent = 'Nyní není potřeba nic doplňovat. Výsledek se zde objeví po rozhodnutí vedoucího.'
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy)
+    } else {
+      focus.className = 'op-inventory-focus clear'
+      focusLabel.textContent = 'Vše vyřízeno'
+      focusTitle.textContent = 'Žádná inventura nečeká'
+      focusCopy.textContent = inventories.length ? 'Všechny dosavadní kontroly jsou uzavřené.' : 'Jakmile vznikne inventura, objeví se na tomto místě.'
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy)
+    }
     var list = root.querySelector('#op-inventory-list')
     list.innerHTML = ''
     if (!inventories.length) { addEmpty(list, 'Zatím zde není žádná inventura.'); return }
     inventories.forEach(function (item) {
       var status = inventoryStatus(item)
-      var card = document.createElement('article')
-      card.className = 'op-inventory-card' + (inventoryKind(item) === 'action' ? ' attention' : '')
-      var head = document.createElement('div')
-      head.className = 'op-inventory-head'
+      var kind = inventoryKind(item)
+      var row = document.createElement('article')
+      row.className = 'op-inventory-row ' + kind
+      var symbol = document.createElement('span')
+      symbol.className = 'op-inventory-symbol'
+      symbol.textContent = kind === 'action' ? '!' : kind === 'review' ? '…' : '✓'
       var copy = document.createElement('div')
+      copy.className = 'op-inventory-copy'
       var title = document.createElement('strong')
       var meta = document.createElement('span')
-      var chip = document.createElement('b')
-      chip.className = 'op-status ' + status.cls
+      var result = document.createElement('em')
+      var state = document.createElement('b')
       title.textContent = 'Inventura auta #' + item.id
       meta.textContent = formatDate(item.audit_date || item.created_at) + (item.audit_origin === 'post_route_exception' ? ' · po trase' : '')
-      chip.textContent = status.label
-      copy.appendChild(title); copy.appendChild(meta); head.appendChild(copy); head.appendChild(chip); card.appendChild(head)
-      var impact = document.createElement('div')
-      impact.className = 'op-inventory-impact' + (item.responsibility_status === 'not_operator' ? ' ok' : '')
-      if (inventoryKind(item) === 'action') impact.textContent = 'Čeká na fyzické přepočítání položek.'
-      else if (inventoryKind(item) === 'review') impact.textContent = 'Výsledek čeká na vyhodnocení vedoucím.'
-      else if (item.responsibility_status === 'not_operator') impact.textContent = 'Uzavřeno bez odpovědnosti operátora.'
-      else if (item.bonus_impact_amount != null) impact.textContent = 'Schválený dopad do prémie: ' + formatMoney(item.bonus_impact_amount) + ' · ' + formatMonth(item.bonus_period)
-      else impact.textContent = 'Uzavřeno bez schváleného dopadu do prémie.'
-      card.appendChild(impact); list.appendChild(card)
+      state.textContent = status.label
+      if (kind === 'action') result.textContent = 'Čeká na přepočítání v průběhu směny.'
+      else if (kind === 'review') result.textContent = 'Čeká na vyhodnocení vedoucím.'
+      else if (item.responsibility_status === 'not_operator') result.textContent = 'Bez odpovědnosti operátora.'
+      else if (item.bonus_impact_amount != null) result.textContent = 'Dopad do prémie ' + formatMoney(item.bonus_impact_amount) + ' · ' + formatMonth(item.bonus_period)
+      else result.textContent = 'Uzavřeno bez dopadu do prémie.'
+      copy.appendChild(title); copy.appendChild(meta); copy.appendChild(result)
+      row.appendChild(symbol); row.appendChild(copy); row.appendChild(state); list.appendChild(row)
     })
   }
 
