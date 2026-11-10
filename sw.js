@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v252-fructal-product-photos';
+const CACHE_NAME = 'olvend-v253-operator-live-route';
 const APP_SHELL = [
   './',
   './index.html',

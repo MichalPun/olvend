@@ -31,7 +31,7 @@
   <section id="operatorAuthGate" aria-busy="true"><div><strong>Ověřuji přihlášení…</strong><p id="operatorAuthMessage">Načítám bezpečnou relaci.</p><div id="operatorAuthActions" hidden><button id="operatorAuthRetry" type="button">Zkusit znovu</button><button id="operatorAuthLogin" type="button">Přihlásit se</button></div></div></section>
   <div class="app">
     <header class="topbar"><div class="brand"><img class="logo" src="./icon-192.png" alt=""><div><strong><b>OLVEND</b> Operátor</strong><span>Aktivní směna · 2TX7928</span></div></div><div class="head-actions"><span class="online">Online</span><button class="user op-user" type="button">VJ</button></div></header>
-    <section class="machine-head"><button class="back" type="button">‹ Zpět na zastávku</button><div class="title-row"><div><h1>HANÁK NÁBYTEK Kojetín</h1><p>EV 23 · Luce Snack X · otevřen 13:59</p></div><span class="badge">Živá data</span></div><nav class="steps"><button class="step active" data-screen="pick">Picklist</button><button class="step" data-screen="work">Volby</button><button class="step" data-screen="cash">Hotovost</button><button class="step" data-screen="check">Kontrola</button></nav></section>
+    <section class="machine-head"><button class="back" type="button">‹ Zpět na zastávku</button><div class="title-row"><div><h1 id="machine-location-title">HANÁK NÁBYTEK Kojetín</h1><p id="machine-meta">EV 23 · Luce Snack X · otevřen 13:59</p></div><span class="badge">Živá data</span></div><nav class="steps"><button class="step active" data-screen="pick">Picklist</button><button class="step" data-screen="work">Volby</button><button class="step" data-screen="cash">Hotovost</button><button class="step" data-screen="check">Kontrola</button></nav></section>
     <main>
       <section class="screen active" data-panel="pick">
         <article class="hero"><small>Před otevřením automatu</small><h2 id="pick-total-title">Vezmi z auta 11 ks</h2><p>Jen to, co budeš u EV 23 opravdu potřebovat. U každého produktu vidíš stejnou volbu jako zákazník.</p><div class="hero-facts"><div class="hero-fact"><span>Volby</span><strong id="pick-choice-count">5</strong></div><div class="hero-fact"><span>Z auta</span><strong id="pick-total-fact">11 ks</strong></div><div class="hero-fact"><span>Upraveno</span><strong id="pick-custom-count">0×</strong></div></div></article>
@@ -143,7 +143,46 @@
         {choice:'6D',name:'7days Croissant lískový oříšek 60g',current:2,capacity:8,price:20,car:14,photo:'./assets/product-images/ean-7622201390648.jpg',types:1},
         {choice:'6F',name:'Dupetky hořčice, med a cibulka 70g',current:6,capacity:10,price:27,car:1,photo:'./assets/product-images/ean-5949040204427.jpg',types:1}
       ];
-      var query=new URLSearchParams(window.location.search),accepted=new Set(),activeIndex=0,actual=items[0].current,add=items[0].pickQty,toastTimer,selectedSwapTarget=swapTargets[2],editingPickIndex=0,editingPickQty=items[0].pickQty,editingAlternative=null,duplicateAcknowledged=false,editingAdd=add,mismatchActive=false,mismatchReason='',expiryDraft=[],expiryTransferRecommendation=null,expiryTransferAccepted=false,cashStatus='',scenario=query.get('scenario'),initialScreen=query.get('screen');
+      var query=new URLSearchParams(window.location.search),accepted=new Set(),activeIndex=0,actual=items[0].current,add=items[0].pickQty,toastTimer,selectedSwapTarget=swapTargets[2],editingPickIndex=0,editingPickQty=items[0].pickQty,editingAlternative=null,duplicateAcknowledged=false,editingAdd=add,mismatchActive=false,mismatchReason='',expiryDraft=[],expiryTransferRecommendation=null,expiryTransferAccepted=false,cashStatus='',scenario=query.get('scenario'),initialScreen=query.get('screen'),liveMode=query.get('live')==='1',liveEngine=null,liveStopId=query.get('stop_id')||'';
+      function liveCall(method){
+        if(!liveMode||!liveEngine||typeof liveEngine[method]!=='function')return Promise.resolve(null);
+        var args=Array.prototype.slice.call(arguments,1);
+        return Promise.resolve(liveEngine[method].apply(liveEngine,args)).then(function(snapshot){
+          if(snapshot&&snapshot.ready)applyLiveSnapshot(snapshot);
+          return snapshot
+        }).catch(function(error){toast(error&&error.message?error.message:'Akci se nepodařilo uložit.');throw error})
+      }
+      function applyLiveSnapshot(snapshot){
+        if(!snapshot||!snapshot.ready)return;
+        document.getElementById('machine-location-title').textContent=snapshot.title||'Potravinový automat';
+        document.getElementById('machine-meta').textContent='EV '+snapshot.evidenceNumber+' · '+(snapshot.machine||'Potravinový automat')+(snapshot.openedAt?' · otevřen '+new Date(snapshot.openedAt).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'}):'');
+        var mapped=(snapshot.slots||[]).map(function(slot){
+          return Object.assign({},slot,{
+            defaultAlt:String(slot.selectedProductId||''),selectedAlt:String(slot.selectedProductId||''),
+            alternatives:(slot.alternatives||[]).map(function(option){return Object.assign({},option,{key:String(option.id)})}),
+            contents:(slot.contents||[]).filter(function(block){return Number(block.qty||0)>0})
+          })
+        });
+        if(mapped.length){items.splice.apply(items,[0,items.length].concat(mapped));swapTargets=items.map(function(item){return{choice:item.choice,name:item.name,current:item.current,capacity:item.capacity,price:item.price,car:item.car,photo:item.photo,types:item.contents&&item.contents.length||1,id:item.id}})}
+        accepted.clear();items.forEach(function(item,index){if(item.pickConfirmed||item.skipped)accepted.add(index)});
+        var firstOpen=items.findIndex(function(item){return !item.accepted&&(item.pickQty>0||item.qty>0)});activeIndex=firstOpen<0?0:firstOpen;
+        actual=Number(items[activeIndex]&&items[activeIndex].actualBefore!=null?items[activeIndex].actualBefore:items[activeIndex].current||0);add=Number(items[activeIndex]&&items[activeIndex].actualAdd!=null?items[activeIndex].actualAdd:items[activeIndex].pickQty||0);editingAdd=add;
+        var cash=snapshot.cash;if(cash){var code=String(cash.bagCode||'----');document.querySelector('.cash-bag strong').textContent=code;document.querySelector('.cash-bag em').textContent='EV '+snapshot.evidenceNumber;document.querySelector('.cash-copy h2').textContent='Použij sáček '+code;document.getElementById('cash-confirm').textContent='Hotovost je v sáčku '+code;cashStatus=cash.collected?'collected':cash.deferred?'deferred':''}
+        var checkList=document.getElementById('check-list');if(snapshot.checks&&snapshot.checks.length){checkList.innerHTML='';snapshot.checks.forEach(function(check,index){var row=document.createElement('article');row.className='check'+(check.done?' done':'');row.dataset.checkKey=check.key;row.innerHTML='<b>'+(check.done?'✓':index+1)+'</b><div><strong></strong><span>Potvrď po skutečném provedení</span></div><button type="button">'+(check.done?'Hotovo':'Potvrdit')+'</button>';row.querySelector('strong').textContent=check.label;checkList.appendChild(row)})}
+        document.getElementById('finish-machine').textContent='Dokončit EV '+snapshot.evidenceNumber;
+        document.getElementById('finish-machine').disabled=Boolean(snapshot.checks&&snapshot.checks.some(function(check){return !check.done}));
+        renderPick();renderWork();renderCashState();
+        var stageScreen={goods:'pick',refill:'work',cash:'cash',check:'check',finish:'check'}[snapshot.stage];if(stageScreen)setScreen(stageScreen)
+      }
+      function initLiveEngine(){
+        if(!liveMode)return;
+        if(!liveStopId){toast('V odkazu chybí zastávka trasy.');return}
+        var frame=document.createElement('iframe');frame.hidden=true;frame.setAttribute('aria-hidden','true');frame.src='../mobile.html?operator_engine=1&operator_stop_id='+encodeURIComponent(liveStopId);document.body.appendChild(frame);
+        var attempts=0,timer=setInterval(function(){
+          attempts+=1;
+          try{var engine=frame.contentWindow&&frame.contentWindow.olvendOperatorFoodEngine;if(engine){clearInterval(timer);liveEngine=engine;var snapshot=engine.snapshot();if(snapshot&&snapshot.ready){applyLiveSnapshot(snapshot);toast('Živá data trasy jsou načtená.')}else if(snapshot&&snapshot.error){toast(snapshot.error)}}else if(attempts>240){clearInterval(timer);toast('Živá data se nepodařilo načíst. Zkus obrazovku obnovit.')}}catch(error){if(attempts>240){clearInterval(timer);toast('Živá data se nepodařilo načíst.')}}
+        },250)
+      }
       if(scenario==='mixed-bagettes'){
         Object.assign(items[4],{
           name:'Snack Pořízek 136g',current:3,capacity:5,car:1,qty:1,pickQty:1,shortage:'',sub:'Ve spirále jsou dva druhy; doplňuješ třetí.',
@@ -500,7 +539,25 @@
       document.getElementById('cash-missing-save').addEventListener('click',function(){var button=this,reason=document.getElementById('cash-missing-reason').selectedOptions[0].textContent;button.disabled=true;button.textContent='Ukládám…';setTimeout(function(){button.disabled=false;button.textContent='Uložit bez výběru';cashStatus='deferred';closeCashMissing();renderCashState();toast(reason+' · výběr zůstává povinný pro příští návštěvu.')},650)});
       document.getElementById('cash-go-check').addEventListener('click',function(){setScreen('check')});
       document.querySelectorAll('.check button').forEach(function(button){button.addEventListener('click',function(){var row=button.closest('.check');row.classList.toggle('done');row.querySelector('b').textContent=row.classList.contains('done')?'✓':Array.from(document.querySelectorAll('.check')).indexOf(row)+1;button.textContent=row.classList.contains('done')?'Hotovo':'Potvrdit';document.getElementById('finish-machine').disabled=document.querySelectorAll('.check.done').length!==document.querySelectorAll('.check').length})});
-      document.getElementById('finish-machine').addEventListener('click',function(){toast('EV 23 je připravený k dokončení a návratu do Trasy.')});renderPick();['pick','work','cash','check'].includes(initialScreen)?setScreen(initialScreen):(scenario==='mixed-bagettes'?setScreen('work'):renderWork());
+      document.getElementById('finish-machine').addEventListener('click',function(){toast('EV 23 je připravený k dokončení a návratu do Trasy.')});
+      var livePositionContext=null;
+      document.getElementById('confirm-position').addEventListener('click',function(){if(liveMode&&items[activeIndex])livePositionContext={id:items[activeIndex].id,actualBefore:actual,actualAdd:add}},true);
+      pickList.addEventListener('click',function(event){
+        if(!liveMode)return;var button=event.target.closest('.pick-action');if(!button)return;var row=button.closest('.pick'),index=Array.prototype.indexOf.call(pickList.children,row),item=items[index];if(!item||button.classList.contains('alternative'))return;
+        window.setTimeout(function(){if(accepted.has(index))liveCall('setPick',item.id,item.pickQty,item.selectedProductId).then(function(){return liveCall('confirmPick',item.id)}).catch(function(){accepted.delete(index);renderPick()})},0)
+      });
+      document.getElementById('pick-edit-save').addEventListener('click',function(){if(!liveMode)return;var item=items[editingPickIndex];window.setTimeout(function(){liveCall('setPick',item.id,item.pickQty,item.selectedAlt||item.selectedProductId)},0)});
+      document.getElementById('accept-all').addEventListener('click',function(){if(!liveMode)return;window.setTimeout(function(){Promise.all(items.map(function(item,index){if(!accepted.has(index))return null;return liveCall('setPick',item.id,item.pickQty,item.selectedAlt||item.selectedProductId).then(function(){return liveCall('confirmPick',item.id)})})).catch(function(){})},0)});
+      accept.addEventListener('click',function(){if(liveMode)liveCall('openMachine').catch(function(){setScreen('pick')})});
+      document.getElementById('confirm-position').addEventListener('click',function(){if(!liveMode||!livePositionContext)return;var context=livePositionContext;livePositionContext=null;liveCall('updateSlot',context.id,{actualBefore:context.actualBefore,actualAdd:context.actualAdd}).then(function(){return liveCall('confirmSlot',context.id)}).catch(function(){})});
+      document.getElementById('price-save').addEventListener('click',function(){if(!liveMode||!items[activeIndex])return;var item=items[activeIndex];liveCall('updateSlot',item.id,{operatorProposedPrice:item.price,operatorPriceNote:item.priceReason||'',operatorPriceConfirmed:true}).catch(function(){})});
+      document.getElementById('capacity-save').addEventListener('click',function(){if(liveMode&&items[activeIndex])liveCall('updateSlot',items[activeIndex].id,{capacityUnits:items[activeIndex].capacity}).catch(function(){})});
+      document.getElementById('expiry-save').addEventListener('click',function(){if(!liveMode||!items[activeIndex])return;var first=(items[activeIndex].contents||[])[0];liveCall('updateSlot',items[activeIndex].id,{existingExpiryDate:first&&first.expiry||''}).catch(function(){})});
+      document.getElementById('cash-confirm').addEventListener('click',function(){if(liveMode)liveCall('saveCash').catch(function(){})});
+      document.getElementById('cash-missing-save').addEventListener('click',function(){if(!liveMode)return;var reason=document.getElementById('cash-missing-reason').selectedOptions[0].textContent;liveCall('deferCash',reason).catch(function(){})});
+      document.getElementById('check-list').addEventListener('click',function(event){if(!liveMode)return;var button=event.target.closest('button'),row=button&&button.closest('.check');if(!row||!row.dataset.checkKey)return;liveCall('saveCheck',row.dataset.checkKey).catch(function(){})});
+      document.getElementById('finish-machine').addEventListener('click',function(){if(!liveMode)return;liveCall('complete').then(function(result){if(result&&result.completed)window.location.href='./trasa.html'}).catch(function(){})});
+      renderPick();['pick','work','cash','check'].includes(initialScreen)?setScreen(initialScreen):(scenario==='mixed-bagettes'?setScreen('work'):renderWork());initLiveEngine();
     })();
   </script>
   <script src="./auth-guard.js?v=20261110-3"></script>

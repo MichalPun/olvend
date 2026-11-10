@@ -277,8 +277,36 @@
       row.disabled = !active
       row.addEventListener('click', function () {
         var isCoffee = /coffee|ká|kav/i.test(stop.view.machineType)
+        if (!preview) {
+          if (isCoffee) {
+            var coffeeParams = new URLSearchParams({
+              live: '1',
+              stop_id: String(stop.id),
+              ev: String(stop.view.evidenceNumber || stop.machine_id || ''),
+              machine: String(stop.view.machineName || stop.title || 'Kávový automat'),
+              location: String(group.name || '')
+            })
+            window.location.href = './index.html?' + coffeeParams.toString()
+            return
+          }
+          var liveParams = new URLSearchParams({
+            live: '1',
+            stop_id: String(stop.id),
+            ev: String(stop.view.evidenceNumber || stop.machine_id || ''),
+            machine: String(stop.view.machineName || stop.title || 'Potravinový automat'),
+            location: String(group.name || '')
+          })
+          window.location.href = './potravinovy-automat-preview.html?' + liveParams.toString()
+          return
+        }
         if (isCoffee) {
-          showToast('Kávový automat ' + (stop.view.evidenceNumber ? 'EV ' + stop.view.evidenceNumber : stop.view.machineName) + ' naváže na odsouhlasený kávový postup.')
+          var previewCoffeeParams = new URLSearchParams({
+            preview: 'route197',
+            ev: String(stop.view.evidenceNumber || stop.machine_id || ''),
+            machine: String(stop.view.machineName || stop.title || 'Kávový automat'),
+            location: String(group.name || '')
+          })
+          window.location.href = './index.html?' + previewCoffeeParams.toString()
           return
         }
         var params = new URLSearchParams({

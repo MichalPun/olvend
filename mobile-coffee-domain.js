@@ -301,7 +301,7 @@ export function createCoffeeDomain({
     const hasContainers = (detail.containers || []).length > 0
     const hasPlannedRefill = (detail.containers || []).some((container) => getCoffeeActualPackages(stopId, container) > 0)
     if (hasContainers && !hasPlannedRefill && !detail.draft?.refillReviewed) return 'refill'
-    const cashResolved = detail.cash && (detail.cash.collection_required ? detail.cash.operator_collected_confirmed : detail.cash.retained_for_next_visit)
+    const cashResolved = detail.cash && (detail.cash.operator_collected_confirmed || detail.cash.retained_for_next_visit)
     if (!cashResolved) return 'cash'
     if (getCoffeeGuidedCheckRows(detail).some((row) => row.status !== 'done')) return 'check'
     return 'finish'
