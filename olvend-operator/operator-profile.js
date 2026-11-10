@@ -12,6 +12,8 @@
   var territoryRows = []
   var payslips = []
   var currentView = 'overview'
+  var territoryMaps = {}
+  var territoryBounds = null
 
   function apiHeaders(extra) {
     return Object.assign({
@@ -140,6 +142,12 @@
     currentView = name
     Array.prototype.forEach.call(root.querySelectorAll('.op-view'), function (view) { view.hidden = view.getAttribute('data-view') !== name })
     window.scrollTo(0, 0)
+    if (name === 'territory' && territoryMaps.detail) {
+      window.setTimeout(function () {
+        territoryMaps.detail.invalidateSize()
+        fitTerritoryMap(territoryMaps.detail, 12)
+      }, 30)
+    }
   }
 
   function addEmpty(parent, message) {
@@ -257,38 +265,111 @@
     return requestJson(url).then(function (rows) { payslips = Array.isArray(rows) ? rows : [] })
   }
 
-  function mapPoint(location) {
+  function locationPoint(location) {
     var lat = Number(location && location.latitude)
     var lng = Number(location && location.longitude)
     if (!isFinite(lat) || !isFinite(lng) || lat < 48.3 || lat > 51.2 || lng < 11.8 || lng > 19.2) return null
-    return [16 + (lng - 11.8) / 7.4 * 288, 14 + (51.15 - lat) / 2.85 * 150]
+    return [lat, lng]
   }
 
-  function svgNode(name, attributes) {
-    var node = document.createElementNS('http://www.w3.org/2000/svg', name)
-    Object.keys(attributes || {}).forEach(function (key) { node.setAttribute(key, attributes[key]) })
-    return node
-  }
-
-  function renderMap(svg) {
-    while (svg.firstChild) svg.removeChild(svg.firstChild)
-    var border = [[12.1,50.28],[12.3,49.82],[12.1,49.45],[12.55,49.08],[13.15,48.72],[13.75,48.58],[14.4,48.62],[14.95,48.82],[15.55,48.76],[16.12,48.66],[16.75,48.55],[17.35,48.78],[18.05,48.94],[18.72,49.45],[18.55,49.78],[18.08,50.05],[17.65,50.32],[17.05,50.55],[16.4,50.72],[15.75,50.93],[15.05,50.98],[14.38,51.03],[13.78,50.82],[13.05,50.83],[12.45,50.55]]
-    var outline = border.map(function (pair) { return mapPoint({ longitude: pair[0], latitude: pair[1] }) }).filter(Boolean)
-    svg.appendChild(svgNode('polygon', { points: outline.map(function (point) { return point[0].toFixed(1) + ',' + point[1].toFixed(1) }).join(' '), 'class': 'op-map-country' }))
-    var visible = territoryRows.filter(function (row) { return mapPoint(row.location) })
-    if (!visible.length) {
-      var empty = svgNode('text', { x: '160', y: '93', 'class': 'op-map-empty' })
-      empty.textContent = 'Rajón zatím nemá polohy k zobrazení'
-      svg.appendChild(empty)
+  function fitTerritoryMap(map, maxZoom) {
+    if (!map || !territoryBounds || !territoryBounds.isValid()) return
+    if (territoryBounds.getNorthEast().equals(territoryBounds.getSouthWest())) {
+      map.setView(territoryBounds.getCenter(), Math.min(maxZoom || 13, 13))
       return
     }
-    visible.forEach(function (row) {
-      var point = mapPoint(row.location)
-      var circle = svgNode('circle', { cx: point[0].toFixed(1), cy: point[1].toFixed(1), r: row.role === 'primary' ? '4.2' : '3.8', 'class': row.role === 'primary' ? 'op-map-primary' : 'op-map-backup' })
-      var title = svgNode('title')
-      title.textContent = (row.location.name || 'Lokalita') + ' · ' + (row.location.city || '')
-      circle.appendChild(title)
-      svg.appendChild(circle)
+    map.fitBounds(territoryBounds, { paddingTopLeft: [26, 26], paddingBottomRight: [26, 54], maxZoom: maxZoom || 13 })
+  }
+
+  function cross(origin, a, b) {
+    return (a[1] - origin[1]) * (b[0] - origin[0]) - (a[0] - origin[0]) * (b[1] - origin[1])
+  }
+
+  function convexHull(points) {
+    if (points.length < 3) return points
+    var sorted = points.slice().sort(function (a, b) { return a[1] === b[1] ? a[0] - b[0] : a[1] - b[1] })
+    var lower = []
+    sorted.forEach(function (point) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop()
+      lower.push(point)
+    })
+    var upper = []
+    sorted.slice().reverse().forEach(function (point) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop()
+      upper.push(point)
+    })
+    lower.pop(); upper.pop()
+    return lower.concat(upper)
+  }
+
+  function fallbackMap(container, message) {
+    container.innerHTML = ''
+    var fallback = document.createElement('div')
+    fallback.className = 'op-map-fallback'
+    fallback.textContent = message
+    container.appendChild(fallback)
+  }
+
+  function renderLeafletMap(container, key, interactive) {
+    if (!container) return
+    if (territoryMaps[key]) {
+      territoryMaps[key].remove()
+      territoryMaps[key] = null
+    }
+    var visible = territoryRows.map(function (row, index) {
+      var point = locationPoint(row.location)
+      return point ? { row: row, point: point, index: index + 1 } : null
+    }).filter(Boolean)
+    if (!visible.length) {
+      fallbackMap(container, 'U přidělených lokalit zatím nejsou uložené souřadnice.')
+      return
+    }
+    if (!window.L) {
+      fallbackMap(container, 'Mapový podklad se nepodařilo načíst. Seznam lokalit je dostupný pod mapou.')
+      return
+    }
+    container.innerHTML = ''
+    var map = window.L.map(container, {
+      attributionControl: true,
+      zoomControl: interactive,
+      dragging: interactive,
+      touchZoom: interactive,
+      doubleClickZoom: interactive,
+      boxZoom: interactive,
+      keyboard: interactive,
+      scrollWheelZoom: false,
+      tap: interactive,
+      zoomSnap: 0.5
+    })
+    territoryMaps[key] = map
+    window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+      maxZoom: 18
+    }).addTo(map)
+    var primaryPoints = []
+    visible.forEach(function (item) {
+      if (item.row.role === 'primary') primaryPoints.push(item.point)
+      var icon = window.L.divIcon({
+        className: '',
+        html: '<span class="op-map-pin' + (item.row.role === 'backup' ? ' backup' : '') + '">' + item.index + '</span>',
+        iconSize: [27, 27],
+        iconAnchor: [14, 14]
+      })
+      var marker = window.L.marker(item.point, { icon: icon, keyboard: interactive, title: item.row.location.name || 'Lokalita' }).addTo(map)
+      var label = item.row.location.name || item.row.location.city || 'Lokalita'
+      marker.bindTooltip(label, { className: 'op-map-label', direction: 'top', offset: [0, -11], opacity: 1, permanent: interactive })
+      if (interactive) marker.bindPopup('<strong>' + escapeHtml(label) + '</strong><br>' + escapeHtml([item.row.location.city, item.row.location.address].filter(Boolean).join(', ')) + '<br><small>' + item.row.machineCount + (item.row.machineCount === 1 ? ' automat' : ' automatů') + '</small>')
+    })
+    if (primaryPoints.length >= 3) {
+      window.L.polygon(convexHull(primaryPoints), { color: '#087746', weight: 2, opacity: .55, fillColor: '#087746', fillOpacity: .08, interactive: false, dashArray: '6 6' }).addTo(map)
+    }
+    territoryBounds = window.L.latLngBounds(visible.map(function (item) { return item.point }))
+    fitTerritoryMap(map, interactive ? 12 : 10)
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>'"]/g, function (character) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]
     })
   }
 
@@ -309,22 +390,26 @@
     root.querySelector('#op-territory-cities').textContent = cities.length ? cities.slice(0, 6).join(' · ') : 'Zatím bez přidělené hlavní oblasti'
     var validFrom = primary.map(function (row) { return row.assignment.effective_from }).filter(Boolean).sort()[0]
     root.querySelector('#op-territory-validity').textContent = validFrom ? 'Aktuální rozdělení platné od ' + formatDate(validFrom) : 'Aktuální rozdělení'
-    renderMap(root.querySelector('#op-territory-map-overview'))
-    renderMap(root.querySelector('#op-territory-map-detail'))
+    renderLeafletMap(root.querySelector('#op-territory-map-overview'), 'overview', false)
+    renderLeafletMap(root.querySelector('#op-territory-map-detail'), 'detail', true)
     var list = root.querySelector('#op-territory-list')
     list.innerHTML = ''
     if (!territoryRows.length) { addEmpty(list, 'Zatím nemáte přidělený rajón.'); return }
-    territoryRows.forEach(function (row) {
+    territoryRows.forEach(function (row, index) {
       var item = document.createElement('div')
       item.className = 'op-location' + (row.role === 'backup' ? ' backup' : '')
+      var number = document.createElement('span')
+      number.className = 'op-location-index'
+      number.textContent = String(index + 1)
       var copy = document.createElement('span')
+      copy.className = 'op-location-copy'
       var title = document.createElement('strong')
       var address = document.createElement('span')
       var value = document.createElement('b')
       title.textContent = row.location.name || 'Lokalita'
       address.textContent = [row.location.city, row.location.address].filter(Boolean).join(' · ')
       value.textContent = row.role === 'backup' ? 'Náhradník' : row.machineCount + (row.machineCount === 1 ? ' automat' : row.machineCount > 1 && row.machineCount < 5 ? ' automaty' : ' automatů')
-      copy.appendChild(title); copy.appendChild(address); item.appendChild(copy); item.appendChild(value); list.appendChild(item)
+      copy.appendChild(title); copy.appendChild(address); item.appendChild(number); item.appendChild(copy); item.appendChild(value); list.appendChild(item)
     })
   }
 
@@ -578,6 +663,7 @@
       if (!to.value || to.value < event.target.value) to.value = event.target.value
     })
     root.querySelector('#op-request-form').addEventListener('submit', saveRequest)
+    root.querySelector('#op-map-fit').addEventListener('click', function () { fitTerritoryMap(territoryMaps.detail, 12) })
   }
 
   bind()
