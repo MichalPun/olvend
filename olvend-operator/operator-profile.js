@@ -11,6 +11,8 @@
   var shifts = []
   var territoryRows = []
   var payslips = []
+  var bonusSummaries = []
+  var inventories = []
   var currentView = 'overview'
   var territoryMaps = {}
   var territoryBounds = null
@@ -265,6 +267,26 @@
     return requestJson(url).then(function (rows) { payslips = Array.isArray(rows) ? rows : [] })
   }
 
+  function monthStart(offset) {
+    var date = new Date()
+    date = new Date(date.getFullYear(), date.getMonth() - Number(offset || 0), 1)
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-01'
+  }
+
+  function loadBonuses() {
+    var offsets = [0, 1, 2, 3, 4, 5].filter(function (offset) { return monthStart(offset) >= '2026-08-01' })
+    return Promise.all(offsets.map(function (offset) {
+      return requestJson(supabaseUrl + '/rest/v1/rpc/my_bonus_summary', { method: 'POST', body: JSON.stringify({ p_period: monthStart(offset) }) })
+    })).then(function (rows) { bonusSummaries = rows.filter(Boolean) })
+  }
+
+  function loadInventories() {
+    var fields = 'id,audit_date,scope_type,assigned_employee_id,status,difference_quantity_total,difference_value_total,evaluated_at,closed_at,responsibility_status,responsibility_decision_note,bonus_impact_amount,bonus_period,created_at,audit_origin'
+    var url = supabaseUrl + '/rest/v1/inventory_audits?select=' + encodeURIComponent(fields)
+      + '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&scope_type=eq.vehicle&order=created_at.desc&limit=30'
+    return requestJson(url).then(function (rows) { inventories = Array.isArray(rows) ? rows : [] })
+  }
+
   function locationPoint(location) {
     var lat = Number(location && location.latitude)
     var lng = Number(location && location.longitude)
@@ -480,6 +502,106 @@
       .then(function () { showBusy(false) })
   }
 
+  function formatMoney(value) {
+    return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 }).format(Number(value || 0))
+  }
+
+  function formatMonth(value) {
+    if (!value) return '—'
+    return new Date(String(value).slice(0, 10) + 'T12:00:00').toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })
+  }
+
+  function renderBonuses() {
+    var current = bonusSummaries[0] || null
+    root.querySelector('#op-bonus-amount').textContent = current ? formatMoney(current.total) : '—'
+    root.querySelector('#op-bonus-note').textContent = current && current.is_final ? 'uzavřená částka' : 'průběžný odhad'
+    root.querySelector('#op-bonus-period').textContent = current ? formatMonth(current.period) : 'Aktuální měsíc'
+    root.querySelector('#op-bonus-state').textContent = current && current.is_final ? 'Uzavřeno' : 'Průběžný odhad'
+    root.querySelector('#op-bonus-total').textContent = current ? formatMoney(current.total) : 'Údaj není dostupný'
+    root.querySelector('#op-bonus-before').textContent = current ? formatMoney(current.bonus_before_adjustments) : '—'
+    root.querySelector('#op-bonus-deductions').textContent = current ? '−' + formatMoney(current.deductions) : '—'
+    root.querySelector('#op-bonus-visits').textContent = current ? String(current.visits || 0) : '—'
+    root.querySelector('#op-bonus-machines').textContent = current ? String(current.machines || 0) : '—'
+    root.querySelector('#op-bonus-updated').textContent = current && current.updated_at
+      ? 'Aktualizováno ' + new Date(current.updated_at).toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : 'Vyhodnocení se nepodařilo načíst.'
+    var history = root.querySelector('#op-bonus-history')
+    root.querySelector('#op-bonus-history-label').textContent = bonusSummaries.length === 1 ? '1 měsíc' : bonusSummaries.length + ' měsíců'
+    history.innerHTML = ''
+    if (!bonusSummaries.length) { addEmpty(history, 'Přehled prémií nyní není dostupný.'); return }
+    bonusSummaries.forEach(function (item) {
+      var row = document.createElement('div')
+      row.className = 'op-history-row'
+      var copy = document.createElement('span')
+      var title = document.createElement('strong')
+      var detail = document.createElement('span')
+      var amount = document.createElement('b')
+      title.textContent = formatMonth(item.period)
+      detail.textContent = (item.visits || 0) + ' návštěv · ' + (item.machines || 0) + ' automatů' + (Number(item.deductions || 0) ? ' · úpravy −' + formatMoney(item.deductions) : '')
+      amount.textContent = formatMoney(item.total)
+      copy.appendChild(title); copy.appendChild(detail); row.appendChild(copy); row.appendChild(amount); history.appendChild(row)
+    })
+  }
+
+  function inventoryKind(item) {
+    if (item.status === 'assigned') return 'action'
+    if (['counted', 'transfer_ready', 'evaluated'].indexOf(item.status) !== -1) return 'review'
+    return 'closed'
+  }
+
+  function inventoryStatus(item) {
+    var kind = inventoryKind(item)
+    if (kind === 'action') return { label: 'K dokončení', cls: 'pending' }
+    if (kind === 'review') return { label: 'Prověřuje se', cls: '' }
+    if (item.responsibility_status === 'not_operator') return { label: 'Bez odpovědnosti', cls: 'approved' }
+    if (item.responsibility_status === 'operator') return { label: 'Uzavřeno', cls: 'rejected' }
+    return { label: 'Uzavřeno', cls: 'approved' }
+  }
+
+  function renderInventories() {
+    var action = inventories.filter(function (item) { return inventoryKind(item) === 'action' })
+    var review = inventories.filter(function (item) { return inventoryKind(item) === 'review' })
+    var closed = inventories.filter(function (item) { return inventoryKind(item) === 'closed' })
+    var attention = action.length
+    root.querySelector('#op-inventory-action').textContent = String(action.length)
+    root.querySelector('#op-inventory-review').textContent = String(review.length)
+    root.querySelector('#op-inventory-closed').textContent = String(closed.length)
+    root.querySelector('#op-inventory-total').textContent = inventories.length + (inventories.length === 1 ? ' záznam' : inventories.length > 1 && inventories.length < 5 ? ' záznamy' : ' záznamů')
+    root.querySelector('#op-inventory-summary').textContent = attention
+      ? (attention === 1 ? '1 inventura čeká na dokončení' : attention + ' inventury čekají na dokončení')
+      : review.length ? review.length + (review.length === 1 ? ' kontrola se prověřuje' : ' kontroly se prověřují') : 'Výsledky a případné rozdíly'
+    var badge = root.querySelector('#op-inventory-badge')
+    badge.textContent = attention ? String(attention) : '✓'
+    badge.classList.toggle('ok', !attention)
+    var list = root.querySelector('#op-inventory-list')
+    list.innerHTML = ''
+    if (!inventories.length) { addEmpty(list, 'Zatím zde není žádná inventura.'); return }
+    inventories.forEach(function (item) {
+      var status = inventoryStatus(item)
+      var card = document.createElement('article')
+      card.className = 'op-inventory-card' + (inventoryKind(item) === 'action' ? ' attention' : '')
+      var head = document.createElement('div')
+      head.className = 'op-inventory-head'
+      var copy = document.createElement('div')
+      var title = document.createElement('strong')
+      var meta = document.createElement('span')
+      var chip = document.createElement('b')
+      chip.className = 'op-status ' + status.cls
+      title.textContent = 'Inventura auta #' + item.id
+      meta.textContent = formatDate(item.audit_date || item.created_at) + (item.audit_origin === 'post_route_exception' ? ' · po trase' : '')
+      chip.textContent = status.label
+      copy.appendChild(title); copy.appendChild(meta); head.appendChild(copy); head.appendChild(chip); card.appendChild(head)
+      var impact = document.createElement('div')
+      impact.className = 'op-inventory-impact' + (item.responsibility_status === 'not_operator' ? ' ok' : '')
+      if (inventoryKind(item) === 'action') impact.textContent = 'Čeká na fyzické přepočítání položek.'
+      else if (inventoryKind(item) === 'review') impact.textContent = 'Výsledek čeká na vyhodnocení vedoucím.'
+      else if (item.responsibility_status === 'not_operator') impact.textContent = 'Uzavřeno bez odpovědnosti operátora.'
+      else if (item.bonus_impact_amount != null) impact.textContent = 'Schválený dopad do prémie: ' + formatMoney(item.bonus_impact_amount) + ' · ' + formatMonth(item.bonus_period)
+      else impact.textContent = 'Uzavřeno bez schváleného dopadu do prémie.'
+      card.appendChild(impact); list.appendChild(card)
+    })
+  }
+
   function renderOverview() {
     var fullName = [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil'
     var mark = initials(employee)
@@ -501,14 +623,6 @@
     root.querySelector('#op-vacation-note').textContent = vacation.total ? 'zbývá z nároku' : 'schváleno letos'
     root.querySelector('#op-today-label').textContent = new Date().toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' })
     root.querySelector('#op-next-shift').textContent = shifts.length ? formatDate(shifts[0].plan_date, true) + ' · ' + shiftTime(shifts[0]) : 'Žádná publikovaná směna na dalších 28 dní'
-    var pending = requests.filter(function (row) { return row.status === 'pending' }).length
-    root.querySelector('#op-request-summary').textContent = pending ? (pending === 1 ? '1 žádost čeká na rozhodnutí' : pending + ' žádosti čekají na rozhodnutí') : 'Žádná žádost nečeká na rozhodnutí'
-    var badge = root.querySelector('#op-request-badge')
-    badge.textContent = pending ? String(pending) : '✓'
-    badge.classList.toggle('ok', !pending)
-    var moreBadge = root.querySelector('#op-more-request-badge')
-    moreBadge.textContent = badge.textContent
-    moreBadge.classList.toggle('ok', !pending)
   }
 
   function shiftTime(row) {
@@ -596,6 +710,8 @@
   function renderAll() {
     renderOverview()
     renderTerritory()
+    renderBonuses()
+    renderInventories()
     renderPayslips()
     renderShifts()
     renderRequests()
@@ -674,7 +790,7 @@
     employee = activeEmployee || {}
     if (!employee.id && !(session && session.user && session.user.id)) { showBusy(false); toast('Profil zaměstnance se nepodařilo načíst.', true); return }
     loadEmployee().then(function () {
-      return Promise.allSettled([loadAttendance(), loadRequests(), loadShifts(), loadTerritory(), loadPayslips()])
+      return Promise.allSettled([loadAttendance(), loadRequests(), loadShifts(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories()])
     }).then(function (results) {
       var failed = results.filter(function (result) { return result.status === 'rejected' })
       renderAll()
