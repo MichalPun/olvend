@@ -647,7 +647,7 @@
       var state = document.createElement('b')
       title.textContent = 'Inventura auta #' + item.id
       meta.textContent = formatDate(item.audit_date || item.created_at) + (item.audit_origin === 'post_route_exception' ? ' · po trase' : '')
-      state.textContent = status.label
+      state.textContent = status.label + '  ›'
       if (kind === 'action') result.textContent = 'Čeká na přepočítání v průběhu směny.'
       else if (kind === 'review') result.textContent = 'Čeká na vyhodnocení vedoucím.'
       else if (item.responsibility_status === 'not_operator') result.textContent = 'Bez odpovědnosti operátora.'
