@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v7'
+  var CACHE_NAME = 'olvend-operator-v8'
   var APP_SHELL = [
     './',
     './index.html',
@@ -11,6 +11,7 @@
     './prihlaseni.html',
     './manifest.webmanifest',
     './operator-login.js',
+    './operator-nav.css',
     './approved-home.js',
     './operator-route.js',
     './operator-profile.js',

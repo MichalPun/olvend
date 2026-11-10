@@ -139,12 +139,6 @@
   function openView(name) {
     currentView = name
     Array.prototype.forEach.call(root.querySelectorAll('.op-view'), function (view) { view.hidden = view.getAttribute('data-view') !== name })
-    var navTarget = ['worktime', 'payslips', 'requests', 'request-form', 'personal'].indexOf(name) !== -1 ? 'more' : name
-    Array.prototype.forEach.call(root.querySelectorAll('.op-bottom button'), function (button) {
-      var target = button.getAttribute('data-open-view')
-      button.classList.toggle('active', target === navTarget)
-    })
-    root.querySelector('.op-bottom').hidden = name === 'request-form'
     window.scrollTo(0, 0)
   }
 

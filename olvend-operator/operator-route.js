@@ -216,12 +216,9 @@
   }
 
   root.querySelector('#or-close').addEventListener('click', function () { root.querySelector('#or-overlay').hidden = true })
-  root.querySelector('#or-nav-route').addEventListener('click', openRouteList)
+  root.querySelector('#or-route-list').addEventListener('click', openRouteList)
   root.querySelector('#or-vehicle').addEventListener('click', openVehicle)
   root.querySelector('#or-stock').addEventListener('click', openStock)
-  root.querySelector('#or-nav-stock').addEventListener('click', openStock)
-  root.querySelector('#or-nav-overview').addEventListener('click', openOverview)
-  root.querySelector('#or-nav-more').addEventListener('click', openMore)
 
   window.operatorRouteStart = function (activeSession, activeEmployee) {
     session = activeSession
