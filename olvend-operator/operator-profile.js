@@ -848,38 +848,76 @@
   function renderMeetingSlots() {
     var container = root.querySelector('#op-meeting-slots')
     container.innerHTML = ''
-    if (!meetingSlots.length) { addEmpty(container, 'V následujících třech týdnech není zveřejněný volný termín.'); return }
+    if (!meetingSlots.length) {
+      addEmpty(container, 'V následujících třech týdnech není zveřejněný volný termín.')
+      updateMeetingSubmit()
+      return
+    }
     meetingSlots.slice(0, 18).forEach(function (slot) {
       var button = document.createElement('button')
       button.type = 'button'
       button.className = 'op-meeting-slot' + (selectedMeetingSlot && selectedMeetingSlot.slot_start === slot.slot_start ? ' selected' : '')
-      button.textContent = new Date(slot.slot_start).toLocaleString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      var date = new Date(slot.slot_start)
+      var day = document.createElement('small')
+      var time = document.createElement('strong')
+      day.textContent = date.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+      time.textContent = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+      button.appendChild(day); button.appendChild(time)
       button.addEventListener('click', function () { selectedMeetingSlot = slot; renderMeetingSlots() })
       container.appendChild(button)
     })
+    updateMeetingSubmit()
+  }
+
+  function updateMeetingSubmit() {
+    var button = root.querySelector('#op-meeting-submit')
+    var summary = root.querySelector('#op-meeting-selection')
+    if (!button || !summary) return
+    button.disabled = !selectedMeetingSlot
+    if (!selectedMeetingSlot) {
+      summary.textContent = 'Nejdříve vyberte volný termín'
+      button.textContent = 'Odeslat žádost'
+      return
+    }
+    var date = new Date(selectedMeetingSlot.slot_start)
+    var label = date.toLocaleString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+    summary.textContent = 'Vybraný termín · ' + label
+    button.textContent = 'Odeslat žádost o schůzku'
+  }
+
+  function meetingTopicLabel(value) {
+    var map = { work: 'Práce a směny', pay_bonus: 'Mzda a prémie', operations: 'Provozní problém', personal: 'Osobní záležitost', other: 'Jiné' }
+    return map[String(value || '')] || 'Schůzka'
   }
 
   function renderMeetings() {
     var list = root.querySelector('#op-meeting-list')
     list.innerHTML = ''
     var relevant = meetings.filter(function (item) { return ['pending', 'approved', 'reschedule_requested'].indexOf(item.status) !== -1 }).slice(0, 4)
-    if (!relevant.length) addEmpty(list, 'Nemáte žádnou čekající ani potvrzenou schůzku.')
+    if (!relevant.length) {
+      var clear = document.createElement('div')
+      clear.className = 'op-meeting-current clear'
+      var clearLabel = document.createElement('small')
+      var clearTitle = document.createElement('strong')
+      var clearCopy = document.createElement('span')
+      clearLabel.textContent = 'Aktuálně'
+      clearTitle.textContent = 'Nemáte naplánovanou schůzku'
+      clearCopy.textContent = 'Novou žádost vytvoříte ve třech krátkých krocích níže.'
+      clear.appendChild(clearLabel); clear.appendChild(clearTitle); clear.appendChild(clearCopy); list.appendChild(clear)
+    }
     relevant.forEach(function (item) {
       var status = meetingStatus(item.status)
       var card = document.createElement('article')
-      card.className = 'op-card'
-      var head = document.createElement('div')
-      head.className = 'op-card-head'
-      var copy = document.createElement('div')
+      card.className = 'op-meeting-current'
+      var label = document.createElement('small')
       var title = document.createElement('strong')
       var meta = document.createElement('p')
       var badge = document.createElement('span')
-      badge.className = 'op-status ' + status.cls
+      label.textContent = status.label
       title.textContent = new Date(item.starts_at).toLocaleString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
-      meta.textContent = item.meeting_mode === 'phone' ? 'Telefonicky' : item.meeting_mode === 'video' ? 'Videohovor' : 'Osobně v Blučině'
-      badge.textContent = status.label
-      copy.appendChild(title); copy.appendChild(meta); head.appendChild(copy); head.appendChild(badge); card.appendChild(head)
-      if (item.response_note) { var note = document.createElement('p'); note.textContent = item.response_note; card.appendChild(note) }
+      badge.textContent = meetingTopicLabel(item.topic) + ' · ' + (item.meeting_mode === 'phone' ? 'telefonicky' : item.meeting_mode === 'video' ? 'videohovor' : 'osobně v Blučině')
+      card.appendChild(label); card.appendChild(title); card.appendChild(badge)
+      if (item.response_note) { meta.textContent = item.response_note; card.appendChild(meta) }
       list.appendChild(card)
     })
     renderMeetingSlots()
@@ -891,8 +929,8 @@
     var payload = {
       p_starts_at: selectedMeetingSlot.slot_start,
       p_ends_at: selectedMeetingSlot.slot_end,
-      p_meeting_mode: root.querySelector('#op-meeting-mode').value,
-      p_topic: root.querySelector('#op-meeting-topic').value,
+      p_meeting_mode: root.querySelector('input[name="meeting-mode"]:checked').value,
+      p_topic: root.querySelector('input[name="meeting-topic"]:checked').value,
       p_message: root.querySelector('#op-meeting-message').value.trim() || null
     }
     showBusy(true, 'Odesílám žádost o schůzku…')
