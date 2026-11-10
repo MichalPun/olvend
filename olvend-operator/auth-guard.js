@@ -7,7 +7,7 @@
   var gate = document.getElementById('operatorAuthGate')
   var gateMessage = document.getElementById('operatorAuthMessage')
   var gateActions = document.getElementById('operatorAuthActions')
-  var userButtons = document.querySelectorAll('.og-user,.ot-user,.os-user,.op-user')
+  var userButtons = document.querySelectorAll('.og-user,.ot-user,.os-user,.op-user,.ov-user')
   var logoutButtons = document.querySelectorAll('[data-operator-logout]')
   var gateWatchdog = window.setTimeout(function () {
     showGateError('Ověření se nepodařilo dokončit. Zkontroluj připojení a zkus to znovu.')
@@ -91,6 +91,7 @@
     if (typeof window.operatorRouteStart === 'function') window.operatorRouteStart(session, employee)
     if (typeof window.operatorProfileStart === 'function') window.operatorProfileStart(session, employee)
     if (typeof window.operatorInstructionsStart === 'function') window.operatorInstructionsStart(session, employee)
+    if (typeof window.operatorVehicleStart === 'function') window.operatorVehicleStart(session, employee)
   }
 
   function showGateError(message) {
