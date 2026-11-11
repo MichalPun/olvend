@@ -15,6 +15,10 @@
   var vehicleConfirmed = false
   var startOdometer = null
 
+  function isShiftPreview() {
+    return location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'shift-start'
+  }
+
   var iconPaths = {
     route: '<circle cx="6" cy="19" r="3"></circle><path d="M9 19h6.5a3.5 3.5 0 0 0 0-7h-8a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle>',
     'refresh-cw': '<path d="M21 12a9 9 0 0 0-15.2-6.5L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 15.2 6.5L21 16"></path><path d="M16 16h5v5"></path>',
@@ -54,6 +58,22 @@
   function formatDateLong() {
     try { return new Intl.DateTimeFormat('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()) }
     catch (_) { return todayIso() }
+  }
+
+  function machineCountLabel(count) {
+    return count + (count === 1 ? ' automat' : count > 1 && count < 5 ? ' automaty' : ' automatů')
+  }
+
+  function locationCount() {
+    var seen = new Set()
+    ;(routePlan && routePlan.route_plan_stops || []).forEach(function (stop) {
+      seen.add(stop.location_id ? 'id:' + stop.location_id : [stop.address_snapshot, stop.city_snapshot].join('|'))
+    })
+    return seen.size
+  }
+
+  function locationCountLabel(count) {
+    return count + (count === 1 ? ' zastávka' : count > 1 && count < 5 ? ' zastávky' : ' zastávek')
   }
 
   function vocativeName(value) {
@@ -171,7 +191,10 @@
     instructions.classList.toggle('pending', Boolean(instruction) && !confirmed)
     required.classList.toggle('confirmed', !instruction || confirmed)
     required.textContent = !instruction ? 'Bez pokynu' : confirmed ? 'Potvrzeno' : 'Povinné'
-    stateLabel.textContent = !instruction ? 'Dnes není nový povinný pokyn' : confirmed ? 'Všechny pokyny potvrzeny' : '1 pokyn čeká na potvrzení'
+    stateLabel.textContent = !instruction || confirmed ? 'Hotovo ✓' : 'Přečíst ›'
+    instructions.querySelector('h3').textContent = !instruction ? '2. Dnes bez nového pokynu' : confirmed ? '2. Pokyn přečten' : '2. Přečti dnešní pokyn'
+    instructions.querySelector('p').textContent = !instruction ? 'Není potřeba nic potvrzovat' : confirmed ? (instruction.title || 'Povinný pokyn potvrzen') : (instruction.title || 'Krátká informace před výjezdem')
+    root.querySelector('#ot-guide-progress').textContent = (Number(vehicleConfirmed) + Number(!instruction || confirmed)) + ' ze 2 hotovo'
     updateReadiness()
   }
 
@@ -180,7 +203,7 @@
   }
 
   function vehicleKey() {
-    return 'olvendOperatorVehicle:' + todayIso() + ':' + (employee && employee.id || '') + ':' + (vehicle && vehicle.id || '')
+    return 'olvendOperatorVehicleV2:' + todayIso() + ':' + (employee && employee.id || '') + ':' + (vehicle && vehicle.id || '') + ':' + (routePlan && routePlan.id || '')
   }
 
   function readVehicleConfirmation() {
@@ -212,14 +235,13 @@
       start.innerHTML = 'Zahájit směnu <span data-lucide="arrow-right" aria-hidden="true"></span>'
       help.hidden = true
     } else {
-      var reason = instruction && !instructionConfirmed ? 'Nejprve potvrďte pokyn' : !routePlan ? 'Čeká na dnešní trasu' : !vehicle ? 'Čeká na vozidlo' : 'Potvrďte vozidlo a kilometry'
+      var reason = !routePlan ? 'Čeká na dnešní trasu' : !vehicle ? 'Čeká na vozidlo' : !vehicleConfirmed ? 'Nejdřív potvrď vozidlo a km' : 'Nejdřív přečti dnešní pokyn'
       start.innerHTML = '<span data-lucide="lock-keyhole" aria-hidden="true"></span><span>' + reason + '</span>'
       help.hidden = false
-      help.textContent = instruction && !instructionConfirmed
-        ? 'Směnu lze zahájit až po potvrzení všech povinných pokynů.'
-        : !routePlan ? 'Vedoucí zatím nepřiřadil dnešní trasu.'
+      help.textContent = !routePlan ? 'Vedoucí zatím nepřiřadil dnešní trasu.'
           : !vehicle ? 'Pro dnešní směnu zatím není přiřazené vozidlo.'
-            : 'Otevřete Vozidlo a potvrďte počáteční stav kilometrů.'
+            : !vehicleConfirmed ? 'Ověř RZ a opiš skutečný stav z tachometru.'
+              : 'Před zahájením směny potvrď dnešní povinný pokyn.'
     }
     installIcons()
     var state = root.querySelector('.ot-state')
@@ -233,15 +255,23 @@
     root.querySelector('.ot-date').textContent = formatDateLong()
     root.querySelector('.ot-main h2').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
     root.querySelector('.ot-tile.profile strong').textContent = [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil'
-    var routeTile = root.querySelector('.ot-tile.route')
+    var routeTile = root.querySelector('#ot-route')
     var stops = routePlan && Array.isArray(routePlan.route_plan_stops) ? routePlan.route_plan_stops.length : 0
     routeTile.querySelector('p').textContent = routePlan ? (routePlan.title || 'Dnešní trasa') : 'Trasa zatím nepřiřazena'
-    routeTile.querySelector('strong').textContent = routePlan ? stops + ' zastávek · ' + (Number(routePlan.estimated_distance_km || 0) ? Number(routePlan.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km' : 'vzdálenost se načítá') : 'Čeká na plán'
+    routeTile.querySelector('strong').textContent = routePlan
+      ? machineCountLabel(stops) + ' · ' + (routePlan.estimated_distance_km == null ? 'vzdálenost se načítá' : Number(routePlan.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km')
+      : 'Čeká na plán'
     var vehicleTile = root.querySelector('.ot-tile.vehicle')
-    vehicleTile.querySelector('p').textContent = vehicle ? (vehicle.name || 'Přiřazené vozidlo') : 'Vozidlo zatím není přiřazeno'
-    vehicleTile.querySelector('strong').textContent = vehicle
-      ? (vehicle.plate || 'Bez RZ') + (vehicleConfirmed && startOdometer != null ? ' · ' + Number(startOdometer).toLocaleString('cs-CZ') + ' km ✓' : '')
-      : 'Nevybráno'
+    vehicleTile.classList.toggle('ready', vehicleConfirmed)
+    vehicleTile.querySelector('h3').textContent = vehicleConfirmed ? '1. Vozidlo potvrzeno' : '1. Potvrď vozidlo a km'
+    vehicleTile.querySelector('p').textContent = vehicle
+      ? [vehicle.name || 'Přiřazené vozidlo', vehicle.plate || 'Bez RZ', vehicleConfirmed && startOdometer != null ? Number(startOdometer).toLocaleString('cs-CZ') + ' km' : ''].filter(Boolean).join(' · ')
+      : 'Vozidlo zatím není přiřazeno'
+    vehicleTile.querySelector('strong').textContent = vehicleConfirmed ? 'Hotovo ✓' : vehicle ? 'Potvrdit ›' : 'Nevybráno'
+    var instructionTile = root.querySelector('#ot-instructions')
+    instructionTile.querySelector('h3').textContent = !instruction ? '2. Dnes bez nového pokynu' : instructionConfirmed ? '2. Pokyn přečten' : '2. Přečti dnešní pokyn'
+    instructionTile.querySelector('p').textContent = !instruction ? 'Není potřeba nic potvrzovat' : instructionConfirmed ? (instruction.title || 'Povinný pokyn potvrzen') : (instruction.title || 'Krátká informace před výjezdem')
+    root.querySelector('#ot-guide-progress').textContent = (Number(vehicleConfirmed) + Number(!instruction || instructionConfirmed)) + ' ze 2 hotovo'
     root.querySelector('.ot-brand-copy span').textContent = vehicle ? 'Před směnou · ' + (vehicle.plate || vehicle.name || 'vozidlo') : 'Před zahájením směny'
     if (instruction) {
       root.querySelector('.ot-sheet-title h3').textContent = instruction.title || instruction.name || 'Povinný pokyn dne'
@@ -281,7 +311,7 @@
         addCard(body, 'Trasa zatím není přiřazená', 'Po přiřazení vedoucím se zde zobrazí skutečné zastávky.')
         return
       }
-      addCard(body, routePlan.title || 'Dnešní trasa', (routePlan.route_plan_stops || []).length + ' zastávek · ' + Number(routePlan.estimated_distance_km || 0).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km')
+      addCard(body, routePlan.title || 'Dnešní trasa', locationCountLabel(locationCount()) + ' · ' + machineCountLabel((routePlan.route_plan_stops || []).length) + ' · ' + (routePlan.estimated_distance_km == null ? 'vzdálenost se načítá' : Number(routePlan.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km'))
       var list = document.createElement('div')
       list.className = 'ot-route-list'
       ;(routePlan.route_plan_stops || []).slice().sort(function (a, b) { return Number(a.stop_order || 0) - Number(b.stop_order || 0) }).forEach(function (stop, index) {
@@ -305,17 +335,21 @@
   }
 
   function openVehiclePanel() {
-    showPanel('Krok před výjezdem', 'Vozidlo a počáteční km', function (body) {
+    showPanel('Krok 1 ze 2', 'Potvrdit dnešní vozidlo', function (body) {
       if (!vehicle) {
         addCard(body, 'Vozidlo není přiřazené', 'Po přiřazení vozidla vedoucím bude možné potvrdit počáteční stav kilometrů.')
         return
       }
-      addCard(body, vehicle.plate || 'Bez RZ', vehicle.name || 'Přiřazené vozidlo')
+      var intro = document.createElement('div')
+      intro.className = 'ot-panel-intro'
+      intro.innerHTML = '<b>1.</b> Ověř, že sedí RZ. &nbsp; <b>2.</b> Opiš stav z tachometru. &nbsp; <b>3.</b> Potvrď.'
+      body.appendChild(intro)
+      addCard(body, vehicle.plate || 'Bez RZ', (vehicle.name || 'Přiřazené vozidlo') + ' · poslední stav ' + Number(vehicle.current_odometer_km || 0).toLocaleString('cs-CZ') + ' km')
       var field = document.createElement('div')
       field.className = 'ot-field'
       var label = document.createElement('label')
       label.setAttribute('for', 'ot-odometer')
-      label.textContent = 'Počáteční stav kilometrů'
+      label.textContent = 'Stav na tachometru právě teď'
       var shell = document.createElement('div')
       shell.className = 'ot-field-shell'
       var input = document.createElement('input')
@@ -339,7 +373,7 @@
       var button = document.createElement('button')
       button.className = 'ot-panel-action'
       button.type = 'button'
-      button.textContent = vehicleConfirmed ? 'Kilometry potvrzeny · uložit změnu' : 'Potvrdit vozidlo a kilometry'
+      button.textContent = vehicleConfirmed ? 'Uložit opravený stav km' : 'Ano, toto je moje vozidlo · potvrdit km'
       button.addEventListener('click', function () {
         var value = Number(input.value)
         var minimum = Number(vehicle.current_odometer_km || 0)
@@ -365,6 +399,7 @@
 
   function acknowledgeInstruction() {
     if (!instruction || instruction.requires_acknowledgement === false) return Promise.resolve()
+    if (isShiftPreview()) return Promise.resolve()
     return apiRequest(supabaseUrl + '/rest/v1/instruction_acknowledgements?on_conflict=instruction_id,employee_id', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
@@ -427,10 +462,11 @@
   function bindInteractions() {
     var overlay = root.querySelector('#ot-overlay')
     root.querySelector('#ot-route').addEventListener('click', openRoutePanel)
-    root.querySelector('#ot-vehicle').addEventListener('click', function () { window.location.href = './vozidlo.html' })
+    root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
-      window.location.href = './pokyny.html'
+      if (instruction && !instructionConfirmed) overlay.hidden = false
+      else window.location.href = './pokyny.html'
     })
     root.querySelector('#ot-close').addEventListener('click', function () { overlay.hidden = true })
     root.querySelector('#ot-confirm').addEventListener('click', function () {
@@ -481,5 +517,21 @@
       root.querySelector('.ot-state').innerHTML = 'Data směny se nepodařilo načíst · <b>' + String(error.message || 'zkuste obnovit') + '</b>'
       updateReadiness()
     })
+  }
+
+  if (isShiftPreview()) {
+    employee = { id: 'preview-michal', name: 'Michal', surname: 'Punčochář', role: 'operator' }
+    routePlan = { id: 200, title: '[TEST] HANÁK NÁBYTEK Kojetín', vehicle_id: 6, execution_status: 'assigned', estimated_distance_km: 76.4, route_plan_stops: [
+      { id: 2504, stop_order: 1, title: 'EV 23 · Luce Snack X', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' },
+      { id: 2505, stop_order: 2, title: 'EV 29 · Luce X2 I/E jídelna', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' }
+    ] }
+    vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 317658, warehouse_id: 1 }
+    instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
+    attendanceDay = null
+    vehicleLog = null
+    instructionConfirmed = false
+    vehicleConfirmed = false
+    startOdometer = null
+    renderData()
   }
 })()

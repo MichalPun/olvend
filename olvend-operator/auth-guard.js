@@ -1,7 +1,8 @@
 (function () {
   'use strict'
 
-  if (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'route197') {
+  var localPreview = location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview')
+  if (localPreview === 'route197' || localPreview === 'shift-start') {
     var revealPreview = function () {
       document.body.classList.remove('auth-pending')
       var previewGate = document.getElementById('operatorAuthGate')
