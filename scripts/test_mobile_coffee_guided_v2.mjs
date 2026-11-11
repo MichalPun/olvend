@@ -40,6 +40,8 @@ assert.match(html, /async takePackages\(containerId, packages\)[\s\S]*?await han
 assert.match(operatorPicklist, /liveCall\('takePackages',item\.id,item\.prepared\)/, 'Operátorský picklist nesmí mezi změnou množství a potvrzením překreslit položku')
 assert.match(html, /pickTouched: Boolean\(draft\.packagesManuallyAdjusted \|\| draft\.pickDecision \|\| draft\.stockShortage\)/, 'Rozpracovaná položka musí po chybě zůstat dohledatelná')
 assert.match(operatorPicklist, /item\.prepared>0\|\|item\.picked\|\|item\.accepted\|\|item\.pickTouched/, 'Rozpracovaná položka nesmí po obnovení picklistu zmizet')
+assert.match(operatorPicklist, /pickIndex=editingPickFromReview\?items\.length:items\.findIndex/, 'Živé překreslení během opravy nesmí spustit picklist znovu po položkách')
+assert.match(operatorPicklist, /pickIndex=returnToReview\?items\.length:nextUndecidedPick\(\)/, 'Po uložení opravy se aplikace musí vrátit na kontrolní souhrn')
 assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')

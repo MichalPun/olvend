@@ -183,6 +183,7 @@
       const confirmLabel=count=>count<=0?'Pokračovat bez doplnění':`Doplnil/a jsem ${count} ${count===1?'balení':'balení'}`;
       const pickDecisions=new Map();
       let pickIndex=0;
+      let editingPickFromReview=false;
       const nextUndecidedPick=()=>{
         const next=items.findIndex((item,index)=>!pickDecisions.has(index));
         return next<0?items.length:next;
@@ -362,7 +363,7 @@
         const planned=mapped.filter(item=>item.prepared>0||item.picked||item.accepted||item.pickTouched);const chosen=snapshot.stage==='calibration'?mapped:(planned.length?planned:mapped);
         items.splice(0,items.length,...chosen);extraItems.splice(0,extraItems.length,...mapped.filter(item=>!chosen.some(chosenItem=>String(chosenItem.id)===String(item.id))));
         pickDecisions.clear();items.forEach((item,index)=>{if(item.picked)pickDecisions.set(index,{status:item.pickedPackages>0?'taken':'skipped'})});
-        pickIndex=items.findIndex(item=>!item.picked);if(pickIndex<0)pickIndex=items.length;
+        pickIndex=editingPickFromReview?items.length:items.findIndex(item=>!item.picked);if(pickIndex<0)pickIndex=items.length;
         activeIndex=snapshot.stage==='calibration'?items.findIndex(item=>!item.calibrated):items.findIndex(item=>!item.accepted);if(activeIndex<0)activeIndex=Math.max(0,items.length-1);
         const cash=snapshot.cash;if(cash){const code=String(cash.bagCode||'----');root.querySelector('.og-bag-code').textContent=code;root.querySelector('.og-bag-machine').textContent=`EV ${snapshot.evidenceNumber}`;root.querySelector('[data-cash-confirm]').textContent=`Hotovost je v sáčku ${code}`;cashDeferred=Boolean(cash.deferred)}
         operatorChecks.splice(0,operatorChecks.length,...(snapshot.checks||[]).filter(check=>check.section!=='test').map(check=>({id:check.key,label:check.label})));
@@ -455,15 +456,18 @@
         if(!button)return;
         const action=button.dataset.pickAction;
         if(action==='edit'){
+          editingPickFromReview=true;
           pickIndex=Math.max(0,Math.min(items.length-1,Number(button.dataset.pickIndex||0)));
           renderPickList();
           return;
         }
         if(action==='review'){
+          editingPickFromReview=false;
           pickIndex=items.length;renderPickList();
           return;
         }
         if(action==='previous'){
+          editingPickFromReview=false;
           pickIndex=Math.max(0,pickIndex-1);renderPickList();
           return;
         }
@@ -477,6 +481,8 @@
         if(action==='take'||action==='skip'){
           const selectedIndex=pickIndex;
           const item=items[selectedIndex];
+          const selectedId=item&&item.id;
+          const returnToReview=editingPickFromReview;
           if(!item)return;
           const original=button.innerHTML;
           button.setAttribute('aria-busy','true');button.disabled=true;button.innerHTML='<span class="og-spinner" aria-hidden="true"></span><span>Ukládám…</span>';
@@ -485,8 +491,10 @@
               if(action==='take')await liveCall('takePackages',item.id,item.prepared);
               else await liveCall('skipPick',item.id,'Dnes nedoplňuji');
             }else await new Promise(resolve=>window.setTimeout(resolve,420));
-            pickDecisions.set(selectedIndex,{status:action==='take'?'taken':'skipped'});
-            pickIndex=nextUndecidedPick();
+            const updatedIndex=items.findIndex(candidate=>String(candidate.id||'')===String(selectedId||''));
+            if(updatedIndex>=0)pickDecisions.set(updatedIndex,{status:action==='take'?'taken':'skipped'});
+            editingPickFromReview=false;
+            pickIndex=returnToReview?items.length:nextUndecidedPick();
             renderPickList();
           }catch(error){
             if(button.isConnected){button.removeAttribute('aria-busy');button.disabled=false;button.innerHTML=original}
