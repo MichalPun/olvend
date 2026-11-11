@@ -45,6 +45,8 @@ assert.match(operatorPicklist, /pickIndex=returnToReview\?items\.length:nextUnde
 assert.match(html, /async saveContainer\(containerId, actualBefore, packages, addOutsidePicklist\)[\s\S]*?await handleCoffeeAction\('accept-container'/, 'Uložení skutečného stavu a potvrzení zásobníku musí být atomické')
 assert.match(operatorPicklist, /liveCall\('saveContainer',item\.id,before,packages/, 'Operátorské doplnění musí volat jedinou ukládací operaci')
 assert.equal((operatorPicklist.match(/querySelector\('\[data-confirm\]'\)\.addEventListener\('click'/g) || []).length, 1, 'Jedno potvrzení doplnění smí obsluhovat jen jeden click handler')
+assert.match(operatorPicklist, /let refillSaveInFlight=false/, 'Doplnění musí držet výslovný zámek jediné ukládací operace')
+assert.match(operatorPicklist, /finally\{\s*refillSaveInFlight=false;\s*if\(button\.isConnected\)\{button\.removeAttribute\('aria-busy'\);button\.disabled=false/, 'Po každém výsledku se musí odemknout potvrzení dalšího zásobníku')
 assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')
