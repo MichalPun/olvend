@@ -38,6 +38,8 @@ for (const required of [
 assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261111-operator-pick-v2'/, 'Kávová pravidla musí být oddělená od mobilního UI a změna picklistu musí obejít starou PWA cache')
 assert.match(html, /async takePackages\(containerId, packages\)[\s\S]*?await handleCoffeeAction\('guided-pick-take'/, 'Volba množství a potvrzení picklistu se musí uložit atomicky')
 assert.match(operatorPicklist, /liveCall\('takePackages',item\.id,item\.prepared\)/, 'Operátorský picklist nesmí mezi změnou množství a potvrzením překreslit položku')
+assert.match(html, /pickTouched: Boolean\(draft\.packagesManuallyAdjusted \|\| draft\.pickDecision \|\| draft\.stockShortage\)/, 'Rozpracovaná položka musí po chybě zůstat dohledatelná')
+assert.match(operatorPicklist, /item\.prepared>0\|\|item\.picked\|\|item\.accepted\|\|item\.pickTouched/, 'Rozpracovaná položka nesmí po obnovení picklistu zmizet')
 assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')
