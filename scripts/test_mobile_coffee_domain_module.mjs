@@ -71,10 +71,17 @@ details.stop.draft.containers.c3 = { actualBeforeQuantity: 1200, packages: 3, mo
 assert.equal(domain.getCoffeeActualBeforeQuantity('stop', coffee), 1200)
 assert.equal(domain.getCoffeeMaxPackages('stop', coffee), 1)
 assert.equal(domain.getCoffeeVehicleAvailablePackages('stop', coffee), 5)
-assert.equal(domain.getCoffeeSelectableMaxPackages('stop', coffee), 1)
-assert.equal(domain.getCoffeeActualPackages('stop', coffee), 1)
-assert.equal(domain.getCoffeeAddedQuantity('stop', coffee), 1000)
-assert.equal(domain.getCoffeeAfterQuantity('stop', coffee), 2200)
+assert.equal(domain.getCoffeeSelectableMaxPackages('stop', coffee), 5, 'Picklist omezuje zásoba vozidla, ne telemetrická kapacita automatu')
+assert.equal(domain.getCoffeeActualPackages('stop', coffee), 3)
+assert.equal(domain.getCoffeeAddedQuantity('stop', coffee), 3000)
+assert.equal(domain.getCoffeeAfterQuantity('stop', coffee), 3000, 'Náhled doplnění dál respektuje kapacitu automatu')
+
+coffee.current_quantity = 3000
+details.stop.draft.containers.c3 = { packages: 1 }
+assert.equal(domain.getCoffeeSuggestedPackages(coffee), 0)
+assert.equal(domain.getCoffeeSelectableMaxPackages('stop', coffee), 4)
+assert.equal(domain.getCoffeeActualPackages('stop', coffee), 1, 'Operátor může vzít jedno balení i při telemetrickém doporučení nula')
+coffee.current_quantity = 900
 
 assert.equal(domain.getCoffeeEntryUnit(coffee), 'kg')
 assert.equal(domain.getCoffeeEntryQuantity(1500, coffee), 1.5)

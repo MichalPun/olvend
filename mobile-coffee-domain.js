@@ -202,7 +202,10 @@ export function createCoffeeDomain({
   }
 
   function getCoffeeSelectableMaxPackages(stopId, container) {
-    return Math.min(getCoffeeMaxPackages(stopId, container), getCoffeeVehicleAvailablePackages(stopId, container))
+    // Picklist urcuje pouze to, co si operator vezme z vozidla k automatu.
+    // Telemetricka volna kapacita zasobniku se overuje az po jeho otevreni,
+    // jinak nelze vzit baleni navic pri nepresnem telemetrickem stavu.
+    return getCoffeeVehicleAvailablePackages(stopId, container)
   }
 
   function getCoffeeActualPackages(stopId, container) {

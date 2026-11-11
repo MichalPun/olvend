@@ -4,6 +4,7 @@ import vm from 'node:vm'
 
 const html = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8')
 const coffeeDomain = fs.readFileSync(new URL('../mobile-coffee-domain.js', import.meta.url), 'utf8')
+const operatorPicklist = fs.readFileSync(new URL('../olvend-operator/index.html', import.meta.url), 'utf8')
 
 for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   if (!match[1].trim()) continue
@@ -34,7 +35,9 @@ for (const required of [
   'assets/cash-security-bag.png'
 ]) assert.ok(html.includes(required), `Chybí kávový prvek: ${required}`)
 
-assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261026-initial-count-v3'/, 'Kávová pravidla musí být oddělená od mobilního UI')
+assert.match(html, /from '\.\/mobile-coffee-domain\.js\?v=20261111-operator-pick-v2'/, 'Kávová pravidla musí být oddělená od mobilního UI a změna picklistu musí obejít starou PWA cache')
+assert.match(html, /async takePackages\(containerId, packages\)[\s\S]*?await handleCoffeeAction\('guided-pick-take'/, 'Volba množství a potvrzení picklistu se musí uložit atomicky')
+assert.match(operatorPicklist, /liveCall\('takePackages',item\.id,item\.prepared\)/, 'Operátorský picklist nesmí mezi změnou množství a potvrzením překreslit položku')
 assert.match(coffeeDomain, /isCoffeeCupProduct[\s\S]*?label:\s*isStick\s*\?\s*'tyč'/, 'Kelímky se musí zobrazovat po tyčích')
 assert.match(coffeeDomain, /isCoffeeCupProduct\(container\)\s*\?\s*50/, 'Výchozí tyč kelímků musí mít 50 ks')
 assert.match(html, /if \(error && navigator\.onLine\) throw error[\s\S]*?persistMobileSnapshot\(\)/, 'Kávové kroky musí mít offline lokální uložení')
