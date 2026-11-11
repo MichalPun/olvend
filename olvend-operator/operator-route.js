@@ -139,12 +139,13 @@
     ;(plan.route_plan_stops || []).forEach(function (stop) {
       if (stop.view) return
       var payload = payloadRows.find(function (row) { return String(row.machineId) === String(stop.machine_id) }) || {}
+      var machine = stop.machineRecord || {}
       var timing = scheduleMap.get(String(stop.id)) || {}
       stop.view = {
         locationName: payload.parentLocationName || stop.location_name || stop.city_snapshot || stop.title || 'Zastávka',
-        machineName: payload.machineLabel || payload.name || stop.title || 'Automat',
-        machineType: payload.machineType || 'Automat',
-        evidenceNumber: payload.evidenceNumber || null,
+        machineName: payload.machineLabel || payload.name || machine.name || stop.title || 'Automat',
+        machineType: payload.machineType || machine.machine_type || 'Automat',
+        evidenceNumber: payload.evidenceNumber || machine.evidence_number || null,
         arrivalAt: timing.arrival_at || payload.estimatedArrivalAt || null,
         distanceKm: payload.distanceFromPreviousKm == null ? null : Number(payload.distanceFromPreviousKm)
       }
@@ -390,10 +391,16 @@
       if (!plan) throw new Error('Dnešní trasa není přiřazená.')
       var vehicleRequest = plan.vehicle_id ? requestJson('/rest/v1/vehicles?select=id,name,plate,current_odometer_km&id=eq.' + encodeURIComponent(plan.vehicle_id) + '&limit=1') : Promise.resolve([])
       var visitRequest = requestJson('/rest/v1/route_machine_visits?select=id,route_plan_stop_id,machine_id,status,arrived_at,completed_at,skipped_at&route_plan_id=eq.' + encodeURIComponent(plan.id)).catch(function () { return [] })
-      return Promise.all([vehicleRequest, visitRequest])
+      var machineIds = Array.from(new Set((plan.route_plan_stops || []).map(function (stop) { return stop.machine_id }).filter(Boolean)))
+      var machineRequest = machineIds.length
+        ? requestJson('/rest/v1/machines?select=id,name,evidence_number,machine_type&id=in.(' + machineIds.map(encodeURIComponent).join(',') + ')')
+        : Promise.resolve([])
+      return Promise.all([vehicleRequest, visitRequest, machineRequest])
     }).then(function (results) {
       vehicle = Array.isArray(results[0]) && results[0][0] || null
       visits = Array.isArray(results[1]) ? results[1] : []
+      var machinesById = new Map((Array.isArray(results[2]) ? results[2] : []).map(function (machine) { return [String(machine.id), machine] }))
+      ;(plan.route_plan_stops || []).forEach(function (stop) { stop.machineRecord = machinesById.get(String(stop.machine_id)) || null })
       renderOverview()
     })
   }
