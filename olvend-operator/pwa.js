@@ -3,10 +3,18 @@
 
   var installPrompt = null
   var installButton = document.querySelector('[data-install-app]')
+  var refreshingForUpdate = false
 
   if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (refreshingForUpdate) return
+      refreshingForUpdate = true
+      window.location.reload()
+    })
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(function () {})
+      navigator.serviceWorker.register('./sw.js', { scope: './' }).then(function (registration) {
+        registration.update().catch(function () {})
+      }).catch(function () {})
     })
   }
 
