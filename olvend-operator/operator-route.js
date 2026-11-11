@@ -168,6 +168,9 @@
       if (!group.arrivalAt && stop.view.arrivalAt) group.arrivalAt = stop.view.arrivalAt
       if (group.distanceKm == null && stop.view.distanceKm != null) group.distanceKm = stop.view.distanceKm
     })
+    if (groups.length === 1 && groups[0].distanceKm == null && plan.estimated_distance_km != null) {
+      groups[0].distanceKm = Number(plan.estimated_distance_km)
+    }
     groups.forEach(function (group) {
       group.closed = group.stops.every(isClosed)
       group.arrived = !group.closed && group.stops.some(isArrived)
