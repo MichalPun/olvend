@@ -78,7 +78,7 @@
   }
 
   function isArrived(stop) {
-    return ['arrived', 'in_progress', 'started'].indexOf(stopStatus(stop)) !== -1
+    return Boolean(stop && stop.arrived_at) || ['arrived', 'in_progress', 'started'].indexOf(stopStatus(stop)) !== -1
   }
 
   function requestJson(path, options) {
@@ -339,10 +339,10 @@
     var now = new Date().toISOString()
     var openStops = activeGroup.stops.filter(function (stop) { return !isClosed(stop) })
     var save = preview ? Promise.resolve() : Promise.all(openStops.map(function (stop) {
-      return requestJson('/rest/v1/route_plan_stops?id=eq.' + encodeURIComponent(stop.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'arrived', arrived_at: now }) })
+      return requestJson('/rest/v1/route_plan_stops?id=eq.' + encodeURIComponent(stop.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ arrived_at: now }) })
     }))
     save.then(function () {
-      openStops.forEach(function (stop) { stop.status = 'arrived'; stop.arrived_at = now })
+      openStops.forEach(function (stop) { stop.arrived_at = now })
       buildGroups()
       activeGroup = groups.find(function (group) { return group.key === activeGroup.key }) || activeGroup
       renderOverview(); openGroup(activeGroup); showToast('Návštěva byla zahájena. Můžeš otevřít konkrétní automat.')
