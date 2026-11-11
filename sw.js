@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v253-operator-live-route';
+const CACHE_NAME = 'olvend-v254-fleet-art';
 const APP_SHELL = [
   './',
   './index.html',
@@ -82,6 +82,11 @@ const APP_SHELL = [
   './assets/rheavendors-luce-x2.jpg',
   './assets/rheavendors-luce-x2-interior.jpg',
   './assets/cash-security-bag.png',
+  './assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
+  './assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
+  './assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
+  './assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2',
+  './assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2',
   './assets/product-images/44.jpg',
   './assets/product-images/47.jpg',
   './assets/product-images/48.jpg',
@@ -235,6 +240,18 @@ self.addEventListener('fetch', (event) => {
           cachedResponse || caches.match(event.request, { ignoreSearch: true })
         )
       )
+    );
+    return;
+  }
+
+  if (requestUrl.pathname.includes('/assets/vehicles/')) {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-cache' }).then((response) => {
+        if (response && response.ok) {
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))
     );
     return;
   }
