@@ -9,6 +9,9 @@ for (const match of mobile.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi
 }
 
 assert.match(mobile, /function isFoodProductFamilyAlternative/)
+assert.match(mobile, /'SIMPLY-NUGET'/)
+assert.match(mobile, /'HAME-KURECI-STRIPS'/)
+assert.match(mobile, /product_family: 'HAMÉ chlazený sortiment'/)
 assert.match(mobile, /getFoodProductFamily\(product\) === configuredFamily/)
 assert.match(mobile, /isFoodProductFamilyAlternative\(option, planogramChange\.nextProduct\)/)
 assert.match(mobile, /fullSwap && isFoodProductFamilyAlternative\(selectedProduct, planogramChange\.nextProduct\)/)
