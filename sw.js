@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v254-fleet-art';
+const CACHE_NAME = 'olvend-v255-operator-home';
 const APP_SHELL = [
   './',
   './index.html',
@@ -79,6 +79,7 @@ const APP_SHELL = [
   './sidebar.js',
   './pwa.js',
   './manifest.webmanifest',
+  './operator-manifest.webmanifest',
   './assets/rheavendors-luce-x2.jpg',
   './assets/rheavendors-luce-x2-interior.jpg',
   './assets/cash-security-bag.png',
