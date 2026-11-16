@@ -40,6 +40,7 @@ export function serializeFoodPreparation({ slots = [], getDraft }) {
       transferRecommendation: draft.transferRecommendation || null,
       manualProductChoice: Boolean(draft.manualProductChoice),
       pickConfirmed: Boolean(draft.pickConfirmed),
+      fullSwapRemovalConfirmed: Boolean(draft.fullSwapRemovalConfirmed),
       operatorProposedPrice: draft.operatorProposedPrice === '' ? null : Number(draft.operatorProposedPrice),
       operatorPriceNote: draft.operatorPriceNote || '',
       operatorPriceConfirmed: Boolean(draft.operatorPriceConfirmed),

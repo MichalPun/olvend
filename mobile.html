@@ -5531,7 +5531,7 @@
       persistFoodVisitItem,
       saveFoodProgressRecord,
       serializeFoodPreparation as serializeFoodPreparationData
-    } from './mobile-food-visit.js?v=20261021-food-visit-v1'
+    } from './mobile-food-visit.js?v=20261116-data-guard-v1'
     import { createFoodDomain } from './mobile-food-domain.js?v=20261021-food-domain-v1'
     import {
       createRouteDomain,
@@ -10772,9 +10772,11 @@
       // nového produktu. Počet nových kusů nesmí schovat povinnou změnu.
       const nextSku = String(slot?.pending_product_sku || plannedSku || '')
       const currentPrice = Number(slot?.customer_price_czk ?? slot?.price_czk ?? 0)
-      const nextPriceRaw = slot?.pending_price_czk ?? slot?.planned_price_czk
-      const nextPrice = nextPriceRaw == null ? null : Number(nextPriceRaw)
       const productChanged = Boolean(nextSku && nextSku !== currentSku)
+      // planned_price_czk belongs to a planned product change. It must never
+      // turn into a new price-only instruction after that price was already applied.
+      const nextPriceRaw = slot?.pending_price_czk ?? (productChanged ? slot?.planned_price_czk : null)
+      const nextPrice = nextPriceRaw == null ? null : Number(nextPriceRaw)
       const priceChanged = Number.isFinite(nextPrice) && nextPrice !== currentPrice
       if (!productChanged && !priceChanged) return null
       const product = nextSku ? state.products.find((item) => String(item.sku || '') === nextSku) : null
@@ -11209,6 +11211,7 @@
         manualProductChoice: Boolean(draft.manualProductChoice),
         pickConfirmed: Boolean(draft.pickConfirmed),
         duplicateEmergencyConfirmed: Boolean(draft.duplicateEmergencyConfirmed),
+        fullSwapRemovalConfirmed: Boolean(draft.fullSwapRemovalConfirmed),
         machinePriceConfirmed: Boolean(draft.machinePriceConfirmed),
         operatorProposedPrice: draft.operatorProposedPrice == null ? '' : Number(draft.operatorProposedPrice),
         operatorPriceNote: draft.operatorPriceNote || '',
@@ -11494,6 +11497,9 @@
         const options = getFoodSlotProductOptions(slot)
         const suggestion = optionalMode ? null : getFoodPickSuggestion(detail, stop.id, slot)
         const planogramChange = suggestion?.change || getFoodPlanogramChange(slot)
+        const fullSwapRemovalQuantity = planogramChange?.fullSwap
+          ? Math.max(0, Number(slot.current_units || 0) - Number(slot.changeover_new_units || 0))
+          : 0
         const selectableOptions = planogramChange?.fullSwap
           ? options.filter((option) => String(option.sku || '') === String(planogramChange.nextSku || '') || isFoodProductFamilyAlternative(option, planogramChange.nextProduct))
           : options
@@ -11563,7 +11569,7 @@
         return `
           <div class="coffee-guide-row ${draft.pickConfirmed || noStockResolved ? 'done' : draft.picked && draft.pickedQuantity > 0 ? 'selected' : emptySkipNeedsReason || canConfirmNoStock ? 'selected' : ''}">
             <span class="coffee-guide-icon">${draft.pickConfirmed || noStockResolved ? '✓' : optionalMode ? '+' : emptySkipNeedsReason || canConfirmNoStock ? '!' : '→'}</span>
-            <span class="coffee-guide-main"><small class="food-position-label">Pozice ${escapeHtml(slot.slot_code)}${planogramChange?.fullSwap ? ' · kompletní výměna' : planogramChange?.productChanged ? ' · povinná změna produktu' : substitute ? ' · schválená náhrada' : ''}</small><strong>${escapeHtml(displayProductName)}</strong>${getFoodSlotComposition(slot).length > 1 ? `<small class="food-substitution-line">Uvnitř nyní: ${escapeHtml(getFoodSlotCompositionLabel(slot))}</small>` : substitute ? `<small class="food-substitution-line">Náhrada za: ${escapeHtml(slot.product_name || suggestion.primary?.name || 'původní produkt')}</small>` : ''}<small>${escapeHtml(rowDetail)}</small>${duplicateMessage ? `<small class="food-expiry-line ${duplicateBlocked ? 'danger' : 'warning'}">${escapeHtml(duplicateMessage)}</small>` : ''}${vehicleExpiryParts.length ? `<small class="food-expiry-line ${vehicleExpiryMissing ? 'warning' : ''}">Ze zásoby FEFO: ${escapeHtml(vehicleExpiryParts.join(' · '))}</small>` : ''}${machineExpiry ? `<small class="food-expiry-line ${machineExpiryExpired ? 'danger' : machineExpiryShort ? 'warning' : ''}">${escapeHtml(machineExpiry)}</small>` : ''}</span>
+            <span class="coffee-guide-main"><small class="food-position-label">Pozice ${escapeHtml(slot.slot_code)}${planogramChange?.fullSwap ? ' · POVINNÁ KOMPLETNÍ VÝMĚNA' : planogramChange?.productChanged ? ' · povinná změna produktu' : substitute ? ' · schválená náhrada' : ''}</small><strong>${escapeHtml(displayProductName)}</strong>${getFoodSlotComposition(slot).length > 1 ? `<small class="food-substitution-line">Uvnitř nyní: ${escapeHtml(getFoodSlotCompositionLabel(slot))}</small>` : substitute ? `<small class="food-substitution-line">Náhrada za: ${escapeHtml(slot.product_name || suggestion.primary?.name || 'původní produkt')}</small>` : ''}<small>${escapeHtml(rowDetail)}</small>${fullSwapRemovalQuantity > 0 ? `<small class="food-expiry-line danger">U AUTOMATU NEJDŘÍV STÁHNI ${escapeHtml(fullSwapRemovalQuantity)} KS ${escapeHtml(slot.product_name || slot.product_sku || 'PŮVODNÍHO PRODUKTU')} DO VOZIDLA. Teprve potom vlož nový produkt.</small>` : ''}${duplicateMessage ? `<small class="food-expiry-line ${duplicateBlocked ? 'danger' : 'warning'}">${escapeHtml(duplicateMessage)}</small>` : ''}${vehicleExpiryParts.length ? `<small class="food-expiry-line ${vehicleExpiryMissing ? 'warning' : ''}">Ze zásoby FEFO: ${escapeHtml(vehicleExpiryParts.join(' · '))}</small>` : ''}${machineExpiry ? `<small class="food-expiry-line ${machineExpiryExpired ? 'danger' : machineExpiryShort ? 'warning' : ''}">${escapeHtml(machineExpiry)}</small>` : ''}</span>
             <span class="coffee-pick-actions">${canConfirm ? `<button class="coffee-pick-confirm ${draft.pickConfirmed ? 'confirmed' : ''}" type="button" data-food-action="confirm-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${draft.pickConfirmed ? `✓ ${escapeHtml(confirmQuantity)} ks` : duplicateEmergency ? `Potvrdit nouzovou duplicitu · ${escapeHtml(confirmQuantity)} ks` : `Potvrdit ${escapeHtml(confirmQuantity)} ks`}</button><button class="coffee-pick-open" type="button" data-food-action="skip-pick-now" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">Nedoplňuji</button>` : canConfirmNoStock ? `<button class="coffee-pick-confirm" type="button" data-food-action="confirm-no-stock" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${suggestion?.routeReserved ? '✓ Nechávám pro další zastávky' : '✓ Není v zásobě'}</button>` : noStockResolved ? `<span class="coffee-pick-confirm confirmed">${draft.skipReason === 'reserved_for_route' ? '✓ Pro další zastávky' : '✓ 0 ks'}</span>` : ''}<button class="coffee-pick-open" type="button" data-food-action="guided-food-expand-pick" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}">${open ? 'Zavřít' : optionalMode ? 'Přidat' : emptySkipNeedsReason ? 'Vybrat důvod' : 'Upravit'}</button></span>
           </div>
           ${open ? `<div class="coffee-pick-edit">
@@ -11720,6 +11726,9 @@
       const retainedReplacementUnits = activeFullSwap
         ? Math.max(0, Math.min(draft.actualBefore, Number(slot.changeover_new_units || 0)))
         : 0
+      const swapReturnUnits = activeFullSwap
+        ? Math.max(0, draft.actualBefore - retainedReplacementUnits - wasteTotal)
+        : 0
       const transferQuantity = Math.max(0, Math.min(draft.actualBefore - wasteTotal, Number(draft.transferQuantity || 0)))
       const actualAdd = draft.fillItems.reduce((sum,item) => sum + Math.max(0,Number(item.quantity || 0)),0)
       const requiresMachinePriceConfirmation = foodMachinePriceConfirmationRequired(
@@ -11763,6 +11772,7 @@
           ${returnedPreparedQuantity > 0 ? `<div class="attention-box"><strong>${escapeHtml(returnedPreparedQuantity)} ks zůstane evidovaných ve zdrojové zásobě</strong><span>Ze zdrojové zásoby se odečte jen skutečně vložené množství.</span><label>Proč připravené zboží nevkládáš?<select data-food-field="not-inserted-reason" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}"><option value="">Vyber důvod</option><option value="not_needed" ${draft.notInsertedReason === 'not_needed' ? 'selected' : ''}>Po kontrole se nevejde / není potřeba</option><option value="cooling_failure" ${draft.notInsertedReason === 'cooling_failure' ? 'selected' : ''}>Automat nechladí</option><option value="product_unavailable" ${draft.notInsertedReason === 'product_unavailable' ? 'selected' : ''}>Zboží není k dispozici</option><option value="other" ${draft.notInsertedReason === 'other' ? 'selected' : ''}>Jiný důvod</option></select></label></div>` : ''}
           <div data-food-available-replacement>${renderFoodAvailableReplacement(detail, stop.id, slot)}</div>
           <div class="food-stock-mismatch" data-food-stock-mismatch ${stockDifference ? '' : 'hidden'}><strong data-food-stock-mismatch-title>${stockDifference < 0 ? `Evidence nesedí: uvnitř chybí ${escapeHtml(Math.abs(stockDifference))} ks` : `Evidence nesedí: uvnitř je navíc ${escapeHtml(stockDifference)} ks`}</strong><span data-food-stock-mismatch-copy>Změna skutečného stavu sama nezvyšuje doplnění. Při potvrzení se pouze uloží evidence ${escapeHtml(systemCurrent)} ks → skutečnost ${escapeHtml(draft.actualBefore)} ks, operátorka, čas a inventurní pohyb.</span></div>
+          ${swapReturnUnits > 0 ? `<div class="food-expired-warning"><strong>POVINNÝ KROK: nejdřív stáhni ${escapeHtml(swapReturnUnits)} ks ${escapeHtml(slot.product_name || slot.product_sku || 'původního produktu')}</strong><span>Vrať je do vozidla jako prodejné zboží. Nový produkt vlož až potom.</span><label><input type="checkbox" data-food-field="full-swap-removal-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.fullSwapRemovalConfirmed ? 'checked' : ''}> Potvrzuji, že původní produkt je fyzicky vyndaný a uložený ve vozidle</label></div>` : ''}
           <div class="coffee-instruction"><strong>${actualAdd > 0 ? `Vlož nyní ${escapeHtml(actualAdd)} ks` : 'Bez plánovaného doplnění'}</strong><span>${batchLabels.length ? `${escapeHtml(batchLabels.join(' · '))} · po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks` : `Po doplnění ${escapeHtml(finalQty)}/${escapeHtml(capacity)} ks. Případné další kusy systém odebere FEFO ze zásoby auta.`}</span></div>
           ${planogramChange?.fullSwap && actualAdd <= 0 ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nemáš nový produkt pro kompletní výměnu?'}</strong><span>${deferredFullSwap ? 'Ulož skutečný stav původního produktu a pokračuj. Nový produkt zůstane povinně naplánovaný na další návštěvu.' : 'Nepotvrzuj vložení, které neproběhlo. Odlož pouze výměnu; plán ani cílová cena se nesmažou.'}</span><button class="coffee-guide-more extra" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená · můžeš potvrdit pozici' : 'Nový produkt nemám · odložit výměnu a pokračovat'}</button></div>` : ''}
           ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(displayPrice))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>. OLVEND cenu na tomto automatu neumí zapsat na dálku.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''}> Potvrzuji, že jsem cenu pozice na automatu změnil(a) na ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</label></div>` : ''}
@@ -11779,7 +11789,7 @@
           </div>
           <div class="food-machine-stats"><div class="food-machine-stat"><span>Před</span><strong>${escapeHtml(draft.actualBefore)} ks</strong></div><div class="food-machine-stat"><span>${transferQuantity ? 'Přesun / doplnění' : 'Doplním'}</span><strong>${transferQuantity ? `−${escapeHtml(transferQuantity)} / +${escapeHtml(actualAdd)}` : `${escapeHtml(actualAdd)} ks`}</strong></div><div class="food-machine-stat"><span>Po</span><strong>${escapeHtml(finalQty)} ks</strong></div></div>
         </section>
-        <button class="coffee-guide-primary" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${invalidActualAdd || missingNotInsertedReason || (requiresMachinePriceConfirmation && !draft.machinePriceConfirmed) || (operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed) ? 'disabled' : ''}>${invalidActualAdd ? 'Nejdřív oprav množství' : missingNotInsertedReason ? 'Vyber důvod nevyužitých kusů' : requiresMachinePriceConfirmation && !draft.machinePriceConfirmed ? 'Nejdřív potvrď změnu ceny na automatu' : operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed ? 'Nejdřív potvrď fyzické nastavení ceny' : operatorPriceChangeReady(slot, draft) ? `Potvrdit pozici ${escapeHtml(slot.slot_code)} a odeslat cenu` : `Potvrdit doplnění pozice ${escapeHtml(slot.slot_code)}`}</button>
+        <button class="coffee-guide-primary" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${invalidActualAdd || missingNotInsertedReason || (swapReturnUnits > 0 && !draft.fullSwapRemovalConfirmed) || (requiresMachinePriceConfirmation && !draft.machinePriceConfirmed) || (operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed) ? 'disabled' : ''}>${invalidActualAdd ? 'Nejdřív oprav množství' : missingNotInsertedReason ? 'Vyber důvod nevyužitých kusů' : swapReturnUnits > 0 && !draft.fullSwapRemovalConfirmed ? `Nejdřív stáhni ${escapeHtml(swapReturnUnits)} ks původního produktu` : requiresMachinePriceConfirmation && !draft.machinePriceConfirmed ? 'Nejdřív potvrď změnu ceny na automatu' : operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed ? 'Nejdřív potvrď fyzické nastavení ceny' : operatorPriceChangeReady(slot, draft) ? `Potvrdit pozici ${escapeHtml(slot.slot_code)} a odeslat cenu` : `Potvrdit doplnění pozice ${escapeHtml(slot.slot_code)}`}</button>
         <div class="coffee-guide-hint">Potom se automaticky otevře další pozice</div>
         <section class="coffee-guide-panel"><div class="coffee-guide-panel-head"><h4>Všechny pozice</h4><span>Otevři a případně uprav</span></div>${(detail.slots || []).map((item) => { const itemDraft=getFoodSlotDraft(stop.id,item); const work=workSlots.some((workSlot)=>String(workSlot.id)===String(item.id)); return `<button class="coffee-guide-row ${itemDraft.accepted ? 'done' : String(item.id) === String(slot.id) ? 'selected' : ''}" type="button" data-food-action="guided-food-open-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(item.id)}"><span class="coffee-guide-icon">${itemDraft.accepted ? '✓' : escapeHtml(item.slot_code)}</span><span class="coffee-guide-main"><strong>${escapeHtml(getFoodSlotCompositionLabel(item))}</strong><small>${escapeHtml(`${item.current_units || 0}/${item.capacity_units || 0} ks`)}</small></span><span class="coffee-guide-value">${itemDraft.accepted ? 'Hotovo' : work ? 'Upravit' : 'Otevřít'}</span></button>` }).join('')}</section>`
     }
@@ -12054,11 +12064,12 @@
                   <div class="meta" data-food-total="meta">Systém předpokládal ${escapeHtml(`${slot.current_units || 0} ks`)} · přineseno ${escapeHtml(`${draft.preparedQuantity} ks`)} · kapacita ${escapeHtml(`${slot.capacity_units || 0} ks`)}${returnedPreparedQuantity > 0 ? ` · zůstane v zásobě ${escapeHtml(`${returnedPreparedQuantity} ks`)}` : ''}${swapReturnUnits > 0 ? ` · vrátit do zásoby ${escapeHtml(`${swapReturnUnits} ks`)}` : ''}${wasteTotal > 0 ? ` · odpis ${escapeHtml(`${wasteTotal} ks`)}` : ''}</div>
                   ${planogramChange ? `
                     <div class="attention-box">
-                      <strong>${planogramChange.fullSwap ? 'Kompletní výměna pozice' : 'Naplánovaná změna pozice'}</strong>
+                      <strong>${planogramChange.fullSwap ? 'POVINNÁ KOMPLETNÍ VÝMĚNA' : 'Naplánovaná změna pozice'}</strong>
                       <span>${planogramChange.productChanged ? `${escapeHtml(slot.product_name || slot.product_sku || '')} → ${escapeHtml(planogramChange.nextName || planogramChange.nextSku)}. ` : ''}${planogramChange.priceChanged ? `Nová cena ${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč. ` : ''}${planogramChange.fullSwap ? 'Zadej skutečný celkový stav. Staré prodejné kusy se při potvrzení vrátí do zdrojové zásoby, odpisy se vyřadí a nový produkt se aktivuje ihned.' : 'Potvrzením pozice se změna aktivuje nebo založí řízený doprodej starých kusů.'}</span>
                       ${planogramChange.instruction ? `<span><b>Kam se starým zbožím:</b> ${escapeHtml(planogramChange.instruction)}</span>` : ''}
                     </div>
                   ` : ''}
+                  ${swapReturnUnits > 0 ? `<div class="food-expired-warning"><strong>POVINNÝ KROK: nejdřív stáhni ${escapeHtml(swapReturnUnits)} ks ${escapeHtml(slot.product_name || slot.product_sku || 'původního produktu')}</strong><span>Vrať je do vozidla jako prodejné zboží. Nový produkt vlož až potom.</span><label><input type="checkbox" data-food-field="full-swap-removal-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.fullSwapRemovalConfirmed ? 'checked' : ''} ${readOnly || draft.accepted ? 'disabled' : ''}> Původní produkt je fyzicky vyndaný a uložený ve vozidle</label></div>` : ''}
                   ${planogramChange?.fullSwap && actualAdd <= 0 && !readOnly && !draft.accepted ? `<div class="attention-box"><strong>${deferredFullSwap ? 'Výměna je pro dnešek odložená' : 'Nový produkt není ve zdrojové zásobě?'}</strong><span>${deferredFullSwap ? 'Potvrď skutečný stav. Povinná výměna zůstane připravená na další návštěvu.' : 'Odlož výměnu bez falešného vložení a pokračuj v návštěvě.'}</span><button class="secondary-btn" type="button" data-food-action="defer-full-swap" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${deferredFullSwap ? 'disabled' : ''}>${deferredFullSwap ? '✓ Výměna odložená' : 'Nový produkt nemám · odložit výměnu'}</button></div>` : ''}
                   ${requiresMachinePriceConfirmation ? `<div class="food-expired-warning"><strong>Změň cenu přímo na automatu</strong><span>Pozice ${escapeHtml(slot.slot_code)} · ${escapeHtml(formatNumber(slot.customer_price_czk ?? slot.price_czk))} Kč → <b>${escapeHtml(formatNumber(planogramChange.nextPrice))} Kč</b>.</span><label><input type="checkbox" data-food-field="machine-price-confirmed" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.machinePriceConfirmed ? 'checked' : ''} ${readOnly || draft.accepted ? 'disabled' : ''}> Cena je na automatu skutečně změněná</label></div>` : ''}
                   ${renderOperatorPriceProposal(stop, slot, draft, readOnly)}
@@ -12170,7 +12181,7 @@
                       </label>
                     </div>
                   </details>
-                  ${readOnly ? '' : `<button class="primary-btn" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.accepted || (requiresMachinePriceConfirmation && !draft.machinePriceConfirmed) || (operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed) ? 'disabled' : ''}>${draft.accepted ? 'Pozice potvrzena ✓' : requiresMachinePriceConfirmation && !draft.machinePriceConfirmed ? 'Nejdřív potvrď cenu na automatu' : operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed ? 'Nejdřív potvrď fyzické nastavení ceny' : operatorPriceChangeReady(slot, draft) ? '3. Potvrdit pozici a odeslat cenu' : '3. Potvrdit pozici'}</button>`}
+                  ${readOnly ? '' : `<button class="primary-btn" type="button" data-food-action="confirm-slot" data-stop-id="${escapeHtml(stop.id)}" data-slot-id="${escapeHtml(slot.id)}" ${draft.accepted || (swapReturnUnits > 0 && !draft.fullSwapRemovalConfirmed) || (requiresMachinePriceConfirmation && !draft.machinePriceConfirmed) || (operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed) ? 'disabled' : ''}>${draft.accepted ? 'Pozice potvrzena ✓' : swapReturnUnits > 0 && !draft.fullSwapRemovalConfirmed ? `Nejdřív stáhni ${escapeHtml(swapReturnUnits)} ks původního produktu` : requiresMachinePriceConfirmation && !draft.machinePriceConfirmed ? 'Nejdřív potvrď cenu na automatu' : operatorPriceChangeEntered(slot, draft) && !draft.operatorPriceConfirmed ? 'Nejdřív potvrď fyzické nastavení ceny' : operatorPriceChangeReady(slot, draft) ? '3. Potvrdit pozici a odeslat cenu' : '3. Potvrdit pozici'}</button>`}
                   </div>
                 </details>
               `
@@ -15374,6 +15385,9 @@
       const transferQuantity = fullSwap ? 0 : requestedTransferQuantity
       if (wasteQuantity + transferQuantity > actualBefore) throw new Error(`Pozice ${slot.slot_code}: odpis a přesun dohromady nesmí překročit skutečný stav ${actualBefore} ks.`)
       const swapReturnQuantity = fullSwap ? Math.max(0, oldUnitsBeforeSwap - wasteQuantity) : 0
+      if (swapReturnQuantity > 0 && !draft.fullSwapRemovalConfirmed) {
+        throw new Error(`Pozice ${slot.slot_code}: nejdřív fyzicky stáhni ${swapReturnQuantity} ks původního produktu do vozidla a potvrď tento krok.`)
+      }
       const remainingExistingQuantity = fullSwap ? retainedReplacementUnits : Math.max(0, actualBefore - wasteQuantity - transferQuantity)
       const tracksExistingExpiry = isFoodExpiryTracked(fullSwap ? selectedProduct : (existingProduct || plannedProduct || selectedProduct))
       const existingExpiryDate = normalizeFoodExpiryDate(draft.existingExpiryDate)
@@ -19957,6 +19971,7 @@
             'assortment-mismatch': 'assortmentMismatch',
             'existing-product': 'existingProductId',
             'machine-price-confirmed': 'machinePriceConfirmed',
+            'full-swap-removal-confirmed': 'fullSwapRemovalConfirmed',
             note: 'note'
           }
           const key = fieldMap[foodField.dataset.foodField]
@@ -19968,7 +19983,7 @@
                 : Math.max(0, Math.round(parseNumber(foodField.value) || 0))
               : key === 'assortmentMismatch'
                 ? foodField.value === 'yes'
-                : key === 'machinePriceConfirmed'
+                : ['machinePriceConfirmed', 'fullSwapRemovalConfirmed'].includes(key)
                   ? Boolean(foodField.checked)
                 : key === 'existingExpiryDate'
                   ? formatFoodExpiryTyping(foodField.value)
@@ -20013,6 +20028,7 @@
               ...(['actualBefore', 'capacityUnits', 'existingExpiryDate', 'assortmentMismatch', 'existingProductId'].includes(key)
                 ? { expiryVerified: false, transferQuantity: 0, transferRecommendation: null }
                 : {}),
+              ...(key === 'actualBefore' ? { fullSwapRemovalConfirmed: false } : {}),
               ...(key === 'selectedProductId' ? { picked: false } : {})
             })
             if (slot) refreshFoodMachineTotals(foodField.dataset.stopId, slot)
@@ -20179,6 +20195,14 @@
             rememberFoodMachineRenderAnchor(foodField)
             updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
               machinePriceConfirmed: Boolean(foodField.checked),
+              accepted: false
+            })
+            scheduleFoodWorkProgressSave(foodField.dataset.stopId)
+            renderRouteMachineScreen()
+          } else if (foodField.dataset.foodField === 'full-swap-removal-confirmed') {
+            rememberFoodMachineRenderAnchor(foodField)
+            updateFoodSlotDraft(foodField.dataset.stopId, foodField.dataset.slotId, {
+              fullSwapRemovalConfirmed: Boolean(foodField.checked),
               accepted: false
             })
             scheduleFoodWorkProgressSave(foodField.dataset.stopId)

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v255-operator-home';
+const CACHE_NAME = 'olvend-v256-food-data-guards';
 const APP_SHELL = [
   './',
   './index.html',
@@ -6,7 +6,7 @@ const APP_SHELL = [
   './mobile-route-completion.js?v=20261026-initial-count-v2',
   './mobile-coffee-visit.js?v=20261021-coffee-visit-v1',
   './mobile-coffee-domain.js?v=20261026-initial-count-v3',
-  './mobile-food-visit.js?v=20261021-food-visit-v1',
+  './mobile-food-visit.js?v=20261116-data-guard-v1',
   './mobile-food-domain.js?v=20261021-food-domain-v1',
   './mobile-route-domain.js?v=20261021-route-domain-v1',
   './mobile-control.html',
