@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v256-food-data-guards';
+const CACHE_NAME = 'olvend-v257-mixed-slot-capacity';
 const APP_SHELL = [
   './',
   './index.html',
