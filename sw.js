@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v258-mobile-identity';
+const CACHE_NAME = 'olvend-v259-mobile-bonus-history';
 const APP_SHELL = [
   './',
   './index.html',
