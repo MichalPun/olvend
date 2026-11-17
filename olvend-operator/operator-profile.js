@@ -9,6 +9,8 @@
   var attendanceDays = []
   var requests = []
   var shifts = []
+  var nextRoute = null
+  var nextRouteVehicle = null
   var territoryRows = []
   var payslips = []
   var bonusSummaries = []
@@ -45,21 +47,24 @@
     })
   }
 
+  function allSettled(tasks) {
+    return Promise.all(tasks.map(function (task) {
+      return Promise.resolve(task).then(function (value) { return { status: 'fulfilled', value: value } }, function (reason) { return { status: 'rejected', reason: reason } })
+    }))
+  }
+
+  function pad2(value) { return ('0' + String(value)).slice(-2) }
+
   function todayIso(date) {
     var value = date || new Date()
     try { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Prague' }).format(value) }
     catch (_) { return value.toISOString().slice(0, 10) }
   }
 
-  function weekRange() {
+  function monthRange() {
     var now = new Date()
-    var day = now.getDay() || 7
-    var from = new Date(now)
-    from.setHours(12, 0, 0, 0)
-    from.setDate(from.getDate() - day + 1)
-    var to = new Date(from)
-    to.setDate(to.getDate() + 6)
-    return { from: todayIso(from), to: todayIso(to) }
+    var from = new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0, 0)
+    return { from: todayIso(from), to: todayIso(now) }
   }
 
   function initials(person) {
@@ -104,6 +109,56 @@
     if (!value) return '—'
     var date = new Date(String(value).slice(0, 10) + 'T12:00:00')
     return date.toLocaleDateString('cs-CZ', withWeekday ? { weekday: 'short', day: 'numeric', month: 'numeric' } : { day: 'numeric', month: 'numeric', year: 'numeric' })
+  }
+
+  function formatDateLong(value) {
+    if (!value) return '—'
+    var date = new Date(String(value).slice(0, 10) + 'T12:00:00')
+    return date.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' })
+  }
+
+  function formatMinutes(minutes) {
+    var safe = Math.max(0, Math.round(Number(minutes || 0)))
+    var hours = Math.floor(safe / 60)
+    var rest = safe % 60
+    if (!hours) return rest + ' min'
+    if (!rest) return hours + ' h'
+    return hours + ' h ' + pad2(rest) + ' min'
+  }
+
+  function formatSignedMinutes(minutes) {
+    var value = Math.round(Number(minutes || 0))
+    if (!value) return '0 min'
+    return (value > 0 ? '+' : '−') + formatMinutes(Math.abs(value))
+  }
+
+  function plannedShiftMinutes(shift) {
+    if (!shift) return 0
+    var start = String(shift.planned_start || '').slice(0, 5)
+    var end = String(shift.planned_end || '').slice(0, 5)
+    if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return 0
+    var startParts = start.split(':').map(Number)
+    var endParts = end.split(':').map(Number)
+    var minutes = (endParts[0] * 60 + endParts[1]) - (startParts[0] * 60 + startParts[1])
+    if (minutes < 0) minutes += 24 * 60
+    return Math.max(0, minutes)
+  }
+
+  function attendanceMinutes(row) {
+    if (!row || !row.actual_start) return 0
+    var stored = Number(row.payable_minutes)
+    var date = String(row.attendance_date || '')
+    var today = todayIso()
+    if (Number.isFinite(stored) && (row.actual_end || row.status === 'closed' || date < today)) return Math.max(0, stored)
+    if (!row.actual_end && date < today) return 0
+    var end = row.actual_end ? new Date(row.actual_end) : new Date()
+    return Math.max(0, Math.round((end.getTime() - new Date(row.actual_start).getTime()) / 60000))
+  }
+
+  function greetingName(value) {
+    var name = String(value || '').trim()
+    var known = { Michal: 'Michale', Pavel: 'Pavle', Petr: 'Petře', Lukáš: 'Lukáši', David: 'Davide', Martin: 'Martine', Veronika: 'Veroniko', Kristýna: 'Kristýno', Petra: 'Petro' }
+    return known[name] || name
   }
 
   function formatRange(row) {
@@ -193,7 +248,7 @@
   }
 
   function loadAttendance() {
-    var range = weekRange()
+    var range = monthRange()
     var fields = 'attendance_date,payable_minutes,actual_start,actual_end,status'
     var url = supabaseUrl + '/rest/v1/attendance_days?select=' + encodeURIComponent(fields) + '&employee_id=eq.' + encodeURIComponent(employee.id)
       + '&attendance_date=gte.' + range.from + '&attendance_date=lte.' + range.to + '&order=attendance_date.asc'
@@ -225,6 +280,27 @@
         + '&shift_plan_id=in.(' + ids.map(encodeURIComponent).join(',') + ')&employee_id=eq.' + encodeURIComponent(employee.id)
         + '&plan_date=gte.' + todayIso(now) + '&plan_date=lte.' + todayIso(end) + '&order=plan_date.asc,planned_start.asc'
       return requestJson(url).then(function (rows) { shifts = Array.isArray(rows) ? rows : [] })
+    })
+  }
+
+  function loadNextRoute() {
+    var fields = 'id,planning_date,title,vehicle_id,execution_status,estimated_distance_km,estimated_drive_minutes,created_at,route_plan_stops(id,stop_order,status,title,address_snapshot,city_snapshot,machine_id,location_id)'
+    var url = supabaseUrl + '/rest/v1/route_plans?select=' + encodeURIComponent(fields)
+      + '&planned_employee_id=eq.' + encodeURIComponent(employee.id)
+      + '&planning_date=gte.' + encodeURIComponent(todayIso())
+      + '&execution_status=neq.cancelled&order=planning_date.asc,created_at.desc&limit=20'
+    return requestJson(url).then(function (rows) {
+      rows = Array.isArray(rows) ? rows : []
+      nextRoute = rows.filter(function (row) {
+        return row.execution_status !== 'done' || String(row.planning_date) === todayIso()
+      })[0] || null
+      nextRouteVehicle = null
+      if (!nextRoute || !nextRoute.vehicle_id) return null
+      var vehicleUrl = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent('id,name,plate,brand,model')
+        + '&id=eq.' + encodeURIComponent(nextRoute.vehicle_id) + '&limit=1'
+      return requestJson(vehicleUrl).then(function (vehicles) {
+        nextRouteVehicle = Array.isArray(vehicles) && vehicles[0] ? vehicles[0] : null
+      }).catch(function () { nextRouteVehicle = null })
     })
   }
 
@@ -276,7 +352,7 @@
   function monthStart(offset) {
     var date = new Date()
     date = new Date(date.getFullYear(), date.getMonth() - Number(offset || 0), 1)
-    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-01'
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-01'
   }
 
   function loadBonuses() {
@@ -432,8 +508,6 @@
     root.querySelector('#op-territory-locations').textContent = String(primary.length)
     root.querySelector('#op-territory-machines').textContent = String(machineCount)
     root.querySelector('#op-territory-backups').textContent = String(backup.length)
-    root.querySelector('#op-primary-legend').textContent = primary.length + ' hlavních'
-    root.querySelector('#op-backup-legend').textContent = backup.length + '× náhradník'
     root.querySelector('#op-detail-locations').textContent = String(primary.length)
     root.querySelector('#op-detail-machines').textContent = String(machineCount)
     root.querySelector('#op-detail-backups').textContent = String(backup.length)
@@ -442,7 +516,6 @@
     root.querySelector('#op-territory-cities').textContent = cities.length ? cities.slice(0, 6).join(' · ') : 'Zatím bez přidělené hlavní oblasti'
     var validFrom = primary.map(function (row) { return row.assignment.effective_from }).filter(Boolean).sort()[0]
     root.querySelector('#op-territory-validity').textContent = validFrom ? 'Aktuální rozdělení platné od ' + formatDate(validFrom) : 'Aktuální rozdělení'
-    renderLeafletMap(root.querySelector('#op-territory-map-overview'), 'overview', false)
     renderLeafletMap(root.querySelector('#op-territory-map-detail'), 'detail', true)
     var list = root.querySelector('#op-territory-list')
     list.innerHTML = ''
@@ -751,20 +824,84 @@
   }
 
   function renderOverview() {
-    var fullName = [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil'
     var mark = initials(employee)
-    root.querySelector('#op-name').textContent = fullName
-    root.querySelector('#op-role').textContent = roleLabel(employee.role) + ' · ' + employmentLabel(employee.employment_type)
-    root.querySelector('#op-avatar').textContent = mark
     root.querySelector('.op-user').textContent = mark
+    var hour = new Date().getHours()
+    var greeting = hour < 10 ? 'Dobré ráno' : hour < 18 ? 'Dobrý den' : 'Dobrý večer'
+    root.querySelector('#op-greeting').textContent = greeting + (employee.name ? ', ' + greetingName(employee.name) : '')
 
-    var minutes = attendanceDays.reduce(function (sum, row) {
-      var stored = Number(row.payable_minutes || 0)
-      if (!stored && row.actual_start && !row.actual_end) stored = Math.max(0, Math.round((Date.now() - new Date(row.actual_start).getTime()) / 60000))
-      return sum + stored
-    }, 0)
-    var contracted = Number(employee.contracted_weekly_hours || 0)
-    root.querySelector('#op-week-hours').textContent = (minutes / 60).toLocaleString('cs-CZ', { minimumFractionDigits: 0, maximumFractionDigits: 1 }) + (contracted ? ' / ' + contracted.toLocaleString('cs-CZ') : '') + ' h'
+    var today = todayIso()
+    var todayAttendance = attendanceDays.filter(function (row) { return String(row.attendance_date) === today })[0] || null
+    var todayShift = shifts.filter(function (row) { return String(row.plan_date) === today && row.status !== 'cancelled' })[0] || null
+    var todayWorked = attendanceMinutes(todayAttendance)
+    var todayPlanned = plannedShiftMinutes(todayShift)
+    var hasStarted = Boolean(todayAttendance && todayAttendance.actual_start)
+    var isRunning = Boolean(hasStarted && !todayAttendance.actual_end && todayAttendance.status !== 'closed')
+    var isClosed = Boolean(todayAttendance && (todayAttendance.actual_end || todayAttendance.status === 'closed'))
+    root.querySelector('#op-day-date').textContent = 'Dnes · ' + formatDateLong(today)
+    var hasTodayPlan = Boolean(todayShift || (nextRoute && String(nextRoute.planning_date) === today))
+    if (isRunning) {
+      root.querySelector('#op-day-title').textContent = 'Směna právě probíhá'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je aktivní.'
+      root.querySelector('#op-day-state').textContent = 'Probíhá'
+    } else if (isClosed && hasTodayPlan) {
+      root.querySelector('#op-day-title').textContent = 'Dnešní směna je dokončena'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je pro dnešek uzavřená.'
+      root.querySelector('#op-day-state').textContent = 'Hotovo'
+    } else if (hasTodayPlan) {
+      root.querySelector('#op-day-title').textContent = 'Dnes máte naplánovanou směnu'
+      root.querySelector('#op-day-copy').textContent = 'Směnu zahájíte na úvodní obrazovce.'
+      root.querySelector('#op-day-state').textContent = 'Naplánováno'
+    } else {
+      root.querySelector('#op-day-title').textContent = 'Dnes nemáte směnu'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je pro dnešek uzavřená.'
+      root.querySelector('#op-day-state').textContent = 'Bez směny'
+    }
+
+    root.querySelector('#op-week-hours').textContent = formatMinutes(todayWorked)
+    var workBalance = root.querySelector('#op-work-balance')
+    workBalance.className = 'op-work-note'
+    if (todayPlanned && hasStarted) {
+      var balance = todayWorked - todayPlanned
+      workBalance.textContent = 'Bilance dnes: ' + formatSignedMinutes(balance)
+      workBalance.classList.add(balance > 0 ? 'overtime' : balance === 0 ? 'good' : 'pending')
+    } else if (todayPlanned) {
+      workBalance.textContent = 'Plán dne: ' + formatMinutes(todayPlanned)
+      workBalance.classList.add('pending')
+    } else if (hasStarted && todayWorked > 0) {
+      workBalance.textContent = 'Bez zveřejněného plánu dne'
+      workBalance.classList.add('pending')
+    } else {
+      workBalance.textContent = 'Dnes bez směny · bez přesčasu'
+      workBalance.classList.add('good')
+    }
+
+    var routeCard = root.querySelector('#op-next-route-card')
+    if (nextRoute) {
+      routeCard.classList.remove('empty')
+      var routeDate = String(nextRoute.planning_date || '')
+      var routeShift = shifts.filter(function (row) { return String(row.plan_date) === routeDate && row.status !== 'cancelled' })[0] || null
+      var tomorrow = new Date(today + 'T12:00:00'); tomorrow.setDate(tomorrow.getDate() + 1)
+      var dateBadge = routeDate === today ? 'Dnes' : routeDate === todayIso(tomorrow) ? 'Zítra' : formatDate(routeDate, true)
+      var vehicleName = nextRouteVehicle ? (nextRouteVehicle.name || [nextRouteVehicle.brand, nextRouteVehicle.model].filter(Boolean).join(' ')) : 'Vozidlo zatím nepřiřazeno'
+      var vehiclePlate = nextRouteVehicle && nextRouteVehicle.plate ? ' · ' + nextRouteVehicle.plate : ''
+      var stopCount = Array.isArray(nextRoute.route_plan_stops) ? nextRoute.route_plan_stops.length : 0
+      root.querySelector('#op-next-route-kicker').textContent = routeDate === today ? 'Dnešní trasa' : 'Příští směna'
+      root.querySelector('#op-next-route-date').textContent = formatDateLong(routeDate)
+      root.querySelector('#op-next-route-vehicle').textContent = vehicleName + vehiclePlate
+      root.querySelector('#op-next-route-badge').textContent = dateBadge
+      root.querySelector('#op-next-route-start').textContent = routeShift && routeShift.planned_start ? String(routeShift.planned_start).slice(0, 5) : '—'
+      root.querySelector('#op-next-route-stops').textContent = stopCount + (stopCount === 1 ? ' zastávka' : stopCount > 1 && stopCount < 5 ? ' zastávky' : ' zastávek')
+      root.querySelector('#op-next-route-distance').textContent = nextRoute.estimated_distance_km == null ? '—' : Number(nextRoute.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km'
+      root.querySelector('#op-next-route-open').disabled = false
+    } else {
+      routeCard.classList.add('empty')
+      root.querySelector('#op-next-route-kicker').textContent = 'Plán tras'
+      root.querySelector('#op-next-route-date').textContent = 'Další trasa zatím není naplánovaná'
+      root.querySelector('#op-next-route-vehicle').textContent = 'Jakmile bude zveřejněná, objeví se zde.'
+      root.querySelector('#op-next-route-badge').textContent = 'Bez plánu'
+      root.querySelector('#op-next-route-open').disabled = true
+    }
 
     var vacation = vacationMeta()
     root.querySelector('#op-shift-card-value').textContent = shifts.length ? formatDate(shifts[0].plan_date, true) : '—'
@@ -784,6 +921,44 @@
   function shiftTime(row) {
     if (!row.planned_start || !row.planned_end) return 'Bez času'
     return String(row.planned_start).slice(0, 5) + '–' + String(row.planned_end).slice(0, 5)
+  }
+
+  function renderNextRoute() {
+    var list = root.querySelector('#op-next-route-list')
+    list.innerHTML = ''
+    if (!nextRoute) {
+      root.querySelector('#op-route-detail-title').textContent = 'Další trasa zatím není naplánovaná'
+      root.querySelector('#op-route-detail-meta').textContent = 'Jakmile vedoucí trasu zveřejní, uvidíte ji zde.'
+      root.querySelector('#op-route-detail-count').textContent = 'Bez zastávek'
+      addEmpty(list, 'Na další dny zatím nemáte zveřejněnou trasu.')
+      return
+    }
+    var stops = Array.isArray(nextRoute.route_plan_stops) ? nextRoute.route_plan_stops.slice() : []
+    stops.sort(function (a, b) { return Number(a.stop_order || 0) - Number(b.stop_order || 0) })
+    var vehicleName = nextRouteVehicle ? (nextRouteVehicle.name || [nextRouteVehicle.brand, nextRouteVehicle.model].filter(Boolean).join(' ')) : 'bez přiřazeného vozidla'
+    var vehiclePlate = nextRouteVehicle && nextRouteVehicle.plate ? ' · ' + nextRouteVehicle.plate : ''
+    root.querySelector('#op-route-detail-kicker').textContent = formatDateLong(nextRoute.planning_date)
+    root.querySelector('#op-route-detail-title').textContent = nextRoute.title || 'Plánovaná trasa'
+    root.querySelector('#op-route-detail-meta').textContent = [
+      stops.length + (stops.length === 1 ? ' zastávka' : stops.length > 1 && stops.length < 5 ? ' zastávky' : ' zastávek'),
+      nextRoute.estimated_distance_km == null ? null : Number(nextRoute.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km',
+      vehicleName + vehiclePlate
+    ].filter(Boolean).join(' · ')
+    root.querySelector('#op-route-detail-count').textContent = String(stops.length)
+    if (!stops.length) { addEmpty(list, 'Trasa zatím nemá žádné zastávky.'); return }
+    stops.forEach(function (stop, index) {
+      var row = document.createElement('div')
+      row.className = 'op-next-route-stop'
+      var number = document.createElement('span')
+      number.className = 'op-next-route-number'
+      number.textContent = String(stop.stop_order || index + 1)
+      var copy = document.createElement('span')
+      var title = document.createElement('strong')
+      var address = document.createElement('span')
+      title.textContent = stop.title || 'Zastávka ' + (index + 1)
+      address.textContent = [stop.address_snapshot, stop.city_snapshot].filter(Boolean).join(' · ') || 'Adresa neuvedena'
+      copy.appendChild(title); copy.appendChild(address); row.appendChild(number); row.appendChild(copy); list.appendChild(row)
+    })
   }
 
   function renderShifts() {
@@ -850,7 +1025,7 @@
   function meetingDayKey(value) {
     var date = new Date(value)
     try { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Prague' }).format(date) }
-    catch (_) { return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0') }
+    catch (_) { return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) }
   }
 
   function renderMeetingSlots() {
@@ -1012,18 +1187,25 @@
     var data = root.querySelector('#op-worktime-data')
     data.innerHTML = ''
     var minutes = attendanceDays.reduce(function (sum, row) {
-      var stored = Number(row.payable_minutes || 0)
-      if (!stored && row.actual_start && !row.actual_end) stored = Math.max(0, Math.round((Date.now() - new Date(row.actual_start).getTime()) / 60000))
-      return sum + stored
+      return sum + attendanceMinutes(row)
     }, 0)
+    var today = todayIso()
+    var todayAttendance = attendanceDays.filter(function (row) { return String(row.attendance_date) === today })[0] || null
+    var todayShift = shifts.filter(function (row) { return String(row.plan_date) === today && row.status !== 'cancelled' })[0] || null
+    var todayWorked = attendanceMinutes(todayAttendance)
+    var todayPlanned = plannedShiftMinutes(todayShift)
+    var todayBalance = todayPlanned ? todayWorked - todayPlanned : null
     var contracted = Number(employee.contracted_weekly_hours || 0)
-    addDataRow(data, 'Odpracováno tento týden', (minutes / 60).toLocaleString('cs-CZ', { minimumFractionDigits: 0, maximumFractionDigits: 1 }) + ' hodin')
+    addDataRow(data, 'Odpracováno dnes', formatMinutes(todayWorked))
+    addDataRow(data, 'Plán dne', todayPlanned ? formatMinutes(todayPlanned) : 'Bez zveřejněného plánu')
+    addDataRow(data, 'Bilance dne', todayBalance == null ? 'Nelze vypočítat bez plánu' : formatSignedMinutes(todayBalance))
+    addDataRow(data, 'Odpracováno tento měsíc', formatMinutes(minutes))
     addDataRow(data, 'Týdenní fond', contracted ? contracted.toLocaleString('cs-CZ') + ' hodin' : 'Neuvedeno')
-    addDataRow(data, 'Zbývá do fondu', contracted ? Math.max(0, contracted - minutes / 60).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' hodin' : 'Nelze vypočítat')
   }
 
   function renderAll() {
     renderOverview()
+    renderNextRoute()
     renderTerritory()
     renderBonuses()
     renderInventories()
@@ -1106,7 +1288,7 @@
     employee = activeEmployee || {}
     if (!employee.id && !(session && session.user && session.user.id)) { showBusy(false); toast('Profil zaměstnance se nepodařilo načíst.', true); return }
     loadEmployee().then(function () {
-      return Promise.allSettled([loadAttendance(), loadRequests(), loadShifts(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories(), loadMeetings()])
+      return allSettled([loadAttendance(), loadRequests(), loadShifts(), loadNextRoute(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories(), loadMeetings()])
     }).then(function (results) {
       var failed = results.filter(function (result) { return result.status === 'rejected' })
       renderAll()
