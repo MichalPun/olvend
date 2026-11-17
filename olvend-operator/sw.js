@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v29-idle-weather'
+  var CACHE_NAME = 'olvend-operator-v30-idle-weather'
   var APP_SHELL = [
     './',
     './index.html',
@@ -16,14 +16,14 @@
     './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
-    './approved-home.js',
+    './approved-home-v30.js',
     './operator-route.js',
     './operator-warehouse.js',
     './operator-profile.js',
     './operator-instructions.js',
     './operator-vehicle.js',
     './auth-guard.js',
-    './pwa-v29.js',
+    './pwa-v30.js',
     './icon-192.png',
     './icon-512.png',
     './icon-maskable-512.png',
