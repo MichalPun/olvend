@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v28-pwa-file'
+  var CACHE_NAME = 'olvend-operator-v29-idle-weather'
   var APP_SHELL = [
     './',
     './index.html',
@@ -23,7 +23,7 @@
     './operator-instructions.js',
     './operator-vehicle.js',
     './auth-guard.js',
-    './pwa-v27.js',
+    './pwa-v29.js',
     './icon-192.png',
     './icon-512.png',
     './icon-maskable-512.png',
