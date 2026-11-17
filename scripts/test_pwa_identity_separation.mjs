@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
+const mobileManifest = JSON.parse(read('operator-manifest.webmanifest'))
+const operatorManifest = JSON.parse(read('olvend-operator/manifest.webmanifest'))
+const mobileHtml = read('mobile.html')
+const mobilePwa = read('pwa.js')
+const mobileSw = read('sw.js')
+const operatorHome = read('olvend-operator/uvod.html')
+const operatorPwa = read('olvend-operator/pwa.js')
+const operatorSw = read('olvend-operator/sw.js')
+
+assert.equal(mobileManifest.id, '/mobile.html')
+assert.equal(mobileManifest.name, 'OLVEND Mobil')
+assert.equal(mobileManifest.short_name, 'OLVEND Mobil')
+assert.equal(mobileManifest.start_url, '/mobile.html')
+assert.equal(mobileManifest.scope, '/')
+assert.match(mobileHtml, /apple-mobile-web-app-title" content="OLVEND Mobil"/)
+assert.match(mobileHtml, /<link rel="manifest" href="operator-manifest\.webmanifest"/)
+assert.match(mobileHtml, /<title>OLVEND Mobil<\/title>/)
+assert.match(mobilePwa, /20261117-mobile-bonus-history-v1/)
+assert.match(mobileSw, /olvend-v259-mobile-bonus-history/)
+
+assert.equal(operatorManifest.id, '/olvend-operator/')
+assert.equal(operatorManifest.name, 'OLVEND Operátor')
+assert.equal(operatorManifest.start_url, '/olvend-operator/uvod.html')
+assert.equal(operatorManifest.scope, '/olvend-operator/')
+assert.notEqual(operatorManifest.id, mobileManifest.id)
+assert.notEqual(operatorManifest.name, mobileManifest.name)
+assert.match(operatorHome, /OLVEND Operátor · Před směnou/)
+assert.match(operatorHome, /pwa\.js\?v=20261117-pda-entry-v1/)
+assert.match(operatorPwa, /sw\.js\?v=20261117-pda-entry-v1/)
+assert.match(operatorPwa, /scope:\s*'\.\/'/)
+assert.match(operatorSw, /olvend-operator-v26-pda-entry/)
+
+console.log('PWA identity separation checks passed')
