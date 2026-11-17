@@ -1,0 +1,1302 @@
+(function () {
+  'use strict'
+
+  var supabaseUrl = 'https://rerjlkrhiytgscjerqgs.supabase.co'
+  var supabaseKey = 'sb_publishable_A8OxCcapdNXAzQLjLsW5iA_XtGvBZ0S'
+  var root = document.getElementById('operator-profile')
+  var session = null
+  var employee = null
+  var attendanceDays = []
+  var requests = []
+  var shifts = []
+  var nextRoute = null
+  var nextRouteVehicle = null
+  var territoryRows = []
+  var payslips = []
+  var bonusSummaries = []
+  var inventories = []
+  var inventoryItems = []
+  var meetings = []
+  var meetingSlots = []
+  var selectedMeetingDay = null
+  var selectedMeetingSlot = null
+  var activeInventoryId = null
+  var currentView = 'overview'
+  var territoryMaps = {}
+  var territoryBounds = null
+
+  function apiHeaders(extra) {
+    return Object.assign({
+      apikey: supabaseKey,
+      Authorization: 'Bearer ' + session.access_token,
+      'Content-Type': 'application/json'
+    }, extra || {})
+  }
+
+  function requestJson(url, options) {
+    var opts = Object.assign({}, options || {})
+    opts.headers = apiHeaders(opts.headers)
+    return fetch(url, opts).then(function (response) {
+      if (!response.ok) return response.text().then(function (text) {
+        var detail = ''
+        try { detail = JSON.parse(text).message || JSON.parse(text).details || '' } catch (_) {}
+        throw new Error(detail || 'Data se nepodařilo načíst (HTTP ' + response.status + ').')
+      })
+      if (response.status === 204) return null
+      return response.text().then(function (text) { return text ? JSON.parse(text) : null })
+    })
+  }
+
+  function allSettled(tasks) {
+    return Promise.all(tasks.map(function (task) {
+      return Promise.resolve(task).then(function (value) { return { status: 'fulfilled', value: value } }, function (reason) { return { status: 'rejected', reason: reason } })
+    }))
+  }
+
+  function pad2(value) { return ('0' + String(value)).slice(-2) }
+
+  function todayIso(date) {
+    var value = date || new Date()
+    try { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Prague' }).format(value) }
+    catch (_) { return value.toISOString().slice(0, 10) }
+  }
+
+  function monthRange() {
+    var now = new Date()
+    var from = new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0, 0)
+    return { from: todayIso(from), to: todayIso(now) }
+  }
+
+  function initials(person) {
+    return ((String(person && person.name || '').charAt(0) + String(person && person.surname || '').charAt(0)).toUpperCase() || 'OP')
+  }
+
+  function roleLabel(role) {
+    var map = { operator: 'Operátor', technician: 'Technik', manager: 'Manažer', admin: 'Administrátor' }
+    return map[String(role || '').toLowerCase()] || role || 'Operátor'
+  }
+
+  function employmentLabel(value) {
+    var map = { hpp: 'HPP', dpp: 'DPP', dpc: 'DPČ', external: 'Externí spolupráce' }
+    return map[String(value || '').toLowerCase()] || 'Pracovní poměr neuveden'
+  }
+
+  function requestTypeLabel(type) {
+    var map = { vacation: 'Dovolená', doctor: 'Doktor', personal: 'Osobní volno', sick: 'Nemoc / překážka', other: 'Jiná žádost' }
+    return map[String(type || '').toLowerCase()] || 'Žádost'
+  }
+
+  function requestStatus(status) {
+    var map = {
+      pending: { label: 'Čeká na schválení', cls: 'pending' },
+      approved: { label: 'Schváleno', cls: 'approved' },
+      rejected: { label: 'Zamítnuto', cls: 'rejected' },
+      cancelled: { label: 'Zrušeno', cls: '' }
+    }
+    return map[String(status || '').toLowerCase()] || map.pending
+  }
+
+  function shiftTypeLabel(type) {
+    var map = {
+      operator: 'Operátor v provozu', technician_field: 'Technik v terénu', technician_workshop: 'Technik na dílně',
+      manager_office: 'Manažer v kanceláři', manager_field: 'Manažer v provozu', vacation: 'Dovolená',
+      sick: 'Nemoc', holiday: 'Svátek', day_off: 'Volno'
+    }
+    return map[type] || 'Plánovaná směna'
+  }
+
+  function formatDate(value, withWeekday) {
+    if (!value) return '—'
+    var date = new Date(String(value).slice(0, 10) + 'T12:00:00')
+    return date.toLocaleDateString('cs-CZ', withWeekday ? { weekday: 'short', day: 'numeric', month: 'numeric' } : { day: 'numeric', month: 'numeric', year: 'numeric' })
+  }
+
+  function formatDateLong(value) {
+    if (!value) return '—'
+    var date = new Date(String(value).slice(0, 10) + 'T12:00:00')
+    return date.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' })
+  }
+
+  function formatMinutes(minutes) {
+    var safe = Math.max(0, Math.round(Number(minutes || 0)))
+    var hours = Math.floor(safe / 60)
+    var rest = safe % 60
+    if (!hours) return rest + ' min'
+    if (!rest) return hours + ' h'
+    return hours + ' h ' + pad2(rest) + ' min'
+  }
+
+  function formatSignedMinutes(minutes) {
+    var value = Math.round(Number(minutes || 0))
+    if (!value) return '0 min'
+    return (value > 0 ? '+' : '−') + formatMinutes(Math.abs(value))
+  }
+
+  function plannedShiftMinutes(shift) {
+    if (!shift) return 0
+    var start = String(shift.planned_start || '').slice(0, 5)
+    var end = String(shift.planned_end || '').slice(0, 5)
+    if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return 0
+    var startParts = start.split(':').map(Number)
+    var endParts = end.split(':').map(Number)
+    var minutes = (endParts[0] * 60 + endParts[1]) - (startParts[0] * 60 + startParts[1])
+    if (minutes < 0) minutes += 24 * 60
+    return Math.max(0, minutes)
+  }
+
+  function attendanceMinutes(row) {
+    if (!row || !row.actual_start) return 0
+    var stored = Number(row.payable_minutes)
+    var date = String(row.attendance_date || '')
+    var today = todayIso()
+    if (Number.isFinite(stored) && (row.actual_end || row.status === 'closed' || date < today)) return Math.max(0, stored)
+    if (!row.actual_end && date < today) return 0
+    var end = row.actual_end ? new Date(row.actual_end) : new Date()
+    return Math.max(0, Math.round((end.getTime() - new Date(row.actual_start).getTime()) / 60000))
+  }
+
+  function greetingName(value) {
+    var name = String(value || '').trim()
+    var known = { Michal: 'Michale', Pavel: 'Pavle', Petr: 'Petře', Lukáš: 'Lukáši', David: 'Davide', Martin: 'Martine', Veronika: 'Veroniko', Kristýna: 'Kristýno', Petra: 'Petro' }
+    return known[name] || name
+  }
+
+  function formatRange(row) {
+    var dates = row.date_to && row.date_to !== row.date_from ? formatDate(row.date_from) + ' – ' + formatDate(row.date_to) : formatDate(row.date_from)
+    var times = row.start_time && row.end_time ? String(row.start_time).slice(0, 5) + ' – ' + String(row.end_time).slice(0, 5) : ''
+    return [dates, times].filter(Boolean).join(' · ')
+  }
+
+  function countWeekdays(fromValue, toValue) {
+    if (!fromValue) return 0
+    var from = new Date(fromValue + 'T12:00:00')
+    var to = new Date((toValue || fromValue) + 'T12:00:00')
+    var total = 0
+    while (from <= to) {
+      if (from.getDay() !== 0 && from.getDay() !== 6) total += 1
+      from.setDate(from.getDate() + 1)
+    }
+    return total
+  }
+
+  function vacationMeta() {
+    var year = String(new Date().getFullYear())
+    var total = Number(employee.vacation_allowance_days || 0) + Number(employee.vacation_carryover_days || 0)
+    var approved = requests.filter(function (row) { return row.request_type === 'vacation' && row.status === 'approved' && String(row.date_from || '').indexOf(year) === 0 })
+      .reduce(function (sum, row) { return sum + countWeekdays(row.date_from, row.date_to) }, 0)
+    return { total: total, approved: approved, remaining: Math.max(0, total - approved) }
+  }
+
+  function showBusy(active, label) {
+    root.querySelector('#op-busy-label').textContent = label || 'Načítám…'
+    root.querySelector('#op-busy').hidden = !active
+  }
+
+  function toast(message, isError) {
+    var item = root.querySelector('#op-toast')
+    item.textContent = message
+    item.classList.toggle('error', Boolean(isError))
+    item.hidden = false
+    window.clearTimeout(toast.timer)
+    toast.timer = window.setTimeout(function () { item.hidden = true }, 3600)
+  }
+
+  function openView(name) {
+    currentView = name
+    Array.prototype.forEach.call(root.querySelectorAll('.op-view'), function (view) { view.hidden = view.getAttribute('data-view') !== name })
+    window.scrollTo(0, 0)
+    if (name === 'territory' && territoryMaps.detail) {
+      window.setTimeout(function () {
+        territoryMaps.detail.invalidateSize()
+        fitTerritoryMap(territoryMaps.detail, 12)
+      }, 30)
+    }
+  }
+
+  function addEmpty(parent, message) {
+    var empty = document.createElement('div')
+    empty.className = 'op-empty'
+    empty.textContent = message
+    parent.appendChild(empty)
+  }
+
+  function addDataRow(parent, label, value) {
+    var row = document.createElement('div')
+    row.className = 'op-data-row'
+    var small = document.createElement('span')
+    var strong = document.createElement('strong')
+    small.textContent = label
+    strong.textContent = value || 'Neuvedeno'
+    row.appendChild(small)
+    row.appendChild(strong)
+    parent.appendChild(row)
+  }
+
+  function loadEmployee() {
+    var fields = 'id,name,surname,role,email,phone,contracted_weekly_hours,employment_type,vacation_allowance_days,vacation_carryover_days,auth_user_id'
+    var identityFilter = session && session.user && session.user.id
+      ? '&auth_user_id=eq.' + encodeURIComponent(session.user.id)
+      : '&id=eq.' + encodeURIComponent(employee.id)
+    var url = supabaseUrl + '/rest/v1/employees?select=' + encodeURIComponent(fields) + identityFilter + '&limit=1'
+    return requestJson(url).catch(function (error) {
+      if (!/phone|vacation_allowance_days|vacation_carryover_days/i.test(String(error.message || ''))) throw error
+      fields = 'id,name,surname,role,email,contracted_weekly_hours,employment_type,auth_user_id'
+      return requestJson(supabaseUrl + '/rest/v1/employees?select=' + encodeURIComponent(fields) + identityFilter + '&limit=1')
+    }).then(function (rows) {
+      if (Array.isArray(rows) && rows[0]) employee = Object.assign({}, employee, rows[0])
+    })
+  }
+
+  function loadAttendance() {
+    var range = monthRange()
+    var fields = 'attendance_date,payable_minutes,actual_start,actual_end,status'
+    var url = supabaseUrl + '/rest/v1/attendance_days?select=' + encodeURIComponent(fields) + '&employee_id=eq.' + encodeURIComponent(employee.id)
+      + '&attendance_date=gte.' + range.from + '&attendance_date=lte.' + range.to + '&order=attendance_date.asc'
+    return requestJson(url).then(function (rows) { attendanceDays = Array.isArray(rows) ? rows : [] })
+  }
+
+  function loadRequests() {
+    var fields = 'id,employee_id,request_type,status,date_from,date_to,start_time,end_time,reason,manager_note,approved_at,created_at,updated_at'
+    var url = supabaseUrl + '/rest/v1/hr_requests?select=' + encodeURIComponent(fields) + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&order=created_at.desc'
+    return requestJson(url).then(function (rows) { requests = Array.isArray(rows) ? rows : [] })
+  }
+
+  function loadShifts() {
+    var now = new Date()
+    var periods = [0, 1].map(function (offset) {
+      var date = new Date(now.getFullYear(), now.getMonth() + offset, 1)
+      return { year: date.getFullYear(), month: date.getMonth() + 1 }
+    })
+    return Promise.all(periods.map(function (period) {
+      var url = supabaseUrl + '/rest/v1/shift_plans?select=id&period_type=eq.month&period_year=eq.' + period.year + '&period_month=eq.' + period.month + '&status=eq.published&order=published_at.desc&limit=1'
+      return requestJson(url).catch(function () { return [] })
+    })).then(function (results) {
+      var ids = results.map(function (rows) { return rows && rows[0] && rows[0].id }).filter(Boolean)
+      if (!ids.length) { shifts = []; return }
+      var end = new Date(now)
+      end.setDate(end.getDate() + 27)
+      var fields = 'id,shift_type,planned_start,planned_end,warehouse_id,vehicle_id,location_type,note,status,shift_plan_id,plan_date'
+      var url = supabaseUrl + '/rest/v1/shift_plan_days?select=' + encodeURIComponent(fields)
+        + '&shift_plan_id=in.(' + ids.map(encodeURIComponent).join(',') + ')&employee_id=eq.' + encodeURIComponent(employee.id)
+        + '&plan_date=gte.' + todayIso(now) + '&plan_date=lte.' + todayIso(end) + '&order=plan_date.asc,planned_start.asc'
+      return requestJson(url).then(function (rows) { shifts = Array.isArray(rows) ? rows : [] })
+    })
+  }
+
+  function loadNextRoute() {
+    var fields = 'id,planning_date,title,vehicle_id,execution_status,estimated_distance_km,estimated_drive_minutes,created_at,route_plan_stops(id,stop_order,status,title,address_snapshot,city_snapshot,machine_id,location_id)'
+    var url = supabaseUrl + '/rest/v1/route_plans?select=' + encodeURIComponent(fields)
+      + '&planned_employee_id=eq.' + encodeURIComponent(employee.id)
+      + '&planning_date=gte.' + encodeURIComponent(todayIso())
+      + '&execution_status=neq.cancelled&order=planning_date.asc,created_at.desc&limit=20'
+    return requestJson(url).then(function (rows) {
+      rows = Array.isArray(rows) ? rows : []
+      nextRoute = rows.filter(function (row) {
+        return row.execution_status !== 'done' || String(row.planning_date) === todayIso()
+      })[0] || null
+      nextRouteVehicle = null
+      if (!nextRoute || !nextRoute.vehicle_id) return null
+      var vehicleUrl = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent('id,name,plate,brand,model')
+        + '&id=eq.' + encodeURIComponent(nextRoute.vehicle_id) + '&limit=1'
+      return requestJson(vehicleUrl).then(function (vehicles) {
+        nextRouteVehicle = Array.isArray(vehicles) && vehicles[0] ? vehicles[0] : null
+      }).catch(function () { nextRouteVehicle = null })
+    })
+  }
+
+  function loadTerritory() {
+    var filter = '?or=(primary_employee_id.eq.' + encodeURIComponent(employee.id) + ',backup_employee_id.eq.' + encodeURIComponent(employee.id) + ')&order=effective_from.desc'
+    var url = supabaseUrl + '/rest/v1/rpc/get_operator_territories_v51' + filter
+    return requestJson(url, { method: 'POST', body: JSON.stringify({ p_date: todayIso() }) }).then(function (assignments) {
+      assignments = Array.isArray(assignments) ? assignments : []
+      var locationIds = assignments.map(function (row) { return row.location_id }).filter(Boolean).filter(function (value, index, all) { return all.indexOf(value) === index })
+      if (!locationIds.length) { territoryRows = []; return }
+      var idFilter = 'in.(' + locationIds.map(encodeURIComponent).join(',') + ')'
+      var locationsUrl = supabaseUrl + '/rest/v1/locations?select=' + encodeURIComponent('id,name,city,address,latitude,longitude,active') + '&id=' + idFilter
+      var machinesUrl = supabaseUrl + '/rest/v1/machines?select=' + encodeURIComponent('id,location_id,active,status') + '&location_id=' + idFilter + '&active=eq.true'
+      return Promise.all([requestJson(locationsUrl), requestJson(machinesUrl)]).then(function (results) {
+        var locations = Array.isArray(results[0]) ? results[0] : []
+        var machines = Array.isArray(results[1]) ? results[1] : []
+        var locationById = {}
+        var machinesByLocation = {}
+        locations.forEach(function (location) { if (location.active !== false) locationById[String(location.id)] = location })
+        machines.filter(function (machine) { return !/warehouse|sklad|reserve|rezerv/i.test(String(machine.status || '')) }).forEach(function (machine) {
+          var key = String(machine.location_id)
+          if (!machinesByLocation[key]) machinesByLocation[key] = []
+          machinesByLocation[key].push(machine)
+        })
+        territoryRows = assignments.map(function (assignment) {
+          var location = locationById[String(assignment.location_id)]
+          if (!location) return null
+          var allMachines = machinesByLocation[String(location.id)] || []
+          var selected = Array.isArray(assignment.selected_machine_ids) ? assignment.selected_machine_ids.map(String) : []
+          var machineCount = assignment.assignment_scope === 'machines'
+            ? allMachines.filter(function (machine) { return selected.indexOf(String(machine.id)) !== -1 }).length
+            : allMachines.length
+          return { assignment: assignment, location: location, machineCount: machineCount, role: String(assignment.primary_employee_id) === String(employee.id) ? 'primary' : 'backup' }
+        }).filter(Boolean).sort(function (a, b) {
+          if (a.role !== b.role) return a.role === 'primary' ? -1 : 1
+          return String(a.location.city || a.location.name || '').localeCompare(String(b.location.city || b.location.name || ''), 'cs')
+        })
+      })
+    })
+  }
+
+  function loadPayslips() {
+    var fields = 'id,employee_id,period_month,file_path,file_name,general_message,status,published_at,read_at'
+    var url = supabaseUrl + '/rest/v1/payroll_payslips?select=' + encodeURIComponent(fields)
+      + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&status=eq.published&order=period_month.desc'
+    return requestJson(url).then(function (rows) { payslips = Array.isArray(rows) ? rows : [] })
+  }
+
+  function monthStart(offset) {
+    var date = new Date()
+    date = new Date(date.getFullYear(), date.getMonth() - Number(offset || 0), 1)
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-01'
+  }
+
+  function loadBonuses() {
+    var offsets = [0, 1, 2, 3, 4, 5].filter(function (offset) { return monthStart(offset) >= '2026-08-01' })
+    return Promise.all(offsets.map(function (offset) {
+      return requestJson(supabaseUrl + '/rest/v1/rpc/my_bonus_summary', { method: 'POST', body: JSON.stringify({ p_period: monthStart(offset) }) })
+    })).then(function (rows) { bonusSummaries = rows.filter(Boolean) })
+  }
+
+  function loadInventories() {
+    var fields = 'id,audit_date,scope_type,assigned_employee_id,status,difference_quantity_total,difference_value_total,evaluated_at,closed_at,responsibility_status,responsibility_decision_note,bonus_impact_amount,bonus_period,created_at,audit_origin'
+    var url = supabaseUrl + '/rest/v1/inventory_audits?select=' + encodeURIComponent(fields)
+      + '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&scope_type=eq.vehicle&order=created_at.desc&limit=30'
+    return requestJson(url).then(function (rows) {
+      inventories = Array.isArray(rows) ? rows : []
+      var ids = inventories.map(function (item) { return item.id }).filter(Boolean)
+      if (!ids.length) { inventoryItems = []; return }
+      var itemFields = 'id,audit_id,book_quantity,counted_quantity,difference_quantity,difference_value,reported_book_quantity,reported_difference_quantity,reported_difference_value,counted_at,products(id,name,sku,base_unit)'
+      var itemsUrl = supabaseUrl + '/rest/v1/inventory_audit_items?select=' + encodeURIComponent(itemFields)
+        + '&audit_id=in.(' + ids.map(encodeURIComponent).join(',') + ')&order=id.asc'
+      return requestJson(itemsUrl).then(function (rows) { inventoryItems = Array.isArray(rows) ? rows : [] })
+    })
+  }
+
+  function loadMeetings() {
+    var from = todayIso()
+    var end = new Date()
+    end.setDate(end.getDate() + 21)
+    var slotsRequest = requestJson(supabaseUrl + '/rest/v1/rpc/my_meeting_slots', {
+      method: 'POST', body: JSON.stringify({ p_from: from, p_to: todayIso(end) })
+    })
+    var fields = 'id,direction,starts_at,ends_at,meeting_mode,topic,message,status,response_note,created_at'
+    var meetingsUrl = supabaseUrl + '/rest/v1/employee_meetings?select=' + encodeURIComponent(fields)
+      + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&order=starts_at.desc&limit=20'
+    return Promise.all([slotsRequest, requestJson(meetingsUrl)]).then(function (results) {
+      meetingSlots = Array.isArray(results[0]) ? results[0] : []
+      meetings = Array.isArray(results[1]) ? results[1] : []
+    })
+  }
+
+  function locationPoint(location) {
+    var lat = Number(location && location.latitude)
+    var lng = Number(location && location.longitude)
+    if (!isFinite(lat) || !isFinite(lng) || lat < 48.3 || lat > 51.2 || lng < 11.8 || lng > 19.2) return null
+    return [lat, lng]
+  }
+
+  function fitTerritoryMap(map, maxZoom) {
+    if (!map || !territoryBounds || !territoryBounds.isValid()) return
+    if (territoryBounds.getNorthEast().equals(territoryBounds.getSouthWest())) {
+      map.setView(territoryBounds.getCenter(), Math.min(maxZoom || 13, 13))
+      return
+    }
+    map.fitBounds(territoryBounds, { paddingTopLeft: [26, 26], paddingBottomRight: [26, 54], maxZoom: maxZoom || 13 })
+  }
+
+  function cross(origin, a, b) {
+    return (a[1] - origin[1]) * (b[0] - origin[0]) - (a[0] - origin[0]) * (b[1] - origin[1])
+  }
+
+  function convexHull(points) {
+    if (points.length < 3) return points
+    var sorted = points.slice().sort(function (a, b) { return a[1] === b[1] ? a[0] - b[0] : a[1] - b[1] })
+    var lower = []
+    sorted.forEach(function (point) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop()
+      lower.push(point)
+    })
+    var upper = []
+    sorted.slice().reverse().forEach(function (point) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop()
+      upper.push(point)
+    })
+    lower.pop(); upper.pop()
+    return lower.concat(upper)
+  }
+
+  function fallbackMap(container, message) {
+    container.innerHTML = ''
+    var fallback = document.createElement('div')
+    fallback.className = 'op-map-fallback'
+    fallback.textContent = message
+    container.appendChild(fallback)
+  }
+
+  function renderLeafletMap(container, key, interactive) {
+    if (!container) return
+    if (territoryMaps[key]) {
+      territoryMaps[key].remove()
+      territoryMaps[key] = null
+    }
+    var visible = territoryRows.map(function (row, index) {
+      var point = locationPoint(row.location)
+      return point ? { row: row, point: point, index: index + 1 } : null
+    }).filter(Boolean)
+    if (!visible.length) {
+      fallbackMap(container, 'U přidělených lokalit zatím nejsou uložené souřadnice.')
+      return
+    }
+    if (!window.L) {
+      fallbackMap(container, 'Mapový podklad se nepodařilo načíst. Seznam lokalit je dostupný pod mapou.')
+      return
+    }
+    container.innerHTML = ''
+    var map = window.L.map(container, {
+      attributionControl: true,
+      zoomControl: interactive,
+      dragging: interactive,
+      touchZoom: interactive,
+      doubleClickZoom: interactive,
+      boxZoom: interactive,
+      keyboard: interactive,
+      scrollWheelZoom: false,
+      tap: interactive,
+      zoomSnap: 0.5
+    })
+    territoryMaps[key] = map
+    window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+      maxZoom: 18
+    }).addTo(map)
+    var primaryPoints = []
+    visible.forEach(function (item) {
+      if (item.row.role === 'primary') primaryPoints.push(item.point)
+      var icon = window.L.divIcon({
+        className: '',
+        html: '<span class="op-map-pin' + (item.row.role === 'backup' ? ' backup' : '') + '">' + item.index + '</span>',
+        iconSize: [27, 27],
+        iconAnchor: [14, 14]
+      })
+      var marker = window.L.marker(item.point, { icon: icon, keyboard: interactive, title: item.row.location.name || 'Lokalita' }).addTo(map)
+      var label = item.row.location.name || item.row.location.city || 'Lokalita'
+      marker.bindTooltip(label, { className: 'op-map-label', direction: 'top', offset: [0, -11], opacity: 1, permanent: interactive })
+      if (interactive) marker.bindPopup('<strong>' + escapeHtml(label) + '</strong><br>' + escapeHtml([item.row.location.city, item.row.location.address].filter(Boolean).join(', ')) + '<br><small>' + item.row.machineCount + (item.row.machineCount === 1 ? ' automat' : ' automatů') + '</small>')
+    })
+    if (primaryPoints.length >= 3) {
+      window.L.polygon(convexHull(primaryPoints), { color: '#087746', weight: 2, opacity: .55, fillColor: '#087746', fillOpacity: .08, interactive: false, dashArray: '6 6' }).addTo(map)
+    }
+    territoryBounds = window.L.latLngBounds(visible.map(function (item) { return item.point }))
+    fitTerritoryMap(map, interactive ? 12 : 10)
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>'"]/g, function (character) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]
+    })
+  }
+
+  function renderTerritory() {
+    var primary = territoryRows.filter(function (row) { return row.role === 'primary' })
+    var backup = territoryRows.filter(function (row) { return row.role === 'backup' })
+    var machineCount = primary.reduce(function (sum, row) { return sum + Number(row.machineCount || 0) }, 0)
+    root.querySelector('#op-territory-locations').textContent = String(primary.length)
+    root.querySelector('#op-territory-machines').textContent = String(machineCount)
+    root.querySelector('#op-territory-backups').textContent = String(backup.length)
+    root.querySelector('#op-detail-locations').textContent = String(primary.length)
+    root.querySelector('#op-detail-machines').textContent = String(machineCount)
+    root.querySelector('#op-detail-backups').textContent = String(backup.length)
+    root.querySelector('#op-territory-total').textContent = territoryRows.length + ' záznamů'
+    var cities = primary.map(function (row) { return row.location.city }).filter(Boolean).filter(function (value, index, all) { return all.indexOf(value) === index })
+    root.querySelector('#op-territory-cities').textContent = cities.length ? cities.slice(0, 6).join(' · ') : 'Zatím bez přidělené hlavní oblasti'
+    var validFrom = primary.map(function (row) { return row.assignment.effective_from }).filter(Boolean).sort()[0]
+    root.querySelector('#op-territory-validity').textContent = validFrom ? 'Aktuální rozdělení platné od ' + formatDate(validFrom) : 'Aktuální rozdělení'
+    renderLeafletMap(root.querySelector('#op-territory-map-detail'), 'detail', true)
+    var list = root.querySelector('#op-territory-list')
+    list.innerHTML = ''
+    if (!territoryRows.length) { addEmpty(list, 'Zatím nemáte přidělený rajón.'); return }
+    territoryRows.forEach(function (row, index) {
+      var item = document.createElement('div')
+      item.className = 'op-location' + (row.role === 'backup' ? ' backup' : '')
+      var number = document.createElement('span')
+      number.className = 'op-location-index'
+      number.textContent = String(index + 1)
+      var copy = document.createElement('span')
+      copy.className = 'op-location-copy'
+      var title = document.createElement('strong')
+      var address = document.createElement('span')
+      var value = document.createElement('b')
+      title.textContent = row.location.name || 'Lokalita'
+      address.textContent = [row.location.city, row.location.address].filter(Boolean).join(' · ')
+      value.textContent = row.role === 'backup' ? 'Náhradník' : row.machineCount + (row.machineCount === 1 ? ' automat' : row.machineCount > 1 && row.machineCount < 5 ? ' automaty' : ' automatů')
+      copy.appendChild(title); copy.appendChild(address); item.appendChild(number); item.appendChild(copy); item.appendChild(value); list.appendChild(item)
+    })
+  }
+
+  function formatPayslipMonth(value) {
+    if (!value) return 'Výplatnice'
+    return new Date(String(value).slice(0, 10) + 'T12:00:00').toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })
+  }
+
+  function renderPayslips() {
+    var unread = payslips.filter(function (item) { return !item.read_at }).length
+    root.querySelector('#op-payslip-count').textContent = String(payslips.length)
+    root.querySelector('#op-payslip-note').textContent = unread ? unread + (unread === 1 ? ' nová' : ' nové') : (payslips.length === 1 ? 'nahraná' : 'nahrané')
+    var list = root.querySelector('#op-payslip-list')
+    list.innerHTML = ''
+    if (!payslips.length) { addEmpty(list, 'Zatím zde není žádná zveřejněná výplatnice.'); return }
+    payslips.forEach(function (payslip) {
+      var card = document.createElement('article')
+      card.className = 'op-card' + (payslip.read_at ? '' : ' unread')
+      var head = document.createElement('div')
+      head.className = 'op-card-head'
+      var copy = document.createElement('div')
+      var title = document.createElement('strong')
+      var file = document.createElement('p')
+      var status = document.createElement('span')
+      status.className = 'op-status ' + (payslip.read_at ? 'approved' : 'pending')
+      title.textContent = formatPayslipMonth(payslip.period_month)
+      file.textContent = payslip.file_name || 'Výplatnice PDF'
+      status.textContent = payslip.read_at ? 'Přečteno' : 'Nové'
+      copy.appendChild(title); copy.appendChild(file); head.appendChild(copy); head.appendChild(status); card.appendChild(head)
+      if (payslip.general_message) { var message = document.createElement('p'); message.textContent = payslip.general_message; card.appendChild(message) }
+      var actions = document.createElement('div')
+      actions.className = 'op-payslip-actions'
+      var open = document.createElement('button')
+      open.type = 'button'; open.className = 'op-primary'; open.textContent = 'Otevřít PDF'
+      open.addEventListener('click', function () { openPayslip(payslip) })
+      actions.appendChild(open)
+      if (!payslip.read_at) {
+        var acknowledge = document.createElement('button')
+        acknowledge.type = 'button'; acknowledge.className = 'op-secondary'; acknowledge.textContent = 'Potvrdit přečtení'
+        acknowledge.addEventListener('click', function () { acknowledgePayslip(payslip) })
+        actions.appendChild(acknowledge)
+      } else {
+        var placeholder = document.createElement('span')
+        actions.appendChild(placeholder)
+      }
+      card.appendChild(actions); list.appendChild(card)
+    })
+  }
+
+  function openPayslip(payslip) {
+    if (!payslip.file_path) { toast('PDF dokument není dostupný.', true); return }
+    showBusy(true, 'Otevírám výplatnici…')
+    var path = payslip.file_path.split('/').map(encodeURIComponent).join('/')
+    requestJson(supabaseUrl + '/storage/v1/object/sign/payroll-payslips/' + path, { method: 'POST', body: JSON.stringify({ expiresIn: 120 }) })
+      .then(function (data) {
+        var signed = data && (data.signedURL || data.signedUrl)
+        if (!signed) throw new Error('Odkaz na PDF se nepodařilo vytvořit.')
+        window.open(signed.indexOf('http') === 0 ? signed : supabaseUrl + '/storage/v1' + signed, '_blank', 'noopener')
+      }).catch(function (error) { toast(error.message || 'Výplatnici se nepodařilo otevřít.', true) })
+      .then(function () { showBusy(false) })
+  }
+
+  function acknowledgePayslip(payslip) {
+    showBusy(true, 'Ukládám potvrzení…')
+    requestJson(supabaseUrl + '/rest/v1/rpc/acknowledge_my_payslip', { method: 'POST', body: JSON.stringify({ p_payslip_id: Number(payslip.id) }) })
+      .then(function () { payslip.read_at = new Date().toISOString(); renderPayslips(); toast('Přečtení výplatnice bylo potvrzeno.') })
+      .catch(function (error) { toast(error.message || 'Potvrzení se nepodařilo uložit.', true) })
+      .then(function () { showBusy(false) })
+  }
+
+  function formatMoney(value) {
+    return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 }).format(Number(value || 0))
+  }
+
+  function formatMonth(value) {
+    if (!value) return '—'
+    return new Date(String(value).slice(0, 10) + 'T12:00:00').toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' })
+  }
+
+  function renderBonuses() {
+    var current = bonusSummaries[0] || null
+    root.querySelector('#op-bonus-amount').textContent = current ? formatMoney(current.total) : '—'
+    root.querySelector('#op-bonus-note').textContent = current && current.is_final ? 'uzavřená částka' : 'průběžný odhad'
+    root.querySelector('#op-bonus-period').textContent = current ? formatMonth(current.period) : 'Aktuální měsíc'
+    root.querySelector('#op-bonus-state').textContent = current && current.is_final ? 'Uzavřeno' : 'Průběžný odhad'
+    root.querySelector('#op-bonus-total').textContent = current ? formatMoney(current.total) : 'Údaj není dostupný'
+    root.querySelector('#op-bonus-before').textContent = current ? formatMoney(current.bonus_before_adjustments) : '—'
+    root.querySelector('#op-bonus-deductions').textContent = current ? '−' + formatMoney(current.deductions) : '—'
+    root.querySelector('#op-bonus-visits').textContent = current ? String(current.visits || 0) : '—'
+    root.querySelector('#op-bonus-machines').textContent = current ? String(current.machines || 0) : '—'
+    root.querySelector('#op-bonus-updated').textContent = current && current.updated_at
+      ? 'Aktualizováno ' + new Date(current.updated_at).toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : 'Vyhodnocení se nepodařilo načíst.'
+    var history = root.querySelector('#op-bonus-history')
+    root.querySelector('#op-bonus-history-label').textContent = bonusSummaries.length === 1 ? '1 měsíc' : bonusSummaries.length + ' měsíců'
+    history.innerHTML = ''
+    if (!bonusSummaries.length) { addEmpty(history, 'Přehled prémií nyní není dostupný.'); return }
+    bonusSummaries.forEach(function (item) {
+      var row = document.createElement('div')
+      row.className = 'op-history-row'
+      var copy = document.createElement('span')
+      var title = document.createElement('strong')
+      var detail = document.createElement('span')
+      var amount = document.createElement('b')
+      title.textContent = formatMonth(item.period)
+      detail.textContent = (item.visits || 0) + ' návštěv · ' + (item.machines || 0) + ' automatů' + (Number(item.deductions || 0) ? ' · úpravy −' + formatMoney(item.deductions) : '')
+      amount.textContent = formatMoney(item.total)
+      copy.appendChild(title); copy.appendChild(detail); row.appendChild(copy); row.appendChild(amount); history.appendChild(row)
+    })
+  }
+
+  function inventoryKind(item) {
+    if (item.status === 'assigned') return 'action'
+    if (['counted', 'transfer_ready', 'evaluated'].indexOf(item.status) !== -1) return 'review'
+    return 'closed'
+  }
+
+  function inventoryStatus(item) {
+    var kind = inventoryKind(item)
+    if (kind === 'action') return { label: 'K dokončení', cls: 'pending' }
+    if (kind === 'review') return { label: 'Prověřuje se', cls: '' }
+    if (item.responsibility_status === 'not_operator') return { label: 'Bez odpovědnosti', cls: 'approved' }
+    if (item.responsibility_status === 'operator') return { label: 'Uzavřeno', cls: 'rejected' }
+    return { label: 'Uzavřeno', cls: 'approved' }
+  }
+
+  function renderInventories() {
+    var action = inventories.filter(function (item) { return inventoryKind(item) === 'action' })
+    var review = inventories.filter(function (item) { return inventoryKind(item) === 'review' })
+    var attention = action.length
+    root.querySelector('#op-inventory-total').textContent = inventories.length + (inventories.length === 1 ? ' záznam' : inventories.length > 1 && inventories.length < 5 ? ' záznamy' : ' záznamů')
+    root.querySelector('#op-inventory-summary').textContent = attention
+      ? (attention === 1 ? '1 inventura čeká na dokončení' : attention + ' inventury čekají na dokončení')
+      : review.length ? review.length + (review.length === 1 ? ' kontrola se prověřuje' : ' kontroly se prověřují') : 'Výsledky a případné rozdíly'
+    var badge = root.querySelector('#op-inventory-badge')
+    badge.textContent = attention ? String(attention) : '✓'
+    badge.classList.toggle('ok', !attention)
+    var focus = root.querySelector('#op-inventory-focus')
+    focus.innerHTML = ''
+    var focusLabel = document.createElement('small')
+    var focusTitle = document.createElement('strong')
+    var focusCopy = document.createElement('span')
+    if (attention) {
+      focus.className = 'op-inventory-focus'
+      focusLabel.textContent = 'Vyžaduje pozornost'
+      focusTitle.textContent = attention === 1 ? 'Čeká 1 inventura' : 'Čekají ' + attention + ' inventury'
+      focusCopy.textContent = 'Přepočítání je součástí pracovního postupu. Dokončete ho v průběhu směny.'
+      var routeButton = document.createElement('button')
+      routeButton.type = 'button'; routeButton.textContent = 'Přejít do trasy'
+      routeButton.addEventListener('click', function () { window.location.href = './trasa.html' })
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy); focus.appendChild(routeButton)
+    } else if (review.length) {
+      focus.className = 'op-inventory-focus review'
+      focusLabel.textContent = 'Kontrola probíhá'
+      focusTitle.textContent = review.length === 1 ? '1 inventura se prověřuje' : review.length + ' inventury se prověřují'
+      focusCopy.textContent = 'Nyní není potřeba nic doplňovat. Výsledek se zde objeví po rozhodnutí vedoucího.'
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy)
+    } else {
+      focus.className = 'op-inventory-focus clear'
+      focusLabel.textContent = 'Vše vyřízeno'
+      focusTitle.textContent = 'Žádná inventura nečeká'
+      focusCopy.textContent = inventories.length ? 'Všechny dosavadní kontroly jsou uzavřené.' : 'Jakmile vznikne inventura, objeví se na tomto místě.'
+      focus.appendChild(focusLabel); focus.appendChild(focusTitle); focus.appendChild(focusCopy)
+    }
+    var list = root.querySelector('#op-inventory-list')
+    list.innerHTML = ''
+    if (!inventories.length) { addEmpty(list, 'Zatím zde není žádná inventura.'); return }
+    inventories.forEach(function (item) {
+      var status = inventoryStatus(item)
+      var kind = inventoryKind(item)
+      var row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'op-inventory-row ' + kind
+      row.setAttribute('aria-label', 'Otevřít detail inventury auta ' + item.id)
+      row.addEventListener('click', function () { openInventoryDetail(item.id) })
+      var symbol = document.createElement('span')
+      symbol.className = 'op-inventory-symbol'
+      symbol.textContent = kind === 'action' ? '!' : kind === 'review' ? '…' : '✓'
+      var copy = document.createElement('div')
+      copy.className = 'op-inventory-copy'
+      var title = document.createElement('strong')
+      var meta = document.createElement('span')
+      var result = document.createElement('em')
+      var state = document.createElement('b')
+      title.textContent = 'Inventura auta #' + item.id
+      meta.textContent = formatDate(item.audit_date || item.created_at) + (item.audit_origin === 'post_route_exception' ? ' · po trase' : '')
+      state.textContent = status.label + '  ›'
+      if (kind === 'action') result.textContent = 'Čeká na přepočítání v průběhu směny.'
+      else if (kind === 'review') result.textContent = 'Čeká na vyhodnocení vedoucím.'
+      else if (item.responsibility_status === 'not_operator') result.textContent = 'Bez odpovědnosti operátora.'
+      else if (item.bonus_impact_amount != null) result.textContent = 'Dopad do prémie ' + formatMoney(item.bonus_impact_amount) + ' · ' + formatMonth(item.bonus_period)
+      else result.textContent = 'Uzavřeno bez dopadu do prémie.'
+      copy.appendChild(title); copy.appendChild(meta); copy.appendChild(result)
+      row.appendChild(symbol); row.appendChild(copy); row.appendChild(state); list.appendChild(row)
+    })
+  }
+
+  function openInventoryDetail(id) {
+    activeInventoryId = String(id)
+    renderInventoryDetail()
+    openView('inventory-detail')
+  }
+
+  function formatQuantity(value) {
+    return Number(value || 0).toLocaleString('cs-CZ', { maximumFractionDigits: 3 })
+  }
+
+  function renderInventoryDetail() {
+    var container = root.querySelector('#op-inventory-detail')
+    container.innerHTML = ''
+    var audit = inventories.find(function (item) { return String(item.id) === String(activeInventoryId) })
+    if (!audit) { addEmpty(container, 'Inventuru se nepodařilo najít.'); return }
+    var items = inventoryItems.filter(function (item) { return String(item.audit_id) === String(audit.id) })
+    var differences = items.filter(function (item) {
+      var difference = item.reported_difference_quantity != null ? item.reported_difference_quantity : item.difference_quantity
+      return Math.abs(Number(difference || 0)) > 0.0005
+    })
+    var counted = items.filter(function (item) { return item.counted_at || item.counted_quantity != null }).length
+    var kind = inventoryKind(audit)
+    var status = inventoryStatus(audit)
+    var head = document.createElement('div')
+    head.className = 'op-inventory-detail-head'
+    var label = document.createElement('small')
+    var title = document.createElement('strong')
+    var meta = document.createElement('span')
+    label.textContent = status.label
+    title.textContent = 'Inventura auta #' + audit.id
+    meta.textContent = formatDate(audit.audit_date || audit.created_at) + (audit.audit_origin === 'post_route_exception' ? ' · vytvořeno po trase' : '')
+    head.appendChild(label); head.appendChild(title); head.appendChild(meta); container.appendChild(head)
+    var stats = document.createElement('div')
+    stats.className = 'op-inventory-detail-grid'
+    ;[
+      ['Položky', items.length || '—'],
+      ['Spočítáno', items.length ? counted + '/' + items.length : '—'],
+      ['Rozdíly', kind === 'action' ? 'Skryto' : differences.length]
+    ].forEach(function (value) {
+      var box = document.createElement('div')
+      var small = document.createElement('span')
+      var strong = document.createElement('strong')
+      small.textContent = value[0]; strong.textContent = String(value[1]); box.appendChild(small); box.appendChild(strong); stats.appendChild(box)
+    })
+    container.appendChild(stats)
+    if (kind === 'action') {
+      var actionNote = document.createElement('div')
+      actionNote.className = 'op-inventory-note'
+      actionNote.textContent = 'Evidenční množství se před počítáním nezobrazuje. Inventuru otevřete v pracovním postupu trasy a potvrďte skutečné počty.'
+      var route = document.createElement('button')
+      route.type = 'button'; route.className = 'op-primary'; route.style.marginTop = '11px'; route.textContent = 'Přejít do trasy'
+      route.addEventListener('click', function () { window.location.href = './trasa.html' })
+      container.appendChild(actionNote); container.appendChild(route); return
+    }
+    var section = document.createElement('div')
+    section.className = 'op-section-title'
+    var heading = document.createElement('h2')
+    var count = document.createElement('span')
+    heading.textContent = differences.length ? 'Nalezené rozdíly' : 'Výsledek kontroly'
+    count.textContent = differences.length + (differences.length === 1 ? ' rozdíl' : differences.length > 1 && differences.length < 5 ? ' rozdíly' : ' rozdílů')
+    section.appendChild(heading); section.appendChild(count); container.appendChild(section)
+    if (!differences.length) {
+      var ok = document.createElement('div')
+      ok.className = 'op-inventory-focus clear'
+      var okTitle = document.createElement('strong')
+      var okCopy = document.createElement('span')
+      okTitle.textContent = 'Všechno sedí'; okCopy.textContent = 'Fyzické stavy odpovídají evidenci.'
+      ok.appendChild(okTitle); ok.appendChild(okCopy); container.appendChild(ok)
+    } else {
+      differences.forEach(function (item) {
+        var row = document.createElement('div')
+        row.className = 'op-difference-row'
+        var product = item.products || {}
+        var rowTitle = document.createElement('strong')
+        var values = document.createElement('span')
+        rowTitle.textContent = product.name || 'Produkt'
+        var bookQuantity = item.reported_book_quantity != null ? item.reported_book_quantity : item.book_quantity
+        var differenceQuantity = item.reported_difference_quantity != null ? item.reported_difference_quantity : item.difference_quantity
+        values.textContent = 'Evidence ' + formatQuantity(bookQuantity) + ' → napočítáno ' + formatQuantity(item.counted_quantity) + ' ' + (product.base_unit || 'ks') + ' · rozdíl ' + (Number(differenceQuantity || 0) > 0 ? '+' : '') + formatQuantity(differenceQuantity)
+        row.appendChild(rowTitle); row.appendChild(values); container.appendChild(row)
+      })
+    }
+    var decision = document.createElement('div')
+    decision.className = 'op-inventory-note'
+    if (kind === 'review') decision.textContent = 'Výsledek nyní prověřuje vedoucí. Zatím není rozhodnuto o odpovědnosti ani dopadu do prémie.'
+    else if (audit.responsibility_status === 'not_operator') decision.textContent = 'Kontrola byla uzavřena bez odpovědnosti operátora.'
+    else if (audit.bonus_impact_amount != null) decision.textContent = 'Schválený dopad do prémie: ' + formatMoney(audit.bonus_impact_amount) + ' · ' + formatMonth(audit.bonus_period) + (audit.responsibility_decision_note ? ' · ' + audit.responsibility_decision_note : '')
+    else decision.textContent = 'Kontrola je uzavřená bez schváleného dopadu do prémie.'
+    container.appendChild(decision)
+  }
+
+  function renderOverview() {
+    var mark = initials(employee)
+    root.querySelector('.op-user').textContent = mark
+    var hour = new Date().getHours()
+    var greeting = hour < 10 ? 'Dobré ráno' : hour < 18 ? 'Dobrý den' : 'Dobrý večer'
+    root.querySelector('#op-greeting').textContent = greeting + (employee.name ? ', ' + greetingName(employee.name) : '')
+
+    var today = todayIso()
+    var todayAttendance = attendanceDays.filter(function (row) { return String(row.attendance_date) === today })[0] || null
+    var todayShift = shifts.filter(function (row) { return String(row.plan_date) === today && row.status !== 'cancelled' })[0] || null
+    var todayWorked = attendanceMinutes(todayAttendance)
+    var todayPlanned = plannedShiftMinutes(todayShift)
+    var hasStarted = Boolean(todayAttendance && todayAttendance.actual_start)
+    var isRunning = Boolean(hasStarted && !todayAttendance.actual_end && todayAttendance.status !== 'closed')
+    var isClosed = Boolean(todayAttendance && (todayAttendance.actual_end || todayAttendance.status === 'closed'))
+    root.querySelector('#op-day-date').textContent = 'Dnes · ' + formatDateLong(today)
+    var hasTodayPlan = Boolean(todayShift || (nextRoute && String(nextRoute.planning_date) === today))
+    if (isRunning) {
+      root.querySelector('#op-day-title').textContent = 'Směna právě probíhá'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je aktivní.'
+      root.querySelector('#op-day-state').textContent = 'Probíhá'
+    } else if (isClosed && hasTodayPlan) {
+      root.querySelector('#op-day-title').textContent = 'Dnešní směna je dokončena'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je pro dnešek uzavřená.'
+      root.querySelector('#op-day-state').textContent = 'Hotovo'
+    } else if (hasTodayPlan) {
+      root.querySelector('#op-day-title').textContent = 'Dnes máte naplánovanou směnu'
+      root.querySelector('#op-day-copy').textContent = 'Směnu zahájíte na úvodní obrazovce.'
+      root.querySelector('#op-day-state').textContent = 'Naplánováno'
+    } else {
+      root.querySelector('#op-day-title').textContent = 'Dnes nemáte směnu'
+      root.querySelector('#op-day-copy').textContent = 'Pracovní část aplikace je pro dnešek uzavřená.'
+      root.querySelector('#op-day-state').textContent = 'Bez směny'
+    }
+
+    root.querySelector('#op-week-hours').textContent = formatMinutes(todayWorked)
+    var workBalance = root.querySelector('#op-work-balance')
+    workBalance.className = 'op-work-note'
+    if (todayPlanned && hasStarted) {
+      var balance = todayWorked - todayPlanned
+      workBalance.textContent = 'Bilance dnes: ' + formatSignedMinutes(balance)
+      workBalance.classList.add(balance > 0 ? 'overtime' : balance === 0 ? 'good' : 'pending')
+    } else if (todayPlanned) {
+      workBalance.textContent = 'Plán dne: ' + formatMinutes(todayPlanned)
+      workBalance.classList.add('pending')
+    } else if (hasStarted && todayWorked > 0) {
+      workBalance.textContent = 'Bez zveřejněného plánu dne'
+      workBalance.classList.add('pending')
+    } else {
+      workBalance.textContent = 'Dnes bez směny · bez přesčasu'
+      workBalance.classList.add('good')
+    }
+
+    var routeCard = root.querySelector('#op-next-route-card')
+    if (nextRoute) {
+      routeCard.classList.remove('empty')
+      var routeDate = String(nextRoute.planning_date || '')
+      var routeShift = shifts.filter(function (row) { return String(row.plan_date) === routeDate && row.status !== 'cancelled' })[0] || null
+      var tomorrow = new Date(today + 'T12:00:00'); tomorrow.setDate(tomorrow.getDate() + 1)
+      var dateBadge = routeDate === today ? 'Dnes' : routeDate === todayIso(tomorrow) ? 'Zítra' : formatDate(routeDate, true)
+      var vehicleName = nextRouteVehicle ? (nextRouteVehicle.name || [nextRouteVehicle.brand, nextRouteVehicle.model].filter(Boolean).join(' ')) : 'Vozidlo zatím nepřiřazeno'
+      var vehiclePlate = nextRouteVehicle && nextRouteVehicle.plate ? ' · ' + nextRouteVehicle.plate : ''
+      var stopCount = Array.isArray(nextRoute.route_plan_stops) ? nextRoute.route_plan_stops.length : 0
+      root.querySelector('#op-next-route-kicker').textContent = routeDate === today ? 'Dnešní trasa' : 'Příští směna'
+      root.querySelector('#op-next-route-date').textContent = formatDateLong(routeDate)
+      root.querySelector('#op-next-route-vehicle').textContent = vehicleName + vehiclePlate
+      root.querySelector('#op-next-route-badge').textContent = dateBadge
+      root.querySelector('#op-next-route-start').textContent = routeShift && routeShift.planned_start ? String(routeShift.planned_start).slice(0, 5) : '—'
+      root.querySelector('#op-next-route-stops').textContent = stopCount + (stopCount === 1 ? ' zastávka' : stopCount > 1 && stopCount < 5 ? ' zastávky' : ' zastávek')
+      root.querySelector('#op-next-route-distance').textContent = nextRoute.estimated_distance_km == null ? '—' : Number(nextRoute.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km'
+      root.querySelector('#op-next-route-open').disabled = false
+    } else {
+      routeCard.classList.add('empty')
+      root.querySelector('#op-next-route-kicker').textContent = 'Plán tras'
+      root.querySelector('#op-next-route-date').textContent = 'Další trasa zatím není naplánovaná'
+      root.querySelector('#op-next-route-vehicle').textContent = 'Jakmile bude zveřejněná, objeví se zde.'
+      root.querySelector('#op-next-route-badge').textContent = 'Bez plánu'
+      root.querySelector('#op-next-route-open').disabled = true
+    }
+
+    var vacation = vacationMeta()
+    root.querySelector('#op-shift-card-value').textContent = shifts.length ? formatDate(shifts[0].plan_date, true) : '—'
+    root.querySelector('#op-shift-card-note').textContent = shifts.length ? shiftTime(shifts[0]) : 'žádná publikovaná směna'
+    var pending = requests.filter(function (row) { return row.status === 'pending' }).length
+    root.querySelector('#op-request-summary').textContent = (vacation.total ? vacation.remaining + ' dní dovolené' : 'Volno a žádosti') + (pending ? ' · ' + pending + ' čeká' : '')
+    var requestBadge = root.querySelector('#op-request-badge')
+    requestBadge.hidden = !pending
+    requestBadge.textContent = pending ? String(pending) : ''
+    requestBadge.classList.remove('ok')
+    var nextMeeting = meetings.filter(function (item) { return ['pending', 'approved'].indexOf(item.status) !== -1 && new Date(item.starts_at).getTime() >= Date.now() }).sort(function (a, b) { return String(a.starts_at).localeCompare(String(b.starts_at)) })[0]
+    root.querySelector('#op-meeting-summary').textContent = nextMeeting
+      ? new Date(nextMeeting.starts_at).toLocaleString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' · ' + (nextMeeting.status === 'approved' ? 'potvrzeno' : 'čeká na potvrzení')
+      : 'Vybrat volný termín'
+  }
+
+  function shiftTime(row) {
+    if (!row.planned_start || !row.planned_end) return 'Bez času'
+    return String(row.planned_start).slice(0, 5) + '–' + String(row.planned_end).slice(0, 5)
+  }
+
+  function renderNextRoute() {
+    var list = root.querySelector('#op-next-route-list')
+    list.innerHTML = ''
+    if (!nextRoute) {
+      root.querySelector('#op-route-detail-title').textContent = 'Další trasa zatím není naplánovaná'
+      root.querySelector('#op-route-detail-meta').textContent = 'Jakmile vedoucí trasu zveřejní, uvidíte ji zde.'
+      root.querySelector('#op-route-detail-count').textContent = 'Bez zastávek'
+      addEmpty(list, 'Na další dny zatím nemáte zveřejněnou trasu.')
+      return
+    }
+    var stops = Array.isArray(nextRoute.route_plan_stops) ? nextRoute.route_plan_stops.slice() : []
+    stops.sort(function (a, b) { return Number(a.stop_order || 0) - Number(b.stop_order || 0) })
+    var vehicleName = nextRouteVehicle ? (nextRouteVehicle.name || [nextRouteVehicle.brand, nextRouteVehicle.model].filter(Boolean).join(' ')) : 'bez přiřazeného vozidla'
+    var vehiclePlate = nextRouteVehicle && nextRouteVehicle.plate ? ' · ' + nextRouteVehicle.plate : ''
+    root.querySelector('#op-route-detail-kicker').textContent = formatDateLong(nextRoute.planning_date)
+    root.querySelector('#op-route-detail-title').textContent = nextRoute.title || 'Plánovaná trasa'
+    root.querySelector('#op-route-detail-meta').textContent = [
+      stops.length + (stops.length === 1 ? ' zastávka' : stops.length > 1 && stops.length < 5 ? ' zastávky' : ' zastávek'),
+      nextRoute.estimated_distance_km == null ? null : Number(nextRoute.estimated_distance_km).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' km',
+      vehicleName + vehiclePlate
+    ].filter(Boolean).join(' · ')
+    root.querySelector('#op-route-detail-count').textContent = String(stops.length)
+    if (!stops.length) { addEmpty(list, 'Trasa zatím nemá žádné zastávky.'); return }
+    stops.forEach(function (stop, index) {
+      var row = document.createElement('div')
+      row.className = 'op-next-route-stop'
+      var number = document.createElement('span')
+      number.className = 'op-next-route-number'
+      number.textContent = String(stop.stop_order || index + 1)
+      var copy = document.createElement('span')
+      var title = document.createElement('strong')
+      var address = document.createElement('span')
+      title.textContent = stop.title || 'Zastávka ' + (index + 1)
+      address.textContent = [stop.address_snapshot, stop.city_snapshot].filter(Boolean).join(' · ') || 'Adresa neuvedena'
+      copy.appendChild(title); copy.appendChild(address); row.appendChild(number); row.appendChild(copy); list.appendChild(row)
+    })
+  }
+
+  function renderShifts() {
+    var list = root.querySelector('#op-shift-list')
+    list.innerHTML = ''
+    if (!shifts.length) { addEmpty(list, 'Na dalších 28 dní není zveřejněná žádná směna. Jakmile HR plán publikuje, objeví se tady.'); return }
+    shifts.forEach(function (row) {
+      var card = document.createElement('article')
+      card.className = 'op-card'
+      var head = document.createElement('div')
+      head.className = 'op-card-head'
+      var copy = document.createElement('div')
+      var title = document.createElement('strong')
+      var meta = document.createElement('p')
+      var badge = document.createElement('span')
+      badge.className = 'op-status'
+      title.textContent = formatDate(row.plan_date, true) + ' · ' + shiftTime(row)
+      meta.textContent = [shiftTypeLabel(row.shift_type), row.note].filter(Boolean).join(' · ')
+      badge.textContent = row.status === 'cancelled' ? 'Zrušeno' : 'Naplánováno'
+      copy.appendChild(title); copy.appendChild(meta); head.appendChild(copy); head.appendChild(badge); card.appendChild(head); list.appendChild(card)
+    })
+  }
+
+  function renderRequests() {
+    var list = root.querySelector('#op-request-list')
+    list.innerHTML = ''
+    if (!requests.length) { addEmpty(list, 'Zatím nemáte žádnou žádost. Novou můžete odeslat tlačítkem nahoře.'); return }
+    requests.forEach(function (row) {
+      var status = requestStatus(row.status)
+      var card = document.createElement('article')
+      card.className = 'op-card'
+      var head = document.createElement('div')
+      head.className = 'op-card-head'
+      var copy = document.createElement('div')
+      var title = document.createElement('strong')
+      var range = document.createElement('p')
+      var badge = document.createElement('span')
+      badge.className = 'op-status ' + status.cls
+      title.textContent = requestTypeLabel(row.request_type)
+      range.textContent = formatRange(row)
+      badge.textContent = status.label
+      copy.appendChild(title); copy.appendChild(range); head.appendChild(copy); head.appendChild(badge); card.appendChild(head)
+      if (row.reason) { var reason = document.createElement('p'); reason.textContent = row.reason; card.appendChild(reason) }
+      if (row.manager_note) { var note = document.createElement('p'); note.textContent = 'Poznámka HR: ' + row.manager_note; card.appendChild(note) }
+      if (row.status === 'pending') {
+        var cancel = document.createElement('button')
+        cancel.type = 'button'; cancel.className = 'op-secondary'; cancel.textContent = 'Zrušit žádost'
+        cancel.addEventListener('click', function () { cancelRequest(row.id) })
+        card.appendChild(cancel)
+      }
+      list.appendChild(card)
+    })
+  }
+
+  function meetingStatus(value) {
+    var map = {
+      pending: { label: 'Čeká na potvrzení', cls: 'pending' }, approved: { label: 'Potvrzeno', cls: 'approved' },
+      rejected: { label: 'Zamítnuto', cls: 'rejected' }, reschedule_requested: { label: 'Navržen jiný termín', cls: 'pending' },
+      cancelled: { label: 'Zrušeno', cls: '' }
+    }
+    return map[String(value || '')] || map.pending
+  }
+
+  function meetingDayKey(value) {
+    var date = new Date(value)
+    try { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Prague' }).format(date) }
+    catch (_) { return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) }
+  }
+
+  function renderMeetingSlots() {
+    var daysContainer = root.querySelector('#op-meeting-days')
+    var timesContainer = root.querySelector('#op-meeting-slots')
+    var timesBlock = root.querySelector('#op-meeting-times')
+    var timesLabel = root.querySelector('#op-meeting-times-label')
+    daysContainer.innerHTML = ''
+    timesContainer.innerHTML = ''
+    if (!meetingSlots.length) {
+      addEmpty(daysContainer, 'V následujících třech týdnech není zveřejněný volný termín.')
+      timesBlock.hidden = true
+      updateMeetingSubmit()
+      return
+    }
+
+    var grouped = {}
+    var dayKeys = []
+    meetingSlots.forEach(function (slot) {
+      var key = meetingDayKey(slot.slot_start)
+      if (!grouped[key]) { grouped[key] = []; dayKeys.push(key) }
+      grouped[key].push(slot)
+    })
+
+    if (selectedMeetingDay && !grouped[selectedMeetingDay]) {
+      selectedMeetingDay = null
+      selectedMeetingSlot = null
+    }
+
+    dayKeys.forEach(function (key) {
+      var slots = grouped[key]
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'op-meeting-day' + (selectedMeetingDay === key ? ' selected' : '')
+      var date = new Date(slots[0].slot_start)
+      var weekday = document.createElement('small')
+      var day = document.createElement('strong')
+      var count = document.createElement('span')
+      weekday.textContent = date.toLocaleDateString('cs-CZ', { weekday: 'long', timeZone: 'Europe/Prague' })
+      day.textContent = date.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric', timeZone: 'Europe/Prague' })
+      count.textContent = slots.length + (slots.length === 1 ? ' čas' : slots.length < 5 ? ' časy' : ' časů')
+      button.appendChild(weekday); button.appendChild(day); button.appendChild(count)
+      button.addEventListener('click', function () {
+        selectedMeetingDay = key
+        selectedMeetingSlot = null
+        renderMeetingSlots()
+        window.setTimeout(function () { timesBlock.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, 30)
+      })
+      daysContainer.appendChild(button)
+    })
+
+    timesBlock.hidden = !selectedMeetingDay
+    if (!selectedMeetingDay) {
+      updateMeetingSubmit()
+      return
+    }
+
+    var selectedDate = new Date(grouped[selectedMeetingDay][0].slot_start)
+    timesLabel.textContent = 'Volné časy · ' + selectedDate.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: 'Europe/Prague' })
+
+    grouped[selectedMeetingDay].forEach(function (slot) {
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'op-meeting-slot' + (selectedMeetingSlot && selectedMeetingSlot.slot_start === slot.slot_start ? ' selected' : '')
+      var date = new Date(slot.slot_start)
+      var time = document.createElement('strong')
+      time.textContent = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Prague' })
+      button.appendChild(time)
+      button.addEventListener('click', function () { selectedMeetingSlot = slot; renderMeetingSlots() })
+      timesContainer.appendChild(button)
+    })
+    updateMeetingSubmit()
+  }
+
+  function updateMeetingSubmit() {
+    var button = root.querySelector('#op-meeting-submit')
+    var summary = root.querySelector('#op-meeting-selection')
+    if (!button || !summary) return
+    button.disabled = !selectedMeetingSlot
+    if (!selectedMeetingSlot) {
+      summary.textContent = 'Nejdříve vyberte volný termín'
+      button.textContent = 'Odeslat žádost'
+      return
+    }
+    var date = new Date(selectedMeetingSlot.slot_start)
+    var label = date.toLocaleString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+    summary.textContent = 'Vybraný termín · ' + label
+    button.textContent = 'Odeslat žádost o schůzku'
+  }
+
+  function meetingTopicLabel(value) {
+    var map = { work: 'Práce a směny', pay_bonus: 'Mzda a prémie', operations: 'Provozní problém', personal: 'Osobní záležitost', other: 'Jiné' }
+    return map[String(value || '')] || 'Schůzka'
+  }
+
+  function renderMeetings() {
+    var list = root.querySelector('#op-meeting-list')
+    list.innerHTML = ''
+    var relevant = meetings.filter(function (item) { return ['pending', 'approved', 'reschedule_requested'].indexOf(item.status) !== -1 }).slice(0, 4)
+    if (!relevant.length) {
+      var clear = document.createElement('div')
+      clear.className = 'op-meeting-current clear'
+      var clearLabel = document.createElement('small')
+      var clearTitle = document.createElement('strong')
+      var clearCopy = document.createElement('span')
+      clearLabel.textContent = 'Aktuálně'
+      clearTitle.textContent = 'Nemáte naplánovanou schůzku'
+      clearCopy.textContent = 'Novou žádost vytvoříte ve třech krátkých krocích níže.'
+      clear.appendChild(clearLabel); clear.appendChild(clearTitle); clear.appendChild(clearCopy); list.appendChild(clear)
+    }
+    relevant.forEach(function (item) {
+      var status = meetingStatus(item.status)
+      var card = document.createElement('article')
+      card.className = 'op-meeting-current'
+      var label = document.createElement('small')
+      var title = document.createElement('strong')
+      var meta = document.createElement('p')
+      var badge = document.createElement('span')
+      label.textContent = status.label
+      title.textContent = new Date(item.starts_at).toLocaleString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
+      badge.textContent = meetingTopicLabel(item.topic) + ' · ' + (item.meeting_mode === 'phone' ? 'telefonicky' : item.meeting_mode === 'video' ? 'videohovor' : 'osobně v Blučině')
+      card.appendChild(label); card.appendChild(title); card.appendChild(badge)
+      if (item.response_note) { meta.textContent = item.response_note; card.appendChild(meta) }
+      list.appendChild(card)
+    })
+    renderMeetingSlots()
+  }
+
+  function saveMeeting(event) {
+    event.preventDefault()
+    if (!selectedMeetingSlot) { toast('Nejdřív vyberte volný termín.', true); return }
+    var payload = {
+      p_starts_at: selectedMeetingSlot.slot_start,
+      p_ends_at: selectedMeetingSlot.slot_end,
+      p_meeting_mode: root.querySelector('input[name="meeting-mode"]:checked').value,
+      p_topic: root.querySelector('input[name="meeting-topic"]:checked').value,
+      p_message: root.querySelector('#op-meeting-message').value.trim() || null
+    }
+    showBusy(true, 'Odesílám žádost o schůzku…')
+    requestJson(supabaseUrl + '/rest/v1/rpc/request_my_meeting', { method: 'POST', body: JSON.stringify(payload) })
+      .then(function () { selectedMeetingDay = null; selectedMeetingSlot = null; root.querySelector('#op-meeting-message').value = ''; return loadMeetings() })
+      .then(function () { renderMeetings(); renderOverview(); toast('Žádost o schůzku byla odeslána.') })
+      .catch(function (error) { toast(error.message || 'Žádost o schůzku se nepodařilo odeslat.', true) })
+      .then(function () { showBusy(false) })
+  }
+
+  function renderPersonal() {
+    var data = root.querySelector('#op-personal-data')
+    data.innerHTML = ''
+    addDataRow(data, 'Jméno a příjmení', [employee.name, employee.surname].filter(Boolean).join(' '))
+    addDataRow(data, 'Pracovní role', roleLabel(employee.role))
+    addDataRow(data, 'Pracovní poměr', employmentLabel(employee.employment_type))
+    addDataRow(data, 'Týdenní fond', employee.contracted_weekly_hours ? Number(employee.contracted_weekly_hours).toLocaleString('cs-CZ') + ' hodin' : 'Neuvedeno')
+    addDataRow(data, 'E-mail', employee.email)
+    if (employee.phone) addDataRow(data, 'Telefon', employee.phone)
+  }
+
+  function renderWorktime() {
+    var data = root.querySelector('#op-worktime-data')
+    data.innerHTML = ''
+    var minutes = attendanceDays.reduce(function (sum, row) {
+      return sum + attendanceMinutes(row)
+    }, 0)
+    var today = todayIso()
+    var todayAttendance = attendanceDays.filter(function (row) { return String(row.attendance_date) === today })[0] || null
+    var todayShift = shifts.filter(function (row) { return String(row.plan_date) === today && row.status !== 'cancelled' })[0] || null
+    var todayWorked = attendanceMinutes(todayAttendance)
+    var todayPlanned = plannedShiftMinutes(todayShift)
+    var todayBalance = todayPlanned ? todayWorked - todayPlanned : null
+    var contracted = Number(employee.contracted_weekly_hours || 0)
+    addDataRow(data, 'Odpracováno dnes', formatMinutes(todayWorked))
+    addDataRow(data, 'Plán dne', todayPlanned ? formatMinutes(todayPlanned) : 'Bez zveřejněného plánu')
+    addDataRow(data, 'Bilance dne', todayBalance == null ? 'Nelze vypočítat bez plánu' : formatSignedMinutes(todayBalance))
+    addDataRow(data, 'Odpracováno tento měsíc', formatMinutes(minutes))
+    addDataRow(data, 'Týdenní fond', contracted ? contracted.toLocaleString('cs-CZ') + ' hodin' : 'Neuvedeno')
+  }
+
+  function renderAll() {
+    renderOverview()
+    renderNextRoute()
+    renderTerritory()
+    renderBonuses()
+    renderInventories()
+    renderMeetings()
+    renderPayslips()
+    renderShifts()
+    renderRequests()
+    renderWorktime()
+    renderPersonal()
+  }
+
+  function resetForm() {
+    var today = todayIso()
+    root.querySelector('#op-request-type').value = 'vacation'
+    root.querySelector('#op-date-from').value = today
+    root.querySelector('#op-date-to').value = today
+    root.querySelector('#op-duration').value = 'full_day'
+    root.querySelector('#op-time-from').value = ''
+    root.querySelector('#op-time-to').value = ''
+    root.querySelector('#op-time-row').hidden = true
+    root.querySelector('#op-reason').value = ''
+  }
+
+  function saveRequest(event) {
+    event.preventDefault()
+    var dateFrom = root.querySelector('#op-date-from').value
+    var dateTo = root.querySelector('#op-date-to').value
+    var timed = root.querySelector('#op-duration').value === 'time_range'
+    var timeFrom = timed ? root.querySelector('#op-time-from').value : null
+    var timeTo = timed ? root.querySelector('#op-time-to').value : null
+    var reason = root.querySelector('#op-reason').value.trim()
+    if (!dateFrom || !dateTo || dateTo < dateFrom) { toast('Zkontrolujte datum od a do.', true); return }
+    if (timed && (!timeFrom || !timeTo || timeTo <= timeFrom)) { toast('Zkontrolujte čas od a do.', true); return }
+    if (!reason) { toast('Doplňte stručný důvod žádosti.', true); return }
+    var payload = {
+      employee_id: employee.id, request_type: root.querySelector('#op-request-type').value, status: 'pending',
+      date_from: dateFrom, date_to: dateTo, start_time: timeFrom, end_time: timeTo, reason: reason,
+      manager_note: null, created_by_employee_id: employee.id, approved_by_employee_id: null, approved_at: null
+    }
+    showBusy(true, 'Odesílám žádost…')
+    requestJson(supabaseUrl + '/rest/v1/hr_requests', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(payload) })
+      .then(function () { return loadRequests() })
+      .then(function () { renderAll(); resetForm(); openView('requests'); toast('Žádost byla odeslána ke schválení.') })
+      .catch(function (error) { toast(error.message || 'Žádost se nepodařilo odeslat.', true) })
+      .then(function () { showBusy(false) })
+  }
+
+  function cancelRequest(id) {
+    if (!window.confirm('Opravdu chcete tuto čekající žádost zrušit?')) return
+    showBusy(true, 'Ruším žádost…')
+    var url = supabaseUrl + '/rest/v1/hr_requests?id=eq.' + encodeURIComponent(id) + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&status=eq.pending'
+    requestJson(url, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'cancelled', approved_by_employee_id: null, approved_at: null, updated_at: new Date().toISOString() }) })
+      .then(function () { return loadRequests() })
+      .then(function () { renderAll(); toast('Žádost byla zrušena.') })
+      .catch(function (error) { toast(error.message || 'Žádost se nepodařilo zrušit.', true) })
+      .then(function () { showBusy(false) })
+  }
+
+  function bind() {
+    root.querySelector('.op-user').addEventListener('click', function () { openView('overview') })
+    Array.prototype.forEach.call(root.querySelectorAll('[data-open-view]'), function (button) {
+      button.addEventListener('click', function () { openView(button.getAttribute('data-open-view')) })
+    })
+    root.querySelector('#op-new-request').addEventListener('click', function () { resetForm(); openView('request-form') })
+    root.querySelector('#op-duration').addEventListener('change', function (event) { root.querySelector('#op-time-row').hidden = event.target.value !== 'time_range' })
+    root.querySelector('#op-date-from').addEventListener('change', function (event) {
+      var to = root.querySelector('#op-date-to')
+      if (!to.value || to.value < event.target.value) to.value = event.target.value
+    })
+    root.querySelector('#op-request-form').addEventListener('submit', saveRequest)
+    root.querySelector('#op-meeting-form').addEventListener('submit', saveMeeting)
+    root.querySelector('#op-map-fit').addEventListener('click', function () { fitTerritoryMap(territoryMaps.detail, 12) })
+  }
+
+  bind()
+  resetForm()
+
+  window.operatorProfileStart = function (activeSession, activeEmployee) {
+    session = activeSession
+    employee = activeEmployee || {}
+    if (!employee.id && !(session && session.user && session.user.id)) { showBusy(false); toast('Profil zaměstnance se nepodařilo načíst.', true); return }
+    loadEmployee().then(function () {
+      return allSettled([loadAttendance(), loadRequests(), loadShifts(), loadNextRoute(), loadTerritory(), loadPayslips(), loadBonuses(), loadInventories(), loadMeetings()])
+    }).then(function (results) {
+      var failed = results.filter(function (result) { return result.status === 'rejected' })
+      renderAll()
+      showBusy(false)
+      if (failed.length) toast('Část údajů se nepodařilo načíst. Zkuste profil obnovit.', true)
+    }).catch(function (error) {
+      showBusy(false)
+      toast(error && error.message ? error.message : 'Profil zaměstnance se nepodařilo načíst.', true)
+    })
+  }
+})()
