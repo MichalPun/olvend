@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v25-refill-lock'
+  var CACHE_NAME = 'olvend-operator-v26-pda-entry'
   var APP_SHELL = [
     './',
     './index.html',
