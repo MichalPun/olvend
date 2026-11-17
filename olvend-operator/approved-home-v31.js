@@ -299,8 +299,11 @@
     var employeeInitials = [employee.name, employee.surname].filter(Boolean).map(function (part) { return String(part).charAt(0) }).join('').slice(0, 2).toLocaleUpperCase('cs-CZ') || 'OP'
     root.querySelector('#operatorIdleDate').textContent = formatDateLong()
     root.querySelector('#operatorIdleGreeting').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
-    root.querySelector('.operator-idle-start .ot-user').textContent = employeeInitials
-    root.querySelector('.operator-idle-start .ot-user').setAttribute('aria-label', employeeName ? 'Otevřít profil ' + employeeName : 'Otevřít můj profil')
+    root.querySelector('#operatorIdleUser').textContent = employeeInitials
+    root.querySelector('#operatorIdleUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
+    root.querySelector('#operatorIdleAccountInitials').textContent = employeeInitials
+    root.querySelector('#operatorIdleAccountName').textContent = employeeName || 'Přihlášený operátor'
+    root.querySelector('#operatorIdleAccountRole').textContent = String(employee.role || '').toLowerCase() === 'operator' ? 'Operátor' : (employee.role || 'Uživatel OLVEND')
     if (isShiftPreview()) renderWeather({ place: 'Blučina', temperature_c: 7, condition: 'zataženo' })
     root.querySelector('.ot-date').textContent = formatDateLong()
     root.querySelector('.ot-main h2').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
@@ -511,7 +514,19 @@
 
   function bindInteractions() {
     var overlay = root.querySelector('#ot-overlay')
-    root.querySelector('.operator-idle-start .ot-user').addEventListener('click', function () { window.location.href = './profil.html' })
+    var accountMenu = root.querySelector('#operatorIdleAccount')
+    var accountButton = root.querySelector('#operatorIdleUser')
+    function setAccountMenu(open) {
+      accountMenu.hidden = !open
+      accountButton.setAttribute('aria-expanded', open ? 'true' : 'false')
+    }
+    accountButton.addEventListener('click', function () { setAccountMenu(true) })
+    Array.prototype.forEach.call(root.querySelectorAll('[data-idle-account-close]'), function (button) {
+      button.addEventListener('click', function () { setAccountMenu(false) })
+    })
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !accountMenu.hidden) setAccountMenu(false)
+    })
     root.querySelector('#operatorIdleStartButton').addEventListener('click', function () {
       preparationStarted = true
       updateReadiness()
