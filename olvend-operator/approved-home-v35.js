@@ -713,6 +713,10 @@
     return Boolean((attendanceDay && attendanceDay.actual_start && !attendanceDay.actual_end) || (routePlan && routePlan.execution_status === 'in_progress'))
   }
 
+  function isTestRoute() {
+    return Boolean(routePlan && routePlan.route_payload && routePlan.route_payload.test_mode === true)
+  }
+
   function vehicleKey() {
     return 'olvendOperatorVehicleV2:' + todayIso() + ':' + (employee && employee.id || '') + ':' + (vehicle && vehicle.id || '') + ':' + (routePlan && routePlan.id || '')
   }
@@ -1223,6 +1227,19 @@
     }
     setBusy(true, 'Zahajuji směnu…')
     var startedAt = new Date().toISOString()
+    if (isTestRoute()) {
+      apiRequest(supabaseUrl + '/rest/v1/route_plans?id=eq.' + encodeURIComponent(routePlan.id), {
+        method: 'PATCH',
+        headers: { 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ execution_status: 'in_progress', started_at: startedAt, vehicle_id: usesVehicle && vehicle ? vehicle.id : null })
+      }, 12000).then(function () {
+        window.location.href = './trasa.html'
+      }).catch(function (error) {
+        setBusy(false)
+        window.alert(error && error.message ? error.message : 'Testovací trasu se nepodařilo zahájit.')
+      })
+      return
+    }
     var attendancePayload = {
       employee_id: employee.id,
       attendance_date: todayIso(),

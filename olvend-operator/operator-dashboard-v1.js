@@ -83,13 +83,13 @@
     document.getElementById('odGreeting').textContent=greeting()+', '+vocative(employee.name)
     var initials=(String(employee.name||'').charAt(0)+String(employee.surname||'').charAt(0)).toUpperCase()||'OP'
     root.querySelector('.od-user').textContent=initials
-    var start=attendance&&attendance.actual_start||route&&route.started_at
+    var start=attendance&&attendance.actual_start&&!attendance.actual_end?attendance.actual_start:route&&route.started_at
     document.getElementById('odShiftSince').textContent=start?'· zahájena v '+clock(start):'· aktivní trasa'
     updateShiftClock()
   }
 
   function updateShiftClock() {
-    var start=attendance&&attendance.actual_start||route&&route.started_at
+    var start=attendance&&attendance.actual_start&&!attendance.actual_end?attendance.actual_start:route&&route.started_at
     document.getElementById('odShiftElapsed').textContent=start?minutesLabel((Date.now()-new Date(start).getTime())/60000):'Probíhá'
     if(worktimeCache)renderWorktime(worktimeCache)
   }
@@ -141,7 +141,7 @@
 
   function vehicleImage(item){var path=String(item&&item.image_path||'');if(path.indexOf('static:')===0)path=path.slice(7);return /^\.\.\/assets\/vehicles\/[a-z0-9._-]+$/i.test(path)?path:'./icon-192.png'}
   function loadVehicle() {
-    var vehicleId=attendance&&attendance.vehicle_id||route&&route.vehicle_id
+    var vehicleId=attendance&&attendance.actual_start&&!attendance.actual_end?attendance.vehicle_id:route&&route.vehicle_id
     if(!vehicleId){document.getElementById('odVehicleName').textContent='Dnes bez vozidla';document.getElementById('odVehiclePlate').textContent='NEPOUŽÍVÁ SE';document.getElementById('odVehiclePhoto').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 17-2 2M19 17l2 2M5 9l1.5-4h11L19 9M3 11h18v6H3z"/><circle cx="7" cy="14" r="1"/><circle cx="17" cy="14" r="1"/></svg>';document.getElementById('odStockNote').textContent='Směna je zahájena bez použití vozidla';return Promise.resolve()}
     var range=monthRange()
     return Promise.all([
