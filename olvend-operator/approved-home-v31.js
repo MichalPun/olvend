@@ -147,7 +147,7 @@
   }
 
   function loadVehicle(vehicleId) {
-    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active'
+    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active,image_path'
     var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields)
       + (vehicleId
         ? '&id=eq.' + encodeURIComponent(vehicleId)
@@ -157,7 +157,7 @@
   }
 
   function loadVehicles() {
-    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active'
+    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active,image_path'
     var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields) + '&order=active.desc,name.asc,plate.asc'
     return apiRequest(url, {}, 9000).then(function (rows) { return Array.isArray(rows) ? rows : [] }).catch(function () { return [] })
   }
@@ -321,15 +321,10 @@
   }
 
   function vehicleImagePath(item) {
-    var plate = normalizePlate(item && item.plate)
-    var byPlate = {
-      '3BU9736': '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
-      '5AP9000': '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
-      '7Z71808': '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
-      '2BN7419': '../assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2',
-      '2TX7928': '../assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2'
-    }
-    return byPlate[plate] || ''
+    var path = String(item && item.image_path || '').trim()
+    if (path.indexOf('static:') === 0) path = path.slice(7)
+    if (!/^\.\.\/assets\/vehicles\/[a-z0-9._-]+$/i.test(path)) return ''
+    return path + '?v=20261117-vehicle-db-v1'
   }
 
   function vehicleFallbackMarkup() {
@@ -916,14 +911,14 @@
       { id: 2504, stop_order: 1, title: 'EV 23 · Luce Snack X', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' },
       { id: 2505, stop_order: 2, title: 'EV 29 · Luce X2 I/E jídelna', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' }
     ] }
-    vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 128318, warehouse_id: 1, active: true }
+    vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 128318, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/fiat-doblo-2012.png' }
     assignedVehicleId = 6
     availableVehicles = [
       vehicle,
-      { id: 3, name: 'Fiat Doblo', plate: '5AP9000', current_odometer_km: 318906, warehouse_id: 1, active: true },
-      { id: 1, name: 'Renault Kangoo', plate: '2TX7928', current_odometer_km: 132669, warehouse_id: 1, active: true },
-      { id: 5, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 106358, warehouse_id: 1, active: true },
-      { id: 4, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 154555, warehouse_id: 1, active: true }
+      { id: 3, name: 'Fiat Doblo', plate: '5AP9000', current_odometer_km: 318906, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/fiat-doblo-modern.png' },
+      { id: 1, name: 'Renault Kangoo', plate: '2TX7928', current_odometer_km: 132669, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/renault-kangoo-2019.png' },
+      { id: 5, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 106358, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/opel-combo-2024-passenger.png' },
+      { id: 4, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 154555, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/opel-movano-older.png' }
     ]
     busyVehicles = new Map([['1', { employeeId: 'preview-veronika', employeeName: 'Veronika Jirdová' }]])
     warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
