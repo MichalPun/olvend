@@ -12,7 +12,7 @@
       window.location.reload()
     })
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw-v43.js', { scope: './' }).then(function (registration) {
+      navigator.serviceWorker.register('./sw-v44.js', { scope: './' }).then(function (registration) {
         registration.update().catch(function () {})
       }).catch(function () {})
     })

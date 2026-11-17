@@ -2,7 +2,7 @@
   'use strict'
 
   var localPreview = location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview')
-  if (localPreview === 'route197' || localPreview === 'shift-start') {
+  if (localPreview === 'route197' || localPreview === 'shift-start' || localPreview === 'dashboard') {
     var revealPreview = function () {
       document.body.classList.remove('auth-pending')
       var previewGate = document.getElementById('operatorAuthGate')
@@ -103,6 +103,7 @@
       }
     } catch (_) {}
     if (typeof window.operatorApprovedHomeStart === 'function') window.operatorApprovedHomeStart(session, employee)
+    if (typeof window.operatorDashboardStart === 'function') window.operatorDashboardStart(session, employee)
     if (typeof window.operatorRouteStart === 'function') window.operatorRouteStart(session, employee)
     if (typeof window.operatorProfileStart === 'function') window.operatorProfileStart(session, employee)
     if (typeof window.operatorInstructionsStart === 'function') window.operatorInstructionsStart(session, employee)
