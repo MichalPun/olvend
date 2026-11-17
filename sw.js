@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v257-mixed-slot-capacity';
+const CACHE_NAME = 'olvend-v258-mobile-identity';
 const APP_SHELL = [
   './',
   './index.html',
