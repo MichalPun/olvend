@@ -8509,11 +8509,12 @@
         return
       }
       const total = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0)
+      const approvedOverride = rows.some((row) => row.approvedOverride)
       els.freshRouteRecommendation.innerHTML = `
-        <strong>Doporučení pro dnešní trasu · ${formatNumber(total)} ks</strong>
-        <span>Návrh obsahuje aktuální stav, očekávaný prodej do příjezdu i rezervu. Po načtení upravíš skutečné kusy po položkách.</span>
+        <strong>${approvedOverride ? 'Schválené rozdělení pro dnešní trasu' : 'Doporučení pro dnešní trasu'} · ${formatNumber(total)} ks</strong>
+        <span>${approvedOverride ? 'Načti schválené množství a při převzetí bagety fyzicky přepočítej.' : 'Návrh obsahuje aktuální stav, očekávaný prodej do příjezdu i rezervu. Po načtení upravíš skutečné kusy po položkách.'}</span>
         <div class="stock-draft">
-          ${rows.map((row) => `<div class="draft-line"><div><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml(formatNumber(row.quantity))} ${escapeHtml(row.unit)} · nyní chybí ${escapeHtml(formatNumber(row.missingNow))} · do příjezdu ${escapeHtml(formatNumber(row.forecastSales))}</span></div></div>`).join('')}
+          ${rows.map((row) => `<div class="draft-line"><div><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml(formatNumber(row.quantity))} ${escapeHtml(row.unit)}${row.approvedOverride ? ' · schválený rozpis' : ` · nyní chybí ${escapeHtml(formatNumber(row.missingNow))} · do příjezdu ${escapeHtml(formatNumber(row.forecastSales))}`}</span></div></div>`).join('')}
         </div>
         <button class="primary-btn" data-load-fresh-recommendation type="button">Použít doporučení</button>
       `
@@ -8522,6 +8523,31 @@
     async function loadFreshRouteRecommendation() {
       state.freshRouteRecommendation = []
       const plan = getAssignedRoutePlan()
+      const approvedOverride = plan?.route_payload?.fresh_load_recommendation_override
+      const overrideDate = String(approvedOverride?.valid_for_date || '')
+      const overrideItems = Array.isArray(approvedOverride?.items) ? approvedOverride.items : []
+      if (plan && overrideDate === String(plan.planning_date || todayIso) && overrideDate === todayIso && overrideItems.length) {
+        state.freshRouteRecommendation = overrideItems
+          .map((item) => {
+            const product = state.products.find((row) => String(row.id) === String(item.product_id || ''))
+            const quantity = Math.max(0, Number(item.quantity || 0))
+            if (!product || !isFoodReadyProduct(product) || quantity <= 0) return null
+            return {
+              product_id: product.id,
+              product_name: product.name,
+              sku: product.sku || null,
+              unit: product.base_unit || 'ks',
+              quantity,
+              missingNow: quantity,
+              forecastSales: 0,
+              approvedOverride: true
+            }
+          })
+          .filter(Boolean)
+          .sort((a, b) => String(a.product_name).localeCompare(String(b.product_name), 'cs'))
+        renderFreshRouteRecommendation()
+        return
+      }
       const stops = getRouteStops(plan)
       const machineIds = [...new Set(stops.map((stop) => stop.machine_id).filter(Boolean))]
       if (!plan || !machineIds.length) {
@@ -8621,7 +8647,7 @@
         if (existing) {
           existing.quantity = row.quantity
           existing.stock_quantity_base_units = row.quantity
-          existing.note = 'Doporučení z telemetrie pro dnešní trasu'
+          existing.note = row.approvedOverride ? 'Schválené rozdělení pro dnešní trasu' : 'Doporučení z telemetrie pro dnešní trasu'
           existing.available_batches = row.available_batches
           existing.expiry_allocations = expiryAllocations
           existing.batch_id = expiryAllocations[0]?.batch_id || null
@@ -8636,7 +8662,7 @@
           unit: row.unit,
           quantity: row.quantity,
           stock_quantity_base_units: row.quantity,
-          note: 'Doporučení z telemetrie pro dnešní trasu',
+          note: row.approvedOverride ? 'Schválené rozdělení pro dnešní trasu' : 'Doporučení z telemetrie pro dnešní trasu',
           available_batches: row.available_batches,
           expiry_allocations: expiryAllocations,
           batch_id: expiryAllocations[0]?.batch_id || null,
