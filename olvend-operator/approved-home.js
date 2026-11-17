@@ -8,12 +8,14 @@
   var employee = null
   var routePlan = null
   var vehicle = null
+  var warehouse = null
   var instruction = null
   var attendanceDay = null
   var vehicleLog = null
   var instructionConfirmed = false
   var vehicleConfirmed = false
   var startOdometer = null
+  var preparationStarted = false
 
   function isShiftPreview() {
     return location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'shift-start'
@@ -27,6 +29,7 @@
     'notebook-tabs': '<path d="M4 4a2 2 0 0 1 2-2h12v20H6a2 2 0 0 1-2-2Z"></path><path d="M8 2v20M12 6h6M12 10h6"></path>',
     'circle-user-round': '<circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="9" r="3"></circle><path d="M6.2 18a6 6 0 0 1 11.6 0"></path>',
     'lock-keyhole': '<rect width="16" height="12" x="4" y="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path><circle cx="12" cy="16" r="1"></circle>',
+    'cloud-sun': '<path d="M12 2v2"></path><path d="m4.93 4.93 1.42 1.42"></path><path d="M20 12h2"></path><path d="m19.07 4.93-1.42 1.42"></path><path d="M15 8a4 4 0 0 0-7.72 1.43"></path><path d="M17.5 18H9a5 5 0 1 1 4.9-6H15a3 3 0 0 1 2.5 6Z"></path>',
     'arrow-right': '<path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path>'
   }
 
@@ -130,7 +133,7 @@
   }
 
   function loadRoute() {
-    var select = 'id,planning_date,title,vehicle_id,execution_status,estimated_distance_km,estimated_drive_minutes,started_at,route_plan_stops(id,stop_order,status,title,address_snapshot,city_snapshot,latitude,longitude,machine_id,location_id)'
+    var select = 'id,planning_date,title,vehicle_id,warehouse_id,start_latitude,start_longitude,execution_status,estimated_distance_km,estimated_drive_minutes,started_at,warehouse:warehouses(name,city,latitude,longitude),route_plan_stops(id,stop_order,status,title,address_snapshot,city_snapshot,latitude,longitude,machine_id,location_id)'
     var url = supabaseUrl + '/rest/v1/route_plans?select=' + encodeURIComponent(select)
       + '&planned_employee_id=eq.' + encodeURIComponent(employee.id)
       + '&planning_date=eq.' + encodeURIComponent(todayIso())
@@ -146,6 +149,41 @@
         : '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&active=eq.true&order=id&limit=1')
     if (vehicleId) url += '&limit=1'
     return apiRequest(url, {}, 8000).then(function (rows) { return Array.isArray(rows) && rows.length ? rows[0] : null }).catch(function () { return null })
+  }
+
+  function loadWarehouse() {
+    var routeWarehouse = routePlan && routePlan.warehouse
+    if (routeWarehouse && routeWarehouse.latitude != null && routeWarehouse.longitude != null) return Promise.resolve(routeWarehouse)
+    var warehouseId = routePlan && routePlan.warehouse_id || vehicle && vehicle.warehouse_id
+    if (!warehouseId) return Promise.resolve(null)
+    var url = supabaseUrl + '/rest/v1/warehouses?select=id,name,city,latitude,longitude&id=eq.' + encodeURIComponent(warehouseId) + '&limit=1'
+    return apiRequest(url, {}, 8000).then(function (rows) { return Array.isArray(rows) && rows.length ? rows[0] : null }).catch(function () { return null })
+  }
+
+  function loadWeather() {
+    var usesRouteStart = Boolean(routePlan && routePlan.start_latitude != null && routePlan.start_longitude != null)
+    var latitude = usesRouteStart ? Number(routePlan.start_latitude) : warehouse && Number(warehouse.latitude)
+    var longitude = usesRouteStart ? Number(routePlan.start_longitude) : warehouse && Number(warehouse.longitude)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return Promise.resolve(null)
+    var routeWarehouse = routePlan && routePlan.warehouse
+    var place = usesRouteStart
+      ? routeWarehouse && (routeWarehouse.city || routeWarehouse.name) || 'Výchozí místo'
+      : warehouse && (warehouse.city || warehouse.name) || 'Výchozí místo'
+    return apiRequest(supabaseUrl + '/functions/v1/operator-weather', {
+      method: 'POST',
+      body: JSON.stringify({ latitude: latitude, longitude: longitude, place: place })
+    }, 9000).catch(function () { return null })
+  }
+
+  function renderWeather(weather) {
+    var weatherRow = root.querySelector('#operatorIdleWeatherRow')
+    if (!weather || !Number.isFinite(Number(weather.temperature_c))) {
+      weatherRow.hidden = true
+      return
+    }
+    root.querySelector('#operatorIdleLocation').textContent = weather.place || warehouse && (warehouse.city || warehouse.name) || 'Výchozí místo'
+    root.querySelector('#operatorIdleWeather').textContent = Math.round(Number(weather.temperature_c)).toLocaleString('cs-CZ') + ' °C, ' + String(weather.condition || 'proměnlivo')
+    weatherRow.hidden = false
   }
 
   function loadInstruction() {
@@ -226,6 +264,11 @@
     var start = root.querySelector('#ot-start')
     var help = root.querySelector('#ot-start-help')
     var running = isShiftRunning()
+    var idleStart = root.querySelector('#operatorIdleStart')
+    var operationalHome = root.querySelector('.ot-phone')
+    var showIdleStart = !running && !preparationStarted
+    idleStart.hidden = !showIdleStart
+    operationalHome.hidden = showIdleStart
     var ready = running || Boolean(routePlan && vehicle && vehicleConfirmed && (!instruction || instructionConfirmed))
     start.disabled = !ready
     if (running) {
@@ -252,6 +295,13 @@
 
   function renderData() {
     var salutation = vocativeName(employee.name)
+    var employeeName = [employee.name, employee.surname].filter(Boolean).join(' ')
+    var employeeInitials = [employee.name, employee.surname].filter(Boolean).map(function (part) { return String(part).charAt(0) }).join('').slice(0, 2).toLocaleUpperCase('cs-CZ') || 'OP'
+    root.querySelector('#operatorIdleDate').textContent = formatDateLong()
+    root.querySelector('#operatorIdleGreeting').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
+    root.querySelector('.operator-idle-start .ot-user').textContent = employeeInitials
+    root.querySelector('.operator-idle-start .ot-user').setAttribute('aria-label', employeeName ? 'Otevřít profil ' + employeeName : 'Otevřít můj profil')
+    if (isShiftPreview()) renderWeather({ place: 'Blučina', temperature_c: 7, condition: 'zataženo' })
     root.querySelector('.ot-date').textContent = formatDateLong()
     root.querySelector('.ot-main h2').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
     root.querySelector('.ot-tile.profile strong').textContent = [employee.name, employee.surname].filter(Boolean).join(' ') || 'Můj profil'
@@ -461,6 +511,11 @@
 
   function bindInteractions() {
     var overlay = root.querySelector('#ot-overlay')
+    root.querySelector('.operator-idle-start .ot-user').addEventListener('click', function () { window.location.href = './profil.html' })
+    root.querySelector('#operatorIdleStartButton').addEventListener('click', function () {
+      preparationStarted = true
+      updateReadiness()
+    })
     root.querySelector('#ot-route').addEventListener('click', openRoutePanel)
     root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
@@ -508,11 +563,15 @@
     }).then(function (results) {
       vehicle = results[0]
       instructionConfirmed = results[1]
-      return loadVehicleLog()
-    }).then(function (loadedVehicleLog) {
-      vehicleLog = loadedVehicleLog
+      return Promise.all([loadVehicleLog(), loadWarehouse()])
+    }).then(function (results) {
+      vehicleLog = results[0]
+      warehouse = results[1]
       readVehicleConfirmation()
       renderData()
+      return loadWeather()
+    }).then(function (weather) {
+      renderWeather(weather)
     }).catch(function (error) {
       root.querySelector('.ot-state').innerHTML = 'Data směny se nepodařilo načíst · <b>' + String(error.message || 'zkuste obnovit') + '</b>'
       updateReadiness()
@@ -526,6 +585,7 @@
       { id: 2505, stop_order: 2, title: 'EV 29 · Luce X2 I/E jídelna', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' }
     ] }
     vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 317658, warehouse_id: 1 }
+    warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
     instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
     attendanceDay = null
     vehicleLog = null
