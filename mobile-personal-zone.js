@@ -3,7 +3,11 @@ import { supabase } from './supabase.js?v=20260815-offline-auth-refresh-v4'
 const $ = selector => document.querySelector(selector)
 const $$ = selector => [...document.querySelectorAll(selector)]
 const money = value => `${new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 0 }).format(Number(value || 0))} Kč`
-const monthLabel = date => new Intl.DateTimeFormat('cs-CZ', { month: 'long', year: 'numeric' }).format(date).replace(/^./, char => char.toUpperCase())
+const monthLabel = value => {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Neznámé období'
+  return new Intl.DateTimeFormat('cs-CZ', { month: 'long', year: 'numeric' }).format(date).replace(/^./, char => char.toUpperCase())
+}
 const dateLabel = value => new Intl.DateTimeFormat('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' }).format(new Date(value))
 const timeLabel = value => new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
@@ -135,7 +139,7 @@ async function loadBonus() {
 async function loadBonusHistory() {
   const start = new Date(2026, 7, 1); const end = new Date(new Date().getFullYear(), new Date().getMonth(), 1); const rows = []
   for (let d = new Date(end); d >= start; d.setMonth(d.getMonth() - 1)) {
-    const period = new Date(d); const { data, error } = await supabase.rpc('my_bonus_summary', { p_period: periodKey(period) }); if (!error) rows.push({ period, ...data })
+    const period = new Date(d); const { data, error } = await supabase.rpc('my_bonus_summary', { p_period: periodKey(period) }); if (!error) rows.push({ ...data, period })
   }
   $('#bonusHistory').innerHTML = rows.map(row => `<div class="personal-history-row"><span><strong>${esc(monthLabel(row.period))}</strong><small>${row.is_final ? 'Uzavřeno' : 'Průběžný odhad'} · ${Number(row.visits || 0)} návštěv</small></span><b>${esc(money(row.total))}</b></div>`).join('') || '<div class="personal-history-row"><span><strong>Zatím bez historie</strong></span></div>'
 }
