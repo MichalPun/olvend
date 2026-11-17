@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const manifest = JSON.parse(read('olvend-operator/manifest.webmanifest'))
-const pwa = read('olvend-operator/pwa.js')
+const pwa = read('olvend-operator/pwa-v27.js')
 const serviceWorker = read('olvend-operator/sw.js')
 const installablePages = ['index.html', 'prihlaseni.html', 'uvod.html', 'trasa.html', 'sklad.html', 'profil.html', 'pokyny.html', 'vozidlo.html']
 
@@ -18,7 +18,7 @@ for (const page of installablePages) {
   assert.match(html, /name="application-name" content="OLVEND Operátor"/, page)
   assert.match(html, /name="apple-mobile-web-app-title" content="OLVEND Operátor"/, page)
   assert.match(html, /manifest\.webmanifest\?v=20261117-full-name-v1/, page)
-  assert.match(html, /pwa\.js\?v=20261117-full-name-v1/, page)
+  assert.match(html, /pwa-v27\.js/, page)
 }
 
 const intro = read('olvend-operator/uvod.html')
@@ -27,8 +27,8 @@ assert.match(intro, /id="olvend-before-shift-tiles"/)
 assert.match(intro, /id="ot-vehicle"/)
 assert.match(intro, /id="ot-instructions"/)
 assert.match(intro, /id="ot-start"/)
-assert.match(pwa, /sw\.js\?v=20261117-full-name-v1/)
+assert.match(pwa, /sw\.js\?v=20261117-full-name-v2/)
 assert.match(pwa, /scope:\s*'\.\/'/)
-assert.match(serviceWorker, /olvend-operator-v27-full-name/)
+assert.match(serviceWorker, /olvend-operator-v28-pwa-file/)
 
 console.log('OLVEND Operátor tiled intro and install identity checks passed')
