@@ -1217,7 +1217,7 @@
 
   function startShift() {
     if (isShiftRunning()) {
-      window.location.href = './trasa.html'
+      window.location.href = './uvod.html'
       return
     }
     var usesVehicle = vehicleUsage !== 'without'
@@ -1233,7 +1233,7 @@
         headers: { 'Prefer': 'return=minimal' },
         body: JSON.stringify({ execution_status: 'in_progress', started_at: startedAt, vehicle_id: usesVehicle && vehicle ? vehicle.id : null })
       }, 12000).then(function () {
-        window.location.href = './trasa.html'
+        window.location.href = './uvod.html'
       }).catch(function (error) {
         setBusy(false)
         window.alert(error && error.message ? error.message : 'Testovací trasu se nepodařilo zahájit.')
@@ -1279,7 +1279,7 @@
         body: JSON.stringify({ execution_status: 'in_progress', started_at: routePlan.started_at || startedAt, vehicle_id: usesVehicle && vehicle ? vehicle.id : null })
       }, 12000)
     }).then(function () {
-      window.location.href = './trasa.html'
+      window.location.href = './uvod.html'
     }).catch(function (error) {
       setBusy(false)
       window.alert(error && error.message ? error.message : 'Směnu se nepodařilo zahájit.')
