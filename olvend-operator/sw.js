@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v26-pda-entry'
+  var CACHE_NAME = 'olvend-operator-v27-full-name'
   var APP_SHELL = [
     './',
     './index.html',
@@ -13,7 +13,7 @@
     './vozidlo.html',
     './potravinovy-automat-preview.html',
     './prihlaseni.html',
-    './manifest.webmanifest',
+    './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
     './approved-home.js',
