@@ -1,7 +1,9 @@
 -- Compact, deduplicated economics for the machine overview.
 -- Telemetry revenue is normalized to an average calendar month over the
--- requested rolling period. A fixed partner invoice is added separately and
--- distributed only between the active machines covered by that billing rule.
+-- shorter of the requested rolling period and the machine's current placement.
+-- Revenue from an earlier location is deliberately excluded. A fixed partner
+-- invoice is added separately and distributed only between the active machines
+-- covered by that billing rule.
 create or replace function public.get_machine_overview_economics_v66(
   p_from timestamptz default (now() - interval '90 days'),
   p_to timestamptz default now()
@@ -24,12 +26,43 @@ as $$
     select
       least(p_from, p_to) as date_from,
       greatest(p_from, p_to) as date_to,
-      greatest(
-        extract(epoch from (greatest(p_from, p_to) - least(p_from, p_to))) / 86400.0,
-        1::numeric
-      ) as period_days,
       date_trunc('month', timezone('Europe/Prague', greatest(p_from, p_to)))
         at time zone 'Europe/Prague' as current_month_from
+  ),
+  machine_periods as (
+    select
+      machine.id as machine_id,
+      greatest(
+        params.date_from,
+        least(
+          params.date_to,
+          coalesce(placement.transferred_at, machine.created_at, params.date_from)
+        )
+      ) as observed_from,
+      params.date_to as observed_to,
+      greatest(
+        extract(epoch from (
+          params.date_to - greatest(
+            params.date_from,
+            least(
+              params.date_to,
+              coalesce(placement.transferred_at, machine.created_at, params.date_from)
+            )
+          )
+        )) / 86400.0,
+        1::numeric
+      ) as observed_days
+    from public.machines machine
+    cross join params
+    left join lateral (
+      select transfer.transferred_at
+      from public.machine_transfers transfer
+      where transfer.machine_id = machine.id
+        and transfer.to_location_id is not distinct from machine.location_id
+        and transfer.transferred_at < params.date_to
+      order by transfer.transferred_at desc, transfer.id desc
+      limit 1
+    ) placement on true
   ),
   ranked_events as (
     select
@@ -37,10 +70,10 @@ as $$
       bool_or(lower(coalesce(event.provider, '')) = 'ima')
         over (partition by event.machine_id) as has_direct_ima
     from public.telemetry_sales_events event
-    cross join params
+    join machine_periods period on period.machine_id = event.machine_id
     where event.machine_id is not null
-      and event.source_event_at >= params.date_from
-      and event.source_event_at < params.date_to
+      and event.source_event_at >= period.observed_from
+      and event.source_event_at < period.observed_to
   ),
   source_events as (
     select *
@@ -111,18 +144,18 @@ as $$
   select
     machine.id as machine_id,
     round(coalesce(telemetry.period_revenue, 0), 2) as telemetry_period_revenue,
-    round(coalesce(telemetry.period_revenue, 0) / params.period_days * 30.4375, 2)
+    round(coalesce(telemetry.period_revenue, 0) / period.observed_days * 30.4375, 2)
       as telemetry_monthly_average,
     round(coalesce(invoicing.monthly_amount, 0), 2) as invoicing_monthly_average,
     round(
-      coalesce(telemetry.period_revenue, 0) / params.period_days * 30.4375
+      coalesce(telemetry.period_revenue, 0) / period.observed_days * 30.4375
       + coalesce(invoicing.monthly_amount, 0),
       2
     ) as combined_monthly_average,
     round(coalesce(telemetry.current_month_revenue, 0), 2) as current_month_revenue,
-    round(params.period_days, 2) as observed_days
+    round(period.observed_days, 2) as observed_days
   from public.machines machine
-  cross join params
+  join machine_periods period on period.machine_id = machine.id
   left join telemetry on telemetry.machine_id = machine.id
   left join invoicing on invoicing.machine_id = machine.id;
 $$;
@@ -131,4 +164,4 @@ revoke all on function public.get_machine_overview_economics_v66(timestamptz, ti
 grant execute on function public.get_machine_overview_economics_v66(timestamptz, timestamptz) to authenticated;
 
 comment on function public.get_machine_overview_economics_v66(timestamptz, timestamptz) is
-  'Deduplicated rolling machine revenue plus separately allocated fixed partner billing for the PC machine overview.';
+  'Deduplicated revenue from the current placement (up to the requested rolling window) plus separately allocated fixed partner billing for the PC machine overview.';
