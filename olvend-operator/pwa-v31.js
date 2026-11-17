@@ -12,7 +12,7 @@
       window.location.reload()
     })
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw.js?v=20261117-idle-weather-v2', { scope: './' }).then(function (registration) {
+      navigator.serviceWorker.register('./sw.js?v=20261117-idle-logout-v3', { scope: './' }).then(function (registration) {
         registration.update().catch(function () {})
       }).catch(function () {})
     })
