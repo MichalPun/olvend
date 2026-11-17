@@ -34,7 +34,7 @@ insert into public.daily_instructions (
     'requiresSignature', true,
     'documentVersion', '1.0',
     'documentSha256', '094f8423393ae1bf1ce51c4d5e18d9b220b98a911793a54eb241114f706bd561',
-    'previewPages', jsonb_build_array('./assets/instructions/pokyn-dne-test-2026-11-17-page-1.png'),
+    'previewPages', jsonb_build_array('./assets/instructions/pokyn-dne-test-2026-11-17-page-1-hires.png'),
     'pageCount', 1,
     'warningText', 'Po podpisu se potvrzení uloží do databáze společně s verzí dokumentu a údaji zařízení.'
   ),
