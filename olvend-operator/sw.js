@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v38-vehicle-live-use'
+  var CACHE_NAME = 'olvend-operator-v39-signed-instructions'
   var APP_SHELL = [
     './',
     './index.html',
@@ -16,7 +16,7 @@
     './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
-    './approved-home-v31.js?v=20261117-vehicle-step-v5',
+    './approved-home-v31.js?v=20261117-signed-instruction-v1',
     './operator-route.js',
     './operator-warehouse.js',
     './operator-profile.js',
@@ -27,6 +27,8 @@
     './icon-192.png',
     './icon-512.png',
     './icon-maskable-512.png',
+    './assets/instructions/pokyn-dne-test-2026-11-17.pdf',
+    './assets/instructions/pokyn-dne-test-2026-11-17-page-1.png',
     './assets/product-images/201.jpg',
     './assets/product-images/bagette-hamka.jpg',
     './assets/product-images/bagette-porizek.jpg',

@@ -21,6 +21,13 @@
   var assignedVehicleId = null
   var vehicleUsage = 'vehicle'
   var vehicleStepComplete = false
+  var instructionReadAt = null
+  var instructionSignatureEnabled = false
+  var instructionSignatureHasInk = false
+  var instructionSignatureSaved = false
+  var instructionSignatureDraftData = null
+  var renderedInstructionId = null
+  var instructionOpenedRecorded = false
 
   function isShiftPreview() {
     return location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'shift-start'
@@ -262,6 +269,24 @@
     return apiRequest(url, {}, 8000).then(function (rows) { return Boolean(Array.isArray(rows) && rows.length) }).catch(function () { return false })
   }
 
+  function loadInstructionProgress() {
+    instructionReadAt = null
+    instructionSignatureSaved = false
+    instructionSignatureDraftData = null
+    if (!instruction || !employee || !employee.id) return Promise.resolve()
+    var url = supabaseUrl + '/rest/v1/instruction_events?select=event_type,event_at,signature_data_url&instruction_id=eq.' + encodeURIComponent(instruction.id)
+      + '&employee_id=eq.' + encodeURIComponent(employee.id) + '&event_type=in.(document_read,signature_captured)'
+    return apiRequest(url, {}, 8000).then(function (rows) {
+      ;(Array.isArray(rows) ? rows : []).forEach(function (row) {
+        if (row.event_type === 'document_read') instructionReadAt = row.event_at || new Date().toISOString()
+        if (row.event_type === 'signature_captured' && row.signature_data_url) {
+          instructionSignatureSaved = true
+          instructionSignatureDraftData = row.signature_data_url
+        }
+      })
+    }).catch(function () {})
+  }
+
   function loadVehicleLog() {
     if (!attendanceDay || !attendanceDay.id || !vehicle) return Promise.resolve(null)
     var url = supabaseUrl + '/rest/v1/vehicle_operation_logs?select=*&attendance_day_id=eq.' + encodeURIComponent(attendanceDay.id)
@@ -282,6 +307,341 @@
     instructions.querySelector('p').textContent = !instruction ? 'Není potřeba nic potvrzovat' : confirmed ? (instruction.title || 'Povinný pokyn potvrzen') : (instruction.title || 'Krátká informace před výjezdem')
     root.querySelector('#ot-guide-progress').textContent = (Number(vehicleConfirmed) + Number(!instruction || confirmed)) + ' ze 2 hotovo'
     updateReadiness()
+  }
+
+  function currentInstructionPayload() {
+    return instruction && instruction.instruction_payload && typeof instruction.instruction_payload === 'object'
+      ? instruction.instruction_payload
+      : {}
+  }
+
+  function instructionRequiresSignature() {
+    var value = currentInstructionPayload().requiresSignature
+    return value === true || String(value || '').toLowerCase() === 'true'
+  }
+
+  function instructionDeviceInfo() {
+    return {
+      app: 'OLVEND Operátor',
+      appVersion: '20261117-signed-instruction-v1',
+      userAgent: navigator.userAgent || '',
+      platform: navigator.platform || '',
+      screenWidth: window.screen && window.screen.width || null,
+      screenHeight: window.screen && window.screen.height || null,
+      viewportWidth: window.innerWidth || null,
+      viewportHeight: window.innerHeight || null,
+      online: navigator.onLine !== false,
+      timezone: (function () {
+        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Prague' } catch (_) { return 'Europe/Prague' }
+      })()
+    }
+  }
+
+  function recordInstructionEvent(eventType) {
+    if (!instruction || isShiftPreview()) return Promise.resolve(true)
+    var payload = currentInstructionPayload()
+    return apiRequest(supabaseUrl + '/rest/v1/rpc/record_instruction_event', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_instruction_id: instruction.id,
+        p_event_type: eventType,
+        p_document_version: payload.documentVersion || null,
+        p_document_sha256: payload.documentSha256 || null,
+        p_device_info: instructionDeviceInfo()
+      })
+    }, 10000)
+  }
+
+  function saveInstructionSignatureDraft(signatureDataUrl) {
+    if (!instruction) return Promise.reject(new Error('Pokyn není načtený.'))
+    if (isShiftPreview()) return Promise.resolve(true)
+    var payload = currentInstructionPayload()
+    return apiRequest(supabaseUrl + '/rest/v1/rpc/save_instruction_signature', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_instruction_id: instruction.id,
+        p_signature_data_url: signatureDataUrl || null,
+        p_document_version: payload.documentVersion || null,
+        p_document_sha256: payload.documentSha256 || null,
+        p_device_info: instructionDeviceInfo()
+      })
+    }, 12000)
+  }
+
+  function resetInstructionSignature(clearSaved) {
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    if (canvas && canvas.getContext) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    instructionSignatureHasInk = false
+    if (clearSaved !== false) {
+      instructionSignatureSaved = false
+      instructionSignatureDraftData = null
+    }
+    var placeholder = root.querySelector('#operatorInstructionSignaturePlaceholder')
+    if (placeholder) placeholder.style.display = 'flex'
+  }
+
+  function restoreInstructionSignatureDraft() {
+    if (!instructionSignatureDraftData) return
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    var image = new Image()
+    image.onload = function () {
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height)
+      instructionSignatureHasInk = true
+      instructionSignatureSaved = true
+      root.querySelector('#operatorInstructionSignaturePlaceholder').style.display = 'none'
+      renderInstructionStep()
+    }
+    image.src = instructionSignatureDraftData
+  }
+
+  function renderInstructionStep() {
+    if (!instruction) return
+    var payload = currentInstructionPayload()
+    var hasAttachment = Boolean(instruction.attachment_url)
+    var requiresSignature = instructionRequiresSignature()
+    var pdfStep = root.querySelector('#operatorInstructionPdfStep')
+    var signatureStep = root.querySelector('#operatorInstructionSignatureStep')
+    var confirm = root.querySelector('#operatorInstructionConfirm')
+    var error = root.querySelector('#operatorInstructionError')
+
+    if (String(renderedInstructionId || '') !== String(instruction.id)) {
+      renderedInstructionId = instruction.id
+      instructionOpenedRecorded = false
+      instructionSignatureEnabled = !hasAttachment
+      resetInstructionSignature(false)
+      if (instructionSignatureDraftData) restoreInstructionSignatureDraft()
+    }
+
+    root.querySelector('#operatorInstructionTitle').textContent = instruction.title || 'Pokyn dne'
+    root.querySelector('#operatorInstructionBody').textContent = instruction.message || 'Přečtěte si pokyn a potvrďte jeho převzetí.'
+    root.querySelector('#operatorInstructionNoticeText').textContent = payload.warningText || 'Potvrzení se uloží do databáze společně s časem a údaji zařízení.'
+    error.hidden = true
+    error.textContent = ''
+
+    pdfStep.hidden = !hasAttachment
+    signatureStep.hidden = !requiresSignature
+    if (hasAttachment) {
+      var pageCount = Number(payload.pageCount || 0)
+      root.querySelector('#operatorInstructionAttachmentLabel').textContent = instruction.attachment_label || 'Přiložený dokument'
+      root.querySelector('#operatorInstructionAttachmentMeta').textContent = (pageCount ? pageCount + (pageCount === 1 ? ' strana' : pageCount < 5 ? ' strany' : ' stran') + ' · ' : 'PDF · ') + (requiresSignature ? 'podpis je povinný' : 'vyžaduje přečtení')
+      pdfStep.classList.toggle('done', Boolean(instructionReadAt))
+      root.querySelector('#operatorInstructionPdfNumber').textContent = instructionReadAt ? '✓' : '1'
+      root.querySelector('#operatorInstructionOpenPdf').textContent = instructionReadAt ? 'Přečteno ✓' : 'Otevřít PDF'
+      root.querySelector('#operatorInstructionOpenPdf').className = 'operator-instruction-pdf-open' + (instructionReadAt ? ' read' : '')
+    }
+
+    if (requiresSignature) {
+      instructionSignatureEnabled = !hasAttachment || Boolean(instructionReadAt)
+      signatureStep.classList.toggle('locked', !instructionSignatureEnabled)
+      signatureStep.classList.toggle('done', instructionSignatureSaved)
+      root.querySelector('#operatorInstructionSignatureNumber').textContent = instructionSignatureSaved ? '✓' : hasAttachment ? '2' : '1'
+      root.querySelector('#operatorInstructionSignatureHint').textContent = instructionSignatureSaved ? 'Podpis je uložený a připravený k potvrzení.' : instructionSignatureEnabled ? 'Podepište se prstem do pole níže.' : 'Tento krok se odemkne po přečtení PDF.'
+      var canvas = root.querySelector('#operatorInstructionSignaturePad')
+      canvas.className = 'operator-signature-pad' + (instructionSignatureEnabled ? '' : ' locked')
+      var placeholder = root.querySelector('#operatorInstructionSignaturePlaceholder')
+      if (!instructionSignatureHasInk) {
+        placeholder.style.display = 'flex'
+        placeholder.textContent = instructionSignatureEnabled ? 'Podepište se prstem do pole' : 'Nejprve dokončete krok 1'
+      }
+      root.querySelector('#operatorInstructionSignatureStatus').textContent = instructionSignatureSaved
+        ? 'Podpis uložen · připraven k potvrzení'
+        : instructionSignatureHasInk ? 'Podpis změněn · dokončete tah pro uložení'
+        : instructionSignatureEnabled ? 'PDF přečteno · čeká na podpis' : 'Podpis je vyžadován'
+      root.querySelector('#operatorInstructionSignatureClear').disabled = !instructionSignatureEnabled
+    }
+
+    confirm.textContent = requiresSignature ? 'Podepsat a potvrdit pokyn →' : 'Přečetl/a jsem a rozumím →'
+    confirm.disabled = Boolean((hasAttachment && !instructionReadAt) || (requiresSignature && !instructionSignatureSaved))
+
+    if (!root.querySelector('#operatorInstructionStep').hidden && !instructionOpenedRecorded) {
+      instructionOpenedRecorded = true
+      recordInstructionEvent('instruction_opened').catch(function () {})
+    }
+  }
+
+  function renderInstructionPdf() {
+    var payload = currentInstructionPayload()
+    var pages = Array.isArray(payload.previewPages) ? payload.previewPages : []
+    var viewer = root.querySelector('#operatorInstructionPdfViewer')
+    viewer.innerHTML = ''
+    if (pages.length) {
+      pages.forEach(function (src, index) {
+        var image = document.createElement('img')
+        image.className = 'operator-pdf-page'
+        image.src = src
+        image.alt = 'Strana ' + (index + 1) + ' dokumentu'
+        viewer.appendChild(image)
+      })
+    } else {
+      var fallback = document.createElement('div')
+      fallback.className = 'operator-pdf-fallback'
+      fallback.textContent = 'Náhled tohoto dokumentu není v zařízení dostupný.'
+      var link = document.createElement('a')
+      link.href = instruction.attachment_url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.textContent = 'Otevřít PDF samostatně'
+      fallback.appendChild(link)
+      viewer.appendChild(fallback)
+    }
+    root.querySelector('#operatorInstructionPdfTitle').textContent = instruction.attachment_label || 'Přiložený dokument'
+    var pageCount = Number(payload.pageCount || pages.length || 0)
+    root.querySelector('#operatorInstructionPdfMeta').textContent = pageCount ? 'Náhled dokumentu · ' + pageCount + (pageCount === 1 ? ' strana' : ' stran') : 'Náhled dokumentu'
+  }
+
+  function openInstructionPdf() {
+    if (!instruction || !instruction.attachment_url) return
+    renderInstructionPdf()
+    root.querySelector('#operatorInstructionPdfModal').hidden = false
+    recordInstructionEvent('attachment_opened').catch(function () {})
+  }
+
+  function markInstructionDocumentRead() {
+    var button = root.querySelector('#operatorInstructionPdfRead')
+    var error = root.querySelector('#operatorInstructionError')
+    button.disabled = true
+    button.textContent = 'Ukládám přečtení…'
+    recordInstructionEvent('document_read').then(function () {
+      instructionReadAt = new Date().toISOString()
+      root.querySelector('#operatorInstructionPdfModal').hidden = true
+      renderInstructionStep()
+    }).catch(function (cause) {
+      error.textContent = cause && cause.message ? cause.message : 'Přečtení dokumentu se nepodařilo uložit.'
+      error.hidden = false
+      root.querySelector('#operatorInstructionPdfModal').hidden = true
+    }).then(function () {
+      button.disabled = false
+      button.textContent = 'Dokument jsem přečetl/a'
+    })
+  }
+
+  function instructionSignaturePoint(event) {
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    var rect = canvas.getBoundingClientRect()
+    var source = event.touches && event.touches[0] ? event.touches[0] : event
+    return {
+      x: (source.clientX - rect.left) * (canvas.width / rect.width),
+      y: (source.clientY - rect.top) * (canvas.height / rect.height)
+    }
+  }
+
+  function beginInstructionSignature(event) {
+    if (!instructionSignatureEnabled) return
+    event.preventDefault()
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    var point = instructionSignaturePoint(event)
+    var context = canvas.getContext('2d')
+    canvas.setAttribute('data-drawing', '1')
+    context.beginPath()
+    context.moveTo(point.x, point.y)
+    root.querySelector('#operatorInstructionSignaturePlaceholder').style.display = 'none'
+  }
+
+  function moveInstructionSignature(event) {
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    if (!instructionSignatureEnabled || canvas.getAttribute('data-drawing') !== '1') return
+    event.preventDefault()
+    var point = instructionSignaturePoint(event)
+    var context = canvas.getContext('2d')
+    context.lineWidth = 2.6
+    context.lineCap = 'round'
+    context.lineJoin = 'round'
+    context.strokeStyle = '#18202a'
+    context.lineTo(point.x, point.y)
+    context.stroke()
+    instructionSignatureHasInk = true
+    instructionSignatureSaved = false
+    instructionSignatureDraftData = null
+    var signatureStep = root.querySelector('#operatorInstructionSignatureStep')
+    signatureStep.classList.remove('done')
+    root.querySelector('#operatorInstructionSignatureNumber').textContent = instruction.attachment_url ? '2' : '1'
+    root.querySelector('#operatorInstructionSignatureStatus').textContent = 'Podpis změněn · dokončete tah pro uložení'
+    root.querySelector('#operatorInstructionConfirm').disabled = true
+  }
+
+  function endInstructionSignature() {
+    var canvas = root.querySelector('#operatorInstructionSignaturePad')
+    if (!canvas || canvas.getAttribute('data-drawing') !== '1') return
+    canvas.removeAttribute('data-drawing')
+    if (!instructionSignatureHasInk) return
+    var signatureDataUrl = canvas.toDataURL('image/png')
+    var status = root.querySelector('#operatorInstructionSignatureStatus')
+    var error = root.querySelector('#operatorInstructionError')
+    status.textContent = 'Ukládám podpis…'
+    saveInstructionSignatureDraft(signatureDataUrl).then(function () {
+      instructionSignatureSaved = true
+      instructionSignatureDraftData = signatureDataUrl
+      renderInstructionStep()
+    }).catch(function (cause) {
+      instructionSignatureSaved = false
+      root.querySelector('#operatorInstructionConfirm').disabled = true
+      status.textContent = 'Podpis se nepodařilo uložit'
+      error.textContent = cause && cause.message ? cause.message : 'Podpis se nepodařilo uložit do databáze.'
+      error.hidden = false
+    })
+  }
+
+  function clearInstructionSignature() {
+    resetInstructionSignature()
+    renderInstructionStep()
+    root.querySelector('#operatorInstructionSignatureStatus').textContent = 'Mažu uložený podpis…'
+    saveInstructionSignatureDraft(null).then(function () {
+      renderInstructionStep()
+    }).catch(function (cause) {
+      var error = root.querySelector('#operatorInstructionError')
+      error.textContent = cause && cause.message ? cause.message : 'Uložený podpis se nepodařilo vymazat.'
+      error.hidden = false
+    })
+  }
+
+  function confirmInstructionStep() {
+    if (!instruction) return
+    var payload = currentInstructionPayload()
+    var requiresSignature = instructionRequiresSignature()
+    var hasAttachment = Boolean(instruction.attachment_url)
+    var error = root.querySelector('#operatorInstructionError')
+    var button = root.querySelector('#operatorInstructionConfirm')
+    error.hidden = true
+    if (hasAttachment && !instructionReadAt) {
+      error.textContent = 'Nejdříve otevřete a potvrďte přečtení PDF.'
+      error.hidden = false
+      return
+    }
+    if (requiresSignature && !instructionSignatureSaved) {
+      error.textContent = 'Nejdříve dokončete uložení podpisu.'
+      error.hidden = false
+      return
+    }
+    var signature = requiresSignature ? root.querySelector('#operatorInstructionSignaturePad').toDataURL('image/png') : null
+    button.disabled = true
+    button.textContent = 'Ukládám podpis a potvrzení…'
+    var save = isShiftPreview() ? Promise.resolve(true) : apiRequest(supabaseUrl + '/rest/v1/rpc/confirm_signed_instruction', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_instruction_id: instruction.id,
+        p_signature_data_url: signature,
+        p_document_read_at: instructionReadAt,
+        p_document_version: payload.documentVersion || null,
+        p_document_sha256: payload.documentSha256 || null,
+        p_device_info: instructionDeviceInfo()
+      })
+    }, 15000)
+    save.then(function () {
+      button.textContent = 'Pokyn uložen ✓'
+      button.style.background = '#067647'
+      button.style.borderColor = '#067647'
+      window.setTimeout(function () {
+        instructionConfirmed = true
+        setConfirmed(true)
+        renderData()
+      }, 550)
+    }).catch(function (cause) {
+      button.disabled = false
+      button.textContent = requiresSignature ? 'Podepsat a potvrdit pokyn →' : 'Přečetl/a jsem a rozumím →'
+      error.textContent = cause && cause.message ? cause.message : 'Podpis a potvrzení se nepodařilo uložit.'
+      error.hidden = false
+    })
   }
 
   function isShiftRunning() {
@@ -475,12 +835,16 @@
     var running = isShiftRunning()
     var idleStart = root.querySelector('#operatorIdleStart')
     var vehicleStep = root.querySelector('#operatorVehicleStep')
+    var instructionStep = root.querySelector('#operatorInstructionStep')
     var operationalHome = root.querySelector('.ot-phone')
     var showIdleStart = !running && !preparationStarted
     var showVehicleStep = !running && preparationStarted && !vehicleStepComplete
+    var showInstructionStep = !running && preparationStarted && vehicleStepComplete && Boolean(instruction && !instructionConfirmed)
     idleStart.hidden = !showIdleStart
     vehicleStep.hidden = !showVehicleStep
-    operationalHome.hidden = showIdleStart || showVehicleStep
+    instructionStep.hidden = !showInstructionStep
+    operationalHome.hidden = showIdleStart || showVehicleStep || showInstructionStep
+    if (showInstructionStep) renderInstructionStep()
     var hasVehicleChoice = vehicleUsage === 'without' || Boolean(vehicle)
     var ready = running || Boolean(routePlan && hasVehicleChoice && vehicleConfirmed && (!instruction || instructionConfirmed))
     start.disabled = !ready
@@ -516,6 +880,8 @@
     root.querySelector('#operatorIdleUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
     root.querySelector('#operatorVehicleUser').textContent = employeeInitials
     root.querySelector('#operatorVehicleUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
+    root.querySelector('#operatorInstructionUser').textContent = employeeInitials
+    root.querySelector('#operatorInstructionUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
     root.querySelector('#operatorIdleAccountInitials').textContent = employeeInitials
     root.querySelector('#operatorIdleAccountName').textContent = employeeName || 'Přihlášený operátor'
     root.querySelector('#operatorIdleAccountRole').textContent = String(employee.role || '').toLowerCase() === 'operator' ? 'Operátor' : (employee.role || 'Uživatel OLVEND')
@@ -546,6 +912,7 @@
     if (instruction) {
       root.querySelector('.ot-sheet-title h3').textContent = instruction.title || instruction.name || 'Povinný pokyn dne'
       root.querySelector('.ot-instruction').textContent = instruction.body || instruction.content || instruction.message || instruction.note || 'Přečtěte si pokyn a potvrďte jeho převzetí.'
+      renderInstructionStep()
     }
     renderVehicleStep()
     setConfirmed(instructionConfirmed)
@@ -817,7 +1184,11 @@
     root.querySelector('#ot-vehicle').addEventListener('click', openVehicleStep)
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
-      if (instruction && !instructionConfirmed) overlay.hidden = false
+      if (instruction && !instructionConfirmed) {
+        preparationStarted = true
+        vehicleStepComplete = true
+        updateReadiness()
+      }
       else window.location.href = './pokyny.html'
     })
     root.querySelector('#ot-close').addEventListener('click', function () { overlay.hidden = true })
@@ -851,6 +1222,25 @@
       vehicleStepComplete = false
       updateReadiness()
     })
+    root.querySelector('#operatorInstructionOpenPdf').addEventListener('click', openInstructionPdf)
+    root.querySelector('#operatorInstructionPdfClose').addEventListener('click', function () { root.querySelector('#operatorInstructionPdfModal').hidden = true })
+    root.querySelector('#operatorInstructionPdfModal').addEventListener('click', function (event) {
+      if (event.target === root.querySelector('#operatorInstructionPdfModal')) root.querySelector('#operatorInstructionPdfModal').hidden = true
+    })
+    root.querySelector('#operatorInstructionPdfRead').addEventListener('click', markInstructionDocumentRead)
+    root.querySelector('#operatorInstructionConfirm').addEventListener('click', confirmInstructionStep)
+    root.querySelector('#operatorInstructionBack').addEventListener('click', function () {
+      vehicleStepComplete = false
+      updateReadiness()
+    })
+    root.querySelector('#operatorInstructionSignatureClear').addEventListener('click', clearInstructionSignature)
+    var signaturePad = root.querySelector('#operatorInstructionSignaturePad')
+    signaturePad.addEventListener('mousedown', beginInstructionSignature)
+    signaturePad.addEventListener('mousemove', moveInstructionSignature)
+    window.addEventListener('mouseup', endInstructionSignature)
+    signaturePad.addEventListener('touchstart', beginInstructionSignature, { passive: false })
+    signaturePad.addEventListener('touchmove', moveInstructionSignature, { passive: false })
+    signaturePad.addEventListener('touchend', endInstructionSignature)
     root.querySelector('#operatorVehicleOdometer').addEventListener('focus', function (event) {
       event.target.value = String(parseOdometer(event.target.value) || '')
     })
@@ -859,7 +1249,10 @@
       if (Number.isFinite(value)) event.target.value = formatOdometer(value)
     })
     document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') setVehiclePicker(false)
+      if (event.key === 'Escape') {
+        setVehiclePicker(false)
+        root.querySelector('#operatorInstructionPdfModal').hidden = true
+      }
     })
     root.querySelector('.ot-refresh').addEventListener('click', function () { window.location.reload() })
     root.querySelector('#ot-start').addEventListener('click', startShift)
@@ -883,7 +1276,7 @@
       availableVehicles = results[3]
       var resolvedVehicleId = attendanceDay && attendanceDay.vehicle_id || routePlan && routePlan.vehicle_id
       assignedVehicleId = resolvedVehicleId || null
-      return Promise.all([loadVehicle(resolvedVehicleId), loadInstructionAcknowledgement()])
+      return Promise.all([loadVehicle(resolvedVehicleId), loadInstructionAcknowledgement(), loadInstructionProgress()])
     }).then(function (results) {
       vehicle = results[0]
       if (!assignedVehicleId && vehicle) assignedVehicleId = vehicle.id
@@ -920,7 +1313,23 @@
     ]
     busyVehicles = new Map()
     warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
-    instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
+    instruction = {
+      id: 'preview-instruction',
+      title: 'Test PDF a podpisu na PDA',
+      message: 'Otevřete přiložený testovací dokument, potvrďte jeho přečtení a podepište se prstem přímo na PDA.',
+      requires_acknowledgement: true,
+      attachment_url: './assets/instructions/pokyn-dne-test-2026-11-17.pdf',
+      attachment_label: 'Ověření PDF a podpisu na PDA',
+      instruction_type: 'signed_document',
+      instruction_payload: {
+        requiresSignature: true,
+        documentVersion: '1.0',
+        documentSha256: '094f8423393ae1bf1ce51c4d5e18d9b220b98a911793a54eb241114f706bd561',
+        previewPages: ['./assets/instructions/pokyn-dne-test-2026-11-17-page-1.png'],
+        pageCount: 1,
+        warningText: 'Po podpisu se potvrzení uloží do databáze společně s verzí dokumentu a údaji zařízení.'
+      }
+    }
     attendanceDay = null
     vehicleLog = null
     instructionConfirmed = false
