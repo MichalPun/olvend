@@ -323,8 +323,8 @@
   function vehicleImagePath(item) {
     var plate = normalizePlate(item && item.plate)
     var byPlate = {
-      '3BU9736': '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
-      '5AP9000': '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
+      '3BU9736': '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
+      '5AP9000': '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
       '7Z71808': '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
       '2BN7419': '../assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2',
       '2TX7928': '../assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2'
@@ -920,12 +920,12 @@
     assignedVehicleId = 6
     availableVehicles = [
       vehicle,
-      { id: 3, name: 'Fiat Doblò', plate: '5AP9000', current_odometer_km: 184120, warehouse_id: 1, active: true },
-      { id: 2, name: 'Renault Kangoo Maxi', plate: '2TX7928', current_odometer_km: 148059, warehouse_id: 1, active: true },
-      { id: 4, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 90698, warehouse_id: 1, active: true },
-      { id: 5, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 148318, warehouse_id: 1, active: true }
+      { id: 3, name: 'Fiat Doblo', plate: '5AP9000', current_odometer_km: 318906, warehouse_id: 1, active: true },
+      { id: 1, name: 'Renault Kangoo', plate: '2TX7928', current_odometer_km: 132669, warehouse_id: 1, active: true },
+      { id: 5, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 106358, warehouse_id: 1, active: true },
+      { id: 4, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 154555, warehouse_id: 1, active: true }
     ]
-    busyVehicles = new Map([['2', { employeeId: 'preview-veronika', employeeName: 'Veronika Jirdová' }]])
+    busyVehicles = new Map([['1', { employeeId: 'preview-veronika', employeeName: 'Veronika Jirdová' }]])
     warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
     instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
     attendanceDay = null
