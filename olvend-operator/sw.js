@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v34-vehicle-step'
+  var CACHE_NAME = 'olvend-operator-v35-vehicle-step-refresh'
   var APP_SHELL = [
     './',
     './index.html',
@@ -16,7 +16,7 @@
     './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
-    './approved-home-v31.js?v=20261117-vehicle-step-v1',
+    './approved-home-v31.js?v=20261117-vehicle-step-v2',
     './operator-route.js',
     './operator-warehouse.js',
     './operator-profile.js',
@@ -65,7 +65,10 @@
     var requestUrl = new URL(event.request.url)
     if (requestUrl.origin !== self.location.origin) return
 
-    if (event.request.mode === 'navigate') {
+    var mustRefresh = event.request.mode === 'navigate'
+      || /\.(?:html|js|css|webmanifest)$/.test(requestUrl.pathname)
+
+    if (mustRefresh) {
       event.respondWith(
         fetch(event.request).then(function (response) {
           if (response && response.ok) caches.open(CACHE_NAME).then(function (cache) { cache.put(event.request, response.clone()) })
