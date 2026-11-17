@@ -158,16 +158,17 @@
 
   function loadVehicles() {
     var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active,image_path'
-    var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields) + '&order=active.desc,name.asc,plate.asc'
+    var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields) + '&active=eq.true&order=name.asc,plate.asc'
     return apiRequest(url, {}, 9000).then(function (rows) { return Array.isArray(rows) ? rows : [] }).catch(function () { return [] })
   }
 
   function loadVehicleAvailability() {
     if (isShiftPreview()) return Promise.resolve(busyVehicles)
+    var activeSince = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString()
     var attendanceUrl = supabaseUrl + '/rest/v1/attendance_days?select=id,employee_id,vehicle_id,actual_start,actual_end,status'
-      + '&vehicle_id=not.is.null&actual_start=not.is.null&actual_end=is.null'
-    var logsUrl = supabaseUrl + '/rest/v1/vehicle_operation_logs?select=vehicle_id,employee_id,status,ended_at'
-      + '&status=eq.open&ended_at=is.null'
+      + '&vehicle_id=not.is.null&actual_start=gte.' + encodeURIComponent(activeSince) + '&actual_end=is.null'
+    var logsUrl = supabaseUrl + '/rest/v1/vehicle_operation_logs?select=vehicle_id,employee_id,status,started_at,ended_at'
+      + '&status=eq.open&started_at=gte.' + encodeURIComponent(activeSince) + '&ended_at=is.null'
     return Promise.all([
       apiRequest(attendanceUrl, {}, 9000).catch(function () { return [] }),
       apiRequest(logsUrl, {}, 9000).catch(function () { return [] })
@@ -396,13 +397,10 @@
   function renderVehiclePicker() {
     var list = root.querySelector('#operatorVehicleList')
     list.innerHTML = ''
-    var sorted = availableVehicles.slice().sort(function (a, b) {
+    var sorted = availableVehicles.filter(function (item) { return item.active !== false }).sort(function (a, b) {
       var aAssigned = String(a.id) === String(assignedVehicleId)
       var bAssigned = String(b.id) === String(assignedVehicleId)
       if (aAssigned !== bAssigned) return aAssigned ? -1 : 1
-      var aBlocked = a.active === false || busyVehicles.has(String(a.id))
-      var bBlocked = b.active === false || busyVehicles.has(String(b.id))
-      if (aBlocked !== bBlocked) return aBlocked ? 1 : -1
       return String(a.name || '').localeCompare(String(b.name || ''), 'cs')
     })
     if (!sorted.length) {
@@ -920,7 +918,7 @@
       { id: 5, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 106358, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/opel-combo-2024-passenger.png' },
       { id: 4, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 154555, warehouse_id: 1, active: true, image_path: 'static:../assets/vehicles/opel-movano-older.png' }
     ]
-    busyVehicles = new Map([['1', { employeeId: 'preview-veronika', employeeName: 'Veronika Jirdová' }]])
+    busyVehicles = new Map()
     warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
     instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
     attendanceDay = null

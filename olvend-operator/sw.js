@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v37-vehicle-db-images'
+  var CACHE_NAME = 'olvend-operator-v38-vehicle-live-use'
   var APP_SHELL = [
     './',
     './index.html',
@@ -16,7 +16,7 @@
     './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
-    './approved-home-v31.js?v=20261117-vehicle-step-v4',
+    './approved-home-v31.js?v=20261117-vehicle-step-v5',
     './operator-route.js',
     './operator-warehouse.js',
     './operator-profile.js',

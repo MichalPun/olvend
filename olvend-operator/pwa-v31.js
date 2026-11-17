@@ -12,7 +12,7 @@
       window.location.reload()
     })
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw.js?v=20261117-vehicle-step-v4', { scope: './' }).then(function (registration) {
+      navigator.serviceWorker.register('./sw.js?v=20261117-vehicle-step-v5', { scope: './' }).then(function (registration) {
         registration.update().catch(function () {})
       }).catch(function () {})
     })
