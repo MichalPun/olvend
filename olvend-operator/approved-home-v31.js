@@ -16,6 +16,11 @@
   var vehicleConfirmed = false
   var startOdometer = null
   var preparationStarted = false
+  var availableVehicles = []
+  var busyVehicles = new Map()
+  var assignedVehicleId = null
+  var vehicleUsage = 'vehicle'
+  var vehicleStepComplete = false
 
   function isShiftPreview() {
     return location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'shift-start'
@@ -142,13 +147,55 @@
   }
 
   function loadVehicle(vehicleId) {
-    var fields = 'id,name,plate,current_odometer_km,warehouse_id,assigned_employee_id'
+    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active'
     var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields)
       + (vehicleId
         ? '&id=eq.' + encodeURIComponent(vehicleId)
         : '&assigned_employee_id=eq.' + encodeURIComponent(employee.id) + '&active=eq.true&order=id&limit=1')
     if (vehicleId) url += '&limit=1'
     return apiRequest(url, {}, 8000).then(function (rows) { return Array.isArray(rows) && rows.length ? rows[0] : null }).catch(function () { return null })
+  }
+
+  function loadVehicles() {
+    var fields = 'id,name,plate,brand,model,current_odometer_km,warehouse_id,assigned_employee_id,active'
+    var url = supabaseUrl + '/rest/v1/vehicles?select=' + encodeURIComponent(fields) + '&order=active.desc,name.asc,plate.asc'
+    return apiRequest(url, {}, 9000).then(function (rows) { return Array.isArray(rows) ? rows : [] }).catch(function () { return [] })
+  }
+
+  function loadVehicleAvailability() {
+    if (isShiftPreview()) return Promise.resolve(busyVehicles)
+    var attendanceUrl = supabaseUrl + '/rest/v1/attendance_days?select=id,employee_id,vehicle_id,actual_start,actual_end,status'
+      + '&vehicle_id=not.is.null&actual_start=not.is.null&actual_end=is.null'
+    var logsUrl = supabaseUrl + '/rest/v1/vehicle_operation_logs?select=vehicle_id,employee_id,status,ended_at'
+      + '&status=eq.open&ended_at=is.null'
+    return Promise.all([
+      apiRequest(attendanceUrl, {}, 9000).catch(function () { return [] }),
+      apiRequest(logsUrl, {}, 9000).catch(function () { return [] })
+    ]).then(function (results) {
+      var rows = (results[0] || []).concat(results[1] || [])
+      var employeeIds = Array.from(new Set(rows.map(function (row) { return row.employee_id }).filter(Boolean)))
+      if (!employeeIds.length) return { rows: rows, employees: [] }
+      var directoryUrl = supabaseUrl + '/rest/v1/employee_directory?select=id,name,surname&id=in.(' + employeeIds.map(encodeURIComponent).join(',') + ')'
+      return apiRequest(directoryUrl, {}, 9000).then(function (employees) {
+        return { rows: rows, employees: employees || [] }
+      }).catch(function () { return { rows: rows, employees: [] } })
+    }).then(function (result) {
+      var names = new Map((result.employees || []).map(function (person) {
+        return [String(person.id), [person.name, person.surname].filter(Boolean).join(' ')]
+      }))
+      var map = new Map()
+      ;(result.rows || []).forEach(function (row) {
+        if (!row.vehicle_id) return
+        var employeeId = String(row.employee_id || '')
+        if (employee && employeeId === String(employee.id || '')) return
+        map.set(String(row.vehicle_id), {
+          employeeId: employeeId,
+          employeeName: names.get(employeeId) || 'jiný operátor'
+        })
+      })
+      busyVehicles = map
+      return map
+    })
   }
 
   function loadWarehouse() {
@@ -244,20 +291,189 @@
     return 'olvendOperatorVehicleV2:' + todayIso() + ':' + (employee && employee.id || '') + ':' + (vehicle && vehicle.id || '') + ':' + (routePlan && routePlan.id || '')
   }
 
+  function vehicleChoiceKey() {
+    return 'olvendOperatorVehicleChoiceV1:' + todayIso() + ':' + (employee && employee.id || '') + ':' + (routePlan && routePlan.id || '')
+  }
+
+  function normalizePlate(value) {
+    return String(value || '').toLocaleUpperCase('cs-CZ').replace(/[^A-Z0-9]/g, '')
+  }
+
+  function formatPlate(value) {
+    var plate = normalizePlate(value)
+    return plate.length > 3 ? plate.slice(0, 3) + ' ' + plate.slice(3) : plate || '—'
+  }
+
+  function formatOdometer(value) {
+    var number = Number(value)
+    return Number.isFinite(number) ? Math.round(number).toLocaleString('cs-CZ') : '—'
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (character) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]
+    })
+  }
+
+  function parseOdometer(value) {
+    var digits = String(value || '').replace(/[^0-9]/g, '')
+    return digits ? Number(digits) : NaN
+  }
+
+  function vehicleImagePath(item) {
+    var plate = normalizePlate(item && item.plate)
+    var byPlate = {
+      '3BU9736': '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
+      '5AP9000': '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
+      '7Z71808': '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
+      '2BN7419': '../assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2',
+      '2TX7928': '../assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2'
+    }
+    return byPlate[plate] || ''
+  }
+
+  function vehicleFallbackMarkup() {
+    return '<span class="operator-vehicle-fallback" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 17-2 2M19 17l2 2M5 9l1.5-4h11L19 9M3 11h18v6H3z"/><circle cx="7" cy="14" r="1"/><circle cx="17" cy="14" r="1"/></svg></span>'
+  }
+
+  function setVehicleChoice(item) {
+    vehicle = item || null
+    vehicleUsage = 'vehicle'
+    vehicleConfirmed = false
+    vehicleStepComplete = false
+    startOdometer = vehicle && Number(vehicle.current_odometer_km || 0)
+    renderVehicleStep()
+  }
+
+  function saveVehicleChoice(mode) {
+    var payload = mode === 'without'
+      ? { mode: 'without', confirmed: true, confirmedAt: new Date().toISOString() }
+      : { mode: 'vehicle', confirmed: true, vehicleId: vehicle && vehicle.id, odometer: startOdometer, confirmedAt: new Date().toISOString() }
+    localStorage.setItem(vehicleChoiceKey(), JSON.stringify(payload))
+    if (mode === 'vehicle' && vehicle) localStorage.setItem(vehicleKey(), JSON.stringify({ confirmed: true, odometer: startOdometer, confirmedAt: payload.confirmedAt }))
+  }
+
   function readVehicleConfirmation() {
     if (vehicleLog && vehicleLog.start_odometer_km != null) {
+      vehicleUsage = 'vehicle'
       vehicleConfirmed = true
+      vehicleStepComplete = true
       startOdometer = Number(vehicleLog.start_odometer_km)
       return
     }
     try {
+      var choice = JSON.parse(localStorage.getItem(vehicleChoiceKey()) || 'null')
+      if (choice && choice.confirmed && choice.mode === 'without') {
+        vehicleUsage = 'without'
+        vehicleConfirmed = true
+        vehicleStepComplete = true
+        startOdometer = null
+        return
+      }
+      if (choice && choice.confirmed && choice.mode === 'vehicle') {
+        var selected = availableVehicles.find(function (item) { return String(item.id) === String(choice.vehicleId) })
+        if (selected) vehicle = selected
+        vehicleUsage = 'vehicle'
+        vehicleConfirmed = Boolean(vehicle)
+        vehicleStepComplete = vehicleConfirmed
+        startOdometer = Number(choice.odometer)
+        if (vehicleConfirmed && Number.isFinite(startOdometer)) return
+      }
       var stored = JSON.parse(localStorage.getItem(vehicleKey()) || 'null')
+      vehicleUsage = 'vehicle'
       vehicleConfirmed = Boolean(stored && stored.confirmed)
+      vehicleStepComplete = vehicleConfirmed
       startOdometer = stored && Number(stored.odometer)
     } catch (_) {
+      vehicleUsage = 'vehicle'
       vehicleConfirmed = false
+      vehicleStepComplete = false
       startOdometer = null
     }
+  }
+
+  function setVehiclePicker(open) {
+    var picker = root.querySelector('#operatorVehiclePicker')
+    picker.hidden = !open
+    if (open) renderVehiclePicker()
+  }
+
+  function renderVehiclePicker() {
+    var list = root.querySelector('#operatorVehicleList')
+    list.innerHTML = ''
+    var sorted = availableVehicles.slice().sort(function (a, b) {
+      var aAssigned = String(a.id) === String(assignedVehicleId)
+      var bAssigned = String(b.id) === String(assignedVehicleId)
+      if (aAssigned !== bAssigned) return aAssigned ? -1 : 1
+      var aBlocked = a.active === false || busyVehicles.has(String(a.id))
+      var bBlocked = b.active === false || busyVehicles.has(String(b.id))
+      if (aBlocked !== bBlocked) return aBlocked ? 1 : -1
+      return String(a.name || '').localeCompare(String(b.name || ''), 'cs')
+    })
+    if (!sorted.length) {
+      list.innerHTML = '<div class="operator-vehicle-empty">V evidenci zatím není žádné vozidlo.</div>'
+      return
+    }
+    sorted.forEach(function (item) {
+      var busy = busyVehicles.get(String(item.id))
+      var blocked = item.active === false || Boolean(busy)
+      var assigned = String(item.id) === String(assignedVehicleId)
+      var button = document.createElement('button')
+      button.className = 'operator-vehicle-option'
+      button.type = 'button'
+      button.disabled = blocked
+      if (blocked) button.style.opacity = '.52'
+      var art = vehicleImagePath(item)
+      var visual = art ? '<img src="' + art + '" alt="">' : vehicleFallbackMarkup()
+      var state = item.active === false
+        ? 'Mimo provoz · nelze vybrat'
+        : busy
+          ? 'Používá ' + busy.employeeName + ' · nelze vybrat'
+          : assigned
+            ? 'Přiřazené pro dnešní trasu · ' + formatOdometer(item.current_odometer_km) + ' km'
+            : 'Dostupné · ' + formatOdometer(item.current_odometer_km) + ' km'
+      button.innerHTML = visual + '<div><strong>' + escapeHtml(item.name || 'Vozidlo') + '</strong><span>' + escapeHtml(state) + '</span></div><b class="operator-vehicle-mini-plate">' + escapeHtml(formatPlate(item.plate)) + '</b>'
+      if (!blocked) button.addEventListener('click', function () {
+        setVehicleChoice(item)
+        setVehiclePicker(false)
+      })
+      list.appendChild(button)
+    })
+  }
+
+  function renderVehicleStep() {
+    var visual = root.querySelector('#operatorVehicleVisual')
+    var field = root.querySelector('.operator-vehicle-field')
+    var confirm = root.querySelector('#operatorVehicleConfirm')
+    var error = root.querySelector('#operatorVehicleError')
+    error.hidden = true
+    error.textContent = ''
+    if (!vehicle) {
+      visual.innerHTML = vehicleFallbackMarkup()
+      root.querySelector('#operatorVehicleAssignment').textContent = 'Vozidlo není přiřazené'
+      root.querySelector('#operatorVehicleName').textContent = 'Vyberte vozidlo'
+      root.querySelector('#operatorVehiclePlateNumber').textContent = '—'
+      root.querySelector('#operatorVehiclePlate').setAttribute('aria-label', 'Registrační značka není vybraná')
+      field.hidden = true
+      confirm.disabled = true
+      return
+    }
+    var art = vehicleImagePath(vehicle)
+    visual.innerHTML = art ? '<img src="' + art + '" alt="' + escapeHtml(vehicle.name || 'Vozidlo') + '">' : vehicleFallbackMarkup()
+    root.querySelector('#operatorVehicleAssignment').textContent = String(vehicle.id) === String(assignedVehicleId) ? 'Přiřazené vozidlo' : 'Vybrané vozidlo'
+    root.querySelector('#operatorVehicleName').textContent = vehicle.name || [vehicle.brand, vehicle.model].filter(Boolean).join(' ') || 'Vozidlo'
+    root.querySelector('#operatorVehiclePlateNumber').textContent = formatPlate(vehicle.plate)
+    root.querySelector('#operatorVehiclePlate').setAttribute('aria-label', 'Registrační značka ' + formatPlate(vehicle.plate))
+    field.hidden = false
+    confirm.disabled = false
+    var odometer = startOdometer != null && Number.isFinite(Number(startOdometer)) ? Number(startOdometer) : Number(vehicle.current_odometer_km || 0)
+    root.querySelector('#operatorVehicleOdometer').value = formatOdometer(odometer)
+    root.querySelector('#operatorVehicleLastOdometer').textContent = formatOdometer(vehicle.current_odometer_km || 0) + ' km'
+  }
+
+  function proceedFromVehicleStep() {
+    vehicleStepComplete = true
+    updateReadiness()
   }
 
   function updateReadiness() {
@@ -265,11 +481,15 @@
     var help = root.querySelector('#ot-start-help')
     var running = isShiftRunning()
     var idleStart = root.querySelector('#operatorIdleStart')
+    var vehicleStep = root.querySelector('#operatorVehicleStep')
     var operationalHome = root.querySelector('.ot-phone')
     var showIdleStart = !running && !preparationStarted
+    var showVehicleStep = !running && preparationStarted && !vehicleStepComplete
     idleStart.hidden = !showIdleStart
-    operationalHome.hidden = showIdleStart
-    var ready = running || Boolean(routePlan && vehicle && vehicleConfirmed && (!instruction || instructionConfirmed))
+    vehicleStep.hidden = !showVehicleStep
+    operationalHome.hidden = showIdleStart || showVehicleStep
+    var hasVehicleChoice = vehicleUsage === 'without' || Boolean(vehicle)
+    var ready = running || Boolean(routePlan && hasVehicleChoice && vehicleConfirmed && (!instruction || instructionConfirmed))
     start.disabled = !ready
     if (running) {
       start.innerHTML = 'Pokračovat v trase <span data-lucide="arrow-right" aria-hidden="true"></span>'
@@ -278,11 +498,11 @@
       start.innerHTML = 'Zahájit směnu <span data-lucide="arrow-right" aria-hidden="true"></span>'
       help.hidden = true
     } else {
-      var reason = !routePlan ? 'Čeká na dnešní trasu' : !vehicle ? 'Čeká na vozidlo' : !vehicleConfirmed ? 'Nejdřív potvrď vozidlo a km' : 'Nejdřív přečti dnešní pokyn'
+      var reason = !routePlan ? 'Čeká na dnešní trasu' : !hasVehicleChoice ? 'Čeká na volbu vozidla' : !vehicleConfirmed ? 'Nejdřív potvrď vozidlo a km' : 'Nejdřív přečti dnešní pokyn'
       start.innerHTML = '<span data-lucide="lock-keyhole" aria-hidden="true"></span><span>' + reason + '</span>'
       help.hidden = false
       help.textContent = !routePlan ? 'Vedoucí zatím nepřiřadil dnešní trasu.'
-          : !vehicle ? 'Pro dnešní směnu zatím není přiřazené vozidlo.'
+          : !hasVehicleChoice ? 'Vyber vozidlo nebo potvrď, že ho dnes nebudeš používat.'
             : !vehicleConfirmed ? 'Ověř RZ a opiš skutečný stav z tachometru.'
               : 'Před zahájením směny potvrď dnešní povinný pokyn.'
     }
@@ -301,6 +521,8 @@
     root.querySelector('#operatorIdleGreeting').textContent = (new Date().getHours() < 12 ? 'Dobré ráno' : 'Dobrý den') + (salutation ? ', ' + salutation : '')
     root.querySelector('#operatorIdleUser').textContent = employeeInitials
     root.querySelector('#operatorIdleUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
+    root.querySelector('#operatorVehicleUser').textContent = employeeInitials
+    root.querySelector('#operatorVehicleUser').setAttribute('aria-label', employeeName ? 'Otevřít nabídku účtu ' + employeeName : 'Otevřít nabídku účtu')
     root.querySelector('#operatorIdleAccountInitials').textContent = employeeInitials
     root.querySelector('#operatorIdleAccountName').textContent = employeeName || 'Přihlášený operátor'
     root.querySelector('#operatorIdleAccountRole').textContent = String(employee.role || '').toLowerCase() === 'operator' ? 'Operátor' : (employee.role || 'Uživatel OLVEND')
@@ -316,8 +538,10 @@
       : 'Čeká na plán'
     var vehicleTile = root.querySelector('.ot-tile.vehicle')
     vehicleTile.classList.toggle('ready', vehicleConfirmed)
-    vehicleTile.querySelector('h3').textContent = vehicleConfirmed ? '1. Vozidlo potvrzeno' : '1. Potvrď vozidlo a km'
-    vehicleTile.querySelector('p').textContent = vehicle
+    vehicleTile.querySelector('h3').textContent = vehicleConfirmed ? (vehicleUsage === 'without' ? '1. Bez vozidla' : '1. Vozidlo potvrzeno') : '1. Potvrď vozidlo a km'
+    vehicleTile.querySelector('p').textContent = vehicleUsage === 'without'
+      ? 'Dnes vozidlo nepoužíváte'
+      : vehicle
       ? [vehicle.name || 'Přiřazené vozidlo', vehicle.plate || 'Bez RZ', vehicleConfirmed && startOdometer != null ? Number(startOdometer).toLocaleString('cs-CZ') + ' km' : ''].filter(Boolean).join(' · ')
       : 'Vozidlo zatím není přiřazeno'
     vehicleTile.querySelector('strong').textContent = vehicleConfirmed ? 'Hotovo ✓' : vehicle ? 'Potvrdit ›' : 'Nevybráno'
@@ -325,11 +549,12 @@
     instructionTile.querySelector('h3').textContent = !instruction ? '2. Dnes bez nového pokynu' : instructionConfirmed ? '2. Pokyn přečten' : '2. Přečti dnešní pokyn'
     instructionTile.querySelector('p').textContent = !instruction ? 'Není potřeba nic potvrzovat' : instructionConfirmed ? (instruction.title || 'Povinný pokyn potvrzen') : (instruction.title || 'Krátká informace před výjezdem')
     root.querySelector('#ot-guide-progress').textContent = (Number(vehicleConfirmed) + Number(!instruction || instructionConfirmed)) + ' ze 2 hotovo'
-    root.querySelector('.ot-brand-copy span').textContent = vehicle ? 'Před směnou · ' + (vehicle.plate || vehicle.name || 'vozidlo') : 'Před zahájením směny'
+    root.querySelector('.ot-brand-copy span').textContent = vehicleUsage === 'without' ? 'Před směnou · bez vozidla' : vehicle ? 'Před směnou · ' + (vehicle.plate || vehicle.name || 'vozidlo') : 'Před zahájením směny'
     if (instruction) {
       root.querySelector('.ot-sheet-title h3').textContent = instruction.title || instruction.name || 'Povinný pokyn dne'
       root.querySelector('.ot-instruction').textContent = instruction.body || instruction.content || instruction.message || instruction.note || 'Přečtěte si pokyn a potvrďte jeho převzetí.'
     }
+    renderVehicleStep()
     setConfirmed(instructionConfirmed)
   }
 
@@ -445,6 +670,62 @@
     })
   }
 
+  function openVehicleStep() {
+    preparationStarted = true
+    vehicleStepComplete = false
+    renderVehicleStep()
+    updateReadiness()
+  }
+
+  function confirmVehicleStep() {
+    var error = root.querySelector('#operatorVehicleError')
+    error.hidden = true
+    error.textContent = ''
+    if (!vehicle) {
+      error.textContent = 'Nejdřív vyberte vozidlo.'
+      error.hidden = false
+      return
+    }
+    var value = parseOdometer(root.querySelector('#operatorVehicleOdometer').value)
+    var minimum = Number(vehicle.current_odometer_km || 0)
+    if (!Number.isFinite(value) || value < minimum) {
+      error.textContent = 'Stav kilometrů nesmí být nižší než poslední evidovaný stav ' + formatOdometer(minimum) + ' km.'
+      error.hidden = false
+      return
+    }
+    var button = root.querySelector('#operatorVehicleConfirm')
+    button.disabled = true
+    button.textContent = 'Ověřuji dostupnost…'
+    loadVehicleAvailability().then(function () {
+      var busy = busyVehicles.get(String(vehicle.id))
+      if (vehicle.active === false || busy) {
+        throw new Error(vehicle.active === false ? 'Toto vozidlo je mimo provoz.' : 'Vozidlo už používá ' + busy.employeeName + '. Vyberte jiné vozidlo.')
+      }
+      vehicleUsage = 'vehicle'
+      startOdometer = Math.round(value)
+      vehicleConfirmed = true
+      vehicleStepComplete = true
+      saveVehicleChoice('vehicle')
+      renderData()
+    }).catch(function (cause) {
+      error.textContent = cause && cause.message ? cause.message : 'Dostupnost vozidla se nepodařilo ověřit.'
+      error.hidden = false
+      renderVehiclePicker()
+    }).then(function () {
+      button.disabled = false
+      button.textContent = 'Potvrdit vozidlo a pokračovat →'
+    })
+  }
+
+  function continueWithoutVehicle() {
+    vehicleUsage = 'without'
+    startOdometer = null
+    vehicleConfirmed = true
+    vehicleStepComplete = true
+    saveVehicleChoice('without')
+    renderData()
+  }
+
   function setBusy(active, label) {
     root.querySelector('#ot-busy-label').textContent = label || 'Ukládám…'
     root.querySelector('#ot-busy').hidden = !active
@@ -465,7 +746,8 @@
       window.location.href = './trasa.html'
       return
     }
-    if (!routePlan || !vehicle || !vehicleConfirmed || (instruction && !instructionConfirmed)) {
+    var usesVehicle = vehicleUsage !== 'without'
+    if (!routePlan || (usesVehicle && !vehicle) || !vehicleConfirmed || (instruction && !instructionConfirmed)) {
       updateReadiness()
       return
     }
@@ -476,21 +758,26 @@
       attendance_date: todayIso(),
       status: 'open',
       actual_start: attendanceDay && attendanceDay.actual_start || startedAt,
-      vehicle_id: vehicle.id,
-      start_warehouse_id: vehicle.warehouse_id || null
+      vehicle_id: usesVehicle && vehicle ? vehicle.id : null,
+      start_warehouse_id: usesVehicle && vehicle ? vehicle.warehouse_id || null : routePlan.warehouse_id || null
     }
-    apiRequest(supabaseUrl + '/rest/v1/attendance_days?on_conflict=employee_id,attendance_date', {
+    var availabilityCheck = usesVehicle ? loadVehicleAvailability().then(function () {
+      var busy = busyVehicles.get(String(vehicle.id))
+      if (vehicle.active === false || busy) throw new Error(vehicle.active === false ? 'Vybrané vozidlo je mimo provoz.' : 'Vybrané vozidlo už používá ' + busy.employeeName + '. Vraťte se a vyberte jiné vozidlo.')
+    }) : Promise.resolve()
+    availabilityCheck.then(function () { return apiRequest(supabaseUrl + '/rest/v1/attendance_days?on_conflict=employee_id,attendance_date', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
       body: JSON.stringify(attendancePayload)
-    }, 12000).then(function (rows) {
+    }, 12000) }).then(function (rows) {
       attendanceDay = Array.isArray(rows) ? rows[0] : rows
       if (!attendanceDay || !attendanceDay.id) throw new Error('Směna se nepodařila založit.')
       return apiRequest(supabaseUrl + '/rest/v1/attendance_events', {
         method: 'POST',
         headers: { 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ attendance_day_id: attendanceDay.id, employee_id: employee.id, event_type: 'shift_start', event_time: startedAt, note: 'Vozidlo ' + (vehicle.plate || vehicle.id) + ', km ' + startOdometer, created_by: employee.id })
+        body: JSON.stringify({ attendance_day_id: attendanceDay.id, employee_id: employee.id, event_type: 'shift_start', event_time: startedAt, note: usesVehicle ? 'Vozidlo ' + (vehicle.plate || vehicle.id) + ', km ' + startOdometer : 'Směna bez vozidla', created_by: employee.id })
       }, 12000).then(function () {
+        if (!usesVehicle) return null
         if (vehicleLog && vehicleLog.id) return null
         return apiRequest(supabaseUrl + '/rest/v1/vehicle_operation_logs', {
           method: 'POST',
@@ -502,7 +789,7 @@
       return apiRequest(supabaseUrl + '/rest/v1/route_plans?id=eq.' + encodeURIComponent(routePlan.id), {
         method: 'PATCH',
         headers: { 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ execution_status: 'in_progress', started_at: routePlan.started_at || startedAt })
+        body: JSON.stringify({ execution_status: 'in_progress', started_at: routePlan.started_at || startedAt, vehicle_id: usesVehicle && vehicle ? vehicle.id : null })
       }, 12000)
     }).then(function () {
       window.location.href = './trasa.html'
@@ -515,12 +802,12 @@
   function bindInteractions() {
     var overlay = root.querySelector('#ot-overlay')
     var accountMenu = root.querySelector('#operatorIdleAccount')
-    var accountButton = root.querySelector('#operatorIdleUser')
+    var accountButtons = root.querySelectorAll('.operator-account-trigger')
     function setAccountMenu(open) {
       accountMenu.hidden = !open
-      accountButton.setAttribute('aria-expanded', open ? 'true' : 'false')
+      Array.prototype.forEach.call(accountButtons, function (button) { button.setAttribute('aria-expanded', open ? 'true' : 'false') })
     }
-    accountButton.addEventListener('click', function () { setAccountMenu(true) })
+    Array.prototype.forEach.call(accountButtons, function (button) { button.addEventListener('click', function () { setAccountMenu(true) }) })
     Array.prototype.forEach.call(root.querySelectorAll('[data-idle-account-close]'), function (button) {
       button.addEventListener('click', function () { setAccountMenu(false) })
     })
@@ -529,10 +816,12 @@
     })
     root.querySelector('#operatorIdleStartButton').addEventListener('click', function () {
       preparationStarted = true
+      vehicleStepComplete = false
+      renderVehicleStep()
       updateReadiness()
     })
     root.querySelector('#ot-route').addEventListener('click', openRoutePanel)
-    root.querySelector('#ot-vehicle').addEventListener('click', openVehiclePanel)
+    root.querySelector('#ot-vehicle').addEventListener('click', openVehicleStep)
     root.querySelector('#ot-profile').addEventListener('click', function () { window.location.href = './profil.html' })
     root.querySelector('#ot-instructions').addEventListener('click', function () {
       if (instruction && !instructionConfirmed) overlay.hidden = false
@@ -554,6 +843,31 @@
       })
     })
     root.querySelector('#ot-panel-close').addEventListener('click', hidePanel)
+    root.querySelector('#operatorChooseVehicle').addEventListener('click', function () {
+      setVehiclePicker(true)
+      loadVehicleAvailability().then(renderVehiclePicker).catch(function () {})
+    })
+    root.querySelector('#operatorVehiclePickerClose').addEventListener('click', function () { setVehiclePicker(false) })
+    root.querySelector('#operatorVehiclePicker').addEventListener('click', function (event) {
+      if (event.target === root.querySelector('#operatorVehiclePicker')) setVehiclePicker(false)
+    })
+    root.querySelector('#operatorVehicleConfirm').addEventListener('click', confirmVehicleStep)
+    root.querySelector('#operatorVehicleWithout').addEventListener('click', continueWithoutVehicle)
+    root.querySelector('#operatorVehicleBack').addEventListener('click', function () {
+      preparationStarted = false
+      vehicleStepComplete = false
+      updateReadiness()
+    })
+    root.querySelector('#operatorVehicleOdometer').addEventListener('focus', function (event) {
+      event.target.value = String(parseOdometer(event.target.value) || '')
+    })
+    root.querySelector('#operatorVehicleOdometer').addEventListener('blur', function (event) {
+      var value = parseOdometer(event.target.value)
+      if (Number.isFinite(value)) event.target.value = formatOdometer(value)
+    })
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') setVehiclePicker(false)
+    })
     root.querySelector('.ot-refresh').addEventListener('click', function () { window.location.reload() })
     root.querySelector('#ot-start').addEventListener('click', startShift)
   }
@@ -569,14 +883,17 @@
       root.querySelector('.ot-state').innerHTML = 'Profil zaměstnance se nepodařilo načíst · <b>obnovte přihlášení</b>'
       return
     }
-    Promise.all([loadRoute(), loadInstruction(), loadAttendance()]).then(function (results) {
+    Promise.all([loadRoute(), loadInstruction(), loadAttendance(), loadVehicles(), loadVehicleAvailability()]).then(function (results) {
       routePlan = results[0]
       instruction = results[1]
       attendanceDay = results[2]
+      availableVehicles = results[3]
       var resolvedVehicleId = attendanceDay && attendanceDay.vehicle_id || routePlan && routePlan.vehicle_id
+      assignedVehicleId = resolvedVehicleId || null
       return Promise.all([loadVehicle(resolvedVehicleId), loadInstructionAcknowledgement()])
     }).then(function (results) {
       vehicle = results[0]
+      if (!assignedVehicleId && vehicle) assignedVehicleId = vehicle.id
       instructionConfirmed = results[1]
       return Promise.all([loadVehicleLog(), loadWarehouse()])
     }).then(function (results) {
@@ -599,7 +916,16 @@
       { id: 2504, stop_order: 1, title: 'EV 23 · Luce Snack X', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' },
       { id: 2505, stop_order: 2, title: 'EV 29 · Luce X2 I/E jídelna', address_snapshot: 'Popůvky 72', city_snapshot: 'Kojetín' }
     ] }
-    vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 317658, warehouse_id: 1 }
+    vehicle = { id: 6, name: 'Fiat Doblò Cargo', plate: '3BU9736', current_odometer_km: 128318, warehouse_id: 1, active: true }
+    assignedVehicleId = 6
+    availableVehicles = [
+      vehicle,
+      { id: 3, name: 'Fiat Doblò', plate: '5AP9000', current_odometer_km: 184120, warehouse_id: 1, active: true },
+      { id: 2, name: 'Renault Kangoo Maxi', plate: '2TX7928', current_odometer_km: 148059, warehouse_id: 1, active: true },
+      { id: 4, name: 'Opel Combo', plate: '7Z71808', current_odometer_km: 90698, warehouse_id: 1, active: true },
+      { id: 5, name: 'Opel Movano', plate: '2BN7419', current_odometer_km: 148318, warehouse_id: 1, active: true }
+    ]
+    busyVehicles = new Map([['2', { employeeId: 'preview-veronika', employeeName: 'Veronika Jirdová' }]])
     warehouse = { id: 1, name: 'Hlavní sklad', city: 'Blučina', latitude: 49.0547, longitude: 16.6445 }
     instruction = { id: 'preview-instruction', title: 'Kontrola vozidla před výjezdem', message: 'Před zahájením směny zkontroluj stav vozidla, povinnou výbavu a bezpečné uložení nákladu.', requires_acknowledgement: true }
     attendanceDay = null
@@ -607,6 +933,8 @@
     instructionConfirmed = false
     vehicleConfirmed = false
     startOdometer = null
+    vehicleUsage = 'vehicle'
+    vehicleStepComplete = false
     renderData()
   }
 })()

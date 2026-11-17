@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v33-avatar-text-center'
+  var CACHE_NAME = 'olvend-operator-v34-vehicle-step'
   var APP_SHELL = [
     './',
     './index.html',
@@ -16,7 +16,7 @@
     './manifest.webmanifest?v=20261117-full-name-v1',
     './operator-login.js',
     './operator-nav.css',
-    './approved-home-v31.js',
+    './approved-home-v31.js?v=20261117-vehicle-step-v1',
     './operator-route.js',
     './operator-warehouse.js',
     './operator-profile.js',
@@ -37,7 +37,12 @@
     './assets/product-images/ean-8000500073698.jpg',
     './assets/product-images/ean-8586018180863.jpg',
     './assets/product-images/ean-8594002072858.webp',
-    './assets/product-images/ean-9002490200091.webp'
+    './assets/product-images/ean-9002490200091.webp',
+    '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
+    '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
+    '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
+    '../assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2',
+    '../assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2'
   ]
 
   self.addEventListener('install', function (event) {
