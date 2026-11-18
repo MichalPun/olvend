@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v45-home-start-weather'
+  var CACHE_NAME = 'olvend-operator-v46-warehouse-flow-v3'
   var APP_SHELL = [
     './',
     './index.html',
@@ -13,7 +13,7 @@
     './vozidlo.html',
     './potravinovy-automat-preview.html',
     './prihlaseni.html',
-    './manifest.webmanifest?v=20261117-full-name-v1',
+    './manifest.webmanifest?v=20261118-warehouse-v2',
     './operator-login.js',
     './operator-nav.css',
     './operator-profile-v3.css',
@@ -22,6 +22,7 @@
     './operator-dashboard-v1.js?v=20261117-weather-v2',
     './operator-route.js',
     './operator-warehouse.js',
+    './operator-warehouse-v2.css',
     './operator-profile-v11.js',
     './operator-instructions.js',
     './operator-vehicle.js',
@@ -45,6 +46,7 @@
     './assets/product-images/ean-8586018180863.jpg',
     './assets/product-images/ean-8594002072858.webp',
     './assets/product-images/ean-9002490200091.webp',
+    './assets/warehouse-loading-v1.jpg',
     '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
