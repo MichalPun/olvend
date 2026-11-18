@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v46-warehouse-flow-v3'
+  var CACHE_NAME = 'olvend-operator-v46-warehouse-flow-v3-vehicle-v1'
   var APP_SHELL = [
     './',
     './index.html',

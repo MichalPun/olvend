@@ -1,0 +1,39 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
+const page = read('olvend-operator/vozidlo.html')
+const runtime = read('olvend-operator/operator-vehicle.js')
+const admin = read('vehicles.html')
+const migration = read('database/operator_vehicle_workflow_v61.sql')
+const ingest = read('backend/supabase/functions/mojio-fleet-ingest/index.ts')
+
+assert.match(page, /id="ovVehiclePhoto"/)
+assert.match(page, /id="ovMileageRemaining"/)
+assert.match(page, /id="ovStockCard"/)
+assert.match(page, /Pytle na odpad/)
+assert.match(page, /Sáčky na zboží/)
+assert.match(page, /Permanentní fixa/)
+assert.match(page, /Kapalina do ostřikovačů/)
+assert.match(page, /Nabíječka PDA/)
+assert.doesNotMatch(page, /Upínací popruhy/)
+
+assert.match(runtime, /get_my_vehicle_mileage_summary_v61/)
+assert.match(runtime, /create_vehicle_issue_v61/)
+assert.match(runtime, /create_vehicle_equipment_request_v61/)
+assert.match(runtime, /fuel_logged_at/)
+assert.match(runtime, /vehicle_live_position_history/)
+assert.match(runtime, /stock_location_balances/)
+
+assert.match(admin, /vehicleIssuesMap/)
+assert.match(admin, /data-vehicle-issue-status="resolved"/)
+assert.match(admin, /data-vehicle-equipment-status="completed"/)
+assert.match(admin, /installPrivateFileLinks/)
+
+assert.match(migration, /create table if not exists public\.vehicle_issues/)
+assert.match(migration, /create table if not exists public\.vehicle_equipment_requests/)
+assert.match(migration, /private_mileage_allowance_percent/)
+assert.match(ingest, /vehicle_live_position_history/)
+assert.match(ingest, /vehicle_id: resolveVehicleId/)
+
+console.log('OLVEND Operátor vehicle workflow v61 checks passed')
