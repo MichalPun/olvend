@@ -3068,6 +3068,9 @@
   <script type="module">
     import { supabase } from './supabase.js'
     import { createVehicleShiftSwitch } from './vehicle-shift-switch.js'
+    import { installPrivateFileLinks } from './secure-files.js'
+
+    installPrivateFileLinks(supabase, 'https://rerjlkrhiytgscjerqgs.supabase.co')
 
     let canSwitchShiftVehicle = false
     const vehicleShiftSwitch = createVehicleShiftSwitch({
@@ -3158,6 +3161,9 @@
     let vehicleExpensesListMap = new Map()
     let vehicleInventoryMap = new Map()
     let vehicleProductPackagesMap = new Map()
+    let vehicleIssuesMap = new Map()
+    let vehicleEquipmentRequestsMap = new Map()
+    let vehicleEquipmentRequestItemsMap = new Map()
     let vehicleReviewCards = []
     let vehicleReviewActionMap = new Map()
     let vehicleCostPerKmMap = new Map()
@@ -4191,6 +4197,8 @@
       const logs = vehicleLogsMap.get(key) || []
       const expenses = vehicleExpensesListMap.get(key) || []
       const inventorySummary = getVehicleInventorySummary(vehicle.id)
+      const vehicleIssues = vehicleIssuesMap.get(key) || []
+      const equipmentRequests = vehicleEquipmentRequestsMap.get(key) || []
       const operationalState = getVehicleOperationalState(vehicle.id)
       const assignedDriver = vehicle.assigned_employee_id ? getAssignedEmployeeName(vehicle) : 'Bez přiřazení'
       const weightedConsumption = consumptionInsight.avgConsumption != null ? `${formatConsumption(consumptionInsight.avgConsumption)} / 100 km` : (consumptionInsight.fuelEventCount >= 1 ? 'Startovní bod' : 'Bez dat')
@@ -4301,6 +4309,59 @@
               <div class="detail-item-note">Jakmile se zboží naloží ze skladu na vozidlo, propíše se sem aktuální stav podle skladové evidence.</div>
             </article>
           `}
+        </section>
+
+        <section class="detail-section">
+          <h4>Závady a požadavky z OLVEND Operátora</h4>
+          <div class="detail-list">
+            ${vehicleIssues.length ? vehicleIssues.slice(0, 20).map((issue) => {
+              const reporter = employeesData.find((employee) => String(employee.id) === String(issue.employee_id))
+              const reporterName = reporter ? [reporter.name, reporter.surname].filter(Boolean).join(' ') : 'Operátor'
+              const issueStatus = { new:'Nová', assigned:'Převzatá', service:'V servisu', resolved:'Vyřešená', cancelled:'Zrušená' }[issue.status] || issue.status
+              const driveLabel = { continue:'Lze pokračovat', advice:'Potřebuje radu', stop:'Vozidlo zastaveno' }[issue.drive_status] || issue.drive_status
+              return `
+                <article class="detail-item">
+                  <div class="detail-item-title">${escapeHtml(issue.subcategory || issue.category || 'Závada')} · ${escapeHtml(driveLabel)}</div>
+                  <div class="detail-item-note">${escapeHtml(`${issue.description || ''} · ${reporterName} · ${new Date(issue.created_at).toLocaleString('cs-CZ')} · ${issueStatus}`)}</div>
+                  ${issue.resolution_note ? `<div class="detail-item-note"><strong>Vyřízení:</strong> ${escapeHtml(issue.resolution_note)}</div>` : ''}
+                  <div class="action-row" style="margin-top:10px;">
+                    ${(issue.photo_urls || []).map((url, index) => `<a class="btn secondary small" href="${escapeHtml(url)}" target="_blank" rel="noopener">Foto ${index + 1}</a>`).join('')}
+                    ${!['resolved','cancelled'].includes(issue.status) ? `
+                      <button class="btn secondary small" type="button" data-vehicle-issue-status="assigned" data-vehicle-issue-id="${escapeHtml(issue.id)}">Převzít</button>
+                      <button class="btn secondary small" type="button" data-vehicle-issue-status="service" data-vehicle-issue-id="${escapeHtml(issue.id)}">Do servisu</button>
+                      <button class="btn primary small" type="button" data-vehicle-issue-status="resolved" data-vehicle-issue-id="${escapeHtml(issue.id)}">Vyřešeno</button>
+                    ` : ''}
+                  </div>
+                </article>
+              `
+            }).join('') : `
+              <article class="detail-item">
+                <div class="detail-item-title">Bez hlášené závady</div>
+                <div class="detail-item-note">Z PDA zatím nebyla k tomuto vozidlu odeslána žádná závada.</div>
+              </article>
+            `}
+            ${equipmentRequests.length ? equipmentRequests.slice(0, 20).map((request) => {
+              const items = vehicleEquipmentRequestItemsMap.get(String(request.id)) || []
+              const reporter = employeesData.find((employee) => String(employee.id) === String(request.employee_id))
+              const reporterName = reporter ? [reporter.name, reporter.surname].filter(Boolean).join(' ') : 'Operátor'
+              const requestStatus = { new:'Nový', picking:'Vychystává se', ready:'Připraveno', completed:'Vydáno', cancelled:'Zrušeno' }[request.status] || request.status
+              return `
+                <article class="detail-item">
+                  <div class="detail-item-title">Vybavení do auta · ${escapeHtml(requestStatus)}</div>
+                  <div class="detail-item-note">${escapeHtml(items.map((item) => `${item.item_name} ${formatQuantity(item.quantity, item.unit)}`).join(' · ') || 'Bez položek')}</div>
+                  <div class="detail-item-note">${escapeHtml(`${request.note || 'Bez poznámky'} · ${reporterName} · ${new Date(request.created_at).toLocaleString('cs-CZ')}`)}</div>
+                  <div class="action-row" style="margin-top:10px;">
+                    ${(request.photo_urls || []).map((url, index) => `<a class="btn secondary small" href="${escapeHtml(url)}" target="_blank" rel="noopener">Foto ${index + 1}</a>`).join('')}
+                    ${!['completed','cancelled'].includes(request.status) ? `
+                      <button class="btn secondary small" type="button" data-vehicle-equipment-status="picking" data-vehicle-equipment-id="${escapeHtml(request.id)}">Vychystává se</button>
+                      <button class="btn secondary small" type="button" data-vehicle-equipment-status="ready" data-vehicle-equipment-id="${escapeHtml(request.id)}">Připraveno</button>
+                      <button class="btn primary small" type="button" data-vehicle-equipment-status="completed" data-vehicle-equipment-id="${escapeHtml(request.id)}">Vydáno</button>
+                    ` : ''}
+                  </div>
+                </article>
+              `
+            }).join('') : ''}
+          </div>
         </section>
 
         <section class="detail-section">
@@ -4725,7 +4786,10 @@
           next_service_odometer_km,
           target_consumption_l_100km,
           tolerated_consumption_l_100km,
-          service_scope
+          service_scope,
+          image_path,
+          private_mileage_allowance_percent,
+          mojio_vehicle_id
         `)
         .order('created_at', { ascending: false })
 
@@ -4785,11 +4849,14 @@
       vehicleReviewActionMap = new Map()
       vehicleInventoryMap = new Map()
       vehicleProductPackagesMap = new Map()
+      vehicleIssuesMap = new Map()
+      vehicleEquipmentRequestsMap = new Map()
+      vehicleEquipmentRequestItemsMap = new Map()
       vehicleReviewCards = []
 
       if (!vehicleIds.length) return
 
-      const [logsResult, expensesResult] = await Promise.all([
+      const [logsResult, expensesResult, issuesResult, equipmentResult] = await Promise.all([
         supabase
           .from('vehicle_operation_logs')
           .select('id, attendance_day_id, vehicle_id, employee_id, log_date, ended_at, distance_km, fuel_liters, fuel_cost, fuel_odometer_km, fuel_receipt_url, fuel_note, start_odometer_km, end_odometer_km, status, trip_note')
@@ -4800,8 +4867,50 @@
           .from('vehicle_expenses')
           .select('id, vehicle_id, expense_date, category, amount, vendor, note')
           .in('vehicle_id', vehicleIds)
-          .order('expense_date', { ascending: false })
+          .order('expense_date', { ascending: false }),
+        supabase
+          .from('vehicle_issues')
+          .select('id, vehicle_id, vehicle_operation_log_id, attendance_day_id, employee_id, category, subcategory, description, drive_status, photo_urls, status, assigned_to, resolution_note, resolved_by, resolved_at, created_at, updated_at')
+          .in('vehicle_id', vehicleIds)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('vehicle_equipment_requests')
+          .select('id, vehicle_id, vehicle_operation_log_id, attendance_day_id, employee_id, status, note, photo_urls, handled_by, handled_at, created_at, updated_at')
+          .in('vehicle_id', vehicleIds)
+          .order('created_at', { ascending: false })
       ])
+
+      const issueRows = issuesResult.error ? [] : (issuesResult.data ?? [])
+      const equipmentRows = equipmentResult.error ? [] : (equipmentResult.data ?? [])
+      issueRows.forEach((issue) => {
+        const key = String(issue.vehicle_id)
+        if (!vehicleIssuesMap.has(key)) vehicleIssuesMap.set(key, [])
+        vehicleIssuesMap.get(key).push(issue)
+      })
+      equipmentRows.forEach((request) => {
+        const key = String(request.vehicle_id)
+        if (!vehicleEquipmentRequestsMap.has(key)) vehicleEquipmentRequestsMap.set(key, [])
+        vehicleEquipmentRequestsMap.get(key).push(request)
+      })
+      const equipmentRequestIds = equipmentRows.map((request) => request.id).filter(Boolean)
+      if (equipmentRequestIds.length) {
+        const itemsResult = await supabase
+          .from('vehicle_equipment_request_items')
+          .select('id, request_id, item_key, item_name, category, quantity, unit, reason, created_at')
+          .in('request_id', equipmentRequestIds)
+          .order('id', { ascending: true })
+        if (itemsResult.error) {
+          console.error('Vehicle equipment request items error:', itemsResult.error)
+        } else {
+          ;(itemsResult.data ?? []).forEach((item) => {
+            const key = String(item.request_id)
+            if (!vehicleEquipmentRequestItemsMap.has(key)) vehicleEquipmentRequestItemsMap.set(key, [])
+            vehicleEquipmentRequestItemsMap.get(key).push(item)
+          })
+        }
+      }
+      if (issuesResult.error) console.error('Vehicle issues error:', issuesResult.error)
+      if (equipmentResult.error) console.error('Vehicle equipment requests error:', equipmentResult.error)
 
       const stockLocationsResult = await supabase
         .from('stock_locations')
@@ -4942,6 +5051,26 @@
         const vehicleLogs = logsByVehicle.get(key) || []
         const vehicleExpenses = expensesByVehicle.get(key) || []
         const reviewItems = []
+        const openVehicleIssues = (vehicleIssuesMap.get(key) || []).filter((issue) => !['resolved', 'cancelled'].includes(String(issue.status)))
+        const openEquipmentRequests = (vehicleEquipmentRequestsMap.get(key) || []).filter((request) => !['completed', 'cancelled'].includes(String(request.status)))
+        const stoppedIssueCount = openVehicleIssues.filter((issue) => issue.drive_status === 'stop').length
+        if (stoppedIssueCount) {
+          reviewItems.push({
+            short: `${stoppedIssueCount}x vozidlo zastaveno`,
+            full: `Operátor označil ${stoppedIssueCount === 1 ? 'závadu' : `${stoppedIssueCount} závady`} jako důvod nepokračovat v jízdě.`
+          })
+        } else if (openVehicleIssues.length) {
+          reviewItems.push({
+            short: `${openVehicleIssues.length}x otevřená závada`,
+            full: `Z PDA čeká ${openVehicleIssues.length === 1 ? 'jedno hlášení závady' : `${openVehicleIssues.length} hlášení závad`} na vyřízení.`
+          })
+        }
+        if (openEquipmentRequests.length) {
+          reviewItems.push({
+            short: `${openEquipmentRequests.length}x vybavení`,
+            full: `Z PDA čeká ${openEquipmentRequests.length === 1 ? 'jeden požadavek' : `${openEquipmentRequests.length} požadavky`} na doplnění vybavení vozidla.`
+          })
+        }
         const fuelTracking = buildFuelConsumptionSegments(vehicleLogs, vehicle)
         const validConsumptionSegments = fuelTracking.segments
         const avgConsumption = getWeightedConsumptionFromSegments(validConsumptionSegments)
@@ -5563,6 +5692,42 @@
     cancelExpenseBtn.addEventListener('click', closeExpenseModal)
     closeVehicleDetailBtn.addEventListener('click', closeVehicleDetailModal)
     closeVehicleDetailFooterBtn.addEventListener('click', closeVehicleDetailModal)
+    vehicleDetailContent?.addEventListener('click', async (event) => {
+      const issueButton = event.target.closest('[data-vehicle-issue-status]')
+      const equipmentButton = event.target.closest('[data-vehicle-equipment-status]')
+      if (!issueButton && !equipmentButton) return
+      const button = issueButton || equipmentButton
+      const vehicleId = vehiclesData.find((vehicle) => {
+        const key = String(vehicle.id)
+        if (issueButton) return (vehicleIssuesMap.get(key) || []).some((item) => String(item.id) === String(issueButton.dataset.vehicleIssueId))
+        return (vehicleEquipmentRequestsMap.get(key) || []).some((item) => String(item.id) === String(equipmentButton.dataset.vehicleEquipmentId))
+      })?.id
+      if (!vehicleId) return
+      button.disabled = true
+      try {
+        if (issueButton) {
+          const nextStatus = issueButton.dataset.vehicleIssueStatus
+          const update = { status: nextStatus }
+          if (nextStatus === 'resolved') update.resolved_at = new Date().toISOString()
+          const { error } = await supabase.from('vehicle_issues').update(update).eq('id', issueButton.dataset.vehicleIssueId)
+          if (error) throw error
+        } else {
+          const nextStatus = equipmentButton.dataset.vehicleEquipmentStatus
+          const update = { status: nextStatus }
+          if (nextStatus === 'completed') update.handled_at = new Date().toISOString()
+          const { error } = await supabase.from('vehicle_equipment_requests').update(update).eq('id', equipmentButton.dataset.vehicleEquipmentId)
+          if (error) throw error
+        }
+        await loadVehicleInsights()
+        const vehicle = vehiclesData.find((item) => String(item.id) === String(vehicleId))
+        if (vehicle) renderVehicleDetail(vehicle)
+        setStatus(issueButton ? 'Stav závady byl aktualizován.' : 'Stav požadavku na vybavení byl aktualizován.', 'success')
+      } catch (error) {
+        console.error(error)
+        setStatus(`Aktualizace selhala: ${error.message}`, 'error')
+        button.disabled = false
+      }
+    })
 
     modalBackdrop.addEventListener('click', (e) => {
       if (e.target === modalBackdrop) closeModal()

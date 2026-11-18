@@ -10,6 +10,13 @@
   var vehicle = null
   var logs = []
   var requests = []
+  var issues = []
+  var equipmentRequests = []
+  var equipmentItems = []
+  var stockRows = []
+  var livePosition = null
+  var liveHistory = []
+  var mileageSummary = null
   var dailyCheck = null
   var activePhotoInput = null
 
@@ -97,7 +104,7 @@
       attendance = Array.isArray(results[0]) && results[0][0] ? results[0][0] : null
       routePlan = Array.isArray(results[1]) && results[1][0] ? results[1][0] : null
       var vehicleId = attendance && attendance.vehicle_id || routePlan && routePlan.vehicle_id
-      var select = 'id,name,plate,brand,model,warehouse_id,current_odometer_km,note,active,fuel_type,tank_capacity_l,assigned_employee_id,stk_valid_until,insurance_valid_until,next_service_date,next_service_odometer_km,service_scope'
+      var select = 'id,name,plate,brand,model,warehouse_id,current_odometer_km,note,active,fuel_type,tank_capacity_l,assigned_employee_id,stk_valid_until,insurance_valid_until,next_service_date,next_service_odometer_km,target_consumption_l_100km,tolerated_consumption_l_100km,service_scope,image_path,private_mileage_allowance_percent,mojio_vehicle_id'
       var url = '/rest/v1/vehicles?select=' + encodeURIComponent(select) + '&active=eq.true&order=id'
       return requestJson(url).then(function (rows) {
         var vehicles = Array.isArray(rows) ? rows : []
@@ -107,12 +114,38 @@
     }).then(function () {
       if (!vehicle) { renderMissingVehicle(); return }
       var logUrl = '/rest/v1/vehicle_operation_logs?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=log_date.desc,updated_at.desc&limit=30'
-      var requestUrl = '/rest/v1/operational_requests?select=*&employee_id=eq.' + encodeURIComponent(employee.id) + '&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&request_kind=in.(equipment,vehicle_service)&order=created_at.desc&limit=50'
       var checkUrl = '/rest/v1/vehicle_daily_checks?select=*&employee_id=eq.' + encodeURIComponent(employee.id) + '&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&check_date=eq.' + todayIso() + '&limit=1'
-      return Promise.all([requestJson(logUrl), requestJson(requestUrl), requestJson(checkUrl).catch(function () { return [] })]).then(function (results) {
+      var liveUrl = '/rest/v1/vehicle_live_positions?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=ingested_at.desc&limit=1'
+      var historyUrl = '/rest/v1/vehicle_live_position_history?select=vehicle_id,odometer_km,fuel_value,fuel_unit,source_updated_at,ingested_at&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=ingested_at.desc&limit=20'
+      var issueUrl = '/rest/v1/vehicle_issues?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=created_at.desc&limit=50'
+      var equipmentUrl = '/rest/v1/vehicle_equipment_requests?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=created_at.desc&limit=50'
+      var locationUrl = '/rest/v1/stock_locations?select=id&location_type=eq.vehicle&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&active=eq.true&limit=1'
+      var mileageRequest = requestJson('/rest/v1/rpc/get_my_vehicle_mileage_summary_v61', { method: 'POST', body: JSON.stringify({ p_vehicle_id: vehicle.id, p_log_date: todayIso() }) })
+      return Promise.all([requestJson(logUrl), requestJson(checkUrl).catch(function () { return [] }), requestJson(liveUrl).catch(function () { return [] }), requestJson(historyUrl).catch(function () { return [] }), mileageRequest.catch(function () { return null }), requestJson(issueUrl), requestJson(equipmentUrl), requestJson(locationUrl)]).then(function (results) {
         logs = Array.isArray(results[0]) ? results[0] : []
-        requests = Array.isArray(results[1]) ? results[1] : []
-        dailyCheck = Array.isArray(results[2]) && results[2][0] ? results[2][0] : null
+        dailyCheck = Array.isArray(results[1]) && results[1][0] ? results[1][0] : null
+        livePosition = Array.isArray(results[2]) && results[2][0] ? results[2][0] : null
+        liveHistory = Array.isArray(results[3]) ? results[3] : []
+        mileageSummary = results[4] && !Array.isArray(results[4]) ? results[4] : null
+        issues = Array.isArray(results[5]) ? results[5] : []
+        equipmentRequests = Array.isArray(results[6]) ? results[6] : []
+        var location = Array.isArray(results[7]) && results[7][0] ? results[7][0] : null
+        var equipmentIds = equipmentRequests.map(function (row) { return row.id }).filter(Boolean)
+        var equipmentItemsRequest = equipmentIds.length ? requestJson('/rest/v1/vehicle_equipment_request_items?select=*&request_id=in.(' + equipmentIds.map(encodeURIComponent).join(',') + ')&order=id') : Promise.resolve([])
+        var stockRequest = location ? requestJson('/rest/v1/stock_location_balances?select=id,product_id,quantity_on_hand,reserved_quantity,updated_at,products(id,name,sku,base_unit,product_category,usage_type)&stock_location_id=eq.' + encodeURIComponent(location.id) + '&quantity_on_hand=gt.0&order=updated_at.desc') : Promise.resolve([])
+        return Promise.all([equipmentItemsRequest, stockRequest])
+      }).then(function (detailResults) {
+        equipmentItems = Array.isArray(detailResults[0]) ? detailResults[0] : []
+        stockRows = (Array.isArray(detailResults[1]) ? detailResults[1] : []).map(function (row) {
+          var product = row.products || {}
+          return Object.assign({}, row, { product_name: product.name || 'Položka', sku: product.sku || '', base_unit: product.base_unit || 'ks', product_category: product.product_category || '', usage_type: product.usage_type || '' })
+        })
+        requests = issues.map(function (row) {
+          return Object.assign({}, row, { source: 'issue', request_kind: 'vehicle_service', title: row.subcategory || issueCategoryLabel(row.category), note: row.description })
+        }).concat(equipmentRequests.map(function (row) {
+          var items = equipmentItems.filter(function (item) { return String(item.request_id) === String(row.id) })
+          return Object.assign({}, row, { source: 'equipment', request_kind: 'equipment', title: items.map(function (item) { return item.item_name + ' ' + Number(item.quantity).toLocaleString('cs-CZ') + ' ' + item.unit }).join(', ') || 'Vybavení do auta' })
+        })).sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')) })
         render()
       })
     })
@@ -122,18 +155,26 @@
     document.querySelector('.ov-vehicle-name').textContent = 'Vozidlo není přiřazené'
     document.querySelector('.ov-plate').textContent = 'Po přiřazení dnešní trasy se údaje zobrazí automaticky.'
     document.querySelector('.ov-km b').textContent = '—'
+    document.getElementById('ovVehiclePhoto').hidden = true
+    document.getElementById('ovLiveFuel').textContent = 'Bez vozidla'
+    document.getElementById('ovLiveState').textContent = 'Bez vozidla'
     document.querySelector('.ov-alerts').innerHTML = '<article class="ov-alert warning"><span class="ov-alert-icon">!</span><div class="ov-alert-copy"><strong>Chybí dnešní vozidlo</strong><span>Kontaktujte vedoucího nebo dispečink.</span></div></article>'
   }
 
   function render() {
     var log = currentLog()
+    var currentOdometer = livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : Number(vehicle.current_odometer_km || 0)
     document.querySelector('.ov-vehicle-name').textContent = vehicle.name || [vehicle.brand, vehicle.model].filter(Boolean).join(' ') || 'Vozidlo'
     document.querySelector('.ov-plate').textContent = [vehicle.plate, fuelLabel(vehicle.fuel_type), vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený provoz'].filter(Boolean).join(' · ')
-    document.querySelector('.ov-km b').textContent = Number(vehicle.current_odometer_km || 0).toLocaleString('cs-CZ')
+    document.querySelector('.ov-km b').textContent = currentOdometer.toLocaleString('cs-CZ', { maximumFractionDigits: 0 })
     document.querySelector('.ov-shift-state').textContent = attendance && attendance.actual_start
       ? attendance.actual_end ? 'Dnešní směna je ukončená' : 'Směna právě probíhá'
       : 'Směna připravena k zahájení'
     document.querySelector('.ov-user').textContent = String((employee.name || 'O').charAt(0) + (employee.surname || 'P').charAt(0)).toUpperCase()
+    renderVehiclePhoto()
+    renderLiveVehicle()
+    renderMileage()
+    renderStock()
     renderAlerts()
     renderRequests()
     renderTech()
@@ -146,11 +187,125 @@
     return ({ diesel: 'nafta', petrol: 'benzín', lpg: 'LPG', electric: 'elektro', hybrid: 'hybrid' })[value] || value || ''
   }
 
+  function issueCategoryLabel(value) {
+    return ({ engine: 'Kontrolka / motor', tires: 'Pneumatiky', fluids: 'Olej a kapaliny', brakes: 'Brzdy', lights: 'Světla', body: 'Karoserie / sklo', cargo: 'Nákladový prostor', service: 'Servis / údržba', other: 'Jiná závada' })[value] || value || 'Závada'
+  }
+
+  function vehicleImageUrl() {
+    var path = String(vehicle && vehicle.image_path || '').trim()
+    if (path.indexOf('static:') === 0) return path.slice(7)
+    var plate = String(vehicle && vehicle.plate || '').replace(/\s+/g, '').toUpperCase()
+    return ({ '3BU9736': '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2', '5AP9000': '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2', '7Z71808': '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2', '2BN7419': '../assets/vehicles/opel-movano-older.png?v=20261111-fleet-art-v2', '2TX7928': '../assets/vehicles/renault-kangoo-2019.png?v=20261111-fleet-art-v2' })[plate] || ''
+  }
+
+  function renderVehiclePhoto() {
+    var image = document.getElementById('ovVehiclePhoto')
+    var url = vehicleImageUrl()
+    image.hidden = !url
+    if (url) image.src = url
+  }
+
+  function fuelPercent() {
+    if (!livePosition || livePosition.fuel_value == null) return null
+    var value = Number(livePosition.fuel_value)
+    if (!Number.isFinite(value)) return null
+    var unit = String(livePosition.fuel_unit || '').toLowerCase()
+    if (unit.indexOf('%') !== -1 || unit.indexOf('percent') !== -1) return Math.max(0, Math.min(100, value))
+    if (vehicle.tank_capacity_l && value <= Number(vehicle.tank_capacity_l) * 1.15) return Math.max(0, Math.min(100, value / Number(vehicle.tank_capacity_l) * 100))
+    return value <= 100 ? Math.max(0, value) : null
+  }
+
+  function renderLiveVehicle() {
+    var percent = fuelPercent()
+    var online = livePosition && livePosition.is_online === true
+    document.getElementById('ovLiveFuel').textContent = percent == null ? 'Bez dat' : Math.round(percent).toLocaleString('cs-CZ') + ' %' + (vehicle.tank_capacity_l ? ' · cca ' + Math.round(Number(vehicle.tank_capacity_l) * percent / 100).toLocaleString('cs-CZ') + ' l' : '')
+    document.getElementById('ovLiveFuelTime').textContent = livePosition && livePosition.ingested_at ? 'T-Mobile · ' + formatDateTime(livePosition.ingested_at) : 'T-Mobile · čeká na data'
+    document.getElementById('ovLiveState').textContent = livePosition ? online ? 'Online' : livePosition.is_parked ? 'Zaparkováno' : 'Offline' : 'Bez dat'
+    document.getElementById('ovLiveTime').textContent = livePosition && (livePosition.source_updated_at || livePosition.ingested_at) ? formatDateTime(livePosition.source_updated_at || livePosition.ingested_at) : 'Poslední synchronizace není dostupná'
+  }
+
+  function renderMileage() {
+    var summary = mileageSummary || {}
+    var percent = Number(summary.allowance_percent == null ? vehicle.private_mileage_allowance_percent || 5 : summary.allowance_percent)
+    document.getElementById('ovMileagePercent').textContent = percent.toLocaleString('cs-CZ') + ' % z plánu'
+    document.getElementById('ovMileagePlan').textContent = Number(summary.today_planned_km || 0).toLocaleString('cs-CZ') + ' km'
+    document.getElementById('ovMileageActual').textContent = Number(summary.today_actual_km || 0).toLocaleString('cs-CZ') + ' km'
+    document.getElementById('ovMileageRemaining').textContent = Number(summary.today_private_remaining_km || 0).toLocaleString('cs-CZ') + ' km'
+    document.getElementById('ovMileageToday').textContent = 'Dnes čerpáno ' + Number(summary.today_private_used_km || 0).toLocaleString('cs-CZ') + ' km'
+    document.getElementById('ovMileageMonth').textContent = 'Měsíc zbývá ' + Number(summary.month_private_remaining_km || 0).toLocaleString('cs-CZ') + ' km'
+  }
+
+  function normalizeText(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  }
+
+  function stockCategory(row) {
+    var text = normalizeText([row.product_name, row.product_category, row.usage_type, row.base_unit].join(' '))
+    if (/baget|sendvic|chlebicek|cerstv/.test(text)) return 'fresh'
+    if (/napoj|voda|cola|pepsi|juice|dzus/.test(text)) return 'drinks'
+    if (/surovin|ingredient|kava|mleko|cukr|cokolad|matcha|kelimek|vick|michat/.test(text)) return 'ingredients'
+    return 'sweets'
+  }
+
+  function renderStock() {
+    var totals = { fresh: 0, sweets: 0, drinks: 0, ingredients: 0 }
+    stockRows.forEach(function (row) { totals[stockCategory(row)] += Number(row.quantity_on_hand || 0) })
+    document.getElementById('ovStockFresh').textContent = totals.fresh.toLocaleString('cs-CZ') + ' ks'
+    document.getElementById('ovStockSweets').textContent = totals.sweets.toLocaleString('cs-CZ') + ' ks'
+    document.getElementById('ovStockDrinks').textContent = totals.drinks.toLocaleString('cs-CZ') + ' ks'
+    document.getElementById('ovStockIngredients').textContent = totals.ingredients.toLocaleString('cs-CZ') + ' j.'
+  }
+
+  function openStockSheet() {
+    var rows = stockRows.slice().sort(function (a, b) { return stockCategory(a).localeCompare(stockCategory(b)) || String(a.product_name).localeCompare(String(b.product_name), 'cs') })
+    var html = '<div class="ov-stock-list">' + (rows.length ? rows.map(function (row) {
+      return '<article class="ov-stock-row"><div><strong>' + escapeHtml(row.product_name) + '</strong><small>' + escapeHtml([row.sku, row.product_category].filter(Boolean).join(' · ')) + '</small></div><b>' + Number(row.quantity_on_hand || 0).toLocaleString('cs-CZ') + ' ' + escapeHtml(row.base_unit || 'ks') + '</b></article>'
+    }).join('') : '<article class="ov-request"><div><strong>Vozidlo je bez evidované zásoby</strong><p>Stav se načítá přímo ze skladu vozidla.</p></div></article>') + '</div>'
+    if (window.operatorVehicleOpenCustomSheet) window.operatorVehicleOpenCustomSheet('▣', 'Zásoby vozidla', 'Co je právě v autě', html)
+  }
+
+  function detectedFuelIncrease() {
+    var rows = liveHistory.filter(function (row) { return row.fuel_value != null }).slice().sort(function (a, b) { return String(a.ingested_at || a.source_updated_at || '').localeCompare(String(b.ingested_at || b.source_updated_at || '')) })
+    if (rows.length < 2) return null
+    var previous = Number(rows[rows.length - 2].fuel_value)
+    var current = Number(rows[rows.length - 1].fuel_value)
+    if (!Number.isFinite(previous) || !Number.isFinite(current) || current - previous < 5) return null
+    return { previous: previous, current: current, increase: current - previous }
+  }
+
+  window.operatorVehicleHydrateSheet = function (name) {
+    if (name === 'fuel') {
+      var inputs = document.querySelectorAll('#ov-sheet-body input')
+      var log = currentLog()
+      if (inputs[0]) inputs[0].value = log && log.fuel_liters || ''
+      if (inputs[1]) inputs[1].value = log && log.fuel_cost || ''
+      if (inputs[2]) inputs[2].value = log && log.fuel_odometer_km || livePosition && livePosition.odometer_km || vehicle.current_odometer_km || ''
+      var fullTank = document.querySelector('#ov-sheet-body [data-full-tank]') || document.getElementById('rideFuelFullTank')
+      if (fullTank) fullTank.checked = Boolean(log && log.fuel_full_tank)
+      var warning = document.querySelector('#ov-sheet-body [data-fuel-telemetry]')
+      var increase = detectedFuelIncrease()
+      if (warning && increase && !(log && log.fuel_logged_at)) {
+        warning.hidden = false
+        warning.textContent = 'T-Mobile zaznamenal zvýšení paliva o ' + increase.increase.toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + '. Pokud jste tankovali, zápis a účtenku uložte před ukončením směny.'
+      }
+    }
+    if (name === 'km') {
+      var kmInputs = document.querySelectorAll('#ov-sheet-body input')
+      var known = livePosition && livePosition.odometer_km != null ? livePosition.odometer_km : vehicle.current_odometer_km
+      if (kmInputs[0]) kmInputs[0].value = Number(known || 0).toLocaleString('cs-CZ') + ' km'
+      if (kmInputs[1]) kmInputs[1].value = currentLog() && currentLog().end_odometer_km != null ? currentLog().end_odometer_km : known || ''
+    }
+  }
+
   function renderAlerts() {
     var alerts = []
+    var stoppedIssue = issues.find(function (row) { return row.drive_status === 'stop' && ['resolved', 'cancelled'].indexOf(row.status) === -1 })
+    var adviceIssue = issues.find(function (row) { return row.drive_status === 'advice' && ['resolved', 'cancelled'].indexOf(row.status) === -1 })
     var stkDays = daysUntil(vehicle.stk_valid_until)
     var insuranceDays = daysUntil(vehicle.insurance_valid_until)
     var serviceRemaining = vehicle.next_service_odometer_km == null || vehicle.current_odometer_km == null ? null : Number(vehicle.next_service_odometer_km) - Number(vehicle.current_odometer_km)
+    if (stoppedIssue) alerts.push({ cls: '', icon: '!', title: 'Vozidlo je zastavené', copy: stoppedIssue.description || 'Čeká na vyřešení nahlášené závady.', action: 'service' })
+    else if (adviceIssue) alerts.push({ cls: 'warning', icon: '!', title: 'Čeká se na posouzení závady', copy: adviceIssue.description || 'Operátor potřebuje rozhodnutí, zda lze pokračovat.', action: 'service' })
     if (stkDays != null && stkDays < 0) alerts.push({ cls: '', icon: '!', title: 'STK je po termínu', copy: 'Evidence uvádí platnost do ' + formatDate(vehicle.stk_valid_until) + '.', action: 'service' })
     else if (stkDays != null && stkDays <= 30) alerts.push({ cls: 'warning', icon: stkDays, title: 'Blíží se konec STK', copy: 'Platnost do ' + formatDate(vehicle.stk_valid_until) + '.', action: 'service' })
     if (serviceRemaining != null && serviceRemaining <= 1000) alerts.push({ cls: serviceRemaining < 0 ? '' : 'warning', icon: serviceRemaining < 0 ? '!' : Math.max(0, serviceRemaining), title: serviceRemaining < 0 ? 'Servisní limit překročen' : 'Servis za ' + serviceRemaining.toLocaleString('cs-CZ') + ' km', copy: 'Servisní limit ' + Number(vehicle.next_service_odometer_km).toLocaleString('cs-CZ') + ' km.', action: 'service' })
@@ -163,17 +318,17 @@
   }
 
   function statusMeta(status) {
-    return ({ new: ['Nový', ''], in_progress: ['Řeší se', 'progress'], warehouse_queue: ['Čeká na sklad', ''], picking: ['Vychystává se', 'progress'], ready: ['Připraveno', 'done'], completed: ['Vyřízeno', 'done'], cancelled: ['Zrušeno', ''] })[status] || [status || 'Nový', '']
+    return ({ new: ['Nový', ''], assigned: ['Převzatá', 'progress'], service: ['V servisu', 'progress'], resolved: ['Vyřešená', 'done'], in_progress: ['Řeší se', 'progress'], warehouse_queue: ['Čeká na sklad', ''], picking: ['Vychystává se', 'progress'], ready: ['Připraveno', 'done'], completed: ['Vyřízeno', 'done'], cancelled: ['Zrušeno', ''] })[status] || [status || 'Nový', '']
   }
 
   function requestMarkup(row) {
     var meta = statusMeta(row.status)
     var type = row.request_kind === 'vehicle_service' ? 'Servis' : 'Vybavení'
-    return '<article class="ov-request"><div><small>' + type + ' · #P-' + escapeHtml(row.id) + '</small><strong>' + escapeHtml(row.title) + '</strong><p>' + escapeHtml(row.need_timing || formatDateTime(row.created_at)) + ' · ' + escapeHtml(vehicle.plate || vehicle.name) + '</p></div><span class="ov-status ' + meta[1] + '">' + escapeHtml(meta[0]) + '</span></article>'
+    return '<article class="ov-request"><div><small>' + type + ' · #' + escapeHtml(row.id) + '</small><strong>' + escapeHtml(row.title) + '</strong><p>' + escapeHtml((row.note ? row.note + ' · ' : '') + formatDateTime(row.created_at)) + ' · ' + escapeHtml(vehicle.plate || vehicle.name) + '</p></div><span class="ov-status ' + meta[1] + '">' + escapeHtml(meta[0]) + '</span></article>'
   }
 
   function renderRequests() {
-    var open = requests.filter(function (row) { return ['completed', 'cancelled', 'invoiced'].indexOf(row.status) === -1 })
+    var open = requests.filter(function (row) { return ['resolved', 'completed', 'cancelled', 'invoiced'].indexOf(row.status) === -1 })
     var badge = document.querySelector('[data-tab="requests"] i')
     badge.textContent = String(open.length)
     badge.hidden = !open.length
@@ -223,10 +378,28 @@
     var end = log && log.end_odometer_km != null ? Number(log.end_odometer_km) : null
     var distance = end != null ? Math.max(0, end - start) : 0
     var latestFuel = logs.find(function (row) { return Number(row.fuel_liters || 0) > 0 })
-    document.querySelector('#ov-metric-grid').innerHTML = '<article class="ov-metric"><span>Počáteční km</span><strong>' + start.toLocaleString('cs-CZ') + '</strong></article><article class="ov-metric"><span>Dnes ujeto</span><strong>' + distance.toLocaleString('cs-CZ') + ' km</strong></article><article class="ov-metric"><span>Poslední tankování</span><strong>' + (latestFuel ? formatDate(latestFuel.log_date) : 'Bez záznamu') + '</strong></article><article class="ov-metric"><span>Stav směny</span><strong>' + (attendance && attendance.actual_start ? attendance.actual_end ? 'Ukončeno' : 'Probíhá' : 'Připraveno') + '</strong></article>'
-    document.querySelector('#rideKnownKm').value = Number(vehicle.current_odometer_km || 0).toLocaleString('cs-CZ') + ' km'
+    var fuelLogs = logs.filter(function (row) { return Number(row.fuel_liters || 0) > 0 && Number(row.fuel_odometer_km || 0) > 0 }).slice().sort(function (a, b) { return Number(a.fuel_odometer_km) - Number(b.fuel_odometer_km) })
+    var consumption = null
+    if (fuelLogs.length > 1) {
+      var last = fuelLogs[fuelLogs.length - 1]
+      var before = fuelLogs[fuelLogs.length - 2]
+      var kmDistance = Number(last.fuel_odometer_km) - Number(before.fuel_odometer_km)
+      if (kmDistance > 0) consumption = Number(last.fuel_liters) / kmDistance * 100
+    }
+    document.querySelector('#ov-metric-grid').innerHTML = '<article class="ov-metric"><span>Počáteční km</span><strong>' + start.toLocaleString('cs-CZ') + '</strong></article><article class="ov-metric"><span>Dnes ujeto</span><strong>' + distance.toLocaleString('cs-CZ') + ' km</strong></article><article class="ov-metric"><span>Poslední tankování</span><strong>' + (latestFuel ? formatDate(latestFuel.log_date) : 'Bez záznamu') + '</strong></article><article class="ov-metric"><span>Kontrolní spotřeba</span><strong>' + (consumption == null ? 'Čeká na data' : consumption.toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' l / 100 km') + '</strong></article>'
+    var knownKm = livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : Number(vehicle.current_odometer_km || 0)
+    document.querySelector('#rideKnownKm').value = knownKm.toLocaleString('cs-CZ') + ' km'
     if (!document.querySelector('#rideKm').value) document.querySelector('#rideKm').value = String(end != null ? end : vehicle.current_odometer_km || '')
-    if (!document.querySelector('#fuelKm').value) document.querySelector('#fuelKm').value = String(vehicle.current_odometer_km || '')
+    if (!document.querySelector('#fuelKm').value) document.querySelector('#fuelKm').value = String(knownKm || '')
+    var increase = detectedFuelIncrease()
+    var warning = document.getElementById('ovFuelTelemetryWarning')
+    var fuelLogged = Boolean(log && (log.fuel_logged_at || log.fuel_receipt_url))
+    warning.hidden = !increase || fuelLogged
+    warning.textContent = increase ? 'T-Mobile zaznamenal zvýšení paliva o ' + increase.increase.toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + '. Pokud jste tankovali, zapište tankování a přiložte účtenku.' : ''
+    if (consumption != null && vehicle.tolerated_consumption_l_100km != null && consumption > Number(vehicle.tolerated_consumption_l_100km)) {
+      warning.hidden = false
+      warning.textContent += (warning.textContent ? ' ' : '') + 'Kontrolní spotřeba je nad nastaveným limitem ' + Number(vehicle.tolerated_consumption_l_100km).toLocaleString('cs-CZ') + ' l / 100 km.'
+    }
   }
 
   function renderHistory() {
@@ -317,29 +490,31 @@
   }
 
   function submitEquipment() {
-    var selected = Array.prototype.map.call(document.querySelectorAll('#ov-sheet-body .ov-choice.active'), function (item) { return item.textContent.trim() })
-    if (!selected.length) throw new Error('Vyberte alespoň jednu věc do vozidla.')
-    var quantity = Number(document.querySelector('#ov-sheet-body input[type="number"]').value || 0)
-    if (!(quantity > 0)) throw new Error('Doplňte množství.')
-    var timing = document.querySelector('#ov-sheet-body select').value
+    if (!attendance || String(attendance.vehicle_id || '') !== String(vehicle.id)) throw new Error('Požadavek lze odeslat jen k vozidlu dnešní směny.')
+    var selected = Array.prototype.map.call(document.querySelectorAll('#ov-sheet-body [data-equipment-item]'), function (item) {
+      var quantity = Number(item.querySelector('input').value || 0)
+      return { item_key: item.getAttribute('data-key'), item_name: item.querySelector('span').textContent.trim(), category: item.getAttribute('data-category'), quantity: quantity, unit: item.getAttribute('data-unit'), reason: 'doplnit' }
+    }).filter(function (item) { return item.quantity > 0 })
+    if (!selected.length) throw new Error('U alespoň jedné položky doplňte množství.')
     var note = document.querySelector('#ov-sheet-body textarea').value.trim()
-    var payload = { request_kind: 'equipment', status: 'new', title: selected.join(', '), note: note || null, need_timing: timing, employee_id: employee.id, vehicle_id: vehicle.id }
-    return createRequest(payload, selected.map(function (name) { return { name: name, quantity: quantity } })).then(function () { closeSheet(); toast('Požadavek na vybavení byl odeslán.'); return load() })
+    var photoButton = document.querySelector('#ov-sheet-body [data-photo]')
+    return uploadFiles(photoButton, 'equipment').then(function (urls) {
+      return requestJson('/rest/v1/rpc/create_vehicle_equipment_request_v61', { method: 'POST', body: JSON.stringify({ p_request: { vehicle_id: vehicle.id, vehicle_operation_log_id: currentLog() && currentLog().id || null, attendance_day_id: attendance.id, note: note || null }, p_items: selected, p_photo_urls: urls }) })
+    }).then(function () { closeSheet(); toast('Požadavek na vybavení byl odeslán.'); return load() })
   }
 
   function submitService() {
     var selected = document.querySelector('#ov-sheet-body .ov-choice.active')
     if (!selected) throw new Error('Vyberte typ servisního problému.')
-    var selects = document.querySelectorAll('#ov-sheet-body select')
-    var driveability = selects[0].value
-    var timing = selects[1].value
+    if (!attendance || String(attendance.vehicle_id || '') !== String(vehicle.id)) throw new Error('Závadu lze odeslat jen k vozidlu dnešní směny.')
+    var driveability = document.querySelector('#ov-sheet-body select').value
     var description = document.querySelector('#ov-sheet-body textarea').value.trim()
     if (!description) throw new Error('Popište prosím závadu nebo požadovaný servis.')
     var photoButton = document.querySelector('#ov-sheet-body [data-photo]')
+    if (!photoButton || !(photoButton._vehicleFiles || []).length) throw new Error('K závadě přidejte alespoň jednu fotografii.')
     return uploadFiles(photoButton, 'service').then(function (urls) {
-      var payload = { request_kind: 'vehicle_service', status: 'new', title: selected.textContent.trim(), note: description, need_timing: timing, employee_id: employee.id, vehicle_id: vehicle.id, issue_category: selected.textContent.trim(), drivable_status: driveability, attachment_urls: urls }
-      return createRequest(payload, [])
-    }).then(function () { closeSheet(); toast('Servisní požadavek byl odeslán.'); return load() })
+      return requestJson('/rest/v1/rpc/create_vehicle_issue_v61', { method: 'POST', body: JSON.stringify({ p_issue: { vehicle_id: vehicle.id, vehicle_operation_log_id: currentLog() && currentLog().id || null, attendance_day_id: attendance.id, category: selected.getAttribute('data-issue-category') || 'other', subcategory: selected.textContent.trim(), description: description, drive_status: driveability }, p_photo_urls: urls }) })
+    }).then(function () { closeSheet(); toast(driveability === 'stop' ? 'Závada je odeslaná a vozidlo je označené jako zastavené.' : 'Závada byla odeslána do správy vozidel.'); return load() })
   }
 
   function saveKilometers(value) {
@@ -365,7 +540,9 @@
     if (!photoButton || !(photoButton._vehicleFiles || []).length) throw new Error('K tankování vyfoťte účtenku.')
     return uploadFiles(photoButton, 'fuel').then(function (urls) {
       var log = currentLog()
-      var payload = { vehicle_id: vehicle.id, employee_id: employee.id, attendance_day_id: attendance.id, log_date: todayIso(), started_at: log && log.started_at || attendance.actual_start, start_odometer_km: log && log.start_odometer_km != null ? log.start_odometer_km : vehicle.current_odometer_km, fuel_liters: liters, fuel_cost: cost, fuel_odometer_km: km, fuel_receipt_url: urls[0], fuel_note: note || null, status: log && log.status || 'open' }
+      var orderedFuel = liveHistory.filter(function (row) { return row.fuel_value != null }).slice().sort(function (a, b) { return String(a.ingested_at || '').localeCompare(String(b.ingested_at || '')) })
+      var fullTank = document.querySelector('#ov-sheet-body [data-full-tank]')
+      var payload = { vehicle_id: vehicle.id, employee_id: employee.id, attendance_day_id: attendance.id, log_date: todayIso(), started_at: log && log.started_at || attendance.actual_start, start_odometer_km: log && log.start_odometer_km != null ? log.start_odometer_km : vehicle.current_odometer_km, fuel_liters: liters, fuel_cost: cost, fuel_odometer_km: km, fuel_receipt_url: urls[0], fuel_note: note || null, fuel_full_tank: Boolean(fullTank && fullTank.checked), fuel_level_before: orderedFuel.length > 1 ? orderedFuel[orderedFuel.length - 2].fuel_value : null, fuel_level_after: orderedFuel.length ? orderedFuel[orderedFuel.length - 1].fuel_value : null, fuel_logged_at: new Date().toISOString(), status: log && log.status || 'open' }
       if (log && log.id) return requestJson('/rest/v1/vehicle_operation_logs?id=eq.' + encodeURIComponent(log.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(payload) })
       return requestJson('/rest/v1/vehicle_operation_logs', { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(payload) })
     }).then(function () { toast('Tankování bylo uloženo.'); return load() })
@@ -399,6 +576,8 @@
     event.preventDefault(); event.stopImmediatePropagation(); target.disabled = true; setBusy(true, 'Ukládám do OLVEND…')
     Promise.resolve().then(function () { return handleAction(target) }).catch(function (error) { toast(error.message || 'Operaci se nepodařilo uložit.', true) }).then(function () { target.disabled = false; setBusy(false) })
   }, true)
+
+  document.getElementById('ovStockCard').addEventListener('click', openStockSheet)
 
   window.operatorVehicleStart = function (activeSession, activeEmployee) {
     session = activeSession
