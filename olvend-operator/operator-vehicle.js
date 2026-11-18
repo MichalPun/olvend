@@ -104,7 +104,7 @@
       attendance = Array.isArray(results[0]) && results[0][0] ? results[0][0] : null
       routePlan = Array.isArray(results[1]) && results[1][0] ? results[1][0] : null
       var vehicleId = attendance && attendance.vehicle_id || routePlan && routePlan.vehicle_id
-      var select = 'id,name,plate,brand,model,warehouse_id,current_odometer_km,note,active,fuel_type,tank_capacity_l,assigned_employee_id,stk_valid_until,insurance_valid_until,next_service_date,next_service_odometer_km,target_consumption_l_100km,tolerated_consumption_l_100km,service_scope,image_path,private_mileage_allowance_percent,mojio_vehicle_id'
+      var select = 'id,name,plate,brand,model,warehouse_id,current_odometer_km,note,active,fuel_type,tank_capacity_l,assigned_employee_id,stk_valid_until,insurance_valid_until,next_service_date,next_service_odometer_km,target_consumption_l_100km,tolerated_consumption_l_100km,service_scope,image_path,private_mileage_allowance_percent,mojio_vehicle_id,telemetry_baseline_device_km,telemetry_baseline_vehicle_km,telemetry_baseline_at'
       var url = '/rest/v1/vehicles?select=' + encodeURIComponent(select) + '&active=eq.true&order=id'
       return requestJson(url).then(function (rows) {
         var vehicles = Array.isArray(rows) ? rows : []
@@ -163,7 +163,7 @@
 
   function render() {
     var log = currentLog()
-    var currentOdometer = livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : Number(vehicle.current_odometer_km || 0)
+    var currentOdometer = estimatedVehicleOdometer()
     document.querySelector('.ov-vehicle-name').textContent = vehicle.name || [vehicle.brand, vehicle.model].filter(Boolean).join(' ') || 'Vozidlo'
     document.querySelector('.ov-plate').textContent = [vehicle.plate, fuelLabel(vehicle.fuel_type), vehicle.service_scope === 'coffee_only' ? 'pouze káva' : 'smíšený provoz'].filter(Boolean).join(' · ')
     document.querySelector('.ov-km b').textContent = currentOdometer.toLocaleString('cs-CZ', { maximumFractionDigits: 0 })
@@ -189,6 +189,14 @@
 
   function issueCategoryLabel(value) {
     return ({ engine: 'Kontrolka / motor', tires: 'Pneumatiky', fluids: 'Olej a kapaliny', brakes: 'Brzdy', lights: 'Světla', body: 'Karoserie / sklo', cargo: 'Nákladový prostor', service: 'Servis / údržba', other: 'Jiná závada' })[value] || value || 'Závada'
+  }
+
+  function estimatedVehicleOdometer() {
+    var raw = livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : null
+    var deviceBase = vehicle && vehicle.telemetry_baseline_device_km != null ? Number(vehicle.telemetry_baseline_device_km) : null
+    var vehicleBase = vehicle && vehicle.telemetry_baseline_vehicle_km != null ? Number(vehicle.telemetry_baseline_vehicle_km) : null
+    if (Number.isFinite(raw) && Number.isFinite(deviceBase) && Number.isFinite(vehicleBase) && raw >= deviceBase) return vehicleBase + raw - deviceBase
+    return Number(vehicle && vehicle.current_odometer_km || 0)
   }
 
   function vehicleImageUrl() {
@@ -221,7 +229,7 @@
     document.getElementById('ovLiveFuel').textContent = percent == null ? 'Bez dat' : Math.round(percent).toLocaleString('cs-CZ') + ' %' + (vehicle.tank_capacity_l ? ' · cca ' + Math.round(Number(vehicle.tank_capacity_l) * percent / 100).toLocaleString('cs-CZ') + ' l' : '')
     document.getElementById('ovLiveFuelTime').textContent = livePosition && livePosition.ingested_at ? 'T-Mobile · ' + formatDateTime(livePosition.ingested_at) : 'T-Mobile · čeká na data'
     document.getElementById('ovLiveState').textContent = livePosition ? online ? 'Online' : livePosition.is_parked ? 'Zaparkováno' : 'Offline' : 'Bez dat'
-    document.getElementById('ovLiveTime').textContent = livePosition && (livePosition.source_updated_at || livePosition.ingested_at) ? formatDateTime(livePosition.source_updated_at || livePosition.ingested_at) : 'Poslední synchronizace není dostupná'
+    document.getElementById('ovLiveTime').textContent = livePosition && (livePosition.source_updated_at || livePosition.ingested_at) ? formatDateTime(livePosition.source_updated_at || livePosition.ingested_at) + (vehicle.telemetry_baseline_at ? ' · km kalibrovány' : ' · km čekají na potvrzení') : 'Poslední synchronizace není dostupná'
   }
 
   function renderMileage() {
@@ -303,7 +311,7 @@
     var adviceIssue = issues.find(function (row) { return row.drive_status === 'advice' && ['resolved', 'cancelled'].indexOf(row.status) === -1 })
     var stkDays = daysUntil(vehicle.stk_valid_until)
     var insuranceDays = daysUntil(vehicle.insurance_valid_until)
-    var serviceRemaining = vehicle.next_service_odometer_km == null || vehicle.current_odometer_km == null ? null : Number(vehicle.next_service_odometer_km) - Number(vehicle.current_odometer_km)
+    var serviceRemaining = vehicle.next_service_odometer_km == null ? null : Number(vehicle.next_service_odometer_km) - estimatedVehicleOdometer()
     if (stoppedIssue) alerts.push({ cls: '', icon: '!', title: 'Vozidlo je zastavené', copy: stoppedIssue.description || 'Čeká na vyřešení nahlášené závady.', action: 'service' })
     else if (adviceIssue) alerts.push({ cls: 'warning', icon: '!', title: 'Čeká se na posouzení závady', copy: adviceIssue.description || 'Operátor potřebuje rozhodnutí, zda lze pokračovat.', action: 'service' })
     if (stkDays != null && stkDays < 0) alerts.push({ cls: '', icon: '!', title: 'STK je po termínu', copy: 'Evidence uvádí platnost do ' + formatDate(vehicle.stk_valid_until) + '.', action: 'service' })
@@ -353,7 +361,7 @@
   function renderTech() {
     var stk = deadlineValue(vehicle.stk_valid_until)
     var insurance = deadlineValue(vehicle.insurance_valid_until)
-    var remaining = vehicle.next_service_odometer_km == null ? null : Number(vehicle.next_service_odometer_km) - Number(vehicle.current_odometer_km || 0)
+    var remaining = vehicle.next_service_odometer_km == null ? null : Number(vehicle.next_service_odometer_km) - estimatedVehicleOdometer()
     document.querySelector('#ov-tech-grid').innerHTML = technicalCard('STK', stk[0], stk[1], stk[2])
       + technicalCard('Pojištění', insurance[0], insurance[1], insurance[2])
       + technicalCard('Další servis', vehicle.next_service_odometer_km == null ? 'Neuvedeno' : Number(vehicle.next_service_odometer_km).toLocaleString('cs-CZ') + ' km', remaining == null ? 'Bez limitu' : (remaining >= 0 ? 'Zbývá ' + remaining.toLocaleString('cs-CZ') + ' km' : 'Překročeno o ' + Math.abs(remaining).toLocaleString('cs-CZ') + ' km'), remaining != null && remaining <= 1000 ? 'warn' : '')
@@ -387,7 +395,7 @@
       if (kmDistance > 0) consumption = Number(last.fuel_liters) / kmDistance * 100
     }
     document.querySelector('#ov-metric-grid').innerHTML = '<article class="ov-metric"><span>Počáteční km</span><strong>' + start.toLocaleString('cs-CZ') + '</strong></article><article class="ov-metric"><span>Dnes ujeto</span><strong>' + distance.toLocaleString('cs-CZ') + ' km</strong></article><article class="ov-metric"><span>Poslední tankování</span><strong>' + (latestFuel ? formatDate(latestFuel.log_date) : 'Bez záznamu') + '</strong></article><article class="ov-metric"><span>Kontrolní spotřeba</span><strong>' + (consumption == null ? 'Čeká na data' : consumption.toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' l / 100 km') + '</strong></article>'
-    var knownKm = livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : Number(vehicle.current_odometer_km || 0)
+    var knownKm = estimatedVehicleOdometer()
     document.querySelector('#rideKnownKm').value = knownKm.toLocaleString('cs-CZ') + ' km'
     if (!document.querySelector('#rideKm').value) document.querySelector('#rideKm').value = String(end != null ? end : vehicle.current_odometer_km || '')
     if (!document.querySelector('#fuelKm').value) document.querySelector('#fuelKm').value = String(knownKm || '')
@@ -529,7 +537,7 @@
     if (!log || !log.id) throw new Error('Pro dnešní směnu chybí otevřený záznam jízdy.')
     return Promise.all([
       requestJson('/rest/v1/vehicle_operation_logs?id=eq.' + encodeURIComponent(log.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ end_odometer_km: km }) }),
-      requestJson('/rest/v1/vehicles?id=eq.' + encodeURIComponent(vehicle.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ current_odometer_km: km }) })
+      requestJson('/rest/v1/vehicles?id=eq.' + encodeURIComponent(vehicle.id), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ current_odometer_km: km, telemetry_baseline_device_km: livePosition && livePosition.odometer_km != null ? Number(livePosition.odometer_km) : null, telemetry_baseline_vehicle_km: livePosition && livePosition.odometer_km != null ? km : null, telemetry_baseline_at: livePosition && livePosition.odometer_km != null ? new Date().toISOString() : null }) })
     ]).then(function () { vehicle.current_odometer_km = km; toast('Aktuální stav kilometrů byl uložen.'); return load() })
   }
 

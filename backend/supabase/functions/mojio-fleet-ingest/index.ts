@@ -109,11 +109,11 @@ Deno.serve(async (req) => {
       return plate && sourceKey.includes(plate);
     });
     if (byPlate) return byPlate.id;
-    const byName = (vehicles || []).find((vehicle) => {
+    const byName = (vehicles || []).filter((vehicle) => {
       const name = normalizeVehicleKey(vehicle.name);
       return name && (sourceKey === name || sourceKey.includes(name) || name.includes(sourceKey));
     });
-    return byName?.id || null;
+    return byName.length === 1 ? byName[0].id : null;
   };
 
   const ingestedAt = new Date().toISOString();
