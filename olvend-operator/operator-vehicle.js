@@ -26,7 +26,7 @@
       { product_name: 'Snack Hamka 146 g', sku: '40300014', ean: '', base_unit: 'ks', product_category: 'food_ready', usage_type: '', quantity_on_hand: 5, product_image: './assets/product-images/bagette-hamka.jpg' },
       { product_name: 'Snickers', sku: 'SNICKERS', ean: '8000500073698', base_unit: 'ks', product_category: 'snack', usage_type: '', quantity_on_hand: 12, product_image: './assets/product-images/ean-8000500073698.jpg' },
       { product_name: 'Red Bull 0,25 l', sku: 'RED-BULL-025', ean: '9002490200091', base_unit: 'ks', product_category: 'drink', usage_type: '', quantity_on_hand: 9, product_image: './assets/product-images/ean-9002490200091.webp' },
-      { product_name: 'Creamer White AG PRO 1 kg', sku: 'CREAMER-WHITE', ean: '', base_unit: 'bal.', product_category: 'ingredient', usage_type: 'coffee', quantity_on_hand: 2, product_image: './icon-192.png' }
+      { product_name: 'Creamer White AG PRO 1 kg', sku: 'CREAMER-WHITE', ean: '', base_unit: 'bal.', product_category: 'ingredient', usage_type: 'coffee', quantity_on_hand: 2, image_path: 'static:./assets/product-images/48.jpg' }
     ]
   }
 
@@ -282,7 +282,10 @@
   function stockProductImage(row) {
     if (row.product_image) return row.product_image
     var path = String(row.image_path || '')
-    if (path.indexOf('static:') === 0) return path.slice(7)
+    if (path.indexOf('static:') === 0) {
+      var staticPath = path.slice(7)
+      return staticPath.indexOf('./assets/') === 0 ? '../assets/' + staticPath.slice(9) : staticPath
+    }
     var name = normalizeText(row.product_name)
     if (name.indexOf('svacink') >= 0) return './assets/product-images/bagette-svacinka.jpg'
     if (name.indexOf('hamka') >= 0) return './assets/product-images/bagette-hamka.jpg'
