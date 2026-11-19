@@ -19,6 +19,17 @@
   var mileageSummary = null
   var activePhotoInput = null
 
+  var preview = location.hostname === '127.0.0.1' && new URLSearchParams(location.search).get('preview') === 'dashboard'
+  if (preview) {
+    stockRows = [
+      { product_name: 'Snack Svačinka 158 g', sku: '40300015', ean: '', base_unit: 'ks', product_category: 'food_ready', usage_type: '', quantity_on_hand: 8, product_image: './assets/product-images/bagette-svacinka.jpg' },
+      { product_name: 'Snack Hamka 146 g', sku: '40300014', ean: '', base_unit: 'ks', product_category: 'food_ready', usage_type: '', quantity_on_hand: 5, product_image: './assets/product-images/bagette-hamka.jpg' },
+      { product_name: 'Snickers', sku: 'SNICKERS', ean: '8000500073698', base_unit: 'ks', product_category: 'snack', usage_type: '', quantity_on_hand: 12, product_image: './assets/product-images/ean-8000500073698.jpg' },
+      { product_name: 'Red Bull 0,25 l', sku: 'RED-BULL-025', ean: '9002490200091', base_unit: 'ks', product_category: 'drink', usage_type: '', quantity_on_hand: 9, product_image: './assets/product-images/ean-9002490200091.webp' },
+      { product_name: 'Creamer White AG PRO 1 kg', sku: 'CREAMER-WHITE', ean: '', base_unit: 'bal.', product_category: 'ingredient', usage_type: 'coffee', quantity_on_hand: 2, product_image: './icon-192.png' }
+    ]
+  }
+
   function headers(extra) {
     return Object.assign({ apikey: supabaseKey, Authorization: 'Bearer ' + session.access_token, 'Content-Type': 'application/json' }, extra || {})
   }
@@ -129,14 +140,17 @@
         var location = Array.isArray(results[6]) && results[6][0] ? results[6][0] : null
         var equipmentIds = equipmentRequests.map(function (row) { return row.id }).filter(Boolean)
         var equipmentItemsRequest = equipmentIds.length ? requestJson('/rest/v1/vehicle_equipment_request_items?select=*&request_id=in.(' + equipmentIds.map(encodeURIComponent).join(',') + ')&order=id') : Promise.resolve([])
-        var stockRequest = location ? requestJson('/rest/v1/stock_location_balances?select=id,product_id,quantity_on_hand,reserved_quantity,updated_at,products(id,name,sku,base_unit,product_category,usage_type)&stock_location_id=eq.' + encodeURIComponent(location.id) + '&quantity_on_hand=gt.0&order=updated_at.desc') : Promise.resolve([])
+        var stockRequest = location ? requestJson('/rest/v1/stock_location_balances?select=id,product_id,quantity_on_hand,reserved_quantity,updated_at,products(id,name,sku,ean,base_unit,product_category,usage_type,image_path)&stock_location_id=eq.' + encodeURIComponent(location.id) + '&quantity_on_hand=gt.0&order=updated_at.desc') : Promise.resolve([])
         return Promise.all([equipmentItemsRequest, stockRequest])
       }).then(function (detailResults) {
         equipmentItems = Array.isArray(detailResults[0]) ? detailResults[0] : []
         stockRows = (Array.isArray(detailResults[1]) ? detailResults[1] : []).map(function (row) {
           var product = row.products || {}
-          return Object.assign({}, row, { product_name: product.name || 'Položka', sku: product.sku || '', base_unit: product.base_unit || 'ks', product_category: product.product_category || '', usage_type: product.usage_type || '' })
+          return Object.assign({}, row, { product_name: product.name || 'Položka', sku: product.sku || '', ean: product.ean || '', base_unit: product.base_unit || 'ks', product_category: product.product_category || '', usage_type: product.usage_type || '', image_path: product.image_path || '' })
         })
+        return Promise.all(stockRows.map(hydrateStockImage))
+      }).then(function (hydratedStockRows) {
+        stockRows = hydratedStockRows
         requests = issues.map(function (row) {
           return Object.assign({}, row, { source: 'issue', request_kind: 'vehicle_service', title: row.subcategory || issueCategoryLabel(row.category), note: row.description })
         }).concat(equipmentRequests.map(function (row) {
@@ -245,10 +259,50 @@
 
   function stockCategory(row) {
     var text = normalizeText([row.product_name, row.product_category, row.usage_type, row.base_unit].join(' '))
-    if (/baget|sendvic|chlebicek|cerstv/.test(text)) return 'fresh'
-    if (/napoj|voda|cola|pepsi|juice|dzus/.test(text)) return 'drinks'
+    if (/food_ready|baget|sendvic|svacink|hamka|porizek|chlebicek|cerstv/.test(text)) return 'fresh'
+    if (/drink|beverage|energy|red bull|napoj|voda|cola|pepsi|juice|dzus/.test(text)) return 'drinks'
     if (/surovin|ingredient|kava|mleko|cukr|cokolad|matcha|kelimek|vick|michat/.test(text)) return 'ingredients'
     return 'sweets'
+  }
+
+  function stockCategoryLabel(category) {
+    return ({ fresh: 'Bagety a čerstvé', sweets: 'Cukrovinky a snacky', drinks: 'Nápoje', ingredients: 'Suroviny a obaly' })[category] || 'Ostatní'
+  }
+
+  function stockCategoryRank(category) {
+    return ({ fresh: 0, sweets: 1, drinks: 2, ingredients: 3 })[category] == null ? 9 : ({ fresh: 0, sweets: 1, drinks: 2, ingredients: 3 })[category]
+  }
+
+  function stockItemCountLabel(count) {
+    if (count === 1) return '1 položka'
+    if (count >= 2 && count <= 4) return count.toLocaleString('cs-CZ') + ' položky'
+    return count.toLocaleString('cs-CZ') + ' položek'
+  }
+
+  function stockProductImage(row) {
+    if (row.product_image) return row.product_image
+    var path = String(row.image_path || '')
+    if (path.indexOf('static:') === 0) return path.slice(7)
+    var name = normalizeText(row.product_name)
+    if (name.indexOf('svacink') >= 0) return './assets/product-images/bagette-svacinka.jpg'
+    if (name.indexOf('hamka') >= 0) return './assets/product-images/bagette-hamka.jpg'
+    if (name.indexOf('porizek') >= 0) return './assets/product-images/bagette-porizek.jpg'
+    var byEan = { '9002490200091': 'ean-9002490200091.webp', '7622201390648': 'ean-7622201390648.jpg', '5949040204427': 'ean-5949040204427.jpg', '8000500073698': 'ean-8000500073698.jpg', '3838945043694': 'ean-3838945043694.png', '8586018180863': 'ean-8586018180863.jpg', '8594002072858': 'ean-8594002072858.webp' }
+    return byEan[String(row.ean || '')] ? './assets/product-images/' + byEan[String(row.ean)] : './icon-192.png'
+  }
+
+  function hydrateStockImage(row) {
+    var path = String(row.image_path || '')
+    if (!path || path.indexOf('static:') === 0) {
+      row.product_image = stockProductImage(row)
+      return Promise.resolve(row)
+    }
+    return requestJson('/storage/v1/object/sign/product-images/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST', body: JSON.stringify({ expiresIn: 43200 }) }).then(function (data) {
+      if (data && data.signedURL) row.product_image = supabaseUrl + '/storage/v1' + data.signedURL
+      else if (data && data.signedUrl) row.product_image = data.signedUrl
+      else row.product_image = stockProductImage(row)
+      return row
+    }).catch(function () { row.product_image = stockProductImage(row); return row })
   }
 
   function renderStock() {
@@ -261,9 +315,15 @@
   }
 
   function openStockSheet() {
-    var rows = stockRows.slice().sort(function (a, b) { return stockCategory(a).localeCompare(stockCategory(b)) || String(a.product_name).localeCompare(String(b.product_name), 'cs') })
-    var html = '<div class="ov-stock-list">' + (rows.length ? rows.map(function (row) {
-      return '<article class="ov-stock-row"><div><strong>' + escapeHtml(row.product_name) + '</strong><small>' + escapeHtml([row.sku, row.product_category].filter(Boolean).join(' · ')) + '</small></div><b>' + Number(row.quantity_on_hand || 0).toLocaleString('cs-CZ') + ' ' + escapeHtml(row.base_unit || 'ks') + '</b></article>'
+    var rows = stockRows.slice().sort(function (a, b) { return stockCategoryRank(stockCategory(a)) - stockCategoryRank(stockCategory(b)) || String(a.product_name).localeCompare(String(b.product_name), 'cs') })
+    var categories = ['fresh', 'sweets', 'drinks', 'ingredients']
+    var html = '<div class="ov-stock-list">' + (rows.length ? categories.map(function (category) {
+      var items = rows.filter(function (row) { return stockCategory(row) === category })
+      if (!items.length) return ''
+      var total = items.reduce(function (sum, row) { return sum + Number(row.quantity_on_hand || 0) }, 0)
+      return '<section class="ov-stock-group"><header class="ov-stock-group-head"><strong>' + stockCategoryLabel(category) + '</strong><span>' + stockItemCountLabel(items.length) + ' · celkem ' + total.toLocaleString('cs-CZ') + '</span></header>' + items.map(function (row) {
+        return '<article class="ov-stock-row"><img src="' + escapeHtml(stockProductImage(row)) + '" alt=""><div><strong>' + escapeHtml(row.product_name) + '</strong><small>' + escapeHtml([row.sku, row.ean].filter(Boolean).join(' · ')) + '</small></div><b>' + Number(row.quantity_on_hand || 0).toLocaleString('cs-CZ') + ' ' + escapeHtml(row.base_unit || 'ks') + '</b></article>'
+      }).join('') + '</section>'
     }).join('') : '<article class="ov-request"><div><strong>Vozidlo je bez evidované zásoby</strong><p>Stav se načítá přímo ze skladu vozidla.</p></div></article>') + '</div>'
     if (window.operatorVehicleOpenCustomSheet) window.operatorVehicleOpenCustomSheet('▣', 'Zásoby vozidla', 'Co je právě v autě', html)
   }
@@ -550,6 +610,7 @@
   }, true)
 
   document.getElementById('ovStockCard').addEventListener('click', openStockSheet)
+  if (preview) renderStock()
 
   window.operatorVehicleStart = function (activeSession, activeEmployee) {
     session = activeSession
