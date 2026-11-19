@@ -17,7 +17,6 @@
   var livePosition = null
   var liveHistory = []
   var mileageSummary = null
-  var dailyCheck = null
   var activePhotoInput = null
 
   function headers(extra) {
@@ -114,22 +113,20 @@
     }).then(function () {
       if (!vehicle) { renderMissingVehicle(); return }
       var logUrl = '/rest/v1/vehicle_operation_logs?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=log_date.desc,updated_at.desc&limit=30'
-      var checkUrl = '/rest/v1/vehicle_daily_checks?select=*&employee_id=eq.' + encodeURIComponent(employee.id) + '&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&check_date=eq.' + todayIso() + '&limit=1'
       var liveUrl = '/rest/v1/vehicle_live_positions?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=ingested_at.desc&limit=1'
       var historyUrl = '/rest/v1/vehicle_live_position_history?select=vehicle_id,odometer_km,fuel_value,fuel_unit,source_updated_at,ingested_at&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=ingested_at.desc&limit=20'
       var issueUrl = '/rest/v1/vehicle_issues?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=created_at.desc&limit=50'
       var equipmentUrl = '/rest/v1/vehicle_equipment_requests?select=*&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&order=created_at.desc&limit=50'
       var locationUrl = '/rest/v1/stock_locations?select=id&location_type=eq.vehicle&vehicle_id=eq.' + encodeURIComponent(vehicle.id) + '&active=eq.true&limit=1'
       var mileageRequest = requestJson('/rest/v1/rpc/get_my_vehicle_mileage_summary_v61', { method: 'POST', body: JSON.stringify({ p_vehicle_id: vehicle.id, p_log_date: todayIso() }) })
-      return Promise.all([requestJson(logUrl), requestJson(checkUrl).catch(function () { return [] }), requestJson(liveUrl).catch(function () { return [] }), requestJson(historyUrl).catch(function () { return [] }), mileageRequest.catch(function () { return null }), requestJson(issueUrl), requestJson(equipmentUrl), requestJson(locationUrl)]).then(function (results) {
+      return Promise.all([requestJson(logUrl), requestJson(liveUrl).catch(function () { return [] }), requestJson(historyUrl).catch(function () { return [] }), mileageRequest.catch(function () { return null }), requestJson(issueUrl), requestJson(equipmentUrl), requestJson(locationUrl)]).then(function (results) {
         logs = Array.isArray(results[0]) ? results[0] : []
-        dailyCheck = Array.isArray(results[1]) && results[1][0] ? results[1][0] : null
-        livePosition = Array.isArray(results[2]) && results[2][0] ? results[2][0] : null
-        liveHistory = Array.isArray(results[3]) ? results[3] : []
-        mileageSummary = results[4] && !Array.isArray(results[4]) ? results[4] : null
-        issues = Array.isArray(results[5]) ? results[5] : []
-        equipmentRequests = Array.isArray(results[6]) ? results[6] : []
-        var location = Array.isArray(results[7]) && results[7][0] ? results[7][0] : null
+        livePosition = Array.isArray(results[1]) && results[1][0] ? results[1][0] : null
+        liveHistory = Array.isArray(results[2]) ? results[2] : []
+        mileageSummary = results[3] && !Array.isArray(results[3]) ? results[3] : null
+        issues = Array.isArray(results[4]) ? results[4] : []
+        equipmentRequests = Array.isArray(results[5]) ? results[5] : []
+        var location = Array.isArray(results[6]) && results[6][0] ? results[6][0] : null
         var equipmentIds = equipmentRequests.map(function (row) { return row.id }).filter(Boolean)
         var equipmentItemsRequest = equipmentIds.length ? requestJson('/rest/v1/vehicle_equipment_request_items?select=*&request_id=in.(' + equipmentIds.map(encodeURIComponent).join(',') + ')&order=id') : Promise.resolve([])
         var stockRequest = location ? requestJson('/rest/v1/stock_location_balances?select=id,product_id,quantity_on_hand,reserved_quantity,updated_at,products(id,name,sku,base_unit,product_category,usage_type)&stock_location_id=eq.' + encodeURIComponent(location.id) + '&quantity_on_hand=gt.0&order=updated_at.desc') : Promise.resolve([])
@@ -178,7 +175,6 @@
     renderAlerts()
     renderRequests()
     renderTech()
-    renderCheck()
     renderRide(log)
     renderHistory()
   }
@@ -368,19 +364,6 @@
       + technicalCard('Typ provozu', vehicle.service_scope === 'coffee_only' ? 'Pouze káva' : 'Káva i potraviny', fuelLabel(vehicle.fuel_type), '')
   }
 
-  function checkValues() {
-    var keys = ['body_ok', 'tires_ok', 'lights_ok', 'equipment_ok', 'fluids_ok', 'load_secured_ok']
-    return keys.map(function (key) { return Boolean(dailyCheck && dailyCheck[key]) })
-  }
-
-  function renderCheck() {
-    var values = checkValues()
-    var count = values.filter(Boolean).length
-    document.querySelector('#ov-check-progress').textContent = count + ' z 6'
-    document.querySelector('#ov-check-bar').style.width = Math.round(count / 6 * 100) + '%'
-    document.querySelector('#ov-check-button').textContent = count === 6 ? 'Kontrola dokončena' : count ? 'Pokračovat v kontrole' : 'Provést kontrolu'
-  }
-
   function renderRide(log) {
     var start = log && log.start_odometer_km != null ? Number(log.start_odometer_km) : Number(vehicle.current_odometer_km || 0)
     var end = log && log.end_odometer_km != null ? Number(log.end_odometer_km) : null
@@ -441,14 +424,6 @@
     })
   }
 
-  function hydrateCheckSheet() {
-    window.setTimeout(function () {
-      var boxes = document.querySelectorAll('#ov-sheet-body .ov-check input')
-      var values = checkValues()
-      Array.prototype.forEach.call(boxes, function (box, index) { box.checked = Boolean(values[index]) })
-    }, 0)
-  }
-
   function selectPhoto(button) {
     if (activePhotoInput) activePhotoInput.remove()
     var input = document.createElement('input')
@@ -476,15 +451,6 @@
         method: 'POST', headers: { apikey: supabaseKey, Authorization: 'Bearer ' + session.access_token, 'Content-Type': file.type || 'image/jpeg', 'x-upsert': 'false' }, body: file
       }).then(function (response) { if (!response.ok) throw new Error('Fotografii se nepodařilo nahrát.'); return supabaseUrl + '/storage/v1/object/public/shift-documents/' + path })
     }))
-  }
-
-  function saveCheck(button) {
-    if (!vehicle) return Promise.reject(new Error('Vozidlo není přiřazené.'))
-    var boxes = document.querySelectorAll('#ov-sheet-body .ov-check input')
-    var values = Array.prototype.map.call(boxes, function (box) { return Boolean(box.checked) })
-    if (values.length !== 6 || values.some(function (value) { return !value })) throw new Error('Nejdřív zkontrolujte a potvrďte všech šest bodů. Problém nahlaste samostatně na servis.')
-    var payload = { vehicle_id: vehicle.id, employee_id: employee.id, attendance_day_id: attendance && attendance.id || null, check_date: todayIso(), body_ok: values[0], tires_ok: values[1], lights_ok: values[2], equipment_ok: values[3], fluids_ok: values[4], load_secured_ok: values[5], checked_at: new Date().toISOString() }
-    return requestJson('/rest/v1/vehicle_daily_checks?on_conflict=vehicle_id,employee_id,check_date', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' }, body: JSON.stringify(payload) }).then(function (rows) { dailyCheck = Array.isArray(rows) && rows[0] ? rows[0] : payload; renderCheck(); closeSheet(); toast('Kontrola vozidla byla potvrzena.') })
   }
 
   function createRequest(payload, items) {
@@ -559,7 +525,6 @@
   function handleAction(button) {
     var sheetTitle = document.getElementById('ov-sheet-title').textContent.toLowerCase()
     if (button.hasAttribute('data-submit-demo')) {
-      if (sheetTitle.indexOf('kontrola') !== -1) return saveCheck(button)
       if (sheetTitle.indexOf('vybavení') !== -1) return submitEquipment()
       if (sheetTitle.indexOf('servis') !== -1 || sheetTitle.indexOf('závadu') !== -1) return submitService()
       if (sheetTitle.indexOf('tankování') !== -1) {
@@ -579,7 +544,6 @@
     if (target.hasAttribute('data-photo')) {
       event.preventDefault(); event.stopImmediatePropagation(); selectPhoto(target); return
     }
-    if (target.getAttribute('data-open') === 'check') hydrateCheckSheet()
     if (!target.hasAttribute('data-submit-demo') && !target.hasAttribute('data-save-action')) return
     event.preventDefault(); event.stopImmediatePropagation(); target.disabled = true; setBusy(true, 'Ukládám do OLVEND…')
     Promise.resolve().then(function () { return handleAction(target) }).catch(function (error) { toast(error.message || 'Operaci se nepodařilo uložit.', true) }).then(function () { target.disabled = false; setBusy(false) })
