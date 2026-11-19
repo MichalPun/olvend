@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v41-vehicle-stock-aggregate-images'
+  var CACHE_NAME = 'olvend-operator-v42-vehicle-stock-categories'
   var APP_SHELL = [
     './',
     './index.html',

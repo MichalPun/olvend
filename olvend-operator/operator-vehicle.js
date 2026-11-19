@@ -258,11 +258,7 @@
   }
 
   function stockCategory(row) {
-    var text = normalizeText([row.product_name, row.product_category, row.usage_type, row.base_unit].join(' '))
-    if (/food_ready|baget|sendvic|svacink|hamka|porizek|chlebicek|cerstv/.test(text)) return 'fresh'
-    if (/drink|beverage|energy|red bull|napoj|voda|cola|pepsi|juice|dzus/.test(text)) return 'drinks'
-    if (/surovin|ingredient|kava|mleko|cukr|cokolad|matcha|kelimek|vick|michat/.test(text)) return 'ingredients'
-    return 'sweets'
+    return window.OlvendOperatorStockCore.stockCategory(row)
   }
 
   function stockCategoryLabel(category) {
