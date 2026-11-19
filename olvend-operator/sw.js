@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v40-vehicle-without-departure-check'
+  var CACHE_NAME = 'olvend-operator-v41-vehicle-stock-aggregate-images'
   var APP_SHELL = [
     './',
     './index.html',
@@ -21,6 +21,7 @@
     './operator-warehouse.js',
     './operator-profile.js',
     './operator-instructions.js',
+    './operator-stock-core.js',
     './operator-vehicle.js',
     './auth-guard.js',
     './pwa-v31.js',
