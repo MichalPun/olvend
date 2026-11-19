@@ -51,5 +51,10 @@ assert.match(html, /if \(isCoffeeVisit && !detail\) throw new Error/, 'Dokončen
 assert.match(html, /await saveCoffeePreparation\(stop\.id, 'machine'\)/, 'Před dokončením se musí uložit aktuální příprava')
 assert.match(html, /await persistUnchangedCoffeeContainerStates\(\{/, 'Dokončení musí hromadně uložit fyzicky zkontrolované zásobníky beze změny')
 assert.doesNotMatch(html, /const \[visitResult, stopResult\] = await Promise\.all/, 'Návštěva a zastávka se nesmí uzavírat souběžně')
+assert.match(
+  html,
+  /if \(action === 'adjust-container'[\s\S]*?actualBeforeQuantity: actualBefore,[\s\S]*?accepted: false[\s\S]*?await saveCoffeeContainerVisitItem/,
+  'Ruční oprava nesmí označit zásobník jako hotový dřív, než se skutečný stav úspěšně uloží'
+)
 
 console.log('OK: coffee container correction remains pending until it is saved and confirmed')
