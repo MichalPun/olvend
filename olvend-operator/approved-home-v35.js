@@ -1419,14 +1419,6 @@
       instruction = results[1]
       attendanceDay = results[2]
       availableVehicles = results[3]
-      var activeShift = Boolean(attendanceDay && attendanceDay.actual_start && !attendanceDay.actual_end)
-      var actionableRoute = Boolean(routePlan && routePlan.execution_status !== 'done' && routePlan.execution_status !== 'cancelled')
-      if (!activeShift && !actionableRoute) {
-        window.location.replace('./profil.html?entry=no-shift')
-        var redirectError = new Error('Přesměrování do sekce Moje')
-        redirectError.operatorRedirect = true
-        throw redirectError
-      }
       var resolvedVehicleId = attendanceDay && attendanceDay.vehicle_id || routePlan && routePlan.vehicle_id
       assignedVehicleId = resolvedVehicleId || null
       return Promise.all([loadVehicle(resolvedVehicleId), loadInstructionAcknowledgement(), loadInstructionProgress()])
@@ -1444,7 +1436,6 @@
     }).then(function (weather) {
       renderWeather(weather)
     }).catch(function (error) {
-      if (error && error.operatorRedirect) return
       root.querySelector('.ot-state').innerHTML = 'Data směny se nepodařilo načíst · <b>' + String(error.message || 'zkuste obnovit') + '</b>'
       updateReadiness()
     })
