@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v46-warehouse-flow-v3-vehicle-v2'
+  var CACHE_NAME = 'olvend-operator-v47-unrestricted-shift-start'
   var APP_SHELL = [
     './',
     './index.html',
@@ -17,7 +17,7 @@
     './operator-login.js',
     './operator-nav.css',
     './operator-profile-v3.css',
-    './approved-home-v35.js?v=20261117-home-start-v2',
+    './approved-home-v35.js?v=20261119-unrestricted-shift-start-v1',
     './operator-dashboard-v1.css?v=20261117-1',
     './operator-dashboard-v1.js?v=20261117-weather-v2',
     './operator-route.js',
