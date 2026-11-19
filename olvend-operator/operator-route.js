@@ -13,6 +13,8 @@
   var groups = []
   var activeGroup = null
   var toastTimer = null
+  var routeMap = null
+  var stopMap = null
 
   var icons = {
     car: '<path d="M5 17h14v-5l-2-5H7l-2 5v5Z"/><path d="M7 17v2M17 17v2M5 12h14"/><circle cx="8" cy="15" r="1"/><circle cx="16" cy="15" r="1"/>',
@@ -102,6 +104,9 @@
       execution_status: 'in_progress',
       started_at: '2026-11-10T04:37:58.753Z',
       estimated_distance_km: 432.05,
+      start_latitude: 49.1185,
+      start_longitude: 16.6445,
+      return_to_start: true,
       route_payload: { mobile_recalculation: { estimated_return_at: '2026-11-10T15:04:01.112Z' } },
       route_plan_stops: [
         previewStop(2467,1,'done',52,'REMANTE GROUP s.r.o.','K Rybníčkům 13','Otice',6,'Europa Snack','Snack'),
@@ -196,6 +201,96 @@
     return plan && plan.route_payload && plan.route_payload.mobile_recalculation && plan.route_payload.mobile_recalculation.estimated_return_at || null
   }
 
+  function point(latitude, longitude) {
+    if (latitude == null || longitude == null || String(latitude).trim() === '' || String(longitude).trim() === '') return null
+    var lat = Number(latitude)
+    var lng = Number(longitude)
+    return Number.isFinite(lat) && Number.isFinite(lng) ? [lat, lng] : null
+  }
+
+  function routeStartPoint() {
+    return plan ? point(plan.start_latitude, plan.start_longitude) : null
+  }
+
+  function previousPointFor(group) {
+    var index = groups.findIndex(function (item) { return item.key === group.key })
+    if (index > 0) return point(groups[index - 1].latitude, groups[index - 1].longitude) || routeStartPoint()
+    return routeStartPoint()
+  }
+
+  function mapIcon(label, type) {
+    return window.L.divIcon({ className: '', html: '<span class="or-map-marker ' + (type || '') + '">' + label + '</span>', iconSize: [26, 26], iconAnchor: [13, 13] })
+  }
+
+  function createMap(containerId) {
+    var container = document.getElementById(containerId)
+    if (!container || !window.L) return null
+    container.innerHTML = ''
+    var map = window.L.map(container, { zoomControl: true, attributionControl: true, scrollWheelZoom: false, tap: false })
+    window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map)
+    return map
+  }
+
+  function mapFallback(containerId, text) {
+    var container = document.getElementById(containerId)
+    if (container) container.innerHTML = '<div class="or-map-fallback">' + text + '</div>'
+  }
+
+  function fitMap(map, points) {
+    if (!map || !points.length) return
+    if (points.length === 1) map.setView(points[0], 13)
+    else map.fitBounds(window.L.latLngBounds(points), { padding: [26, 26], maxZoom: 13 })
+    window.setTimeout(function () { map.invalidateSize(false) }, 80)
+  }
+
+  function renderRouteMap() {
+    if (routeMap) { routeMap.remove(); routeMap = null }
+    var points = []
+    var start = routeStartPoint()
+    if (start) points.push(start)
+    groups.forEach(function (group) {
+      var groupPoint = point(group.latitude, group.longitude)
+      if (groupPoint) points.push(groupPoint)
+    })
+    root.querySelector('#or-route-map-distance').textContent = formatKm(plan && plan.estimated_distance_km)
+    root.querySelector('#or-route-map-caption').innerHTML = '<strong>Celá dnešní trasa</strong>' + groups.length + ' ' + (groups.length === 1 ? 'lokalita' : groups.length < 5 ? 'lokality' : 'lokalit') + ' · start a návrat ' + (plan && plan.return_to_start ? 've skladu' : 'dle plánu')
+    if (!window.L || !points.length) return mapFallback('or-route-map', 'Mapu nelze právě načíst. Seznam zastávek a navigace zůstávají dostupné.')
+    routeMap = createMap('or-route-map')
+    if (!routeMap) return
+    if (start) window.L.marker(start, { icon: mapIcon('S', 'start') }).addTo(routeMap).bindTooltip('Výjezd ze skladu', { direction: 'top' })
+    groups.forEach(function (group) {
+      var groupPoint = point(group.latitude, group.longitude)
+      if (!groupPoint) return
+      window.L.marker(groupPoint, { icon: mapIcon(String(group.order), group.closed ? '' : 'active') }).addTo(routeMap).bindTooltip(group.name, { direction: 'top' })
+    })
+    if (points.length > 1) {
+      var line = points.slice()
+      if (plan && plan.return_to_start && start) line.push(start)
+      window.L.polyline(line, { color: '#d5101a', weight: 4, opacity: .82, lineCap: 'round', dashArray: '8 7' }).addTo(routeMap)
+    }
+    fitMap(routeMap, points)
+  }
+
+  function renderStopMap(group) {
+    if (stopMap) { stopMap.remove(); stopMap = null }
+    var origin = previousPointFor(group)
+    var destination = point(group.latitude, group.longitude)
+    root.querySelector('#or-stop-map-caption').innerHTML = '<strong>Aktuální úsek</strong>' + (origin ? 'Předchozí bod' : 'Výchozí místo') + ' → ' + group.name
+    root.querySelector('#or-stop-map-distance').textContent = group.distanceKm == null ? '—' : formatKm(group.distanceKm)
+    if (!window.L || !destination) return mapFallback('or-stop-map', 'U této zastávky chybí souřadnice mapy. Google navigace použije uloženou adresu.')
+    stopMap = createMap('or-stop-map')
+    if (!stopMap) return
+    var points = []
+    if (origin) {
+      points.push(origin)
+      window.L.marker(origin, { icon: mapIcon('S', 'start') }).addTo(stopMap).bindTooltip('Začátek úseku', { direction: 'top' })
+    }
+    points.push(destination)
+    window.L.marker(destination, { icon: mapIcon(String(group.order), 'active') }).addTo(stopMap).bindTooltip(group.name, { direction: 'top' })
+    if (origin) window.L.polyline([origin, destination], { color: '#d5101a', weight: 4, opacity: .86, dashArray: '8 7' }).addTo(stopMap)
+    fitMap(stopMap, points)
+  }
+
   function showToast(message, error) {
     var toast = root.querySelector('#or-toast')
     window.clearTimeout(toastTimer)
@@ -224,6 +319,7 @@
     root.querySelector('#or-progress-bar').style.width = percent + '%'
     root.querySelector('#or-vehicle [data-tile-copy]').textContent = vehicle ? [vehicle.plate, Number(vehicle.current_odometer_km || 0).toLocaleString('cs-CZ') + ' km'].filter(Boolean).join(' · ') : 'Vozidlo není přiřazené'
     root.querySelector('#or-route-list [data-tile-copy]').textContent = groups.length + ' lokalit · ' + (plan.route_plan_stops || []).length + ' automatů'
+    renderRouteMap()
     renderNext(next, routeDone)
   }
 
@@ -262,6 +358,7 @@
     start.textContent = group.closed ? 'Zastávka je hotová' : group.arrived ? 'Návštěva zahájena' : 'Zahájit návštěvu'
     start.disabled = group.closed || group.arrived
     root.querySelector('#or-stop-navigate').disabled = group.closed
+    renderStopMap(group)
     window.scrollTo(0, 0)
   }
 
@@ -326,6 +423,7 @@
   }
 
   function closeGroup() {
+    if (stopMap) { stopMap.remove(); stopMap = null }
     activeGroup = null
     root.querySelector('#or-stop-view').hidden = true
     root.querySelector('#or-route-view').hidden = false
@@ -384,7 +482,7 @@
   }
 
   function load() {
-    var select = 'id,title,vehicle_id,execution_status,estimated_distance_km,estimated_drive_minutes,estimated_service_minutes,started_at,completed_at,return_to_start,route_payload,route_plan_stops(id,stop_order,status,arrived_at,completed_at,skipped_at,title,address_snapshot,city_snapshot,latitude,longitude,machine_id,location_id,estimated_service_minutes)'
+    var select = 'id,title,vehicle_id,execution_status,estimated_distance_km,estimated_drive_minutes,estimated_service_minutes,started_at,completed_at,return_to_start,start_latitude,start_longitude,route_payload,route_plan_stops(id,stop_order,status,arrived_at,completed_at,skipped_at,title,address_snapshot,city_snapshot,latitude,longitude,machine_id,location_id,estimated_service_minutes)'
     var routePath = '/rest/v1/route_plans?select=' + encodeURIComponent(select) + '&planned_employee_id=eq.' + encodeURIComponent(employee.id) + '&planning_date=eq.' + encodeURIComponent(todayIso()) + '&execution_status=neq.cancelled&order=created_at.desc&limit=1'
     return requestJson(routePath).then(function (rows) {
       plan = Array.isArray(rows) && rows[0] || null
