@@ -11080,7 +11080,7 @@
     }
 
     function applyIsolatedTestVehicleStock(detail, productIds = []) {
-      const route = getAssignedRoutePlan()
+      const route = detail?.stopId ? (findRouteStop(detail.stopId)?.plan || getAssignedRoutePlan()) : getAssignedRoutePlan()
       if (!route?.route_payload?.test_mode || !route.route_payload.test_vehicle_stock) return
       const fixture = route.route_payload.test_vehicle_stock
       for (const productId of productIds) {
@@ -14067,7 +14067,24 @@
           }
         }
 
-        const slots = slotsResult.data || []
+        const routePlan = findRouteStop(stop.id)?.plan || getAssignedRoutePlan()
+        const configuredTestFoodSlots = routePlan?.route_payload?.test_mode
+          && routePlan.route_payload.test_food_slots
+          && typeof routePlan.route_payload.test_food_slots === 'object'
+          ? routePlan.route_payload.test_food_slots
+          : null
+        let slots = slotsResult.data || []
+        const testFixtureBySlotId = new Map()
+        if (configuredTestFoodSlots) {
+          const fixtureSlots = []
+          for (const [fixtureKey, fixture] of Object.entries(configuredTestFoodSlots)) {
+            const matchedSlot = slots.find((slot) => String(slot.id) === String(fixtureKey) || String(slot.slot_code) === String(fixtureKey))
+            if (!matchedSlot || !fixture || typeof fixture !== 'object') continue
+            fixtureSlots.push(matchedSlot)
+            testFixtureBySlotId.set(String(matchedSlot.id), fixture)
+          }
+          slots = fixtureSlots
+        }
         const slotIds = slots.map((slot) => slot.id).filter(Boolean)
         let layersBySlot = new Map()
         if (slotIds.length) {
@@ -14093,6 +14110,41 @@
         }
         for (const slot of slots) {
           slot._layers = layersBySlot.get(String(slot.id)) || []
+          const testFixture = testFixtureBySlotId.get(String(slot.id))
+          if (testFixture) {
+            const fixtureLayers = Array.isArray(testFixture.layers) ? testFixture.layers : []
+            const primaryProduct = state.products.find((product) => String(product.sku || '') === String(testFixture.primary_product_sku || ''))
+            const frontProduct = state.products.find((product) => String(product.sku || '') === String(fixtureLayers[0]?.sku || testFixture.product_sku || ''))
+            const fixtureCurrent = Math.max(0, Number(testFixture.current_units ?? fixtureLayers.reduce((sum, layer) => sum + Number(layer.quantity || 0), 0)))
+            const fixtureCapacity = Math.max(1, Number(testFixture.capacity_units || slot.capacity_units || 1))
+            Object.assign(slot, {
+              product_sku: frontProduct?.sku || testFixture.product_sku || slot.product_sku,
+              product_name: frontProduct?.name || testFixture.product_name || slot.product_name,
+              primary_product_id: primaryProduct?.id || slot.primary_product_id || null,
+              primary_product_sku: primaryProduct?.sku || testFixture.primary_product_sku || slot.primary_product_sku || slot.product_sku,
+              primary_product_name: primaryProduct?.name || testFixture.primary_product_name || slot.primary_product_name || slot.product_name,
+              current_units: fixtureCurrent,
+              capacity_units: fixtureCapacity,
+              target_units: Math.max(0, Number(testFixture.target_units ?? fixtureCapacity)),
+              desired_units: Math.max(0, Number(testFixture.desired_units ?? (fixtureCapacity - fixtureCurrent))),
+              fill_percent: fixtureCapacity > 0 ? Math.round((fixtureCurrent / fixtureCapacity) * 10000) / 100 : 0,
+              substitution_policy: testFixture.substitution_policy || 'approved_list',
+              allowed_substitutes: testFixture.allowed_substitutes || fixtureLayers.map((layer) => `SKU ${layer.sku || ''}`).filter((value) => value !== 'SKU ').join(', '),
+              expiry_date: testFixture.expiry_date || fixtureLayers.map((layer) => layer.expiry_date).filter(Boolean).sort()[0] || slot.expiry_date,
+              _layers: fixtureLayers.map((layer, index) => {
+                const product = state.products.find((item) => String(item.sku || '') === String(layer.sku || ''))
+                return {
+                  layer_order: index + 1,
+                  product_id: product?.id || null,
+                  product_sku: product?.sku || layer.sku || '',
+                  product_name: product?.name || layer.name || layer.sku || 'Produkt',
+                  quantity: Math.max(0, Number(layer.quantity || 0)),
+                  expiry_date: layer.expiry_date || null,
+                  source: 'route_test_fixture'
+                }
+              }).filter((layer) => layer.product_id && layer.quantity > 0)
+            })
+          }
           slot._priceRequest = latestPriceRequestBySlot.get(String(slot.id)) || null
           if (!slot.product_family) continue
           slot._familyAlternativeSkus = slots
@@ -15418,7 +15470,7 @@
       await assertRouteVisitNotCorrected(getFoodDetail(stopId)?.visitId)
       const detail = getFoodDetail(stopId)
       if (!detail?.visitId || !slot?.id) throw new Error('Pozice není připravená k potvrzení.')
-      const isolatedTestMode = Boolean(getAssignedRoutePlan()?.route_payload?.test_mode)
+      const isolatedTestMode = Boolean((findRouteStop(stopId)?.plan || getAssignedRoutePlan())?.route_payload?.test_mode)
       const draft = getFoodSlotDraft(stopId, slot)
       const fillItems = draft.fillItems
         .map((fill) => ({ ...fill, quantity: Math.max(0, Math.round(Number(fill.quantity || 0))) }))
@@ -15932,9 +15984,11 @@
         const { error: fillsError } = await supabase.from('route_machine_visit_food_fills').insert(fillRows)
         if (fillsError) throw fillsError
       }
-      const { error: slotError } = await supabase
-        .from('machine_planogram_slots')
-        .update({
+      let slotError = null
+      if (!isolatedTestMode) {
+        const slotUpdateResult = await supabase
+          .from('machine_planogram_slots')
+          .update({
           ...((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange ? {
             product_sku: finalizedProductSku,
             product_name: finalizedProduct?.name || planogramChange?.nextName || slot.product_name,
@@ -15997,8 +16051,10 @@
             pending_change_note: null,
             pending_change_mode: 'sell_through'
           })
-        })
-        .eq('id', slot.id)
+          })
+          .eq('id', slot.id)
+        slotError = slotUpdateResult.error
+      }
       if (slotError) throw slotError
       const layerPayload = compositionLayers.map((layer) => {
         const product = state.products.find((item) => String(item.id || '') === String(layer.productId || ''))
@@ -16010,12 +16066,14 @@
           expiry_date: layer.expiryDate || ''
         }
       }).filter((layer) => layer.product_id && layer.quantity > 0)
-      const { error: layersError } = await supabase.rpc('replace_machine_planogram_slot_layers', {
-        p_slot_id: slot.id,
-        p_layers: layerPayload,
-        p_source_visit_id: detail.visitId
-      })
-      if (layersError) throw new Error(`Složení pozice ${slot.slot_code} se nepodařilo uložit: ${layersError.message}`)
+      if (!isolatedTestMode) {
+        const { error: layersError } = await supabase.rpc('replace_machine_planogram_slot_layers', {
+          p_slot_id: slot.id,
+          p_layers: layerPayload,
+          p_source_visit_id: detail.visitId
+        })
+        if (layersError) throw new Error(`Složení pozice ${slot.slot_code} se nepodařilo uložit: ${layersError.message}`)
+      }
       slot.current_units = finalQuantity
       slot.capacity_units = capacity
       slot.target_units = targetQuantity
