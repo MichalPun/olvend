@@ -144,10 +144,10 @@
         return Promise.all([equipmentItemsRequest, stockRequest])
       }).then(function (detailResults) {
         equipmentItems = Array.isArray(detailResults[0]) ? detailResults[0] : []
-        stockRows = (Array.isArray(detailResults[1]) ? detailResults[1] : []).map(function (row) {
+        stockRows = window.OlvendOperatorStockCore.aggregateStockRows((Array.isArray(detailResults[1]) ? detailResults[1] : []).map(function (row) {
           var product = row.products || {}
           return Object.assign({}, row, { product_name: product.name || 'Položka', sku: product.sku || '', ean: product.ean || '', base_unit: product.base_unit || 'ks', product_category: product.product_category || '', usage_type: product.usage_type || '', image_path: product.image_path || '' })
-        })
+        }))
         return Promise.all(stockRows.map(hydrateStockImage))
       }).then(function (hydratedStockRows) {
         stockRows = hydratedStockRows

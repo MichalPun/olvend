@@ -22,6 +22,29 @@ warehouse SKU, so renaming a product does not break its image.
 The product master stores these paths in `products.image_path`, so the same
 verified photo is used in the PC inventory and in the Zebra pick card.
 
+## Products completed for vehicle inventory
+
+| File | SKU / EAN | Product | Source |
+| --- | --- | --- | --- |
+| `ean-8594010435614.png` | EAN 8594010435614 | ATM Belgická bageta | https://www.crocodille.com/products/atm |
+| `sku-16-labuznik.png` | SKU 16 | ATM Chlebíčkový labužník | https://www.crocodille.com/products/atm |
+| `sku-282-kure-teriyaki.png` | SKU 282 | ATM Kuře teriyaki | https://www.crocodille.com/products/atm |
+| `ean-8594010421358.png` | EAN 8594010421358 | ATM Kuřecí stripsy | https://www.crocodille.com/products/atm |
+| `ean-8594010433450.png` | EAN 8594010433450 | ATM Debrecínská bageta | https://www.crocodille.com/products/atm |
+| `sku-154-trhane-veprove.png` | SKU 154 | ATM Trhané vepřové | https://www.crocodille.com/products/atm |
+| `sku-207-bad-brambacher-grep.jpg` | SKU 207 | Bad Brambacher Grep PET 0,5 l | https://pape.cz/zahradni-limonada-grep-pet-bad-brambacher-6-ks-x-0-5-l/ |
+| `sku-50-creamio-slany-karamel.jpg` | SKU 50 | Creamio / cappuccino slaný karamel 1 kg | https://www.promatic.cz/enzo-bencini-cappuccino-s-prichuti-slany-karamel-1000g/ |
+| `sku-259-hello-malina.jpg` | SKU 259 | Hello malinový perlivý nápoj 330 ml | https://globusonline.cz/p/hello-perlive-perlivy-malinovy-napoj |
+| `sku-279-jojo-arasidky.jpg` | SKU 279 | JoJo Arašídy v cukru | https://www.rohlik.cz/1442056-jojo-arasidky-v-cukru |
+| `ean-8594027773198.jpg` | EAN 8594027773198 | Proteinový suk vanilka 45 g | https://www.parkfit.cz/proteinove-tycinky/proteinovy-suk-bez-lepku-celita-45g/ |
+| `ean-8594027771514.jpg` | EAN 8594027771514 | RawBar jablko a skořice 40 g | https://eshop.naturaljihlava.cz/produkt/tycinka-rawbar-s-jablkem-a-skorici-vegan-bez-lepku-celita-40g- |
+| `ean-8594027773150.jpg` | EAN 8594027773150 | RawBar klikva a mandle 40 g | https://www.whitemarket.cz/tycinka-rawbar-s-klikvou-a-mandlemi-vegan-bez-lepku-celita-40g/ |
+| `ean-8594027771507.jpg` | EAN 8594027771507 | RawBar arašídy 40 g | https://www.cocowoods.cz/tycinka-rawbar-s-arasidy-bez-lepku-celita-40g/ |
+| `sku-simply-hamka.jpg` | SKU SIMPLY-HAMKA | Snack Hamka 146 g | https://www.bapa.cz/Produkty/Bagety-sendvice-a-panini/Snack-bagety/Hamka |
+| `sku-simply-mlska.jpg` | SKU SIMPLY-MLSKA | Snack Mlska 144 g | https://www.bapa.cz/Produkty/Bagety-sendvice-a-panini/Snack-bagety/Mlska |
+| `ean-8594002072889.jpg` | EAN 8594002072889 | VA Pistácie pražené solené 60 g | https://sortiment.makro.cz/cs/va-pistacie-prazene-solene-60-12x/1821085p/ |
+| `sku-280-veneto-vanilka.png` | SKU 280 | Veneto oplatka vanilková 65 g | https://www.znmarket.cz/veneto-oplatka-vanilkova-65-g/ |
+
 ## Waters, ready-to-drink beverages and snacks
 
 | File | EAN | Product | Source |
