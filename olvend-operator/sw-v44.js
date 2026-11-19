@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v48-start-without-route'
+  var CACHE_NAME = 'olvend-operator-v49-stock-catalog-compact-warehouse'
   var APP_SHELL = [
     './',
     './index.html',
@@ -46,7 +46,6 @@
     './assets/product-images/ean-8586018180863.jpg',
     './assets/product-images/ean-8594002072858.webp',
     './assets/product-images/ean-9002490200091.webp',
-    './assets/warehouse-loading-v1.jpg',
     '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
