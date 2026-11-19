@@ -8,7 +8,7 @@ begin
   from public.machines where serial_number='TEST-MIXED-SPRING-20261119';
 
   delete from public.route_plans
-  where route_payload->>'test_key'='mixed-spring-real-planogram-v1';
+  where route_payload->>'test_key' in ('mixed-spring-real-planogram-v1','operator-full-sportisimo-v2');
 
   delete from public.stock_locations
   where location_type='machine' and machine_id=any(v_machine_ids)

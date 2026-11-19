@@ -14083,7 +14083,7 @@
             fixtureSlots.push(matchedSlot)
             testFixtureBySlotId.set(String(matchedSlot.id), fixture)
           }
-          slots = fixtureSlots
+          if (routePlan?.route_payload?.test_food_slots_mode !== 'overlay') slots = fixtureSlots
         }
         const slotIds = slots.map((slot) => slot.id).filter(Boolean)
         let layersBySlot = new Map()
@@ -14967,6 +14967,10 @@
       return getCoffeeDetail(stopId)?.containers?.find((container) => String(container.id) === String(containerId)) || null
     }
 
+    function isIsolatedOperatorTestRoute(stopId) {
+      return Boolean((findRouteStop(stopId)?.plan || getAssignedRoutePlan())?.route_payload?.test_mode)
+    }
+
     async function saveCoffeeContainerVisitItem(stopId, container, payload = {}) {
       await assertRouteVisitNotCorrected(getCoffeeDetail(stopId)?.visitId)
       const detail = getCoffeeDetail(stopId)
@@ -15012,15 +15016,18 @@
         operator_note: payload.operator_note || null,
         accepted_at: payload.accepted_at || new Date().toISOString()
       }
-      const { savedRow } = await persistCoffeeVisitItem({
-        client: supabase,
-        row,
-        existing,
-        offline: !navigator.onLine || detail.openedOffline,
-        fallbackId: `offline-${detail.visitId}-${container.id}`,
-        createUuid: () => crypto.randomUUID(),
-        getPendingRequestCount: getOfflineRequestCount
-      })
+      const isolatedTestMode = isIsolatedOperatorTestRoute(stopId)
+      const savedRow = isolatedTestMode
+        ? { ...row, id: existing?.id || `test-${detail.visitId}-${container.id}` }
+        : (await persistCoffeeVisitItem({
+            client: supabase,
+            row,
+            existing,
+            offline: !navigator.onLine || detail.openedOffline,
+            fallbackId: `offline-${detail.visitId}-${container.id}`,
+            createUuid: () => crypto.randomUUID(),
+            getPendingRequestCount: getOfflineRequestCount
+          })).savedRow
       const savedFinalQuantity = Number(savedRow.final_quantity ?? row.final_quantity ?? finalQty)
       if (Number.isFinite(savedFinalQuantity)) {
         // The route_machine_visit_items trigger persists the physical baseline
@@ -15077,15 +15084,18 @@
         operator_note: ['První kalibrace zásobníku', note].filter(Boolean).join(' · '),
         accepted_at: new Date().toISOString()
       }
-      const { savedRow } = await persistCoffeeVisitItem({
-        client: supabase,
-        row,
-        existing,
-        offline: !navigator.onLine || detail.openedOffline,
-        fallbackId: `offline-calibration-${detail.visitId}-${container.id}`,
-        createUuid: () => crypto.randomUUID(),
-        getPendingRequestCount: getOfflineRequestCount
-      })
+      const isolatedTestMode = isIsolatedOperatorTestRoute(stopId)
+      const savedRow = isolatedTestMode
+        ? { ...row, id: existing?.id || `test-calibration-${detail.visitId}-${container.id}` }
+        : (await persistCoffeeVisitItem({
+            client: supabase,
+            row,
+            existing,
+            offline: !navigator.onLine || detail.openedOffline,
+            fallbackId: `offline-calibration-${detail.visitId}-${container.id}`,
+            createUuid: () => crypto.randomUUID(),
+            getPendingRequestCount: getOfflineRequestCount
+          })).savedRow
       // The route_machine_visit_items trigger persists the physical baseline
       // and reconciles any sales that happened after this observation.
       container.current_quantity = boundedQuantity
@@ -15126,6 +15136,16 @@
       const desiredPackages = Math.min(requestedPackages, getCoffeeSelectableMaxPackages(stopId, container))
       if (desiredPackages + 0.0001 < requestedPackages) {
         throw new Error(`Z vozidla lze pro ${container.product_name || container.container_code || 'zásobník'} vzít nejvýše ${getCoffeePackageCountLabel(desiredPackages, container)}. Záporný stav není povolen.`)
+      }
+      if (isIsolatedOperatorTestRoute(stopId)) {
+        detail.draft.containers[String(container.id)] = {
+          ...(detail.draft.containers[String(container.id)] || {}),
+          movedPackages: desiredPackages,
+          stockMismatch: false,
+          offlineStockPending: false
+        }
+        persistMobileSnapshot()
+        return { queued: false, isolated: true }
       }
       if (!navigator.onLine && !options.forceOnline) {
         const draft = detail.draft.containers[String(container.id)] || {}
@@ -17768,7 +17788,7 @@
         let expectedCash = detail.cash?.expected_cash_czk ?? null
         let expectedTotal = detail.cash?.expected_total_czk ?? null
         let note = decision === 'skip' ? 'Operátorka zapsala rozhodnutí nevybírat.' : null
-        if (detail.hasTelemetry === false) {
+        if (detail.hasTelemetry === false && !isIsolatedOperatorTestRoute(stopId)) {
           const revenueCounter = parseNumber(els.routeMachineContent.querySelector(`[data-manual-revenue-counter][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value)
           const portionCounter = parseNumber(els.routeMachineContent.querySelector(`[data-manual-portion-counter][data-stop-id="${CSS.escape(String(stopId))}"]`)?.value)
           if (!Number.isFinite(revenueCounter)) throw new Error('Vyplň nemazací tržbu z automatu.')
@@ -17876,7 +17896,7 @@
         // A telemetrický automat zapíše skutečný výdej sám. Ruční odečet by
         // stejný nápoj odečetl podruhé a absolutní update by navíc mohl přepsat
         // prodeje, které dorazily mezi načtením stránky a tímto potvrzením.
-        if (detail.hasTelemetry === false) {
+        if (detail.hasTelemetry === false && !isIsolatedOperatorTestRoute(stopId)) {
           for (const recipeItem of recipeItems) {
             const container = detail.containers.find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
             if (!container) continue
@@ -18048,7 +18068,7 @@
       // U automatu s telemetrií je zkušební nápoj fyzický výdej stejně jako
       // prodej. Odečte jej proto PA2/telemetrie. Druhý ruční odečet zde dříve
       // vytvářel falešné nedostatky a absolutním stavem přepisoval nové prodeje.
-      if (detail.hasTelemetry === false) {
+      if (detail.hasTelemetry === false && !isIsolatedOperatorTestRoute(stopId)) {
         for (const recipeItem of recipeItems) {
           const container = (detail.containers || []).find((item) => String(item.id) === String(recipeItem.coffee_container_id || ''))
           if (!container) continue
