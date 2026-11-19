@@ -10614,7 +10614,7 @@
     function getFoodSlotProductOptions(slot) {
       const familyAllowed = ['same_family', 'operator_choice'].includes(slot?.substitution_policy)
       const listAllowed = familyAllowed || slot?.substitution_policy === 'approved_list'
-      const skus = [slot?.product_sku, slot?.pending_product_sku, slot?.planned_product_sku, ...(familyAllowed ? slot?._familyAlternativeSkus || [] : [])]
+      const skus = [slot?.primary_product_sku, slot?.product_sku, slot?.pending_product_sku, slot?.planned_product_sku, ...(familyAllowed ? slot?._familyAlternativeSkus || [] : [])]
       const allowed = String(slot?.allowed_substitutes || '')
       if (listAllowed) for (const match of allowed.matchAll(/SKU\s*([A-Za-z0-9_-]+)/gi)) skus.push(match[1])
       const familyLabel = normalizeText([slot?.product_family, slot?.product_name, slot?.planned_product_name].filter(Boolean).join(' '))
@@ -10623,7 +10623,7 @@
           .filter((product) => product.active !== false && normalizeText(product.name).includes('nestea'))
           .forEach((product) => skus.push(product.sku))
       }
-      const primaryProduct = state.products.find((product) => String(product.sku || '') === String(slot?.product_sku || ''))
+      const primaryProduct = state.products.find((product) => String(product.sku || '') === String(slot?.primary_product_sku || slot?.product_sku || ''))
       const isAtmSlot = [slot?.product_name, slot?.planned_product_name, primaryProduct?.name]
         .some((name) => normalizeText(name).startsWith('atm'))
       if (familyAllowed && isAtmSlot) {
@@ -10644,7 +10644,7 @@
 
     function getBasicFreshDisplaySlots(detail) {
       const freshSlots = (detail?.slots || []).filter((candidate) => {
-        const product = state.products.find((item) => String(item.sku || '') === String(candidate?.product_sku || ''))
+        const product = state.products.find((item) => String(item.sku || '') === String(candidate?.primary_product_sku || candidate?.product_sku || ''))
         return isFoodReadyProduct(product)
       })
       return freshSlots.length > 0 && freshSlots.length <= 3 ? freshSlots : []
@@ -10662,7 +10662,7 @@
         const prepared = state.products.find((item) => String(item.id) === String(preparedFill.productId))
         if (prepared) return prepared
       }
-      return state.products.find((item) => String(item.sku || '') === String(slot?.product_sku || '')) || null
+      return state.products.find((item) => String(item.sku || '') === String(slot?.primary_product_sku || slot?.product_sku || '')) || null
     }
 
     function getFoodDisplayDuplicateConflict(detail, slot, product) {
@@ -10689,6 +10689,41 @@
 
     function getFoodSlotComposition(slot, totalOverride = null) {
       const total = Math.max(0, Math.round(Number(totalOverride ?? slot?.current_units ?? 0)))
+      if (Array.isArray(slot?._layers) && slot._layers.length) {
+        const layers = slot._layers
+          .map((layer) => ({
+            id: layer.id || null,
+            productId: layer.product_id || null,
+            sku: layer.product_sku || '',
+            name: layer.product_name || layer.product_sku || 'Produkt',
+            quantity: Math.max(0, Math.round(Number(layer.quantity || 0))),
+            expiryDate: layer.expiry_date || ''
+          }))
+          .filter((layer) => layer.quantity > 0)
+        const layerTotal = layers.reduce((sum, layer) => sum + layer.quantity, 0)
+        if (totalOverride == null || layerTotal === total) return layers
+        // Pri rucni oprave celkoveho stavu uberame/prebyvajici kusy vzdy
+        // zepredu, stejne jako fyzicky vydej automatu.
+        let removal = Math.max(0, layerTotal - total)
+        for (const layer of layers) {
+          const removed = Math.min(layer.quantity, removal)
+          layer.quantity -= removed
+          removal -= removed
+        }
+        const remaining = layers.filter((layer) => layer.quantity > 0)
+        if (layerTotal < total) {
+          const target = remaining[0] || {
+            productId: slot.primary_product_id || null,
+            sku: slot.primary_product_sku || slot.product_sku || '',
+            name: slot.primary_product_name || slot.product_name || 'Produkt',
+            quantity: 0,
+            expiryDate: slot.expiry_date || ''
+          }
+          target.quantity += total - layerTotal
+          if (!remaining.length) remaining.push(target)
+        }
+        return remaining
+      }
       const currentSku = String(slot?.product_sku || '')
       const plannedSku = String(slot?.planned_product_sku || '')
       if (!plannedSku || plannedSku === currentSku || Number(slot?.changeover_new_units || 0) <= 0) {
@@ -10707,9 +10742,8 @@
 
     function getFoodSlotCompositionLabel(slot, totalOverride = null) {
       const parts = getFoodSlotComposition(slot, totalOverride)
-      return parts.length > 1
-        ? `vpředu ${parts[0].quantity}× ${parts[0].name} · za nimi ${parts[1].quantity}× ${parts[1].name}`
-        : (parts[0]?.name || slot?.product_name || 'Produkt')
+      if (parts.length <= 1) return parts[0]?.name || slot?.product_name || 'Produkt'
+      return parts.map((part, index) => `${index === 0 ? 'vpředu' : index === parts.length - 1 ? 'vzadu' : `${index + 1}. vrstva`} ${part.quantity}× ${part.name}`).join(' · ')
     }
 
     function buildFoodSlotCompositionPatch(slot, actualBefore, removedQuantity, fillItems) {
@@ -10723,33 +10757,51 @@
       for (const fill of fillItems || []) {
         const product = state.products.find((item) => String(item.id) === String(fill.productId))
         if (!product?.sku || Number(fill.quantity || 0) <= 0) continue
-        const existing = parts.find((part) => String(part.sku) === String(product.sku))
-        if (existing) existing.quantity += Number(fill.quantity || 0)
-        else parts.push({ sku: product.sku, name: product.name, quantity: Number(fill.quantity || 0) })
+        const rear = parts[parts.length - 1]
+        if (rear && String(rear.sku) === String(product.sku) && String(rear.expiryDate || '') === String(fill.expiryDate || '')) {
+          rear.quantity += Number(fill.quantity || 0)
+        } else {
+          parts.push({
+            productId: product.id,
+            sku: product.sku,
+            name: product.name,
+            quantity: Number(fill.quantity || 0),
+            expiryDate: fill.expiryDate || ''
+          })
+        }
       }
       const remaining = parts.filter((part) => Number(part.quantity || 0) > 0)
-      if (remaining.length > 2) {
-        throw new Error(`Pozice ${slot.slot_code}: uvnitř už jsou dva různé produkty. Třetí druh sem nyní nepřidávej.`)
-      }
       if (!remaining.length) return {
+        layers: [],
+        slotPatch: {
         planned_product_sku: null, planned_product_name: null, planned_price_czk: null,
         changeover_old_units: null, changeover_new_units: null, changeover_started_at: null
+        }
       }
-      const primary = remaining.find((part) => String(part.sku) === String(slot.product_sku || '')) || remaining[0]
-      const secondary = remaining.find((part) => part !== primary)
+      const front = remaining[0]
+      const secondary = remaining[1]
       if (!secondary) return {
-        product_sku: primary.sku, product_name: primary.name,
+        layers: remaining,
+        slotPatch: {
+        product_sku: front.sku, product_name: front.name,
         planned_product_sku: null, planned_product_name: null, planned_price_czk: null,
         changeover_old_units: null, changeover_new_units: null, changeover_started_at: null
+        }
       }
       return {
-        product_sku: primary.sku,
-        product_name: primary.name,
-        planned_product_sku: secondary.sku,
-        planned_product_name: secondary.name,
-        changeover_old_units: Math.round(primary.quantity),
-        changeover_new_units: Math.round(secondary.quantity),
-        changeover_started_at: slot.changeover_started_at || new Date().toISOString()
+        layers: remaining,
+        // Fyzicke vrstvy se uz nesmeji zapisovat do planned_product_sku.
+        // Tento sloupec zustava vyhradne pro manazerskou zmenu planogramu.
+        slotPatch: {
+        product_sku: front.sku,
+        product_name: front.name,
+        planned_product_sku: null,
+        planned_product_name: null,
+        planned_price_czk: null,
+        changeover_old_units: null,
+        changeover_new_units: null,
+        changeover_started_at: null
+        }
       }
     }
 
@@ -11027,6 +11079,26 @@
       return Math.max(0, Math.floor(onHand - reserved))
     }
 
+    function applyIsolatedTestVehicleStock(detail, productIds = []) {
+      const route = getAssignedRoutePlan()
+      if (!route?.route_payload?.test_mode || !route.route_payload.test_vehicle_stock) return
+      const fixture = route.route_payload.test_vehicle_stock
+      for (const productId of productIds) {
+        const product = state.products.find((item) => String(item.id) === String(productId))
+        const configured = product?.sku ? fixture[product.sku] : null
+        if (configured == null) continue
+        const quantity = Math.max(0, Number(typeof configured === 'object' ? configured.quantity : configured))
+        const expiry = typeof configured === 'object' ? String(configured.expiry_date || '') : ''
+        detail.vehicleStock[String(productId)] = quantity
+        detail.vehicleBatches[String(productId)] = quantity > 0 ? [{
+          batch_id: null,
+          quantity_on_hand: quantity,
+          lot_code: 'TEST',
+          expiry_date: expiry
+        }] : []
+      }
+    }
+
     function allocateFoodFillForSlot(detail, stopId, slotId, productId, quantity, preferredBatchId = null) {
       const requested = Math.max(0, Number(quantity || 0))
       const reservedByBatch = new Map()
@@ -11107,6 +11179,7 @@
       }
       detail.vehicleStock = vehicleStock
       detail.vehicleBatches = vehicleBatches
+      applyIsolatedTestVehicleStock(detail, productIds)
     }
 
     function hydrateFoodFillBatches(detail, fillItems) {
@@ -11255,7 +11328,7 @@
       const draft = getFoodSlotDraft(stopId, slot)
       const options = getFoodSlotProductOptions(slot)
       const planogramChange = getFoodPlanogramChange(slot)
-      const currentProduct = options.find((product) => String(product.sku || '') === String(slot.product_sku || '')) || options[0] || null
+      const currentProduct = options.find((product) => String(product.sku || '') === String(slot.primary_product_sku || slot.product_sku || '')) || options[0] || null
       const replacementProduct = planogramChange?.productChanged
         ? options.find((product) => String(product.sku || '') === String(planogramChange.nextSku || '')) || planogramChange.nextProduct || null
         : null
@@ -13995,12 +14068,31 @@
         }
 
         const slots = slotsResult.data || []
+        const slotIds = slots.map((slot) => slot.id).filter(Boolean)
+        let layersBySlot = new Map()
+        if (slotIds.length) {
+          const layersResult = await supabase
+            .from('machine_planogram_slot_layers')
+            .select('*')
+            .in('planogram_slot_id', slotIds)
+            .order('planogram_slot_id', { ascending: true })
+            .order('layer_order', { ascending: true })
+          if (layersResult.error && !/machine_planogram_slot_layers|schema cache|does not exist/i.test(String(layersResult.error.message || ''))) {
+            throw layersResult.error
+          }
+          for (const layer of layersResult.data || []) {
+            const layerKey = String(layer.planogram_slot_id)
+            if (!layersBySlot.has(layerKey)) layersBySlot.set(layerKey, [])
+            layersBySlot.get(layerKey).push(layer)
+          }
+        }
         const latestPriceRequestBySlot = new Map()
         for (const request of priceRequestsResult.data || []) {
           const slotKey = String(request.planogram_slot_id || '')
           if (!latestPriceRequestBySlot.has(slotKey)) latestPriceRequestBySlot.set(slotKey, request)
         }
         for (const slot of slots) {
+          slot._layers = layersBySlot.get(String(slot.id)) || []
           slot._priceRequest = latestPriceRequestBySlot.get(String(slot.id)) || null
           if (!slot.product_family) continue
           slot._familyAlternativeSkus = slots
@@ -14149,6 +14241,7 @@
             slots: draftSlots
           }
         }
+        applyIsolatedTestVehicleStock(state.routeFoodDetails[key], productIds)
         try {
           state.routeFoodDetails[key].routePlanningContext = await loadFoodRoutePlanningContext(stop, slots)
         } catch (planningError) {
@@ -15325,12 +15418,14 @@
       await assertRouteVisitNotCorrected(getFoodDetail(stopId)?.visitId)
       const detail = getFoodDetail(stopId)
       if (!detail?.visitId || !slot?.id) throw new Error('Pozice není připravená k potvrzení.')
+      const isolatedTestMode = Boolean(getAssignedRoutePlan()?.route_payload?.test_mode)
       const draft = getFoodSlotDraft(stopId, slot)
       const fillItems = draft.fillItems
         .map((fill) => ({ ...fill, quantity: Math.max(0, Math.round(Number(fill.quantity || 0))) }))
         .filter((fill) => fill.quantity > 0)
       const selectedProduct = state.products.find((product) => String(product.id) === String(fillItems[0]?.productId || draft.selectedProductId))
-      const plannedProduct = state.products.find((product) => String(product.sku || '') === String(slot.product_sku || ''))
+      const plannedProduct = state.products.find((product) => String(product.sku || '') === String(slot.primary_product_sku || slot.product_sku || ''))
+      const currentFrontProduct = state.products.find((product) => String(product.sku || '') === String(slot.product_sku || '')) || plannedProduct
       if (!selectedProduct?.id) throw new Error(`Pozice ${slot.slot_code}: vyber konkrétní produkt.`)
       const emergencyDuplicateFills = []
       const checkedDuplicateProducts = new Set()
@@ -15370,7 +15465,7 @@
         : configuredTargetProduct
       const existingProduct = draft.assortmentMismatch
         ? state.products.find((product) => String(product.id) === String(draft.existingProductId || ''))
-        : plannedProduct
+        : currentFrontProduct
       if (draft.assortmentMismatch && fullSwap) {
         throw new Error(`Pozice ${slot.slot_code}: je naplánovaná kompletní výměna. Prodejné kusy vrať do auta, nebo nejdřív změň režim pozice na řízený doprodej.`)
       }
@@ -15541,9 +15636,25 @@
         && Number(slot.changeover_new_units || 0) > 0)
       // Každá skutečná záměna doplněná za zbývající původní kusy musí
       // zůstat evidovaná jako pořadí dvou produktů v jedné pružině.
-      const compositionPatch = !fullSwap && !physicalMismatchSellThrough && (hasExistingComposition || mixedChangeover || mixedPhysicalFill)
-        ? buildFoodSlotCompositionPatch(slot, actualBefore, wasteQuantity + transferQuantity, fillItems)
-        : {}
+      const compositionResult = buildFoodSlotCompositionPatch(
+        draft.assortmentMismatch
+          ? {
+              ...slot,
+              _layers: actualBefore > 0 ? [{
+                product_id: existingProduct?.id || null,
+                product_sku: existingProduct?.sku || '',
+                product_name: existingProduct?.name || existingProduct?.sku || 'Produkt',
+                quantity: actualBefore,
+                expiry_date: draft.existingExpiryDate || slot.expiry_date || ''
+              }] : []
+            }
+          : slot,
+        actualBefore,
+        wasteQuantity + transferQuantity + swapReturnQuantity,
+        fillItems
+      )
+      const compositionPatch = compositionResult.slotPatch || {}
+      const compositionLayers = compositionResult.layers || []
       const storedTargetQuantity = Math.max(0, Number((slot.target_units ?? storedCapacity) || capacity))
       const targetQuantity = Math.max(0, Math.min(capacity, storedCapacity > 0 && storedTargetQuantity >= storedCapacity ? capacity : storedTargetQuantity))
       const nextDesiredQuantity = detail.manualStockMode
@@ -15551,10 +15662,10 @@
         : Math.max(0, targetQuantity - finalQuantity)
       const stockSource = getRouteStockSource(getRouteStockPlan(detail))
       const vehicleId = stockSource.type === 'vehicle' ? stockSource.id : null
-      const vehicleLocationId = await getRouteStockLocation(detail)
-      const machineLocationId = await ensureStockLocation('machine', slot.machine_id, `Automat ${slot.machine_id}`)
+      const vehicleLocationId = isolatedTestMode ? null : await getRouteStockLocation(detail)
+      const machineLocationId = isolatedTestMode ? null : await ensureStockLocation('machine', slot.machine_id, `Automat ${slot.machine_id}`)
 
-      if (stockDifference !== 0) {
+      if (!isolatedTestMode && stockDifference !== 0) {
         const adjustmentProduct = existingProduct || plannedProduct || selectedProduct
         if (!adjustmentProduct?.id) throw new Error(`Pozice ${slot.slot_code}: produkt pro evidenci odchylky nelze dohledat.`)
         const adjustmentReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_stock_mismatch_${adjustmentProduct.id}`
@@ -15588,7 +15699,7 @@
         }
       }
 
-      if (swapReturnQuantity > 0) {
+      if (!isolatedTestMode && swapReturnQuantity > 0) {
         if (!plannedProduct?.id) throw new Error(`Pozice ${slot.slot_code}: původní produkt nelze dohledat pro vrácení do vozidla.`)
         const returnReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_full_swap_return_${plannedProduct.id}`
         if (!(await stockReferenceAlreadyApplied(returnReference))) {
@@ -15606,7 +15717,7 @@
         }
       }
 
-      if (transferQuantity > 0) {
+      if (!isolatedTestMode && transferQuantity > 0) {
         const transferProduct = existingProduct || plannedProduct || selectedProduct
         if (!transferProduct?.id) throw new Error(`Pozice ${slot.slot_code}: produkt pro přesun nelze dohledat.`)
         const transferReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_expiry_transfer_${transferProduct.id}`
@@ -15639,7 +15750,7 @@
         targetStop.priority_snapshot = targetPriority
       }
 
-      for (const [fillIndex, fill] of fillItems.entries()) {
+      for (const [fillIndex, fill] of (isolatedTestMode ? [] : fillItems).entries()) {
         const fillProduct = state.products.find((item) => String(item.id) === String(fill.productId))
         const fillReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_fill_${fillIndex}_${fill.productId}`
         if (!(await stockReferenceAlreadyApplied(fillReference))) {
@@ -15658,7 +15769,7 @@
         }
       }
 
-      for (const [wasteIndex, waste] of wasteItems.entries()) {
+      for (const [wasteIndex, waste] of (isolatedTestMode ? [] : wasteItems).entries()) {
         const wasteProduct = existingProduct || plannedProduct || selectedProduct
         const wasteReference = `route_visit_${detail.visitId}_food_slot_${slot.id}_waste_${wasteIndex}_${waste.reason}`
         if (!(await stockReferenceAlreadyApplied(wasteReference))) {
@@ -15765,7 +15876,7 @@
         existing,
         online: navigator.onLine
       })
-      if (wasteItems.length) {
+      if (!isolatedTestMode && wasteItems.length) {
         const visit = state.routeMachineVisits.find((item) => String(item.id) === String(detail.visitId))
         const machine = state.machines.find((item) => String(item.id) === String(slot.machine_id))
         const location = state.locations.find((item) => String(item.id) === String(machine?.location_id || ''))
@@ -15827,6 +15938,11 @@
           ...((fullSwap && nextPlanogramSku) || finalizedReplacement || finalizedPriceOnlyChange ? {
             product_sku: finalizedProductSku,
             product_name: finalizedProduct?.name || planogramChange?.nextName || slot.product_name,
+            ...((fullSwap && nextPlanogramSku) || finalizedReplacement ? {
+              primary_product_id: finalizedProduct?.id || planogramChange?.nextProduct?.id || null,
+              primary_product_sku: finalizedProductSku,
+              primary_product_name: finalizedProduct?.name || planogramChange?.nextName || slot.product_name
+            } : {}),
             ...getFoodProductFamilyPatch(finalizedProduct),
             price_czk: planogramChange?.nextPrice ?? slot.price_czk,
             customer_price_czk: planogramChange?.nextPrice ?? slot.customer_price_czk ?? slot.price_czk,
@@ -15884,12 +16000,36 @@
         })
         .eq('id', slot.id)
       if (slotError) throw slotError
+      const layerPayload = compositionLayers.map((layer) => {
+        const product = state.products.find((item) => String(item.id || '') === String(layer.productId || ''))
+          || state.products.find((item) => String(item.sku || '') === String(layer.sku || ''))
+        return {
+          product_id: product?.id || layer.productId || null,
+          product_sku: product?.sku || layer.sku || '',
+          quantity: Math.max(0, Math.round(Number(layer.quantity || 0))),
+          expiry_date: layer.expiryDate || ''
+        }
+      }).filter((layer) => layer.product_id && layer.quantity > 0)
+      const { error: layersError } = await supabase.rpc('replace_machine_planogram_slot_layers', {
+        p_slot_id: slot.id,
+        p_layers: layerPayload,
+        p_source_visit_id: detail.visitId
+      })
+      if (layersError) throw new Error(`Složení pozice ${slot.slot_code} se nepodařilo uložit: ${layersError.message}`)
       slot.current_units = finalQuantity
       slot.capacity_units = capacity
       slot.target_units = targetQuantity
       slot.desired_units = nextDesiredQuantity
       slot.expiry_date = nextExpiryDate
       Object.assign(slot, compositionPatch)
+      slot._layers = layerPayload.map((layer, index) => ({
+        layer_order: index + 1,
+        product_id: layer.product_id,
+        product_sku: layer.product_sku,
+        product_name: state.products.find((item) => String(item.id) === String(layer.product_id))?.name || layer.product_sku,
+        quantity: layer.quantity,
+        expiry_date: layer.expiry_date || null
+      }))
       if (machinePriceChangeRequired) {
         slot.price_czk = planogramChange.nextPrice
         slot.customer_price_czk = planogramChange.nextPrice
@@ -20729,6 +20869,7 @@
           car: getFoodAvailableVehicleQuantity(detail, stop.id, slot.id, product.id),
           price: Number(slot.customer_price_czk ?? slot.price_czk ?? 0)
         }))
+        const composition = getFoodSlotComposition(slot, Number(draft.actualBefore ?? slot.current_units ?? 0))
         return {
           id: slot.id,
           choice: slot.slot_code || String(slot.id),
@@ -20753,12 +20894,23 @@
           skipped: Boolean(draft.skipped),
           skipReason: draft.skipReason || '',
           alternatives: options.map((option) => ({ ...option, key: String(option.id) })),
-          contents: [{
-            name: selectedProduct?.name || slot.product_name || 'Produkt',
-            qty: Number(draft.actualBefore || slot.current_units || 0),
-            expiry: draft.existingExpiryDate || slot.expiry_date || '',
-            photo: getMobileProductImageUrl(selectedProduct)
-          }],
+          primaryProduct: {
+            id: slot.primary_product_id || null,
+            sku: slot.primary_product_sku || slot.product_sku || '',
+            name: slot.primary_product_name || slot.product_name || 'Produkt'
+          },
+          contents: composition.map((part) => {
+            const product = productsById.get(String(part.productId || ''))
+              || state.products.find((item) => String(item.sku || '') === String(part.sku || ''))
+            return {
+              productId: product?.id || part.productId || null,
+              sku: product?.sku || part.sku || '',
+              name: product?.name || part.name || 'Produkt',
+              qty: Number(part.quantity || 0),
+              expiry: part.expiryDate || draft.existingExpiryDate || slot.expiry_date || '',
+              photo: getMobileProductImageUrl(product)
+            }
+          }),
           transferPlan: draft.transferRecommendation?.available ? {
             quantity: Number(draft.transferQuantity || draft.transferRecommendation.quantity || 0),
             product: selectedProduct?.name || slot.product_name || 'Produkt',
@@ -21065,6 +21217,42 @@
           if (patch.operatorPriceNote != null) safe.operatorPriceNote = String(patch.operatorPriceNote || '')
           if (patch.operatorPriceConfirmed != null) safe.operatorPriceConfirmed = Boolean(patch.operatorPriceConfirmed)
           updateFoodSlotDraft(operatorRouteStopId, slot.id, { ...safe, accepted: false })
+          scheduleFoodWorkProgressSave(operatorRouteStopId)
+          return buildOperatorFoodEngineSnapshot()
+        },
+        async saveComposition(slotId, contents) {
+          const slot = getFoodSlot(operatorRouteStopId, slotId)
+          const detail = getFoodDetail(operatorRouteStopId)
+          if (!slot || !detail) throw new Error('Pozice už není dostupná.')
+          if (!Array.isArray(contents)) throw new Error('Složení pozice není platné.')
+          const layers = contents.map((block, index) => {
+            const product = state.products.find((item) => String(item.id || '') === String(block.productId || ''))
+              || state.products.find((item) => String(item.sku || '') === String(block.sku || ''))
+              || state.products.find((item) => String(item.name || '') === String(block.name || ''))
+            const quantity = Math.max(0, Math.round(Number(block.qty || 0)))
+            if (quantity > 0 && !product?.id) throw new Error(`Vrstva ${index + 1}: produkt se nepodařilo dohledat.`)
+            return quantity > 0 ? {
+              layer_order: index + 1,
+              product_id: product.id,
+              product_sku: product.sku || '',
+              product_name: product.name || product.sku || 'Produkt',
+              quantity,
+              expiry_date: String(block.expiry || '')
+            } : null
+          }).filter(Boolean)
+          const total = layers.reduce((sum, layer) => sum + layer.quantity, 0)
+          const draft = getFoodSlotDraft(operatorRouteStopId, slot)
+          if (total !== Math.max(0, Number(draft.actualBefore ?? slot.current_units ?? 0))) {
+            throw new Error(`Součet vrstev je ${total} ks, ale fyzický stav ${draft.actualBefore ?? slot.current_units ?? 0} ks.`)
+          }
+          if (layers.some((layer) => isFoodExpiryTracked(state.products.find((item) => String(item.id) === String(layer.product_id))) && !layer.expiry_date)) {
+            throw new Error('U každého čerstvého produktu zadej expiraci.')
+          }
+          slot._layers = layers
+          updateFoodSlotDraft(operatorRouteStopId, slot.id, {
+            existingExpiryDate: layers.map((layer) => layer.expiry_date).filter(Boolean).sort()[0] || '',
+            accepted: false
+          })
           scheduleFoodWorkProgressSave(operatorRouteStopId)
           return buildOperatorFoodEngineSnapshot()
         },
