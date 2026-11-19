@@ -941,7 +941,7 @@
     var operationalHome = root.querySelector('.ot-phone')
     var operationalDashboard = root.querySelector('#operatorOperationalDashboard')
     var hasVehicleChoice = vehicleUsage === 'without' || Boolean(vehicle)
-    var ready = running || Boolean(routePlan && hasVehicleChoice && vehicleConfirmed && (!instruction || instructionConfirmed))
+    var ready = running || Boolean(hasVehicleChoice && vehicleConfirmed && (!instruction || instructionConfirmed))
     var showIdleStart = !running && !preparationStarted
     var showVehicleStep = !running && preparationStarted && !vehicleStepComplete
     var showInstructionStep = !running && preparationStarted && vehicleStepComplete && Boolean(instruction && !instructionConfirmed)
@@ -962,11 +962,10 @@
       start.innerHTML = 'Zahájit směnu <span data-lucide="arrow-right" aria-hidden="true"></span>'
       help.hidden = true
     } else {
-      var reason = !routePlan ? 'Čeká na dnešní trasu' : !hasVehicleChoice ? 'Čeká na volbu vozidla' : !vehicleConfirmed ? 'Nejdřív potvrď vozidlo a km' : 'Nejdřív přečti dnešní pokyn'
+      var reason = !hasVehicleChoice ? 'Čeká na volbu vozidla' : !vehicleConfirmed ? 'Nejdřív potvrď vozidlo a km' : 'Nejdřív přečti dnešní pokyn'
       start.innerHTML = '<span data-lucide="lock-keyhole" aria-hidden="true"></span><span>' + reason + '</span>'
       help.hidden = false
-      help.textContent = !routePlan ? 'Vedoucí zatím nepřiřadil dnešní trasu.'
-          : !hasVehicleChoice ? 'Vyber vozidlo nebo potvrď, že ho dnes nebudeš používat.'
+      help.textContent = !hasVehicleChoice ? 'Vyber vozidlo nebo potvrď, že ho dnes nebudeš používat.'
             : !vehicleConfirmed ? 'Ověř RZ a opiš skutečný stav z tachometru.'
               : 'Před zahájením směny potvrď dnešní povinný pokyn.'
     }
@@ -1221,7 +1220,7 @@
       return
     }
     var usesVehicle = vehicleUsage !== 'without'
-    if (!routePlan || (usesVehicle && !vehicle) || !vehicleConfirmed || (instruction && !instructionConfirmed)) {
+    if ((usesVehicle && !vehicle) || !vehicleConfirmed || (instruction && !instructionConfirmed)) {
       updateReadiness()
       return
     }
@@ -1246,7 +1245,7 @@
       status: 'open',
       actual_start: attendanceDay && attendanceDay.actual_start || startedAt,
       vehicle_id: usesVehicle && vehicle ? vehicle.id : null,
-      start_warehouse_id: usesVehicle && vehicle ? vehicle.warehouse_id || null : routePlan.warehouse_id || null
+      start_warehouse_id: usesVehicle && vehicle ? vehicle.warehouse_id || null : routePlan && routePlan.warehouse_id || null
     }
     var availabilityCheck = usesVehicle ? loadVehicleAvailability().then(function () {
       var busy = busyVehicles.get(String(vehicle.id))
@@ -1273,6 +1272,7 @@
         }, 12000)
       })
     }).then(function () {
+      if (!routePlan) return null
       return apiRequest(supabaseUrl + '/rest/v1/route_plans?id=eq.' + encodeURIComponent(routePlan.id), {
         method: 'PATCH',
         headers: { 'Prefer': 'return=minimal' },
