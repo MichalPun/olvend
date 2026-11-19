@@ -5715,7 +5715,7 @@
       const salesFrom = new Date()
       salesFrom.setDate(salesFrom.getDate() - 28)
       const [{ data: slots, error: slotsError }, { data: containers, error: containersError }, { data: sales, error: salesError }, { data: machineRecipeItems, error: machineRecipeError }, { data: serviceRules, error: serviceRulesError }] = await Promise.all([
-        supabase.from('machine_planogram_slots').select('machine_id, product_sku, product_name, capacity_units, current_units, target_units, pending_change_mode, pending_change_effective_date, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_old_units, changeover_new_units, substitution_policy, allowed_substitutes, active').in('machine_id', machineIds).eq('active', true),
+        supabase.from('machine_planogram_slots').select('id, machine_id, product_sku, product_name, primary_product_id, primary_product_sku, primary_product_name, capacity_units, current_units, target_units, pending_change_mode, pending_change_effective_date, pending_product_sku, pending_product_name, planned_product_sku, planned_product_name, changeover_old_units, changeover_new_units, substitution_policy, allowed_substitutes, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('machine_coffee_containers').select('machine_id, product_id, product_sku, product_name, capacity_quantity, current_quantity, unit, refill_package_quantity, refill_package_unit, min_refill_quantity, active').in('machine_id', machineIds).eq('active', true),
         supabase.from('telemetry_sales_events').select('machine_id, selection_code, product_sku, product_name, quantity, cash_quantity, cashless_quantity, free_vend_quantity, unknown_payment_quantity, unpaid_dispense_quantity, source_event_at').in('machine_id', machineIds).gte('source_event_at', salesFrom.toISOString()),
         supabase.from('machine_coffee_recipe_items').select('machine_id, product_id, quantity_per_vend, unit, active, machine_coffee_buttons(selection_code)').in('machine_id', machineIds).eq('active', true),
@@ -5726,6 +5726,23 @@
       if (salesError && !/telemetry_sales_events|schema cache/i.test(String(salesError.message || ''))) throw salesError
       if (machineRecipeError && !/machine_coffee_recipe_items|schema cache/i.test(String(machineRecipeError.message || ''))) throw machineRecipeError
       if (serviceRulesError && !/machine_service_rules|schema cache/i.test(String(serviceRulesError.message || ''))) throw serviceRulesError
+      const planogramSlotIds = (slots || []).map(slot => slot.id).filter(Boolean)
+      if (planogramSlotIds.length) {
+        const { data: layerRows, error: layerError } = await supabase
+          .from('machine_planogram_slot_layers')
+          .select('planogram_slot_id,layer_order,product_id,product_sku,product_name,quantity,expiry_date')
+          .in('planogram_slot_id', planogramSlotIds)
+          .order('layer_order', { ascending: true })
+        if (layerError && !/machine_planogram_slot_layers|schema cache/i.test(String(layerError.message || ''))) throw layerError
+        const layersBySlot = new Map()
+        ;(layerRows || []).forEach(layer => {
+          const key = String(layer.planogram_slot_id)
+          const list = layersBySlot.get(key) || []
+          list.push(layer)
+          layersBySlot.set(key, list)
+        })
+        ;(slots || []).forEach(slot => { slot._layers = layersBySlot.get(String(slot.id)) || [] })
+      }
       autoLoadRouteNeeds = new Map()
       autoLoadRouteForecasts = new Map()
       autoLoadExactProductIds = new Set()
@@ -5896,18 +5913,32 @@
           })
       }
       ;[...(slots || []), ...(containers || [])].forEach((item) => {
+        const physicalLayers = Array.isArray(item._layers)
+          ? item._layers.filter(layer => Number(layer.quantity || 0) > 0).sort((a, b) => Number(a.layer_order || 0) - Number(b.layer_order || 0))
+          : []
+        const hasPhysicalLayers = physicalLayers.length > 0 && item.capacity_quantity == null
+        const primarySku = hasPhysicalLayers
+          ? String(item.primary_product_sku || item.product_sku || '')
+          : String(item.product_sku || '')
+        const primaryName = hasPhysicalLayers
+          ? String(item.primary_product_name || item.product_name || '')
+          : String(item.product_name || '')
         const effectiveDate = String(item.pending_change_effective_date || '')
         const changeEffectiveForRoute = !effectiveDate || effectiveDate <= String(route.planning_date || '')
         const pendingSku = changeEffectiveForRoute
           ? String(item.pending_product_sku || item.planned_product_sku || '')
           : ''
-        const productChanged = Boolean(pendingSku && String(item.product_sku || '') !== pendingSku)
+        const productChanged = Boolean(pendingSku && primarySku !== pendingSku)
         const fullSwap = productChanged && item.pending_change_mode === 'full_swap'
-        const sellThrough = productChanged && !fullSwap
-        const sku = normalizeText(productChanged ? pendingSku : (item.product_sku || ''))
+        const targetSkuRaw = productChanged ? pendingSku : primarySku
+        const physicalOldLayers = hasPhysicalLayers
+          ? physicalLayers.filter(layer => normalizeText(layer.product_sku || '') !== normalizeText(targetSkuRaw))
+          : []
+        const sellThrough = (!fullSwap && physicalOldLayers.length > 0) || (productChanged && !fullSwap)
+        const sku = normalizeText(targetSkuRaw)
         const productName = productChanged
           ? (item.pending_product_name || item.planned_product_name || item.product_name || '')
-          : (item.product_name || '')
+          : primaryName
         const product = productsV13.find((candidate) => sku && normalizeText(candidate.sku || '') === sku)
           || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(productName))
         if (!product) return
@@ -5919,8 +5950,11 @@
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
+        const physicalTargetCurrent = hasPhysicalLayers
+          ? physicalLayers.filter(layer => normalizeText(layer.product_sku || '') === sku).reduce((sum, layer) => sum + Number(layer.quantity || 0), 0)
+          : null
         const current = Number(convertRecipeQuantityToBase(
-          Number(productChanged ? (item.changeover_new_units || 0) : (item.current_units ?? item.current_quantity ?? 0)),
+          Number(hasPhysicalLayers ? physicalTargetCurrent : (productChanged ? (item.changeover_new_units || 0) : (item.current_units ?? item.current_quantity ?? 0))),
           sourceUnit,
           product.base_unit || sourceUnit
         ).toFixed(3))
@@ -5930,11 +5964,11 @@
           product.base_unit || sourceUnit
         ).toFixed(3))
         if (capacity <= 0) return
-        const oldProduct = sellThrough
+        const oldProduct = sellThrough && !hasPhysicalLayers
           ? productsV13.find((candidate) => normalizeText(candidate.sku || '') === normalizeText(item.product_sku || ''))
             || productsV13.find((candidate) => normalizeText(candidate.name || '') === normalizeText(item.product_name || ''))
           : null
-        const oldCurrent = sellThrough
+        const oldCurrent = sellThrough && !hasPhysicalLayers
           ? Number(convertRecipeQuantityToBase(
               Number(item.changeover_old_units ?? Math.max(0, Number(item.current_units ?? 0) - Number(item.changeover_new_units || 0))),
               sourceUnit,
@@ -5957,7 +5991,19 @@
         pool.fullSwap = pool.fullSwap || fullSwap
         pool.sellThrough = pool.sellThrough || sellThrough
         pool.minRefillThreshold = Number((pool.minRefillThreshold + minRefillThreshold).toFixed(3))
-        if (sellThrough) {
+        if (hasPhysicalLayers) {
+          const physicalOldByProduct = new Map()
+          physicalOldLayers.forEach(layer => {
+            const oldLayerProduct = productsV13.find(candidate => String(candidate.id || '') === String(layer.product_id || ''))
+              || productsV13.find(candidate => normalizeText(candidate.sku || '') === normalizeText(layer.product_sku || ''))
+              || productsV13.find(candidate => normalizeText(candidate.name || '') === normalizeText(layer.product_name || ''))
+            const key = String(oldLayerProduct?.id || layer.product_sku || layer.product_name || '')
+            const segment = physicalOldByProduct.get(key) || { oldProductId: oldLayerProduct?.id || null, oldCurrent: 0, capacity }
+            segment.oldCurrent = Number((segment.oldCurrent + Number(layer.quantity || 0)).toFixed(3))
+            physicalOldByProduct.set(key, segment)
+          })
+          physicalOldByProduct.forEach(segment => pool.transitionSegments.push(segment))
+        } else if (sellThrough) {
           pool.transitionSegments.push({
             oldProductId: oldProduct?.id || null,
             oldCurrent,
