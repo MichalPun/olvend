@@ -40,7 +40,10 @@
     if (!product) return './icon-192.png'
     if (product.image_url) return product.image_url
     var path = String(product.image_path || '')
-    if (path.indexOf('static:') === 0) return path.slice(7)
+    if (path.indexOf('static:') === 0) {
+      var staticPath = path.slice(7)
+      return staticPath.indexOf('./assets/') === 0 ? '../assets/' + staticPath.slice(9) : staticPath
+    }
     var name = norm(product.name)
     if (name.indexOf('svacink') >= 0) return './assets/product-images/bagette-svacinka.jpg'
     if (name.indexOf('hamka') >= 0) return './assets/product-images/bagette-hamka.jpg'

@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v49-stock-catalog-compact-warehouse'
+  var CACHE_NAME = 'olvend-operator-v50-product-image-path-fix'
   var APP_SHELL = [
     './',
     './index.html',
