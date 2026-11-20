@@ -94,5 +94,22 @@ const existingId = await ensureRouteVisitRecord({
 assert.equal(existingId, 88)
 assert.equal(updateQuery.operation, 'update')
 assert.deepEqual(updateQuery.filters, [['id', 88]])
+assert.equal(updateQuery.value.machine_kind, 'food')
+
+let repairedKindQuery
+const repairedKindId = await ensureRouteVisitRecord({
+  client: createClient((query) => { repairedKindQuery = query; return { data: null, error: null } }),
+  plan: plans[1],
+  stop: stops[2],
+  machine: machines.m3,
+  existing: { id: 89, status: 'arrived', arrived_at: '2026-10-21T08:55:00Z', machine_kind: 'coffee' },
+  visitDate: '2026-10-21',
+  machineKind: 'food',
+  nowIso: '2026-10-21T09:06:00Z'
+})
+assert.equal(repairedKindId, 89)
+assert.equal(repairedKindQuery.operation, 'update')
+assert.deepEqual(repairedKindQuery.value, { machine_kind: 'food', synced_at: '2026-10-21T09:06:00Z' })
+assert.deepEqual(repairedKindQuery.filters, [['id', 89]])
 
 console.log('PASS: shared route order, stop status and visit creation are isolated')
