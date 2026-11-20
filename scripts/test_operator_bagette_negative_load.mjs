@@ -5,8 +5,8 @@ const html = readFileSync(new URL('../olvend-operator/sklad.html', import.meta.u
 const script = readFileSync(new URL('../olvend-operator/operator-warehouse.js', import.meta.url), 'utf8')
 const worker = readFileSync(new URL('../olvend-operator/sw-v44.js', import.meta.url), 'utf8')
 
-assert.match(html, /operator-warehouse\.js\?v=20261120-fresh-photos-v1/)
-assert.match(worker, /olvend-operator-v53-fresh-product-photos/)
+assert.match(html, /operator-warehouse\.js\?v=20261120-picker-close-v1/)
+assert.match(worker, /olvend-operator-v54-close-bagette-picker/)
 assert.match(script, /evidenční stav skladu/)
 assert.match(script, /lze naložit i do mínusu/)
 assert.match(script, /sklad po naložení/)
@@ -18,6 +18,7 @@ assert.match(script, /data-bagette-quantity/)
 assert.match(script, /data-add-selected-bagettes/)
 assert.match(script, /Přidat vybrané/)
 assert.match(script, /if \(flow === 'bagettes'\) \{[\s\S]*ow-bagette-picker/)
+assert.doesNotMatch(script, /bagetteWrap\.hidden=false/, 'bagette picker must close after adding selected products')
 
 const freshPhotoFiles = [
   'bagette-debrecin.jpg',
