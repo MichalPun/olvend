@@ -11,7 +11,13 @@ const dashboard = readFileSync(new URL('../olvend-operator/operator-dashboard-v1
 const worker = readFileSync(new URL('../olvend-operator/sw-v44.js', import.meta.url), 'utf8')
 
 assert.match(mobile, /machine\?\.brand, machine\?\.model, machine\?\.name/)
-assert.ok(mobile.includes('luce\\s*x2|jetinno|bianchi|fas'))
+const machineKindSource = mobile.match(/function getMachineKind\(machine\) \{[\s\S]*?\n    \}/)?.[0]
+assert.ok(machineKindSource, 'getMachineKind must stay available in mobile.html')
+const getMachineKind = Function(`return (${machineKindSource})`)()
+assert.equal(getMachineKind({ machine_type: 'Snack', name: 'FAS 1050', brand: 'Rheavendors' }), 'food')
+assert.equal(getMachineKind({ machine_type: 'Coffee', name: 'FAS 1050', brand: 'Rheavendors' }), 'coffee')
+assert.equal(getMachineKind({ machine_type: 'Potravinový automat', name: 'FAS 1050' }), 'food')
+assert.equal(getMachineKind({ machine_type: '', name: 'Luce X2', brand: 'Rheavendors' }), 'coffee')
 assert.match(mobile, /vehicle: routeVehicle \? \{ id: routeVehicle\.id, name: routeVehicle\.name \|\| '', plate: routeVehicle\.plate \|\| '' \} : null/)
 for (const name of ['nuget', 'porizek', 'debrecin', 'strips', 'svacink', 'hamka', 'mlska']) assert.match(mobile, new RegExp(`/${name}/`))
 
