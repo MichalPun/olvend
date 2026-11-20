@@ -36,6 +36,57 @@
     return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (icons[name] || icons.pin) + '</svg>'
   }
 
+  function normalizeMachineText(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+  }
+
+  function machineRecordFor(stop) {
+    var machine = Object.assign({}, stop && stop.machineRecord || {})
+    if (!machine.name && stop && stop.view) machine.name = stop.view.machineName
+    if (!machine.machine_type && stop && stop.view) machine.machine_type = stop.view.machineType
+    return machine
+  }
+
+  function machineImage(machine) {
+    var value = normalizeMachineText([machine && machine.brand, machine && machine.model, machine && machine.name, machine && machine.machine_type].filter(Boolean).join(' '))
+    if (value.indexOf('jetinno') >= 0 || value.indexOf('jl300') >= 0) return '../assets/machine-overview/models/jetinno-jl300.jpg'
+    if (value.indexOf('vitality') >= 0) return '../assets/machine-overview/models/bianchi-vitality-l.png'
+    if (value.indexOf('aria') >= 0) return '../assets/machine-overview/models/bianchi-aria.jpg'
+    if (value.indexOf('lei 700') >= 0 || value.indexOf('lei700') >= 0) return '../assets/machine-overview/models/bianchi-lei-700.jpg'
+    if (value.indexOf('fas 1050') >= 0 || value.indexOf('fas1050') >= 0) return '../assets/machine-overview/models/fas-1050.jpg'
+    if (value.indexOf('rhfs1') >= 0 && value.indexOf('touch') >= 0) return '../assets/machine-overview/models/rheavendors-rhfs1-touch.jpg'
+    if (value.indexOf('rhfs1') >= 0) return '../assets/machine-overview/models/rheavendors-rhfs1-buttons.jpg'
+    if (value.indexOf('europa snack') >= 0) return '../assets/machine-overview/models/rheavendors-europa-snack.png'
+    if (value.indexOf('luce snack x') >= 0) return '../assets/machine-overview/models/rheavendors-luce-snack-x.jpg'
+    if (value.indexOf('saphirh') >= 0) return '../assets/machine-overview/models/rheavendors-saphirh-10.png'
+    if (value.indexOf('luce zero') >= 0 || value.indexOf('zero full touch') >= 0) return '../assets/machine-overview/models/rheavendors-luce-zero-1.jpg'
+    if (value.indexOf('luce x2') >= 0) return '../assets/machine-overview/models/rheavendors-luce-x2.jpg'
+    if (value.indexOf('luce x1') >= 0) return '../assets/machine-overview/models/rheavendors-luce-x1.jpg'
+    if (value.indexOf('luce h6') >= 0) return '../assets/machine-overview/models/rheavendors-luce-h6.jpg'
+    return ''
+  }
+
+  function appendMachineImage(container, stop, compact) {
+    var machine = machineRecordFor(stop)
+    var imagePath = machineImage(machine)
+    var isCoffee = /coffee|ká|kav/i.test(stop && stop.view && stop.view.machineType || machine.machine_type || '')
+    container.className = compact ? 'or-machine-thumb' : 'or-machine-photo'
+    if (!imagePath) {
+      container.classList.add('fallback')
+      container.innerHTML = svg(isCoffee ? 'coffee' : 'snack')
+      return
+    }
+    var image = document.createElement('img')
+    image.src = imagePath
+    image.alt = machine.name || (isCoffee ? 'Kávový automat' : 'Potravinový automat')
+    image.loading = 'eager'
+    image.addEventListener('error', function () {
+      container.classList.add('fallback')
+      container.innerHTML = svg(isCoffee ? 'coffee' : 'snack')
+    }, { once: true })
+    container.appendChild(image)
+  }
+
   function hydrateIcons(scope) {
     Array.prototype.forEach.call((scope || document).querySelectorAll('[data-icon]'), function (node) {
       node.innerHTML = svg(node.getAttribute('data-icon')) + node.innerHTML
@@ -333,7 +384,11 @@
     var label = document.createElement('div'); label.className = 'or-label'; label.innerHTML = '<span>' + (group.arrived ? 'Aktuální zastávka' : 'Další zastávka') + '</span><b>' + group.order + ' z ' + groups.length + '</b>'
     var place = document.createElement('div'); place.className = 'or-place'; place.innerHTML = '<i class="or-icon">' + svg('pin') + '</i><div><strong></strong><span></span></div>'; place.querySelector('strong').textContent = group.name; place.querySelector('span').textContent = group.address || 'Adresa není uvedena'
     var info = document.createElement('div'); info.className = 'or-stop-info'; info.innerHTML = '<div class="or-meta">' + svg('navigation') + '<span>' + (group.distanceKm == null ? 'Vzdálenost se načítá' : formatKm(group.distanceKm) + ' k zastávce') + '</span></div><div class="or-meta">' + svg('clock') + '<span>Příjezd ' + formatClock(group.arrivalAt) + '</span></div>'
-    var machines = document.createElement('div'); machines.className = 'or-machines'; machines.innerHTML = svg('machines') + '<span></span>'; machines.querySelector('span').textContent = groupMachineSummary(group)
+    var machines = document.createElement('div'); machines.className = 'or-machines'
+    var thumbnails = document.createElement('span'); thumbnails.className = 'or-machine-thumbs'
+    group.stops.slice(0, 3).forEach(function (stop) { var thumb = document.createElement('i'); appendMachineImage(thumb, stop, true); thumbnails.appendChild(thumb) })
+    var machineSummary = document.createElement('span'); machineSummary.className = 'or-machine-summary'; machineSummary.textContent = groupMachineSummary(group)
+    machines.appendChild(thumbnails); machines.appendChild(machineSummary)
     var actions = document.createElement('div'); actions.className = 'or-actions-row'
     var navigation = document.createElement('button'); navigation.type = 'button'; navigation.className = 'or-navigate'; navigation.innerHTML = svg('navigation') + '<span>Navigovat</span>'; navigation.addEventListener('click', function () { navigateTo(group) })
     var open = document.createElement('button'); open.type = 'button'; open.className = 'or-open'; open.textContent = group.arrived ? 'Pokračovat na zastávce' : 'Otevřít zastávku'; open.addEventListener('click', function () { openGroup(group) })
@@ -371,7 +426,8 @@
       var skipped = status === 'skipped'
       var active = !done && !skipped && (group.arrived || isArrived(stop))
       var row = document.createElement('button'); row.type = 'button'; row.className = 'or-machine' + (done || skipped ? ' done' : active ? ' active' : '')
-      row.innerHTML = '<i class="or-machine-icon">' + svg(/coffee|ká|kav/i.test(stop.view.machineType) ? 'coffee' : 'snack') + '</i><div><strong></strong><span></span></div><b></b>'
+      row.innerHTML = '<i></i><div><strong></strong><span></span></div><b></b>'
+      appendMachineImage(row.querySelector('i'), stop, false)
       row.querySelector('strong').textContent = (stop.view.evidenceNumber ? 'EV ' + stop.view.evidenceNumber + ' · ' : '') + stop.view.machineName
       row.querySelector('span').textContent = /coffee|ká|kav/i.test(stop.view.machineType) ? 'Kávový automat' : 'Potravinový automat'
       row.querySelector('b').textContent = done ? 'Hotovo' : skipped ? 'Nejeto' : active ? 'Otevřít ›' : 'Čeká'
@@ -491,7 +547,7 @@
       var visitRequest = requestJson('/rest/v1/route_machine_visits?select=id,route_plan_stop_id,machine_id,status,arrived_at,completed_at,skipped_at&route_plan_id=eq.' + encodeURIComponent(plan.id)).catch(function () { return [] })
       var machineIds = Array.from(new Set((plan.route_plan_stops || []).map(function (stop) { return stop.machine_id }).filter(Boolean)))
       var machineRequest = machineIds.length
-        ? requestJson('/rest/v1/machines?select=id,name,evidence_number,machine_type&id=in.(' + machineIds.map(encodeURIComponent).join(',') + ')')
+        ? requestJson('/rest/v1/machines?select=id,name,evidence_number,machine_type,brand,model&id=in.(' + machineIds.map(encodeURIComponent).join(',') + ')')
         : Promise.resolve([])
       return Promise.all([vehicleRequest, visitRequest, machineRequest])
     }).then(function (results) {
