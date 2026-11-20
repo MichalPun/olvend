@@ -82,6 +82,7 @@
   function qtyControl(flow, index, value, label) { return '<div class="ow-qty"><button type="button" data-delta="-1" data-flow="' + flow + '" data-index="' + index + '" aria-label="Odebrat">−</button><output>' + esc(qty(value)) + ' ' + esc(label || 'ks') + '</output><button type="button" data-delta="1" data-flow="' + flow + '" data-index="' + index + '" aria-label="Přidat">+</button></div>' }
   function productRow(item, flow, index) {
     var meta = esc(item.meta || '')
+    if (flow === 'bagettes') meta += (meta ? ' · ' : '') + 'sklad po naložení <b>' + esc(qty(number(item.stock) - number(item.quantity))) + ' ks</b>'
     if (flow === 'return') meta = 'Staženo ' + esc(item.available) + ' ks · ' + esc(item.machine || 'dnešní trasa') + ' · zůstane ve vozidle ' + esc(qty(item.available - item.quantity)) + ' ks' + (item.expiry ? ' · <em>expirace ' + esc(item.expiry) + '</em>' : '')
     if (flow === 'inventory') meta = 'Systém ' + esc(item.book) + ' ks · rozdíl <b>' + esc((item.quantity - item.book) === 0 ? 'souhlasí' : ((item.quantity - item.book > 0 ? '+' : '') + qty(item.quantity - item.book) + ' ks')) + '</b>'
     var control = qtyControl(flow,index,item.quantity,item.unit)
@@ -93,7 +94,12 @@
   function reasonOptions(selected) { var labels = { expired:'Po expiraci',damaged:'Poškozený obal',shaken:'Znehodnocené',opened:'Otevřené',other:'Jiný důvod' }; return Object.keys(labels).map(function (value) { return '<option value="' + value + '"' + (value === selected ? ' selected' : '') + '>' + labels[value] + '</option>' }).join('') }
   function catalogOptions(flow) {
     var source = flow === 'bagettes' ? extraBagettes : Array.from(balanceMap.values()).filter(function (item) { return item.quantity > 0 })
-    return source.filter(function (item) { return !products[flow].some(function (row) { return String(row.productId) === String(item.productId) }) }).map(function (item) { return '<option value="' + esc(item.productId) + '">' + esc(item.name) + ' · ve vozidle/skladem ' + esc(item.quantity || item.stock) + ' ks</option>' }).join('')
+    return source.filter(function (item) { return !products[flow].some(function (row) { return String(row.productId) === String(item.productId) }) }).map(function (item) {
+      var availability = flow === 'bagettes'
+        ? 'evidenční stav skladu ' + qty(item.stock) + ' ks · lze naložit i do mínusu'
+        : 've vozidle/skladem ' + qty(item.quantity || item.stock) + ' ks'
+      return '<option value="' + esc(item.productId) + '">' + esc(item.name) + ' · ' + esc(availability) + '</option>'
+    }).join('')
   }
   function machineOptions() { return machines.map(function (machine) { return '<option value="' + esc(machine.id) + '">' + esc(machine.title) + '</option>' }).join('') }
   function addPanel(flow) {
@@ -153,7 +159,38 @@
   function loadMachines() { var ids=Array.from(new Set(((route&&route.route_plan_stops)||[]).map(function(s){return s.machine_id}).filter(Boolean)));if(!ids.length){machines=[];return Promise.resolve()}return api('/rest/v1/machines?select='+encodeURIComponent('id,name,locations(name)')+'&id=in.('+ids.join(',')+')').then(function(rows){machines=(rows||[]).map(function(row){return{id:row.id,title:[row.name,row.locations&&row.locations.name].filter(Boolean).join(' · ')}})}) }
   function loadReady() { return api('/rest/v1/mobile_stock_requests?select=*&vehicle_id=eq.'+vehicle.id+'&status=eq.ready&request_type=in.(vehicle_order,vehicle_load)&requested_for_date=eq.'+today()+'&order=prepared_at.desc,created_at.desc&limit=1').then(function(rows){readyRequest=rows[0]||null;if(!readyRequest){products.load=[];return}return api('/rest/v1/mobile_stock_request_items?select=*&request_id=eq.'+readyRequest.id+'&order=id').then(function(items){return loadProducts(items.map(function(x){return x.prepared_product_id||x.product_id})).then(function(){products.load=items.map(function(x){var pid=x.prepared_product_id||x.product_id,p=productMap.get(String(pid))||{},q=number(x.confirmed_quantity!=null?x.confirmed_quantity:x.prepared_quantity!=null?x.prepared_quantity:x.requested_quantity);return{id:'ready-'+x.id,requestItemId:x.id,productId:pid,batchId:x.batch_id,name:x.prepared_product_name||p.name||x.product_name,image:productImage(p),quantity:q,max:q,unit:x.prepared_unit||x.unit||p.base_unit||'ks',meta:x.note||'připraveno skladníkem'}})})})}) }
   function freshRecommendation(fresh) { var result=new Map(),ids=Array.from(new Set(((route&&route.route_plan_stops)||[]).map(function(x){return x.machine_id}).filter(Boolean)));if(!ids.length)return Promise.resolve(result);return api('/rest/v1/machine_planogram_slots?select=machine_id,product_sku,product_name,current_units,capacity_units,target_units,active&machine_id=in.('+ids.join(',')+')&active=eq.true').then(function(slots){(slots||[]).forEach(function(s){var p=fresh.find(function(x){return s.product_sku&&norm(x.sku)===norm(s.product_sku)})||fresh.find(function(x){return norm(x.name)===norm(s.product_name)});if(!p)return;var q=Math.max(0,Math.ceil(number(s.target_units!=null?s.target_units:s.capacity_units)-number(s.current_units)));if(q)result.set(String(p.id),number(result.get(String(p.id)))+q)});return result}).catch(function(){return result}) }
-  function loadFresh() { var fields='id,name,sku,ean,base_unit,product_category,image_path,active';return api('/rest/v1/products?select='+encodeURIComponent(fields)+'&active=eq.true&product_category=eq.food_ready&order=name').then(function(rows){return Promise.all((rows||[]).map(hydrateImage))}).then(function(fresh){fresh.forEach(function(p){productMap.set(String(p.id),p)});if(!fresh.length){products.bagettes=[];extraBagettes=[];return}return Promise.all([api('/rest/v1/stock_location_balances?select=id,product_id,batch_id,quantity_on_hand,inventory_batches(lot_code,best_before_date,use_by_date)&stock_location_id=eq.'+warehouseLocation+'&quantity_on_hand=gt.0&product_id=in.('+fresh.map(function(p){return p.id}).join(',')+')'),freshRecommendation(fresh)]).then(function(result){var by=new Map();result[0].forEach(function(b){var rows=by.get(String(b.product_id))||[];rows.push(b);by.set(String(b.product_id),rows)});products.bagettes=[];extraBagettes=[];fresh.forEach(function(p){var records=(by.get(String(p.id))||[]).sort(batchSort),stock=records.reduce(function(s,b){return s+number(b.quantity_on_hand)},0);if(!stock)return;var wanted=Math.min(stock,number(result[1].get(String(p.id)))),exp=expiry(records[0]),base={productId:p.id,name:p.name,image:productImage(p),max:stock,stock:stock,quantity:stock,unit:p.base_unit||'ks',expiry:date(exp),meta:exp?'nejbližší expirace '+date(exp):'čerstvý sortiment'};if(wanted)products.bagettes.push(Object.assign({},base,{id:'fresh-'+p.id,quantity:wanted,recommended:wanted}));else extraBagettes.push(Object.assign({},base,{id:'extra-'+p.id,quantity:stock}))})})}) }
+  function loadFresh() {
+    var fields='id,name,sku,ean,base_unit,product_category,image_path,active'
+    return api('/rest/v1/products?select='+encodeURIComponent(fields)+'&active=eq.true&product_category=eq.food_ready&order=name').then(function(rows){
+      return Promise.all((rows||[]).map(hydrateImage))
+    }).then(function(fresh){
+      fresh.forEach(function(p){productMap.set(String(p.id),p)})
+      if(!fresh.length){products.bagettes=[];extraBagettes=[];return}
+      var balanceUrl='/rest/v1/stock_location_balances?select=id,product_id,batch_id,quantity_on_hand,inventory_batches(lot_code,best_before_date,use_by_date)&stock_location_id=eq.'+warehouseLocation+'&product_id=in.('+fresh.map(function(p){return p.id}).join(',')+')'
+      return Promise.all([api(balanceUrl),freshRecommendation(fresh)]).then(function(result){
+        var by=new Map(),todayValue=today()
+        result[0].forEach(function(b){var rows=by.get(String(b.product_id))||[];rows.push(b);by.set(String(b.product_id),rows)})
+        products.bagettes=[]
+        extraBagettes=[]
+        fresh.forEach(function(p){
+          var records=(by.get(String(p.id))||[]).filter(function(record){
+            var amount=number(record.quantity_on_hand),expires=expiry(record)
+            return amount<=0||!expires||String(expires).slice(0,10)>=todayValue
+          }).sort(batchSort)
+          var stock=qty(records.reduce(function(s,b){return s+number(b.quantity_on_hand)},0))
+          var wanted=Math.max(0,number(result[1].get(String(p.id))))
+          var positiveRecord=records.find(function(record){return number(record.quantity_on_hand)>0})
+          var exp=expiry(positiveRecord)
+          var base={productId:p.id,name:p.name,image:productImage(p),max:999,stock:stock,quantity:0,unit:p.base_unit||'ks',expiry:date(exp),meta:exp?'nejbližší expirace '+date(exp):'čerstvý sortiment'}
+          if(wanted){
+            products.bagettes.push(Object.assign({},base,{id:'fresh-'+p.id,quantity:wanted,recommended:wanted,meta:'doporučeno podle trasy'}))
+          }else{
+            extraBagettes.push(Object.assign({},base,{id:'extra-'+p.id}))
+          }
+        })
+      })
+    })
+  }
   function loadBalances() { return api('/rest/v1/stock_location_balances?select=id,product_id,batch_id,quantity_on_hand,inventory_batches(lot_code,best_before_date,use_by_date)&stock_location_id=eq.'+vehicleLocation+'&quantity_on_hand=gt.0').then(function(rows){return loadProducts(rows.map(function(x){return x.product_id})).then(function(){balanceMap=new Map();rows.forEach(function(row){var key=String(row.product_id),p=productMap.get(key)||{},existing=balanceMap.get(key)||{productId:row.product_id,name:p.name||'Produkt',image:productImage(p),quantity:0,unit:p.base_unit||'ks',batches:[]};existing.quantity+=number(row.quantity_on_hand);existing.batches.push(row);balanceMap.set(key,existing)})})}) }
   function loadReturns() {
     if (!route) { products.return=[]; return Promise.resolve() }
@@ -228,7 +265,7 @@
     var delta=event.target.closest('[data-delta]');if(delta){var flow=delta.dataset.flow,index=Number(delta.dataset.index),item=products[flow][index],max=flow==='load'||flow==='bagettes'||flow==='return'?number(item.max):999999;item.quantity=Math.max(0,Math.min(max,qty(item.quantity+number(delta.dataset.delta))));delta.closest('.ow-qty').querySelector('output').textContent=qty(item.quantity)+' '+(item.unit||'ks');updateDynamic();return}
     var remove=event.target.closest('[data-remove]');if(remove){products[remove.dataset.flow].splice(Number(remove.dataset.index),1);render();var wrap=document.getElementById('ow-add-wrap');if(wrap)wrap.hidden=false;return}
     if(event.target.closest('[data-toggle-add]')){var addWrap=document.getElementById('ow-add-wrap');addWrap.hidden=!addWrap.hidden;return}
-    var add=event.target.closest('[data-add-product]');if(add){var flow=add.dataset.addProduct,pid=document.getElementById('ow-add-product').value,p=productMap.get(String(pid))||{},machineSelect=document.getElementById('ow-add-machine'),machine=machineSelect?machines.find(function(x){return String(x.id)===String(machineSelect.value)}):null;if(flow==='bagettes'){var extra=extraBagettes.find(function(x){return String(x.productId)===String(pid)});if(extra)products.bagettes.push(Object.assign({},extra,{id:'fresh-manual-'+pid,quantity:1,recommended:0,max:extra.stock,meta:'přidáno operátorem · mimo doporučení'}))}else{var balance=balanceMap.get(String(pid));if(balance)products[flow].push({id:flow+'-manual-'+pid+'-'+Date.now(),productId:Number(pid),name:balance.name,image:balance.image,quantity:1,available:balance.quantity,max:balance.quantity,unit:balance.unit,machine:machine&&machine.title||'Ručně doplněno',meta:(machine&&machine.title||'Ručně doplněno')+' · doplněno operátorem',reason:document.getElementById('ow-add-reason')?document.getElementById('ow-add-reason').value:'other'})}render();var reopened=document.getElementById('ow-add-wrap');if(reopened)reopened.hidden=false;return}
+    var add=event.target.closest('[data-add-product]');if(add){var flow=add.dataset.addProduct,pid=document.getElementById('ow-add-product').value,p=productMap.get(String(pid))||{},machineSelect=document.getElementById('ow-add-machine'),machine=machineSelect?machines.find(function(x){return String(x.id)===String(machineSelect.value)}):null;if(flow==='bagettes'){var extra=extraBagettes.find(function(x){return String(x.productId)===String(pid)});if(extra)products.bagettes.push(Object.assign({},extra,{id:'fresh-manual-'+pid,quantity:1,recommended:0,max:extra.max,meta:'přidáno operátorem · mimo doporučení'}))}else{var balance=balanceMap.get(String(pid));if(balance)products[flow].push({id:flow+'-manual-'+pid+'-'+Date.now(),productId:Number(pid),name:balance.name,image:balance.image,quantity:1,available:balance.quantity,max:balance.quantity,unit:balance.unit,machine:machine&&machine.title||'Ručně doplněno',meta:(machine&&machine.title||'Ručně doplněno')+' · doplněno operátorem',reason:document.getElementById('ow-add-reason')?document.getElementById('ow-add-reason').value:'other'})}render();var reopened=document.getElementById('ow-add-wrap');if(reopened)reopened.hidden=false;return}
     if(event.target.closest('[data-submit]')){var current=step,flow=['','load','bagettes','return','waste','inventory'][current],items=products[flow]||[];if((current===1||current===2)&&items.some(function(x){return x.quantity<0})){message('Zkontrolujte množství.',true);return}setBusy(true,current===5?'Ukládám inventuru…':'Ukládám skladové pohyby…');Promise.resolve().then(submitCurrent).then(function(){return recordStep(flow,items)}).then(function(){summary[flow]=current===5?items.length:total(items);if(current<=4)completed.add(flow);if(current===1)step=2;else if(current===2)step=route&&route.execution_status==='done'?3:30;else if(current===3)step=4;else if(current===4)step=pendingAudit?5:6;else{pendingAudit=null;step=6}render();setBusy(false);message(current===5?'Inventura byla odeslána k vyhodnocení.':'Skladový pohyb je uložený a synchronizovaný.')},function(error){setBusy(false);message(error.message||'Uložení se nepodařilo.',true)});return}
     if(event.target.closest('[data-home]'))location.href='./uvod.html'
     if(event.target.closest('[data-route]'))location.href='./trasa.html'
