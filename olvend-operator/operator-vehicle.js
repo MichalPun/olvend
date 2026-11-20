@@ -286,6 +286,11 @@
     if (name.indexOf('svacink') >= 0) return './assets/product-images/bagette-svacinka.jpg'
     if (name.indexOf('hamka') >= 0) return './assets/product-images/bagette-hamka.jpg'
     if (name.indexOf('porizek') >= 0) return './assets/product-images/bagette-porizek.jpg'
+    if (name.indexOf('nuget') >= 0) return './assets/product-images/bagette-nuget.jpg'
+    if (name.indexOf('debrec') >= 0) return './assets/product-images/bagette-debrecin.jpg'
+    if (name.indexOf('strips') >= 0) return './assets/product-images/bagette-strips.jpg'
+    if (name.indexOf('mlska') >= 0) return './assets/product-images/bagette-mlska.jpg'
+    if (name.indexOf('bertyc') >= 0) return '../assets/product-images/200001.png'
     var byEan = { '9002490200091': 'ean-9002490200091.webp', '7622201390648': 'ean-7622201390648.jpg', '5949040204427': 'ean-5949040204427.jpg', '8000500073698': 'ean-8000500073698.jpg', '3838945043694': 'ean-3838945043694.png', '8586018180863': 'ean-8586018180863.jpg', '8594002072858': 'ean-8594002072858.webp' }
     return byEan[String(row.ean || '')] ? './assets/product-images/' + byEan[String(row.ean)] : './icon-192.png'
   }
@@ -305,12 +310,13 @@
   }
 
   function renderStock() {
-    var totals = { fresh: 0, sweets: 0, drinks: 0, ingredients: 0 }
-    stockRows.forEach(function (row) { totals[stockCategory(row)] += Number(row.quantity_on_hand || 0) })
-    document.getElementById('ovStockFresh').textContent = totals.fresh.toLocaleString('cs-CZ') + ' ks'
-    document.getElementById('ovStockSweets').textContent = totals.sweets.toLocaleString('cs-CZ') + ' ks'
-    document.getElementById('ovStockDrinks').textContent = totals.drinks.toLocaleString('cs-CZ') + ' ks'
-    document.getElementById('ovStockIngredients').textContent = totals.ingredients.toLocaleString('cs-CZ') + ' j.'
+    var totals = { fresh: {}, sweets: {}, drinks: {}, ingredients: {} }
+    stockRows.forEach(function (row) { var unit = row.base_unit || 'ks'; var category = stockCategory(row); totals[category][unit] = Number(totals[category][unit] || 0) + Number(row.quantity_on_hand || 0) })
+    function label(category) { return Object.keys(totals[category]).map(function (unit) { return totals[category][unit].toLocaleString('cs-CZ') + ' ' + unit }).join(' + ') || '0 ks' }
+    document.getElementById('ovStockFresh').textContent = label('fresh')
+    document.getElementById('ovStockSweets').textContent = label('sweets')
+    document.getElementById('ovStockDrinks').textContent = label('drinks')
+    document.getElementById('ovStockIngredients').textContent = label('ingredients')
   }
 
   function openStockSheet() {
@@ -319,9 +325,10 @@
     var html = '<div class="ov-stock-list">' + (rows.length ? categories.map(function (category) {
       var items = rows.filter(function (row) { return stockCategory(row) === category })
       if (!items.length) return ''
-      var total = items.reduce(function (sum, row) { return sum + Number(row.quantity_on_hand || 0) }, 0)
-      return '<section class="ov-stock-group"><header class="ov-stock-group-head"><strong>' + stockCategoryLabel(category) + '</strong><span>' + stockItemCountLabel(items.length) + ' · celkem ' + total.toLocaleString('cs-CZ') + '</span></header>' + items.map(function (row) {
-        return '<article class="ov-stock-row"><img src="' + escapeHtml(stockProductImage(row)) + '" alt=""><div><strong>' + escapeHtml(row.product_name) + '</strong><small>' + escapeHtml([row.sku, row.ean].filter(Boolean).join(' · ')) + '</small></div><b>' + Number(row.quantity_on_hand || 0).toLocaleString('cs-CZ') + ' ' + escapeHtml(row.base_unit || 'ks') + '</b></article>'
+      var totals = items.reduce(function (sum, row) { var unit = row.base_unit || 'ks'; sum[unit] = Number(sum[unit] || 0) + Number(row.quantity_on_hand || 0); return sum }, {})
+      var totalLabel = Object.keys(totals).map(function (unit) { return totals[unit].toLocaleString('cs-CZ') + ' ' + unit }).join(' + ')
+      return '<section class="ov-stock-group"><header class="ov-stock-group-head"><strong>' + stockCategoryLabel(category) + '</strong><span>' + stockItemCountLabel(items.length) + ' · celkem ' + totalLabel + '</span></header>' + items.map(function (row) {
+        return '<article class="ov-stock-row"><img src="' + escapeHtml(stockProductImage(row)) + '" alt="' + escapeHtml(row.product_name) + '"><div><strong>' + escapeHtml(row.product_name) + '</strong><small>' + escapeHtml([row.sku, row.ean].filter(Boolean).join(' · ')) + '</small></div><b>' + Number(row.quantity_on_hand || 0).toLocaleString('cs-CZ') + ' ' + escapeHtml(row.base_unit || 'ks') + '</b></article>'
       }).join('') + '</section>'
     }).join('') : '<article class="ov-request"><div><strong>Vozidlo je bez evidované zásoby</strong><p>Stav se načítá přímo ze skladu vozidla.</p></div></article>') + '</div>'
     if (window.operatorVehicleOpenCustomSheet) window.operatorVehicleOpenCustomSheet('▣', 'Zásoby vozidla', 'Co je právě v autě', html)

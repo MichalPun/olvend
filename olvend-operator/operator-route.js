@@ -117,6 +117,17 @@
     return count + ' automatů'
   }
 
+  function locationCountLabel(count) {
+    if (count === 1) return '1 lokalita'
+    if (count > 1 && count < 5) return count + ' lokality'
+    return count + ' lokalit'
+  }
+
+  function physicalStopCountAfterZ(count) {
+    if (count === 1) return '1 fyzické zastávky'
+    return count + ' fyzických zastávek'
+  }
+
   function visitFor(stop) {
     return visits.find(function (visit) { return String(visit.route_plan_stop_id) === String(stop.id) }) || null
   }
@@ -363,13 +374,13 @@
     state.textContent = routeDone ? 'Trasa hotová' : plan.execution_status === 'in_progress' ? 'Směna běží' : 'Připravená'
     state.className = 'or-state' + (plan.execution_status === 'in_progress' || routeDone ? '' : ' waiting')
     root.querySelector('#or-header-state').textContent = (plan.execution_status === 'in_progress' ? 'Aktivní směna' : 'Dnešní trasa') + (vehicle ? ' · ' + (vehicle.plate || vehicle.name) : '')
-    root.querySelector('#or-started').textContent = plan.started_at ? 'Začátek směny v ' + formatClock(plan.started_at) : 'Trasa čeká na zahájení směny'
-    root.querySelector('#or-progress-label').textContent = completedGroups + ' z ' + groups.length + ' fyzických zastávek hotovo'
-    root.querySelector('#or-progress-meta').textContent = completedMachines + ' z ' + (plan.route_plan_stops || []).length + ' automatů · ' + formatKm(plan.estimated_distance_km) + (routeEnd() ? ' · návrat ' + formatClock(routeEnd()) : '')
+    root.querySelector('#or-started').textContent = plan.started_at ? 'Trasa zahájena v ' + formatClock(plan.started_at) : 'Trasa čeká na zahájení'
+    root.querySelector('#or-progress-label').textContent = completedGroups + ' z ' + physicalStopCountAfterZ(groups.length) + ' hotovo'
+    root.querySelector('#or-progress-meta').textContent = completedMachines + ' z ' + machineCountLabel((plan.route_plan_stops || []).length) + ' · ' + formatKm(plan.estimated_distance_km) + (routeEnd() ? ' · návrat ' + formatClock(routeEnd()) : '')
     root.querySelector('#or-remaining').textContent = remaining ? remaining + ' zbývá' : 'hotovo'
     root.querySelector('#or-progress-bar').style.width = percent + '%'
     root.querySelector('#or-vehicle [data-tile-copy]').textContent = vehicle ? [vehicle.plate, Number(vehicle.current_odometer_km || 0).toLocaleString('cs-CZ') + ' km'].filter(Boolean).join(' · ') : 'Vozidlo není přiřazené'
-    root.querySelector('#or-route-list [data-tile-copy]').textContent = groups.length + ' lokalit · ' + (plan.route_plan_stops || []).length + ' automatů'
+    root.querySelector('#or-route-list [data-tile-copy]').textContent = locationCountLabel(groups.length) + ' · ' + machineCountLabel((plan.route_plan_stops || []).length)
     renderRouteMap()
     renderNext(next, routeDone)
   }

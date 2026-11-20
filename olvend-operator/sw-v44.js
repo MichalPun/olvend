@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v55-confirm-bagette-load'
+  var CACHE_NAME = 'olvend-operator-v56-full-live-regression'
   var APP_SHELL = [
     './',
     './index.html',
@@ -19,13 +19,13 @@
     './operator-profile-v3.css',
     './approved-home-v35.js?v=20261119-unrestricted-shift-start-v2',
     './operator-dashboard-v1.css?v=20261117-1',
-    './operator-dashboard-v1.js?v=20261117-weather-v2',
-    './operator-route.js',
-    './operator-warehouse.js',
+    './operator-dashboard-v1.js?v=20261120-live-regression-v1',
+    './operator-route.js?v=20261120-live-regression-v1',
+    './operator-warehouse.js?v=20261120-live-regression-v1',
     './operator-warehouse-v2.css',
     './operator-profile-v11.js',
     './operator-instructions.js',
-    './operator-vehicle.js',
+    './operator-vehicle.js?v=20261120-live-regression-v1',
     './auth-guard.js',
     './pwa-v27.js',
     './pwa-v36.js',
@@ -50,6 +50,7 @@
     './assets/product-images/ean-8586018180863.jpg',
     './assets/product-images/ean-8594002072858.webp',
     './assets/product-images/ean-9002490200091.webp',
+    '../assets/product-images/200001.png',
     '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
