@@ -292,7 +292,6 @@
       })
       if(!added){message('Zadejte množství alespoň u jednoho produktu.',true);return}
       render()
-      var bagetteWrap=document.getElementById('ow-add-wrap');if(bagetteWrap)bagetteWrap.hidden=false
       return
     }
     var add=event.target.closest('[data-add-product]');if(add){var flow=add.dataset.addProduct,pid=document.getElementById('ow-add-product').value,p=productMap.get(String(pid))||{},machineSelect=document.getElementById('ow-add-machine'),machine=machineSelect?machines.find(function(x){return String(x.id)===String(machineSelect.value)}):null;if(flow==='bagettes'){var extra=extraBagettes.find(function(x){return String(x.productId)===String(pid)});if(extra)products.bagettes.push(Object.assign({},extra,{id:'fresh-manual-'+pid,quantity:1,recommended:0,max:extra.max,meta:'přidáno operátorem · mimo doporučení'}))}else{var balance=balanceMap.get(String(pid));if(balance)products[flow].push({id:flow+'-manual-'+pid+'-'+Date.now(),productId:Number(pid),name:balance.name,image:balance.image,quantity:1,available:balance.quantity,max:balance.quantity,unit:balance.unit,machine:machine&&machine.title||'Ručně doplněno',meta:(machine&&machine.title||'Ručně doplněno')+' · doplněno operátorem',reason:document.getElementById('ow-add-reason')?document.getElementById('ow-add-reason').value:'other'})}render();var reopened=document.getElementById('ow-add-wrap');if(reopened)reopened.hidden=false;return}
