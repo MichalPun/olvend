@@ -125,12 +125,26 @@ export async function ensureRouteVisitRecord({
   if (!plan?.id || !stop?.id || !machine?.id) throw new Error('Zastávka nemá jednoznačně navázaný automat.')
 
   if (existing?.id) {
+    const visitPatch = {}
     if (existing.status !== 'completed' && !existing.arrived_at) {
+      visitPatch.status = 'arrived'
+      visitPatch.arrived_at = nowIso
+    }
+    if (
+      existing.status !== 'completed'
+      && ['coffee', 'food'].includes(machineKind)
+      && existing.machine_kind !== machineKind
+    ) {
+      visitPatch.machine_kind = machineKind
+    }
+    if (Object.keys(visitPatch).length) {
+      visitPatch.synced_at = nowIso
       const { error } = await client
         .from('route_machine_visits')
-        .update({ status: 'arrived', arrived_at: nowIso, synced_at: nowIso })
+        .update(visitPatch)
         .eq('id', existing.id)
       if (error) throw error
+      Object.assign(existing, visitPatch)
     }
     return existing.id
   }
