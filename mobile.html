@@ -7811,13 +7811,23 @@
         const defaultUnit = getStockEntryUnitOption(product, getDefaultStockEntryUnitMode(product))
         const available = Number(state.freshWarehouseAvailability[String(product.id)] || 0)
         const availabilityKnown = freshLoad && state.freshWarehouseAvailabilityLoaded
-        const unavailable = availabilityKnown && available <= 0
+        const negativeAllowed = freshLoad && isMorningBagetteProduct(product)
+        const unavailable = availabilityKnown && available <= 0 && !negativeAllowed
+        const freshAvailabilityLabel = !freshLoad
+          ? ''
+          : !availabilityKnown
+            ? 'ověřuji sklad…'
+            : negativeAllowed
+              ? `skladem ${formatStockQuantityValue(available, product.base_unit || 'ks')} · lze naložit i do mínusu`
+              : unavailable
+                ? 'není skladem'
+                : `skladem ${formatStockQuantityValue(available, product.base_unit || 'ks')}`
         const meta = [
           product.sku ? `SKU ${product.sku}` : '',
           product.ean ? `EAN ${product.ean}` : '',
           defaultUnit?.value !== 'base' ? `zadání ${defaultUnit.unit}` : product.base_unit || 'ks',
           defaultUnit?.value !== 'base' ? `skladově ${formatStockQuantityValue(defaultUnit.stockQuantity, product.base_unit || 'ks')}` : '',
-          freshLoad ? (availabilityKnown ? (unavailable ? 'není skladem' : `skladem ${formatStockQuantityValue(available, product.base_unit || 'ks')}`) : 'ověřuji sklad…') : ''
+          freshAvailabilityLabel
         ].filter(Boolean).join(' · ')
         return `
           <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}" ${unavailable ? 'disabled aria-disabled="true"' : ''}>
@@ -7854,13 +7864,13 @@
         .select('product_id, quantity_on_hand, inventory_batches(best_before_date, use_by_date)')
         .eq('stock_location_id', warehouseLocationId)
         .in('product_id', productIds)
-        .gt('quantity_on_hand', 0)
       if (error) throw error
       ;(data || []).forEach((record) => {
         const expiry = record.inventory_batches?.use_by_date || record.inventory_batches?.best_before_date || null
-        if (expiry && String(expiry) < todayIso) return
+        const quantity = Number(record.quantity_on_hand || 0)
+        if (quantity > 0 && expiry && String(expiry) < todayIso) return
         const key = String(record.product_id)
-        state.freshWarehouseAvailability[key] = Number((Number(state.freshWarehouseAvailability[key] || 0) + Number(record.quantity_on_hand || 0)).toFixed(3))
+        state.freshWarehouseAvailability[key] = Number((Number(state.freshWarehouseAvailability[key] || 0) + quantity).toFixed(3))
       })
       state.freshWarehouseAvailabilityLoaded = true
       renderProductSearchPanel()
@@ -8321,6 +8331,7 @@
         ${state.stockDraftItems.map((item, index) => `
           <article class="stock-receipt-card ${Number(item.quantity || 0) > 0 || item.skipped ? 'verified' : ''}" data-stock-draft-index="${index}">
             <div class="stock-receipt-card-head"><div><strong>${escapeHtml(item.product_name)}</strong><small>${escapeHtml([item.sku ? `SKU ${item.sku}` : '', item.skipped ? `Nevzato · ${item.skip_reason}` : state.selectedStockType === 'vehicle_unload' && item.max_quantity != null ? `v autě ${formatNumber(item.max_quantity)} ${item.unit || 'ks'}` : item.note || 'Skutečné množství'].filter(Boolean).join(' · '))}</small></div><div class="stock-receipt-quantity">${item.skipped ? 'Nevzato' : escapeHtml(formatStockRequestItemQuantity(item))}</div></div>
+            ${!item.skipped && item.allows_negative_warehouse && item.warehouse_available_at_selection !== null && Number(item.stock_quantity_base_units || 0) > Number(item.warehouse_available_at_selection || 0) ? `<div class="stock-receipt-expiry">Sklad po naložení: −${escapeHtml(formatStockQuantityValue(Number(item.stock_quantity_base_units || 0) - Number(item.warehouse_available_at_selection || 0), item.unit || 'ks'))} · pohyb bude uložený k operátorovi a vozidlu</div>` : ''}
             ${!item.skipped && item.batch_id && !item.expiry_allocations?.length ? `<div class="stock-receipt-expiry">Expirace ${escapeHtml(item.expiry_date ? new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'neuvedena')} · šarže ${escapeHtml(item.batch_code || String(item.batch_id))}</div>` : ''}
             ${!item.skipped && item.expiry_allocations?.length ? `<div class="stock-expiry-control"><strong>Povinná kontrola expirací</strong><span>Klepni na každé datum po porovnání s obalem.</span>${item.expiry_allocations.map((allocation, allocationIndex) => `<button class="${allocation.verified ? 'verified' : ''}" data-stock-expiry-index="${allocationIndex}" type="button"><span class="stock-expiry-mark">${allocation.verified ? 'OK' : '!'}</span><span><b>${escapeHtml(allocation.expiry_date ? new Date(`${allocation.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'Expirace neevidována')}</b><small>${allocation.verified ? 'Zkontrolováno' : 'Porovnej datum na obalu'}</small></span><em>${formatNumber(allocation.quantity)} ${escapeHtml(item.unit || 'ks')}</em></button>`).join('')}</div>` : ''}
             ${!item.skipped ? `<div class="stock-receipt-stepper"><button data-stock-draft-step="-1" type="button" aria-label="Ubrat">−</button><output>${escapeHtml(formatStockRequestItemQuantity(item))}</output><button data-stock-draft-step="1" type="button" aria-label="Přidat">+</button></div>` : ''}
@@ -8563,6 +8574,24 @@
       return category === 'food_ready' || name.includes('baget') || name.includes('strips')
     }
 
+    const morningBagetteSkus = new Set([
+      'SIMPLY-DEBRECIN',
+      'SIMPLY-MLSKA',
+      'SIMPLY-PORIZEK',
+      'SIMPLY-SVACINKA',
+      'SIMPLY-HAMKA',
+      'SIMPLY-NUGET',
+      'HAME-KURECI-STRIPS'
+    ])
+
+    function isMorningBagetteProduct(product) {
+      const sku = String(product?.sku || '').trim().toUpperCase()
+      if (morningBagetteSkus.has(sku)) return true
+      const name = normalizeText(product?.name || '')
+      return ['baget', 'debrecin', 'porizek', 'mlska', 'svacinka', 'hamka', 'nuget', 'nugget', 'kureci strips']
+        .some((part) => name.includes(part))
+    }
+
     function renderFreshRouteRecommendation() {
       if (!els.freshRouteRecommendation) return
       const rows = state.freshRouteRecommendation || []
@@ -8707,12 +8736,18 @@
       })))
       preparedRows.forEach((row) => {
         const expiryAllocations = buildFreshExpiryAllocations(row.available_batches, row.quantity)
+        const availableQuantity = Number(state.freshWarehouseAvailability[String(row.product_id)] || 0)
+        const negativeWarehouseAfterLoad = Math.max(0, Number((Number(row.quantity || 0) - availableQuantity).toFixed(3)))
         const existing = state.stockDraftItems.find((item) => String(item.product_id) === String(row.product_id))
         if (existing) {
           existing.quantity = row.quantity
           existing.stock_quantity_base_units = row.quantity
-          existing.note = 'Doporučení z telemetrie pro dnešní trasu'
+          existing.note = negativeWarehouseAfterLoad > 0
+            ? `Doporučení z telemetrie · sklad po naložení −${formatStockQuantityValue(negativeWarehouseAfterLoad, row.unit || 'ks')}`
+            : 'Doporučení z telemetrie pro dnešní trasu'
           existing.available_batches = row.available_batches
+          existing.warehouse_available_at_selection = availableQuantity
+          existing.allows_negative_warehouse = true
           existing.expiry_allocations = expiryAllocations
           existing.batch_id = expiryAllocations[0]?.batch_id || null
           existing.expiry_date = expiryAllocations[0]?.expiry_date || null
@@ -8726,8 +8761,12 @@
           unit: row.unit,
           quantity: row.quantity,
           stock_quantity_base_units: row.quantity,
-          note: 'Doporučení z telemetrie pro dnešní trasu',
+          note: negativeWarehouseAfterLoad > 0
+            ? `Doporučení z telemetrie · sklad po naložení −${formatStockQuantityValue(negativeWarehouseAfterLoad, row.unit || 'ks')}`
+            : 'Doporučení z telemetrie pro dnešní trasu',
           available_batches: row.available_batches,
+          warehouse_available_at_selection: availableQuantity,
+          allows_negative_warehouse: true,
           expiry_allocations: expiryAllocations,
           batch_id: expiryAllocations[0]?.batch_id || null,
           expiry_date: expiryAllocations[0]?.expiry_date || null,
@@ -8743,7 +8782,7 @@
     }
 
     function isBagetteProduct(product) {
-      return normalizeText(product?.name || '').includes('baget')
+      return isMorningBagetteProduct(product)
     }
 
     function getFoodTransferHorizonDays(product) {
@@ -18836,13 +18875,24 @@
         const alreadySelected = state.stockDraftItems
           .filter((item) => String(item.product_id) === String(product.id) && !item.skipped)
           .reduce((sum, item) => sum + Number(item.stock_quantity_base_units || 0), 0)
-        if (stockQuantityBaseUnits + alreadySelected > available) {
+        if (stockQuantityBaseUnits + alreadySelected > available && !isMorningBagetteProduct(product)) {
           showMessage(available > 0
             ? `Ve skladu je nejvýše ${formatStockQuantityValue(available, product.base_unit || 'ks')}.`
             : `${product.name} nyní není ve skladu.`, 'error')
           return false
         }
       }
+      const freshWarehouseAvailable = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad && state.freshWarehouseAvailabilityLoaded
+        ? Number(state.freshWarehouseAvailability[String(product?.id)] || 0)
+        : null
+      const freshAlreadySelected = freshWarehouseAvailable === null
+        ? 0
+        : state.stockDraftItems
+          .filter((item) => String(item.product_id) === String(product?.id || '') && !item.skipped)
+          .reduce((sum, item) => sum + Number(item.stock_quantity_base_units || 0), 0)
+      const negativeWarehouseAfterLoad = freshWarehouseAvailable !== null && isMorningBagetteProduct(product)
+        ? Math.max(0, Number((stockQuantityBaseUnits + freshAlreadySelected - freshWarehouseAvailable).toFixed(3)))
+        : 0
       state.stockDraftItems.push({
         product_id: product?.id || null,
         product_name: product?.name || productText,
@@ -18850,8 +18900,18 @@
         unit: unitOption?.unit || product?.base_unit || 'ks',
         quantity,
         stock_quantity_base_units: stockQuantityBaseUnits,
-        max_quantity: unloadBalance ? Number((Number(unloadBalance.quantity_on_hand || 0) / Math.max(1, Number(unitOption?.stockQuantity || 1))).toFixed(3)) : null,
-        note: unloadBalance ? `V autě ${formatStockQuantityValue(unloadBalance.quantity_on_hand, product?.base_unit || 'ks')}` : els.stockNoteInput.value.trim() || null,
+        max_quantity: unloadBalance
+          ? Number((Number(unloadBalance.quantity_on_hand || 0) / Math.max(1, Number(unitOption?.stockQuantity || 1))).toFixed(3))
+          : freshWarehouseAvailable !== null && !isMorningBagetteProduct(product)
+            ? Number((freshWarehouseAvailable / Math.max(1, Number(unitOption?.stockQuantity || 1))).toFixed(3))
+            : null,
+        note: unloadBalance
+          ? `V autě ${formatStockQuantityValue(unloadBalance.quantity_on_hand, product?.base_unit || 'ks')}`
+          : negativeWarehouseAfterLoad > 0
+            ? `Naloženo nad evidenční stav · sklad po naložení −${formatStockQuantityValue(negativeWarehouseAfterLoad, product?.base_unit || 'ks')}`
+            : els.stockNoteInput.value.trim() || null,
+        warehouse_available_at_selection: freshWarehouseAvailable,
+        allows_negative_warehouse: isMorningBagetteProduct(product),
         batch_id: els.stockBatchSelect?.value ? Number(els.stockBatchSelect.value) : null,
         expiry_date: els.stockBatchSelect?.selectedOptions?.[0]?.dataset?.expiryDate || null,
         batch_code: els.stockBatchSelect?.selectedOptions?.[0]?.dataset?.batchCode || null
@@ -18864,7 +18924,9 @@
       if (els.stockBatchLabel) els.stockBatchLabel.hidden = true
       updateStockUnitControls(null)
       renderStockDraft()
-      if (!options.silent) showMessage('Položka je přidaná do rozpracovaného dokladu.', 'info', { scroll: false })
+      if (!options.silent) showMessage(negativeWarehouseAfterLoad > 0
+        ? `${product.name} můžeš naložit. Sklad po potvrzení klesne na −${formatStockQuantityValue(negativeWarehouseAfterLoad, product?.base_unit || 'ks')}.`
+        : 'Položka je přidaná do rozpracovaného dokladu.', 'info', { scroll: false })
       window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 20)
       return true
     }
@@ -19581,7 +19643,7 @@
             note: hasStockRequestSubstitution(item)
               ? `Mobilní nakládka #${request.id} · náhrada za ${item.product_name || item.sku || item.product_id}`
               : `Mobilní nakládka #${request.id}`,
-            allowNegative: true,
+            allowNegative: request.request_type === 'vehicle_load' && isMorningBagetteProduct(product),
             selectedBatchId: item.batch_id || null
           }))
         }
