@@ -4676,6 +4676,7 @@
     body.stock-active .product-search-option { color:#17212b; border-color:#eaecf0; background:#fff; }
     body.stock-active .product-search-option:hover,
     body.stock-active .product-search-option:focus-visible { background:#f2f4f7; }
+    body.stock-active .product-search-option:disabled { cursor:not-allowed; opacity:.58; background:#f9fafb; }
     body.stock-active .draft-line { color:#17212b; border-color:#eaecf0; background:#fff; }
     body.stock-active .draft-line span { color:#667085; }
 
@@ -5596,6 +5597,8 @@
       routePlanDiagnostics: null,
       freshRouteRecommendation: [],
       freshRouteRecommendationLoaded: false,
+      freshWarehouseAvailability: {},
+      freshWarehouseAvailabilityLoaded: false,
       activeRouteStopId: null,
       routeCoffeeDetails: {},
       routeFoodDetails: {},
@@ -7781,6 +7784,8 @@
       const unloadProductIds = new Set(state.vehicleUnloadBalances.map((row) => String(row.product_id)))
       const searchableProducts = state.products.filter((product) => product.active !== false && (
         state.selectedStockType !== 'vehicle_unload' || unloadProductIds.has(String(product.id))
+      ) && (
+        !(state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad) || isFoodReadyProduct(product)
       ))
       if (state.selectedStockType === 'vehicle_unload' && !normalized) return []
       const rows = normalized
@@ -7793,22 +7798,72 @@
       if (!els.stockProductSearchPanel) return
       const query = els.stockProductInput.value || ''
       const results = getProductSearchResults(query)
-      els.stockProductSearchPanel.hidden = document.activeElement !== els.stockProductInput || !results.length
+      const freshLoad = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad
+      const inputActive = document.activeElement === els.stockProductInput
+      els.stockProductSearchPanel.hidden = !inputActive
+      if (!results.length) {
+        els.stockProductSearchPanel.innerHTML = freshLoad
+          ? '<div class="empty">Žádný druh bagety neodpovídá hledání.</div>'
+          : '<div class="empty">Žádný produkt neodpovídá hledání.</div>'
+        return
+      }
       els.stockProductSearchPanel.innerHTML = results.map((product) => {
         const defaultUnit = getStockEntryUnitOption(product, getDefaultStockEntryUnitMode(product))
+        const available = Number(state.freshWarehouseAvailability[String(product.id)] || 0)
+        const availabilityKnown = freshLoad && state.freshWarehouseAvailabilityLoaded
+        const unavailable = availabilityKnown && available <= 0
         const meta = [
           product.sku ? `SKU ${product.sku}` : '',
           product.ean ? `EAN ${product.ean}` : '',
           defaultUnit?.value !== 'base' ? `zadání ${defaultUnit.unit}` : product.base_unit || 'ks',
-          defaultUnit?.value !== 'base' ? `skladově ${formatStockQuantityValue(defaultUnit.stockQuantity, product.base_unit || 'ks')}` : ''
+          defaultUnit?.value !== 'base' ? `skladově ${formatStockQuantityValue(defaultUnit.stockQuantity, product.base_unit || 'ks')}` : '',
+          freshLoad ? (availabilityKnown ? (unavailable ? 'není skladem' : `skladem ${formatStockQuantityValue(available, product.base_unit || 'ks')}`) : 'ověřuji sklad…') : ''
         ].filter(Boolean).join(' · ')
         return `
-          <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}">
+          <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}" ${unavailable ? 'disabled aria-disabled="true"' : ''}>
             <strong>${escapeHtml(product.name || 'Produkt')}</strong>
             <span>${escapeHtml(meta || 'Bez kódu')}</span>
           </button>
         `
       }).join('')
+    }
+
+    async function loadFreshWarehouseAvailability() {
+      state.freshWarehouseAvailability = {}
+      state.freshWarehouseAvailabilityLoaded = false
+      renderProductSearchPanel()
+      const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId()
+      const vehicle = state.vehicles.find((item) => String(item.id) === String(vehicleId || ''))
+      if (!vehicle?.warehouse_id) {
+        state.freshWarehouseAvailabilityLoaded = true
+        renderProductSearchPanel()
+        return
+      }
+      const productIds = state.products
+        .filter((product) => product.active !== false && isFoodReadyProduct(product))
+        .map((product) => product.id)
+        .filter(Boolean)
+      if (!productIds.length) {
+        state.freshWarehouseAvailabilityLoaded = true
+        renderProductSearchPanel()
+        return
+      }
+      const warehouseLocationId = await ensureStockLocation('warehouse', vehicle.warehouse_id, `Sklad ${vehicle.warehouse_id}`)
+      const { data, error } = await supabase
+        .from('stock_location_balances')
+        .select('product_id, quantity_on_hand, inventory_batches(best_before_date, use_by_date)')
+        .eq('stock_location_id', warehouseLocationId)
+        .in('product_id', productIds)
+        .gt('quantity_on_hand', 0)
+      if (error) throw error
+      ;(data || []).forEach((record) => {
+        const expiry = record.inventory_batches?.use_by_date || record.inventory_batches?.best_before_date || null
+        if (expiry && String(expiry) < todayIso) return
+        const key = String(record.product_id)
+        state.freshWarehouseAvailability[key] = Number((Number(state.freshWarehouseAvailability[key] || 0) + Number(record.quantity_on_hand || 0)).toFixed(3))
+      })
+      state.freshWarehouseAvailabilityLoaded = true
+      renderProductSearchPanel()
     }
 
     function selectStockProduct(productId) {
@@ -8131,6 +8186,11 @@
         els.addStockDraftItemButton.textContent = state.selectedStockType === 'vehicle_unload'
           ? 'Přidat k vrácení'
           : 'Přidat do nakládky'
+      }
+      if (els.openStockManualEntryButton) {
+        els.openStockManualEntryButton.textContent = isManualLoadMode
+          ? '+ Přidat jiný druh bagety'
+          : '+ Přidat další produkt'
       }
       els.createStockRequestButton.textContent = state.selectedStockType === 'vehicle_order'
         ? 'Odeslat objednávku'
@@ -18751,6 +18811,10 @@
       }
 
       const product = resolveProductFromInput(productText)
+      if (state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad && !product?.id) {
+        showMessage('Vyber konkrétní druh bagety z nabídky.', 'error')
+        return false
+      }
       const unitOption = getStockEntryUnitOption(product, els.stockUnitSelect?.value || getDefaultStockEntryUnitMode(product))
       const stockQuantityBaseUnits = unitOption?.pack ? convertMobilePackageQuantityToBase(product, quantity, unitOption.pack) : quantity
       const unloadBalance = state.selectedStockType === 'vehicle_unload'
@@ -18766,6 +18830,18 @@
       if (unloadBalance && stockQuantityBaseUnits + alreadySelectedBaseUnits > Number(unloadBalance.quantity_on_hand || 0)) {
         showMessage(`Ve vozidle je nejvýše ${formatStockQuantityValue(unloadBalance.quantity_on_hand, product?.base_unit || 'ks')}.`, 'error')
         return false
+      }
+      if (state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad && state.freshWarehouseAvailabilityLoaded) {
+        const available = Number(state.freshWarehouseAvailability[String(product.id)] || 0)
+        const alreadySelected = state.stockDraftItems
+          .filter((item) => String(item.product_id) === String(product.id) && !item.skipped)
+          .reduce((sum, item) => sum + Number(item.stock_quantity_base_units || 0), 0)
+        if (stockQuantityBaseUnits + alreadySelected > available) {
+          showMessage(available > 0
+            ? `Ve skladu je nejvýše ${formatStockQuantityValue(available, product.base_unit || 'ks')}.`
+            : `${product.name} nyní není ve skladu.`, 'error')
+          return false
+        }
       }
       state.stockDraftItems.push({
         product_id: product?.id || null,
@@ -19956,6 +20032,9 @@
       if (addStockDraftItem() && els.stockManualEntryPanel) els.stockManualEntryPanel.hidden = true
     })
     els.stockVehicleSelect?.addEventListener('change', () => {
+      if (state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad) {
+        loadFreshWarehouseAvailability().catch(handleError)
+      }
       if (state.selectedStockType === 'vehicle_unload') {
         state.vehicleUnloadBalances = []
         state.stockDraftItems = []
@@ -20556,9 +20635,19 @@
         closeStockDetail()
       })
       els.backToStockOverview?.addEventListener('click', closeStockDetail)
-      els.openStockManualEntryButton?.addEventListener('click', () => {
+      els.openStockManualEntryButton?.addEventListener('click', async () => {
         els.stockManualEntryPanel.hidden = false
-        window.setTimeout(() => els.stockProductInput.focus({ preventScroll: true }), 30)
+        els.stockProductInput.value = ''
+        els.stockProductInput.focus({ preventScroll: true })
+        renderProductSearchPanel()
+        if (state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad) {
+          try {
+            await loadFreshWarehouseAvailability()
+          } catch (error) {
+            state.freshWarehouseAvailabilityLoaded = false
+            handleError(error)
+          }
+        }
       })
       els.closeStockManualEntryButton?.addEventListener('click', () => {
         els.stockManualEntryPanel.hidden = true
