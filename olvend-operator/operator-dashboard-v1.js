@@ -133,7 +133,9 @@
       return Promise.resolve()
     }
     var stops=(route&&route.route_plan_stops||[]).slice().sort(function(a,b){return number(a.stop_order)-number(b.stop_order)})
-    var completed=stops.filter(function(s){return doneStatus(s.status)}).length, total=stops.length, next=stops.find(function(s){return !doneStatus(s.status)})||null
+    var groups=[]
+    stops.forEach(function(stop){var key=routeKey(stop),group=groups.find(function(item){return item.key===key});if(!group){group={key:key,stops:[]};groups.push(group)}group.stops.push(stop)})
+    var completed=groups.filter(function(group){return group.stops.length&&group.stops.every(function(stop){return doneStatus(stop.status)})}).length, total=groups.length, next=stops.find(function(s){return !doneStatus(s.status)})||null
     var remainingDistance=Math.max(0,number(route&&route.estimated_distance_km)*(total?1-completed/total:0))
     var drivenDistance=Math.max(0,number(route&&route.estimated_distance_km)-remainingDistance)
     routeStats={completed:completed,total:total,next:next,remainingDistance:remainingDistance,drivenDistance:drivenDistance}

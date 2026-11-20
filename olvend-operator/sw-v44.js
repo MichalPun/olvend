@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v56-full-live-regression'
+  var CACHE_NAME = 'olvend-operator-v57-production-audit'
   var APP_SHELL = [
     './',
     './index.html',
@@ -51,6 +51,7 @@
     './assets/product-images/ean-8594002072858.webp',
     './assets/product-images/ean-9002490200091.webp',
     '../assets/product-images/200001.png',
+    '../assets/product-images/265.jpg',
     '../assets/vehicles/fiat-doblo-modern.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/fiat-doblo-2012.png?v=20261111-fleet-art-v2',
     '../assets/vehicles/opel-combo-2024-passenger.png?v=20261111-fleet-art-v2',
