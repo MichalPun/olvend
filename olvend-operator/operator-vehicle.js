@@ -245,9 +245,12 @@
   function renderMileage() {
     var summary = mileageSummary || {}
     var percent = Number(summary.allowance_percent == null ? vehicle.private_mileage_allowance_percent || 5 : summary.allowance_percent)
+    var actualKm = Number(summary.today_actual_km || 0)
+    var log = currentLog()
+    if (!actualKm && log && log.start_odometer_km != null) actualKm = Math.max(0, estimatedVehicleOdometer() - Number(log.start_odometer_km || 0))
     document.getElementById('ovMileagePercent').textContent = percent.toLocaleString('cs-CZ') + ' % z plánu'
     document.getElementById('ovMileagePlan').textContent = Number(summary.today_planned_km || 0).toLocaleString('cs-CZ') + ' km'
-    document.getElementById('ovMileageActual').textContent = Number(summary.today_actual_km || 0).toLocaleString('cs-CZ') + ' km'
+    document.getElementById('ovMileageActual').textContent = actualKm.toLocaleString('cs-CZ', { maximumFractionDigits: 0 }) + ' km'
     document.getElementById('ovMileageRemaining').textContent = Number(summary.today_private_remaining_km || 0).toLocaleString('cs-CZ') + ' km'
     document.getElementById('ovMileageToday').textContent = 'Dnes čerpáno ' + Number(summary.today_private_used_km || 0).toLocaleString('cs-CZ') + ' km'
     document.getElementById('ovMileageMonth').textContent = 'Měsíc zbývá ' + Number(summary.month_private_remaining_km || 0).toLocaleString('cs-CZ') + ' km'
