@@ -103,6 +103,13 @@
   }
   function machineOptions() { return machines.map(function (machine) { return '<option value="' + esc(machine.id) + '">' + esc(machine.title) + '</option>' }).join('') }
   function addPanel(flow) {
+    if (flow === 'bagettes') {
+      var freshChoices = extraBagettes.filter(function (item) { return !products.bagettes.some(function (row) { return String(row.productId) === String(item.productId) }) })
+      if (!freshChoices.length) return '<div class="ow-add ow-bagette-add" id="ow-add-panel"><span>Všechny druhy už jsou v nakládce.</span></div>'
+      return '<div class="ow-add ow-bagette-add" id="ow-add-panel"><div class="ow-bagette-picker">' + freshChoices.map(function (item) {
+        return '<label class="ow-bagette-choice"><img src="' + esc(item.image) + '" alt=""><strong>' + esc(item.name) + '</strong><span class="ow-bagette-input"><input type="number" inputmode="numeric" min="0" max="999" step="1" value="0" data-bagette-quantity="' + esc(item.productId) + '" aria-label="Množství ' + esc(item.name) + '"><b>ks</b></span></label>'
+      }).join('') + '</div><button type="button" data-add-selected-bagettes>Přidat vybrané</button></div>'
+    }
     var options = catalogOptions(flow)
     if (!options) return '<div class="ow-add" id="ow-add-panel"><span>Žádný další dostupný produkt.</span></div>'
     var machine = flow === 'return' || flow === 'waste' ? '<label>Automat<select id="ow-add-machine">' + machineOptions() + '</select></label>' : ''
@@ -265,6 +272,21 @@
     var delta=event.target.closest('[data-delta]');if(delta){var flow=delta.dataset.flow,index=Number(delta.dataset.index),item=products[flow][index],max=flow==='load'||flow==='bagettes'||flow==='return'?number(item.max):999999;item.quantity=Math.max(0,Math.min(max,qty(item.quantity+number(delta.dataset.delta))));delta.closest('.ow-qty').querySelector('output').textContent=qty(item.quantity)+' '+(item.unit||'ks');updateDynamic();return}
     var remove=event.target.closest('[data-remove]');if(remove){products[remove.dataset.flow].splice(Number(remove.dataset.index),1);render();var wrap=document.getElementById('ow-add-wrap');if(wrap)wrap.hidden=false;return}
     if(event.target.closest('[data-toggle-add]')){var addWrap=document.getElementById('ow-add-wrap');addWrap.hidden=!addWrap.hidden;return}
+    if(event.target.closest('[data-add-selected-bagettes]')){
+      var added=0
+      Array.prototype.forEach.call(document.querySelectorAll('[data-bagette-quantity]'),function(input){
+        var amount=Math.max(0,Math.min(999,Math.floor(number(input.value)))),pid=input.dataset.bagetteQuantity
+        if(!amount||products.bagettes.some(function(row){return String(row.productId)===String(pid)}))return
+        var extra=extraBagettes.find(function(item){return String(item.productId)===String(pid)})
+        if(!extra)return
+        products.bagettes.push(Object.assign({},extra,{id:'fresh-manual-'+pid,quantity:amount,recommended:0,max:extra.max,meta:'přidáno operátorem · mimo doporučení'}))
+        added+=1
+      })
+      if(!added){message('Zadejte množství alespoň u jednoho produktu.',true);return}
+      render()
+      var bagetteWrap=document.getElementById('ow-add-wrap');if(bagetteWrap)bagetteWrap.hidden=false
+      return
+    }
     var add=event.target.closest('[data-add-product]');if(add){var flow=add.dataset.addProduct,pid=document.getElementById('ow-add-product').value,p=productMap.get(String(pid))||{},machineSelect=document.getElementById('ow-add-machine'),machine=machineSelect?machines.find(function(x){return String(x.id)===String(machineSelect.value)}):null;if(flow==='bagettes'){var extra=extraBagettes.find(function(x){return String(x.productId)===String(pid)});if(extra)products.bagettes.push(Object.assign({},extra,{id:'fresh-manual-'+pid,quantity:1,recommended:0,max:extra.max,meta:'přidáno operátorem · mimo doporučení'}))}else{var balance=balanceMap.get(String(pid));if(balance)products[flow].push({id:flow+'-manual-'+pid+'-'+Date.now(),productId:Number(pid),name:balance.name,image:balance.image,quantity:1,available:balance.quantity,max:balance.quantity,unit:balance.unit,machine:machine&&machine.title||'Ručně doplněno',meta:(machine&&machine.title||'Ručně doplněno')+' · doplněno operátorem',reason:document.getElementById('ow-add-reason')?document.getElementById('ow-add-reason').value:'other'})}render();var reopened=document.getElementById('ow-add-wrap');if(reopened)reopened.hidden=false;return}
     if(event.target.closest('[data-submit]')){var current=step,flow=['','load','bagettes','return','waste','inventory'][current],items=products[flow]||[];if((current===1||current===2)&&items.some(function(x){return x.quantity<0})){message('Zkontrolujte množství.',true);return}setBusy(true,current===5?'Ukládám inventuru…':'Ukládám skladové pohyby…');Promise.resolve().then(submitCurrent).then(function(){return recordStep(flow,items)}).then(function(){summary[flow]=current===5?items.length:total(items);if(current<=4)completed.add(flow);if(current===1)step=2;else if(current===2)step=route&&route.execution_status==='done'?3:30;else if(current===3)step=4;else if(current===4)step=pendingAudit?5:6;else{pendingAudit=null;step=6}render();setBusy(false);message(current===5?'Inventura byla odeslána k vyhodnocení.':'Skladový pohyb je uložený a synchronizovaný.')},function(error){setBusy(false);message(error.message||'Uložení se nepodařilo.',true)});return}
     if(event.target.closest('[data-home]'))location.href='./uvod.html'
