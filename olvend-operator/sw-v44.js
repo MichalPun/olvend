@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v54-close-bagette-picker'
+  var CACHE_NAME = 'olvend-operator-v55-confirm-bagette-load'
   var APP_SHELL = [
     './',
     './index.html',
