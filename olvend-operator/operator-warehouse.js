@@ -39,15 +39,23 @@
   function productImage(product) {
     if (!product) return './icon-192.png'
     if (product.image_url) return product.image_url
+    var name = norm(product.name)
+    var freshImages = {
+      svacinka:'bagette-svacinka.jpg',
+      hamka:'bagette-hamka.jpg',
+      porizek:'bagette-porizek.jpg',
+      mlska:'bagette-mlska.jpg',
+      debrecin:'bagette-debrecin.jpg',
+      strips:'bagette-strips.jpg',
+      nuget:'bagette-nuget.jpg'
+    }
+    var freshKey = Object.keys(freshImages).find(function (key) { return name.indexOf(key) >= 0 })
+    if (freshKey) return './assets/product-images/' + freshImages[freshKey]
     var path = String(product.image_path || '')
     if (path.indexOf('static:') === 0) {
       var staticPath = path.slice(7)
       return staticPath.indexOf('./assets/') === 0 ? '../assets/' + staticPath.slice(9) : staticPath
     }
-    var name = norm(product.name)
-    if (name.indexOf('svacink') >= 0) return './assets/product-images/bagette-svacinka.jpg'
-    if (name.indexOf('hamka') >= 0) return './assets/product-images/bagette-hamka.jpg'
-    if (name.indexOf('porizek') >= 0) return './assets/product-images/bagette-porizek.jpg'
     var byEan = { '9002490200091':'ean-9002490200091.webp','7622201390648':'ean-7622201390648.jpg','5949040204427':'ean-5949040204427.jpg','8000500073698':'ean-8000500073698.jpg','3838945043694':'ean-3838945043694.png','8586018180863':'ean-8586018180863.jpg','8594002072858':'ean-8594002072858.webp' }
     return byEan[String(product.ean || '')] ? './assets/product-images/' + byEan[String(product.ean)] : './icon-192.png'
   }

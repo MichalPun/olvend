@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v52-bagette-picker'
+  var CACHE_NAME = 'olvend-operator-v53-fresh-product-photos'
   var APP_SHELL = [
     './',
     './index.html',
@@ -36,8 +36,12 @@
     './assets/instructions/pokyn-dne-test-2026-11-17-page-1.png',
     './assets/instructions/pokyn-dne-test-2026-11-17-page-1-hires.png',
     './assets/product-images/201.jpg',
+    './assets/product-images/bagette-debrecin.jpg',
     './assets/product-images/bagette-hamka.jpg',
+    './assets/product-images/bagette-mlska.jpg',
+    './assets/product-images/bagette-nuget.jpg',
     './assets/product-images/bagette-porizek.jpg',
+    './assets/product-images/bagette-strips.jpg',
     './assets/product-images/bagette-svacinka.jpg',
     './assets/product-images/ean-3838945043694.png',
     './assets/product-images/ean-5949040204427.jpg',
