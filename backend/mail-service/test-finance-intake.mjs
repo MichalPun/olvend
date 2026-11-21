@@ -57,7 +57,8 @@ Odběratel: OLMIKA s.r.o.\nIČ: 04579968 DIČ: CZ04579968
 Rozpis DPH uveden v měně CZK
 0,00 523,95 - 523,95 CELKEM
 3 018,95 523,95 2 495,00 základní 21 %
-Celková částka 3 018,95 Kč`)
+Celková částka 3 019,00 Kč
+Zaokrouhlení 0,05 Kč`)
 assert.equal(reorderedTaxTable.supplier_company_id,'01572377')
 assert.equal(reorderedTaxTable.supplier_tax_id,'CZ01572377')
 assert.equal(reorderedTaxTable.net_amount,2495)
@@ -69,6 +70,7 @@ Odběratel: OLMIKA s.r.o.\nIČ: 04579968\nDIČ: CZ04579968
 Faktura číslo: 26002070
 Bankovní účet: CEKO\n104458251 0300
 37 800,00\n4 536,00\n42 336,00
+0,00\n0,00\n0,00\n0,00\n0,00\n0,00\n0,00\n0,00
 Celkem:\nZáklad Výše DPH Včetně DPH`)
 assert.equal(moneySummary.supplier_company_id,'63319969')
 assert.equal(moneySummary.supplier_tax_id,'CZ63319969')
