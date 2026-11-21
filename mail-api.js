@@ -33,6 +33,16 @@ export async function mailApi(path, options = {}) {
   }
 }
 
+export async function financeMailboxStatus() {
+  try {
+    return await mailApi('/finance/account')
+  } catch (apiError) {
+    const { data, error } = await supabase.rpc('get_finance_mailbox_status_v1')
+    if (error) throw apiError
+    return { ...(data || {}), degraded: true, api_error: apiError.message }
+  }
+}
+
 export async function currentEmployee() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error('Nejste přihlášeni.')

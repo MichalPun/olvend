@@ -1,5 +1,5 @@
 import { supabase } from './supabase.js'
-import { mailApi } from './mail-api.js'
+import { financeMailboxStatus } from './mail-api.js?v=20261121finance-mail-fallback-v2'
 
 const $ = (id) => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
@@ -209,7 +209,7 @@ async function load(){
     const period=$('periodSelect').value
     const [{data,error},mailbox]=await Promise.all([
       supabase.rpc('get_finance_dashboard_v1',{p_month:`${period}-01`}),
-      mailApi('/finance/account').catch(()=>({account:null,stats:{statuses:{}}}))
+      financeMailboxStatus().catch((error)=>({account:null,stats:{statuses:{}},unavailable:true,api_error:error.message}))
     ])
     if(error)throw error
     renderLive({ ...(data || {}), mailbox })
