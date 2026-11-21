@@ -19,13 +19,14 @@ const demoRows = [
   { id:6, internal_number:'PF26-00474', supplier_name:'BARBERA Caffè Czech s.r.o.', supplier_id:'27746275', document_number:'2026/000319', issue_date:'2026-11-11', taxable_date:'2026-11-11', due_date:'2026-11-25', category:'Zboží a materiál', cost_center:'BLUČINA', net_amount:137400, vat_amount:16488, total_amount:153888, variable_symbol:'2026000319', bank_account:'2401885102/2010', status:'in_payment_batch', payment_status:'ordered', owner:'Vedoucí skladu', confidence:98, source:'pracovní e-mail', attachment_name:'2026-000319.pdf', approval:'Dávka HP-2026-0118 · čeká na banku', note:'Příjem zboží spárován.' },
 ]
 
-let rows = [], intakeRows = [], stockLocations = [], activeTab = 'open', selected = new Set(), activeRow = null
+let rows = [], intakeRows = [], stockLocations = [], activeTab = 'open', activeIntakeTab = 'review', selected = new Set(), activeRow = null, activeIntakeRow = null
 let moneyImport = { file:null, parsed:null, sha256:null }
 const statusMap = { new:['Nová','info'], approval:['Ke schválení','warn'], ready_for_payment:['K platbě','good'], in_payment_batch:['V příkazu','violet'], settled:['Uhrazeno','good'], overdue:['Po splatnosti','bad'], handoff_ready:['Pro účetní','good'], exported:['Uzavřeno','good'], rejected:['Vráceno','bad'], cancelled:['Nulový doklad',''] }
 const paymentMap = { unpaid:['Neuhrazeno','warn'], ordered:['Příkaz vytvořen','violet'], paid:['Zaplaceno','good'], partially_paid:['Částečně','warn'], cancelled:['Bez úhrady',''] }
 const accountingMap = { not_prepared:['Nepředáno účetní',''], prepared:['Připraveno účetní','info'], downloaded:['Staženo účetní','violet'], booked:['Zaúčtováno účetní','good'], returned:['Vráceno účetní','bad'] }
 const stockMap = { not_applicable:['Bez příjmu',''], needs_mapping:['Spárovat položky','warn'], ready:['Příjem připraven','info'], ordered:['Čeká na sklad','violet'], received:['Naskladněno','good'], blocked:['Příjem blokován','bad'] }
 const documentClassMap={invoice:'Faktura',credit_note:'Dobropis',advance_invoice:'Zálohová faktura',delivery_note:'Dodací list',reminder:'Upomínka',payment_schedule:'Splátkový kalendář',accounting_report:'Účetní výkaz',contract:'Smlouva',other:'Jiný dokument'}
+const intakeStatusMap={queued:['Čeká na vytěžení','info'],extracting:['Vytěžuji','violet'],needs_review:['Ke kontrole','warn'],invoice_created:['Přiřazeno','good'],ignored:['Ignorováno',''],failed:['Chyba','bad']}
 
 function setStatus(text, type = '', meta = 'Zdroj: pracovní e-mail') { $('statusText').textContent = text; $('statusMeta').textContent = meta; $('statusStrip').className = `status-strip ${type}`.trim() }
 function badge(map, value) { const item = map[value] || [value || '—','']; return `<span class="badge ${item[1]}">${escapeHtml(item[0])}</span>` }
@@ -50,15 +51,112 @@ function filteredRows() {
 }
 
 function renderMetrics() {
-  $('metricNew').textContent = intakeRows.filter((r)=>['queued','extracting','needs_review'].includes(r.status)).length + rows.filter((r) => r.status === 'new').length; $('metricReview').textContent = rows.filter((r) => r.status === 'approval').length
+  $('metricNew').textContent = intakeRows.filter((r)=>r.status==='needs_review').length; $('metricReview').textContent = rows.filter((r) => r.status === 'approval').length
   $('metricReady').textContent = money(rows.filter((r) => r.status === 'ready_for_payment').reduce((s,r) => s + Number(r.operational_remaining_amount ?? r.money_remaining_amount ?? r.total_amount), 0))
   $('metricOverdue').textContent = money(rows.filter((r) => Number(r.operational_remaining_amount ?? r.money_remaining_amount ?? 0) > .01 && daysTo(r.due_date) < 0).reduce((s,r) => s + Number(r.operational_remaining_amount ?? r.money_remaining_amount ?? 0), 0))
   $('metricAccountant').textContent = rows.filter((r) => ['prepared','downloaded','booked','returned'].includes(r.accounting_status)).length
 }
 
+function matchesIntakeTab(row){
+  if(activeIntakeTab==='all')return true
+  if(activeIntakeTab==='review')return row.status==='needs_review'
+  if(activeIntakeTab==='processing')return ['queued','extracting'].includes(row.status)
+  if(activeIntakeTab==='assigned')return row.status==='invoice_created'
+  if(activeIntakeTab==='ignored')return row.status==='ignored'
+  if(activeIntakeTab==='failed')return row.status==='failed'
+  return true
+}
+
+function filteredIntakeRows(){
+  const query=$('intakeSearchInput').value.trim().toLowerCase(),documentClass=$('intakeClassFilter').value
+  return intakeRows.filter((row)=>{
+    const payload=row.extracted_payload||{}
+    const haystack=`${row.file_name||''} ${row.sender_address||''} ${row.subject||''} ${payload.document_number||''} ${payload.variable_symbol||''}`.toLowerCase()
+    return matchesIntakeTab(row)&&(!query||haystack.includes(query))&&(!documentClass||row.document_class===documentClass)
+  })
+}
+
+function intakeTimestamp(value){return value?new Intl.DateTimeFormat('cs-CZ',{dateStyle:'short',timeStyle:'short'}).format(new Date(value)):'—'}
+function fileGlyph(row){if(/pdf/i.test(row.mime_type||row.file_name||''))return ['PDF','pdf'];if(/image/i.test(row.mime_type||''))return ['IMG','image'];if(/xml|isdoc/i.test(row.mime_type||row.file_name||''))return ['XML','xml'];return ['DOC','document']}
+function renderIntakeCounts(){
+  const count=(statuses)=>intakeRows.filter((row)=>statuses.includes(row.status)).length
+  const review=count(['needs_review'])
+  $('intakeReviewCount').textContent=`${review} ke kontrole`
+  $('intakeTabReviewCount').textContent=review
+  $('intakeTabProcessingCount').textContent=count(['queued','extracting'])
+  $('intakeTabAssignedCount').textContent=count(['invoice_created'])
+  $('intakeTabIgnoredCount').textContent=count(['ignored'])
+  $('intakeTabFailedCount').textContent=count(['failed'])
+  $('intakeTabAllCount').textContent=intakeRows.length
+}
+
 function renderIntake(){
-  const status={queued:['Čeká na vytěžení','info'],extracting:['Vytěžuji','violet'],needs_review:['Ke kontrole','warn'],invoice_created:['Faktura založena','good'],ignored:['Ignorováno',''],failed:['Chyba','bad']}
-  $('intakeBody').innerHTML=intakeRows.length?intakeRows.map((row)=>`<tr><td><span class="cell-main">${escapeHtml(row.file_name)}</span><span class="cell-sub">${escapeHtml(row.mime_type||'soubor')} · ${Math.max(1,Math.round(Number(row.size_bytes||0)/1024)).toLocaleString('cs-CZ')} kB</span></td><td><span class="cell-main">${escapeHtml(row.sender_address||'—')}</span></td><td>${escapeHtml(row.subject||'Bez předmětu')}</td><td>${row.message_received_at?new Date(row.message_received_at).toLocaleString('cs-CZ'):'—'}</td><td>${badge(status,row.status)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="empty">Ze schránky zatím nebyla přijata žádná podporovaná příloha.</div></td></tr>'
+  renderIntakeCounts()
+  const visible=filteredIntakeRows()
+  $('intakeBody').innerHTML=visible.length?visible.map((row)=>{
+    const payload=row.extracted_payload||{},warnings=Array.isArray(row.warnings)?row.warnings:[],received=row.message_received_at||row.discovered_at
+    const amountValue=payload.total_amount==null?'—':money(payload.total_amount,payload.currency||'CZK')
+    const warningItems=row.error_message?[row.error_message,...warnings]:warnings
+    const warningMarkup=warningItems.length?`<div class="intake-warnings">${warningItems.slice(0,2).map((item)=>`<span>${escapeHtml(item)}</span>`).join('')}${warningItems.length>2?`<small>+${warningItems.length-2} další</small>`:''}</div>`:'<span class="intake-ok">Bez upozornění</span>'
+    const [glyph,glyphClass]=fileGlyph(row)
+    return `<tr data-intake-id="${row.id}" class="${row.status==='needs_review'?'review-row':row.status==='failed'?'failed-row':''}"><td><div class="intake-file"><span class="intake-file-icon ${glyphClass}">${glyph}</span><div><span class="cell-main">${escapeHtml(row.file_name)}</span><span class="cell-sub">${escapeHtml(row.sender_address||'Neznámý odesílatel')} · ${Math.max(1,Math.round(Number(row.size_bytes||0)/1024)).toLocaleString('cs-CZ')} kB</span></div></div></td><td><span class="cell-main">${escapeHtml(documentClassMap[row.document_class]||'Nerozpoznáno')}</span><span class="cell-sub">${escapeHtml(payload.document_number||payload.variable_symbol||row.subject||'Bez čísla dokladu')}</span>${row.extraction_confidence!=null?`<span class="intake-confidence">Jistota ${Math.round(Number(row.extraction_confidence))} %</span>`:''}</td><td><span class="cell-main">${amountValue}</span><span class="cell-sub">Splatnost ${date(payload.due_date)}</span></td><td>${warningMarkup}</td><td><span class="cell-main">${intakeTimestamp(received)}</span><span class="cell-sub">${escapeHtml(row.subject||'Bez předmětu')}</span></td><td>${badge(intakeStatusMap,row.status)}</td><td><button class="btn ${row.status==='needs_review'?'':'secondary'} small open-intake" data-id="${row.id}" type="button">${row.status==='needs_review'?'Zkontrolovat':'Detail'}</button></td></tr>`
+  }).join(''):`<tr><td colspan="7"><div class="empty">${activeIntakeTab==='review'?'Žádný dokument nyní nečeká na ruční kontrolu.':'Pro zvolený stav a filtry tu nejsou žádné dokumenty.'}</div></td></tr>`
+  document.querySelectorAll('.open-intake').forEach((button)=>button.addEventListener('click',()=>openIntakeDrawer(Number(button.dataset.id))))
+  document.querySelectorAll('tr[data-intake-id]').forEach((row)=>row.addEventListener('dblclick',()=>openIntakeDrawer(Number(row.dataset.intakeId))))
+}
+
+function intakeInput(id,label,value='',type='text',extra=''){
+  return `<label class="intake-field"><span>${label}</span><input class="field-control" id="${id}" type="${type}" value="${escapeHtml(value??'')}" ${extra}></label>`
+}
+
+function openIntakeDrawer(id){
+  activeIntakeRow=intakeRows.find((row)=>row.id===id);if(!activeIntakeRow)return
+  const row=activeIntakeRow,payload=row.extracted_payload||{},warnings=Array.isArray(row.warnings)?row.warnings:[],lineItems=Array.isArray(payload.line_items)?payload.line_items:[]
+  const assignedInvoice=rows.find((invoice)=>invoice.id===row.invoice_id)
+  const canDecide=row.status==='needs_review',canReopen=['ignored','failed'].includes(row.status)&&!row.invoice_id
+  const canCreate=canDecide&&['invoice','credit_note','advance_invoice'].includes(row.document_class)
+  const isReminder=row.document_class==='reminder'
+  $('intakeDrawerEyebrow').textContent=badge(intakeStatusMap,row.status).replace(/<[^>]*>/g,'')
+  $('intakeDrawerTitle').textContent=row.file_name
+  $('intakeDrawerSubtitle').textContent=`${row.sender_address||'Neznámý odesílatel'} · ${intakeTimestamp(row.message_received_at||row.discovered_at)}`
+  const invoiceOptions=rows.map((invoice)=>`<option value="${invoice.id}" ${invoice.id===row.invoice_id?'selected':''}>${escapeHtml(invoice.internal_number||'Bez čísla')} · ${escapeHtml(invoice.supplier_name)} · ${escapeHtml(invoice.document_number)} · ${money(invoice.total_amount,invoice.currency)}</option>`).join('')
+  const classOptions=Object.entries(documentClassMap).map(([value,label])=>`<option value="${value}" ${value===row.document_class?'selected':''}>${label}</option>`).join('')
+  const warningMarkup=(row.error_message||warnings.length)?`<div class="intake-review-warnings"><strong>Co je potřeba ověřit</strong>${[row.error_message,...warnings].filter(Boolean).map((item)=>`<div>• ${escapeHtml(item)}</div>`).join('')}</div>`:'<div class="notice"><strong>Automatická kontrola nenašla upozornění.</strong> Před založením přesto porovnejte údaje s originálem.</div>'
+  const specialNotice=isReminder?'<div class="notice" style="border-color:#fedf89;background:#fffaeb;color:#93370d"><strong>Toto je upomínka.</strong> Novou fakturu z ní nezakládáme. Přiřaďte ji k původní faktuře, nebo ji ignorujte.</div>':lineItems.length?`<div class="notice"><strong>Položkový doklad:</strong> rozpoznáno ${lineItems.length} položek. Po založení faktury budou čekat na spárování se skladovými kartami; nic se automaticky nenaskladní.</div>`:''
+  const excerpt=payload.text_excerpt?`<details class="intake-excerpt"><summary>Rozpoznaný text dokumentu</summary><pre>${escapeHtml(payload.text_excerpt)}</pre></details>`:''
+  $('intakeDrawerBody').innerHTML=`<div class="intake-review-top"><button class="btn secondary" id="intakeOpenOriginalBtn" type="button">Otevřít originál</button><span>SHA-256 ${escapeHtml((row.sha256||'').slice(0,16))}… · soubor je uložen beze změny</span></div>${warningMarkup}${specialNotice}<div class="intake-form-grid">${intakeInput('intakeSupplierName','Dodavatel',payload.supplier_name||'')}${intakeInput('intakeDocumentNumber','Číslo dokladu',payload.document_number||'')}<label class="intake-field"><span>Typ dokumentu</span><select class="field-control" id="intakeDocumentClass">${classOptions}</select></label>${intakeInput('intakeTotalAmount','Celkem',payload.total_amount??'','number','step="0.01"')}${intakeInput('intakeNetAmount','Bez DPH','','number','step="0.01"')}${intakeInput('intakeVatAmount','DPH','','number','step="0.01"')}${intakeInput('intakeCurrency','Měna',payload.currency||'CZK','text','maxlength="3"')}${intakeInput('intakeVariableSymbol','Variabilní symbol',payload.variable_symbol||'','text','inputmode="numeric"')}${intakeInput('intakeIssueDate','Datum vystavení',payload.issue_date||'','date')}${intakeInput('intakeTaxableDate','DUZP',payload.taxable_date||'','date')}${intakeInput('intakeDueDate','Splatnost',payload.due_date||'','date')}${intakeInput('intakeBankAccount','Bankovní účet',payload.bank_account||'')}${intakeInput('intakeIban','IBAN',payload.iban||'')}${intakeInput('intakeCategory','Kategorie','')}${intakeInput('intakeCostCenter','Středisko','')}</div><label class="intake-field intake-field-wide"><span>Poznámka k rozhodnutí</span><textarea class="field-control" id="intakeReviewNote" rows="2" placeholder="Volitelné zdůvodnění nebo poznámka pro další kontrolu"></textarea></label><div class="intake-attach-box"><label class="intake-field intake-field-wide"><span>Přiřadit k existující faktuře</span><select class="field-control" id="intakeTargetInvoice"><option value="">Vyberte fakturu…</option>${invoiceOptions}</select></label>${assignedInvoice?`<div class="notice"><strong>Přiřazeno:</strong> ${escapeHtml(assignedInvoice.internal_number)} · ${escapeHtml(assignedInvoice.supplier_name)}</div>`:''}</div>${excerpt}`
+  $('intakeOpenOriginalBtn').addEventListener('click',()=>openIntakeOriginal().catch((error)=>setStatus(error.message,'error')))
+  $('intakeIgnoreBtn').hidden=!canDecide
+  $('intakeReopenBtn').hidden=!canReopen
+  $('intakeAttachBtn').hidden=!canDecide
+  $('intakeCreateBtn').hidden=!canCreate
+  $('intakeCreateBtn').textContent='Založit a předat ke schválení'
+  $('intakeDocumentClass').addEventListener('change',(event)=>{$('intakeCreateBtn').hidden=!canDecide||!['invoice','credit_note','advance_invoice'].includes(event.target.value)})
+  $('intakeDrawerBackdrop').classList.add('show')
+}
+
+function closeIntakeDrawer(){$('intakeDrawerBackdrop').classList.remove('show');activeIntakeRow=null}
+async function openIntakeOriginal(){
+  if(!activeIntakeRow?.storage_path)throw new Error('Originální soubor nemá uloženou cestu.')
+  const {data,error}=await supabase.storage.from('finance-private').createSignedUrl(activeIntakeRow.storage_path,300)
+  if(error)throw error
+  window.open(data.signedUrl,'_blank','noopener')
+}
+
+function intakeFormValues(){
+  return {supplier_name:$('intakeSupplierName')?.value.trim()||'',document_number:$('intakeDocumentNumber')?.value.trim()||'',document_class:$('intakeDocumentClass')?.value||activeIntakeRow?.document_class,total_amount:$('intakeTotalAmount')?.value||'',net_amount:$('intakeNetAmount')?.value||'',vat_amount:$('intakeVatAmount')?.value||'',currency:$('intakeCurrency')?.value.trim().toUpperCase()||'CZK',variable_symbol:$('intakeVariableSymbol')?.value.trim()||'',issue_date:$('intakeIssueDate')?.value||'',taxable_date:$('intakeTaxableDate')?.value||'',due_date:$('intakeDueDate')?.value||'',bank_account:$('intakeBankAccount')?.value.trim()||'',iban:$('intakeIban')?.value.trim()||'',category:$('intakeCategory')?.value.trim()||'',cost_center:$('intakeCostCenter')?.value.trim()||'',reason:$('intakeReviewNote')?.value.trim()||''}
+}
+
+async function reviewIntake(action){
+  if(!activeIntakeRow)return
+  const row=activeIntakeRow,invoiceId=Number($('intakeTargetInvoice')?.value||0)||null,values=intakeFormValues()
+  if(action==='attach'&&!invoiceId)throw new Error('Vyberte fakturu, ke které se má dokument přiřadit.')
+  if(preview){row.status=action==='ignore'?'ignored':action==='reopen'?'needs_review':'invoice_created';closeIntakeDrawer();renderAll();setStatus('Rozhodnutí bylo v náhledu uloženo.','success');return}
+  const {data,error}=await supabase.rpc('finance_review_intake_document_v1',{p_queue_id:row.id,p_action:action,p_invoice_id:invoiceId,p_values:values})
+  if(error)throw error
+  closeIntakeDrawer();await load()
+  const message=action==='create'?`Byla založena faktura ${data?.internal_number||''} a čeká na schválení.`:action==='attach'?'Dokument byl přiřazen k existující faktuře.':action==='ignore'?'Dokument byl ignorován. Lze ho kdykoliv vrátit ke kontrole.':'Dokument je znovu ve frontě ke kontrole.'
+  setStatus(message,'success','Originální příloha zůstala bezpečně uložená')
 }
 
 function renderTable() {
@@ -108,8 +206,8 @@ async function createBatch() {
 function renderAll() { renderMetrics(); renderIntake(); renderTable() }
 function missingSchema(error) { return /finance_received|schema cache|does not exist|could not find/i.test(String(error?.message || error || '')) }
 async function load() {
-  if (preview) { rows = [...demoRows]; intakeRows=[{id:1,file_name:'faktura-2026-118.pdf',mime_type:'application/pdf',size_bytes:184220,sender_address:'dodavatel@example.cz',subject:'Faktura 2026-118',message_received_at:new Date().toISOString(),status:'queued'}]; renderAll(); setStatus('Vývojový náhled knihy přijatých faktur je připravený.', 'success', 'Ukázková data · bez zápisu'); return }
-  try { const [{data,error},{data:intake,error:intakeError},{data:locations,error:locationError}] = await Promise.all([supabase.from('finance_received_invoice_overview_v1').select('*').order('due_date',{ascending:true}),supabase.from('finance_document_intake_queue').select('id,file_name,mime_type,size_bytes,sender_address,subject,message_received_at,discovered_at,status,error_message,document_class').order('discovered_at',{ascending:false}).limit(20),supabase.from('stock_locations').select('id,name').eq('location_type','warehouse').eq('active',true).order('name')]); if (error) throw error;if(intakeError)throw intakeError;if(locationError)throw locationError; rows = (data || []).map((row)=>({...row,supplier_id:row.supplier_company_id,confidence:row.extraction_confidence??0,source:row.source_provider,approval:row.approved_at?'Schváleno v OLVENDU':'Čeká na kontrolu'}));intakeRows=intake||[];stockLocations=locations||[]; renderAll(); setStatus('Přijaté faktury jsou aktuální.','success',`${intakeRows.length} příloh · ${rows.length} dokladů v evidenci`) }
+  if (preview) { rows = [...demoRows]; intakeRows=[{id:1,file_name:'faktura-2026-118.pdf',mime_type:'application/pdf',size_bytes:184220,sender_address:'dodavatel@example.cz',subject:'Faktura 2026-118',message_received_at:new Date().toISOString(),discovered_at:new Date().toISOString(),status:'needs_review',document_class:'invoice',extraction_confidence:83,sha256:'a'.repeat(64),storage_path:'preview/faktura.pdf',warnings:['Chybí dodavatel'],extracted_payload:{document_number:'2026-118',total_amount:12540,currency:'CZK',due_date:'2026-11-30',variable_symbol:'2026118',text_excerpt:'Faktura č. 2026-118\nCelkem k úhradě 12 540,00 Kč'}}]; renderAll(); setStatus('Vývojový náhled knihy přijatých faktur je připravený.', 'success', 'Ukázková data · bez zápisu'); return }
+  try { const [{data,error},{data:intake,error:intakeError},{data:locations,error:locationError}] = await Promise.all([supabase.from('finance_received_invoice_overview_v1').select('*').order('due_date',{ascending:true}),supabase.from('finance_document_intake_queue').select('id,file_name,mime_type,size_bytes,sender_address,subject,message_received_at,discovered_at,processed_at,status,error_message,document_class,extraction_confidence,extracted_payload,warnings,invoice_id,storage_path,sha256').order('discovered_at',{ascending:false}).limit(250),supabase.from('stock_locations').select('id,name').eq('location_type','warehouse').eq('active',true).order('name')]); if (error) throw error;if(intakeError)throw intakeError;if(locationError)throw locationError; rows = (data || []).map((row)=>({...row,supplier_id:row.supplier_company_id,confidence:row.extraction_confidence??0,source:row.source_provider,approval:row.approved_at?'Schváleno v OLVENDU':'Čeká na kontrolu'}));intakeRows=intake||[];stockLocations=locations||[]; renderAll(); setStatus('Přijaté faktury jsou aktuální.','success',`${intakeRows.filter((row)=>row.status==='needs_review').length} ke kontrole · ${rows.length} faktur v evidenci`) }
   catch (error) { console.error(error); rows = []; intakeRows=[]; renderAll(); setStatus(missingSchema(error) ? 'Databázové závazkové jádro zatím není nasazené.' : `Faktury se nepodařilo načíst: ${error.message}`,'error','Ukázková data se v ostrém provozu nezobrazují') }
 }
 
@@ -121,9 +219,13 @@ async function updateInvoice(id,patch,successText){
 }
 
 document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => { activeTab = button.dataset.tab; document.querySelectorAll('[data-tab]').forEach((item) => item.classList.toggle('active',item === button)); selected.clear(); renderTable() }))
+document.querySelectorAll('[data-intake-tab]').forEach((button)=>button.addEventListener('click',()=>{activeIntakeTab=button.dataset.intakeTab;document.querySelectorAll('[data-intake-tab]').forEach((item)=>item.classList.toggle('active',item===button));renderIntake()}))
 ;['searchInput','categoryFilter','dueFilter','ownerFilter'].forEach((id) => $(id).addEventListener(id === 'searchInput' ? 'input' : 'change',renderTable))
+;$('intakeSearchInput').addEventListener('input',renderIntake);$('intakeClassFilter').addEventListener('change',renderIntake);$('intakeRefreshBtn').addEventListener('click',()=>load())
 $('selectAll').addEventListener('change',() => { filteredRows().forEach((row) => $('selectAll').checked ? selected.add(row.id) : selected.delete(row.id)); renderTable() })
 $('drawerClose').addEventListener('click',closeDrawer); $('drawerBackdrop').addEventListener('click',(event) => { if (event.target === $('drawerBackdrop')) closeDrawer() })
+$('intakeDrawerClose').addEventListener('click',closeIntakeDrawer);$('intakeDrawerBackdrop').addEventListener('click',(event)=>{if(event.target===$('intakeDrawerBackdrop'))closeIntakeDrawer()})
+$('intakeIgnoreBtn').addEventListener('click',()=>reviewIntake('ignore').catch((error)=>setStatus(error.message,'error')));$('intakeReopenBtn').addEventListener('click',()=>reviewIntake('reopen').catch((error)=>setStatus(error.message,'error')));$('intakeAttachBtn').addEventListener('click',()=>reviewIntake('attach').catch((error)=>setStatus(error.message,'error')));$('intakeCreateBtn').addEventListener('click',()=>reviewIntake('create').catch((error)=>setStatus(error.message,'error')))
 $('drawerApprove').addEventListener('click',() => { if (!activeRow) return; const row=activeRow; closeDrawer(); updateInvoice(row.id,{status:'ready_for_payment',approved_at:new Date().toISOString()},`${row.internal_number} je připravena k platbě.`).catch((error)=>setStatus(error.message,'error')) })
 $('drawerReturn').addEventListener('click',() => { if (!activeRow) return; const row=activeRow; closeDrawer(); updateInvoice(row.id,{status:'rejected'},`${row.internal_number} byla vrácena k doplnění.`).catch((error)=>setStatus(error.message,'error')) })
 $('batchBtn').addEventListener('click',openBatch); $('newBatchTopBtn').addEventListener('click',openBatch); $('batchClose').addEventListener('click',closeBatch); $('batchCancel').addEventListener('click',closeBatch); $('batchCreate').addEventListener('click',() => createBatch().catch((error) => setStatus(error.message,'error')))
