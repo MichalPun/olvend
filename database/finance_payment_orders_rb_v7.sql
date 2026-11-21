@@ -27,7 +27,9 @@ with invoice_orders as (
   select i.invoice_id,sum(i.amount) active_amount
   from public.finance_payment_batch_items i
   join public.finance_payment_batches b on b.id=i.batch_id
-  where i.invoice_id is not null and i.source_kind='olvend'
+  -- Přijatá faktura nemá vlastní ordered_amount. Proto je nutné započítat
+  -- jak příkazy vytvořené v OLVENDU, tak historické příkazy importované z Money.
+  where i.invoice_id is not null
     and i.status not in ('rejected','cancelled') and b.status<>'cancelled'
   group by i.invoice_id
 ), liability_orders as (
