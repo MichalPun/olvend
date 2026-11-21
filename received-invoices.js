@@ -1,0 +1,110 @@
+import { supabase } from './supabase.js'
+
+const $ = (id) => document.getElementById(id)
+const preview = new URL(location.href).searchParams.get('preview') === '1'
+const today = new Date(); today.setHours(12,0,0,0)
+const money = (value, currency = 'CZK') => new Intl.NumberFormat('cs-CZ', { style:'currency', currency, maximumFractionDigits:2 }).format(Number(value || 0))
+const date = (value) => value ? new Intl.DateTimeFormat('cs-CZ').format(new Date(`${value}T12:00:00`)) : '—'
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]))
+
+const demoRows = [
+  { id:1, internal_number:'PF26-00481', supplier_name:'JIPOCAR TRANSPORT, s.r.o.', supplier_id:'46964821', document_number:'202611384', issue_date:'2026-11-18', taxable_date:'2026-11-18', due_date:'2026-11-25', category:'PHM a vozidla', cost_center:'Vozový park', net_amount:18640, vat_amount:3914.40, total_amount:22554.40, variable_symbol:'202611384', bank_account:'123456789/5500', status:'ready_for_payment', payment_status:'unpaid', owner:'Michal Punčochář', confidence:99, source:'pracovní e-mail', attachment_name:'202611384.pdf', approval:'Schváleno 20. 11. Michalem', note:'Tankování a provoz vozidel.' },
+  { id:2, internal_number:'PF26-00480', supplier_name:'CROCUS CZ s.r.o.', supplier_id:'26211719', document_number:'FV-2026-8821', issue_date:'2026-11-17', taxable_date:'2026-11-17', due_date:'2026-11-21', category:'Zboží a materiál', cost_center:'BLUČINA', net_amount:84250, vat_amount:12637.50, total_amount:96887.50, variable_symbol:'20268821', bank_account:'2108876543/2700', status:'approval', payment_status:'unpaid', owner:'Vedoucí skladu', confidence:96, source:'E-mail + AI', attachment_name:'FV-2026-8821.isdoc', approval:'Čeká na věcnou kontrolu skladu', note:'Zkontrolovat množství proti příjemce.' },
+  { id:3, internal_number:'PF26-00479', supplier_name:'Microsoft Ireland Operations Ltd.', supplier_id:'IE8256796U', document_number:'E0400P9N8K', issue_date:'2026-11-16', taxable_date:'2026-11-16', due_date:'2026-11-16', category:'Software a služby', cost_center:'Správa', net_amount:12980, vat_amount:0, total_amount:12980, variable_symbol:'', bank_account:'IBAN IE12••••8890', status:'handoff_ready', payment_status:'paid', owner:'Michal Punčochář', confidence:94, source:'E-mail + AI', attachment_name:'E0400P9N8K.pdf', approval:'Připraveno pro účetní · reverse charge', note:'Režim reverse charge; účetní kontrola DPH.' },
+  { id:4, internal_number:'PF26-00478', supplier_name:'EG.D, a.s.', supplier_id:'28085400', document_number:'4600911251', issue_date:'2026-11-12', taxable_date:'2026-11-10', due_date:'2026-11-19', category:'Nájem a energie', cost_center:'Provozovna', net_amount:31840, vat_amount:6686.40, total_amount:38526.40, variable_symbol:'4600911251', bank_account:'100005321/0100', status:'ready_for_payment', payment_status:'unpaid', owner:'Michal Punčochář', confidence:99, source:'pracovní e-mail', attachment_name:'4600911251.pdf', approval:'Schváleno · nebylo vloženo do dávky', note:'Po splatnosti 2 dny.' },
+  { id:5, internal_number:'PF26-00477', supplier_name:'TECH servis Morava s.r.o.', supplier_id:'05598731', document_number:'TS-260491', issue_date:'2026-11-19', taxable_date:'2026-11-19', due_date:'2026-12-03', category:'Servis a technika', cost_center:'Technický úsek', net_amount:42700, vat_amount:8967, total_amount:51667, variable_symbol:'260491', bank_account:'2901887412/2010', status:'new', payment_status:'unpaid', owner:'Technický úsek', confidence:82, source:'E-mail + AI', attachment_name:'TS-260491-scan.pdf', approval:'Nízká jistota bankovního účtu', note:'Ověřit účet proti registru plátců DPH.' },
+  { id:6, internal_number:'PF26-00474', supplier_name:'BARBERA Caffè Czech s.r.o.', supplier_id:'27746275', document_number:'2026/000319', issue_date:'2026-11-11', taxable_date:'2026-11-11', due_date:'2026-11-25', category:'Zboží a materiál', cost_center:'BLUČINA', net_amount:137400, vat_amount:16488, total_amount:153888, variable_symbol:'2026000319', bank_account:'2401885102/2010', status:'in_payment_batch', payment_status:'ordered', owner:'Vedoucí skladu', confidence:98, source:'pracovní e-mail', attachment_name:'2026-000319.pdf', approval:'Dávka HP-2026-0118 · čeká na banku', note:'Příjem zboží spárován.' },
+]
+
+let rows = [], activeTab = 'open', selected = new Set(), activeRow = null
+const statusMap = { new:['Nová','info'], approval:['Ke schválení','warn'], ready_for_payment:['K platbě','good'], in_payment_batch:['V dávce','violet'], overdue:['Po splatnosti','bad'], handoff_ready:['Pro účetní','good'], exported:['Převzato účetní','good'], rejected:['Vráceno','bad'] }
+const paymentMap = { unpaid:['Neuhrazeno','warn'], ordered:['Příkaz vytvořen','violet'], paid:['Zaplaceno','good'], partially_paid:['Částečně','warn'] }
+
+function setStatus(text, type = '', meta = 'Zdroj: pracovní e-mail') { $('statusText').textContent = text; $('statusMeta').textContent = meta; $('statusStrip').className = `status-strip ${type}`.trim() }
+function badge(map, value) { const item = map[value] || [value || '—','']; return `<span class="badge ${item[1]}">${escapeHtml(item[0])}</span>` }
+function daysTo(value) { return value ? Math.ceil((new Date(`${value}T12:00:00`) - today) / 86400000) : Number.POSITIVE_INFINITY }
+function dayWord(value) { const days=Math.abs(value);return days===1?'den':days>=2&&days<=4?'dny':'dnů' }
+function dueMarkup(row) { if(!row.due_date)return '<span class="deadline warn">Bez data</span><span class="cell-sub">Doplnit splatnost</span>'; const days = daysTo(row.due_date); const cls = row.payment_status === 'paid' ? '' : days < 0 ? 'bad' : days <= 7 ? 'warn' : ''; const note = row.payment_status === 'paid' ? 'Uhrazeno' : days < 0 ? `${Math.abs(days)} ${dayWord(days)} po splatnosti` : days === 0 ? 'Dnes' : `Za ${days} ${dayWord(days)}`; return `<span class="deadline ${cls}">${date(row.due_date)}</span><span class="cell-sub">${note}</span>` }
+
+function matchesTab(row) {
+  if (activeTab === 'all') return true
+  if (activeTab === 'open') return row.payment_status !== 'paid' && row.status !== 'exported'
+  if (activeTab === 'new') return row.status === 'new'
+  if (activeTab === 'approval') return row.status === 'approval'
+  if (activeTab === 'payment') return ['ready_for_payment','in_payment_batch'].includes(row.status)
+  if (activeTab === 'paid') return row.payment_status === 'paid'
+  if (activeTab === 'accounting') return ['handoff_ready','exported'].includes(row.status)
+  return true
+}
+
+function filteredRows() {
+  const query = $('searchInput').value.trim().toLowerCase(); const category = $('categoryFilter').value; const owner = $('ownerFilter').value; const due = $('dueFilter').value
+  return rows.filter((row) => matchesTab(row) && (!query || `${row.internal_number} ${row.document_number} ${row.supplier_name} ${row.variable_symbol}`.toLowerCase().includes(query)) && (!category || row.category === category) && (!owner || row.owner === owner) && (!due || (due === 'overdue' ? daysTo(row.due_date) < 0 && row.payment_status !== 'paid' : daysTo(row.due_date) >= 0 && daysTo(row.due_date) <= Number(due))))
+}
+
+function renderMetrics() {
+  $('metricNew').textContent = rows.filter((r) => r.status === 'new').length; $('metricReview').textContent = rows.filter((r) => r.status === 'approval').length
+  $('metricReady').textContent = money(rows.filter((r) => r.status === 'ready_for_payment').reduce((s,r) => s + Number(r.total_amount), 0))
+  $('metricOverdue').textContent = money(rows.filter((r) => r.payment_status !== 'paid' && daysTo(r.due_date) < 0).reduce((s,r) => s + Number(r.total_amount), 0))
+  $('metricAccountant').textContent = rows.filter((r) => ['handoff_ready','exported'].includes(r.status)).length
+}
+
+function renderTable() {
+  const visible = filteredRows()
+  $('invoiceBody').innerHTML = visible.length ? visible.map((row) => `<tr data-id="${row.id}" class="${selected.has(row.id) ? 'selected' : ''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id) ? 'checked' : ''}></td><td><span class="cell-main">${escapeHtml(row.internal_number)}</span><span class="cell-sub">${escapeHtml(row.document_number)} · VS ${escapeHtml(row.variable_symbol || '—')}</span></td><td><span class="cell-main">${escapeHtml(row.supplier_name)}</span><span class="cell-sub">IČ ${escapeHtml(row.supplier_id || '—')} · ${escapeHtml(row.attachment_name || 'bez přílohy')}</span></td><td>${date(row.issue_date)}<span class="cell-sub">DUZP ${date(row.taxable_date)}</span></td><td>${dueMarkup(row)}</td><td><span class="cell-main">${escapeHtml(row.category || 'Nezařazeno')}</span><span class="cell-sub">${escapeHtml(row.cost_center || 'Bez střediska')} · ${escapeHtml(row.owner || 'Bez přiřazení')}</span></td><td class="money">${money(row.net_amount,row.currency)}</td><td class="money">${money(row.total_amount,row.currency)}</td><td>${badge(statusMap,row.payment_status !== 'paid' && daysTo(row.due_date) < 0 ? 'overdue' : row.status)}</td><td>${badge(paymentMap,row.payment_status)}</td><td><button class="btn ghost small open-row" data-id="${row.id}" type="button">Detail</button></td></tr>`).join('') : '<tr><td colspan="11"><div class="empty">Pro zvolené filtry tu nejsou žádné faktury.</div></td></tr>'
+  document.querySelectorAll('.row-check').forEach((el) => el.addEventListener('change', () => toggleSelection(Number(el.dataset.id), el.checked)))
+  document.querySelectorAll('.open-row').forEach((el) => el.addEventListener('click', () => openDrawer(Number(el.dataset.id))))
+  document.querySelectorAll('tbody tr[data-id]').forEach((el) => el.addEventListener('dblclick', () => openDrawer(Number(el.dataset.id))))
+  $('selectAll').checked = visible.length > 0 && visible.every((row) => selected.has(row.id)); updateSelectionBar()
+}
+
+function updateSelectionBar() { const count = selected.size; $('selectionBar').classList.toggle('show', count > 0); $('selectionText').textContent = `${count} ${count === 1 ? 'vybraná faktura' : count < 5 ? 'vybrané faktury' : 'vybraných faktur'}` }
+function toggleSelection(id, checked) { checked ? selected.add(id) : selected.delete(id); renderTable() }
+
+function openDrawer(id) {
+  activeRow = rows.find((row) => row.id === id); if (!activeRow) return
+  $('drawerTitle').textContent = `${activeRow.internal_number} · ${activeRow.supplier_name}`; $('drawerSubtitle').textContent = `${activeRow.document_number} · ${money(activeRow.total_amount,activeRow.currency)}`
+  $('drawerBody').innerHTML = `<div class="detail-grid"><div class="detail"><span>Originál</span><strong>${escapeHtml(activeRow.attachment_name)}</strong></div><div class="detail"><span>Jistota vytěžení</span><strong>${activeRow.confidence} %</strong></div><div class="detail"><span>Bankovní účet</span><strong>${escapeHtml(activeRow.bank_account || 'Doplnit')}</strong></div><div class="detail"><span>Variabilní symbol</span><strong>${escapeHtml(activeRow.variable_symbol || '—')}</strong></div><div class="detail"><span>Základ</span><strong>${money(activeRow.net_amount)}</strong></div><div class="detail"><span>DPH</span><strong>${money(activeRow.vat_amount)}</strong></div><div class="detail"><span>Kategorie</span><strong>${escapeHtml(activeRow.category)}</strong></div><div class="detail"><span>Středisko</span><strong>${escapeHtml(activeRow.cost_center)}</strong></div></div><div class="notice"><strong>Manažerské zařazení:</strong> ${escapeHtml(activeRow.note || 'Bez poznámky')}<br>OLVEND sleduje náklad, schválení a úhradu. Účetní zaúčtuje originál ve svém systému.</div><div><h3 style="font-size:13px">Auditní stopa</h3><div class="timeline"><div class="timeline-row"><strong>Přijato ze zdroje ${escapeHtml(activeRow.source)}</strong>Originální soubor uložen beze změny a opatřen otiskem.</div><div class="timeline-row"><strong>Doklad automaticky vytěžen · jistota ${activeRow.confidence} %</strong>Dodavatel, termíny, částky, DPH a platební údaje.</div><div class="timeline-row"><strong>${escapeHtml(activeRow.approval)}</strong>${escapeHtml(activeRow.owner || 'Bez odpovědné osoby')}</div></div></div>`
+  $('drawerBackdrop').classList.add('show')
+}
+
+function closeDrawer() { $('drawerBackdrop').classList.remove('show'); activeRow = null }
+function paymentCandidates() { const picked = rows.filter((row) => selected.has(row.id)); return (picked.length ? picked : rows.filter((row) => row.status === 'ready_for_payment')).filter((row) => row.payment_status === 'unpaid') }
+function openBatch() { const items = paymentCandidates(); $('batchCount').textContent = items.length; $('batchAmount').textContent = money(items.reduce((sum,row) => sum + Number(row.total_amount),0)); $('batchDate').textContent = date(items.map((row) => row.due_date).sort()[0]); $('batchWarnings').innerHTML = items.some((row) => !row.bank_account) ? '<div class="notice" style="border-color:#fecdca;background:#fff5f5;color:#b42318">Některému dokladu chybí bankovní účet.</div>' : ''; $('batchCreate').disabled = !items.length; $('batchModal').classList.add('show') }
+function closeBatch() { $('batchModal').classList.remove('show') }
+
+async function createBatch() {
+  const items = paymentCandidates(); if (!items.length) return
+  if (preview) { items.forEach((row) => { row.status = 'in_payment_batch'; row.payment_status = 'ordered' }); selected.clear(); closeBatch(); renderAll(); setStatus(`Platební dávka HP-2026-0119 byla připravena pro ${items.length} plateb.`, 'success', 'Náhled · čeká na autorizaci v bance'); return }
+  const { data, error } = await supabase.rpc('finance_create_payment_batch_v1', { p_invoice_ids:items.map((row) => row.id), p_debtor_account:$('debtorAccountSelect').value }); if (error) throw error
+  closeBatch(); selected.clear(); await load(); setStatus(`Platební dávka ${data?.batch_number || ''} byla vytvořena.`, 'success', 'Čeká na autorizaci v bance')
+}
+
+function renderAll() { renderMetrics(); renderTable() }
+function missingSchema(error) { return /finance_received|schema cache|does not exist|could not find/i.test(String(error?.message || error || '')) }
+async function load() {
+  if (preview) { rows = [...demoRows]; renderAll(); setStatus('Vývojový náhled knihy přijatých faktur je připravený.', 'success', 'Ukázková data · bez zápisu'); return }
+  try { const { data,error } = await supabase.from('finance_received_invoice_overview_v1').select('*').order('due_date',{ascending:true}); if (error) throw error; rows = (data || []).map((row)=>({...row,supplier_id:row.supplier_company_id,confidence:row.extraction_confidence??0,source:row.source_provider,approval:row.approved_at?'Schváleno v OLVENDU':'Čeká na kontrolu'})); renderAll(); setStatus('Přijaté faktury jsou aktuální.','success',`${rows.length} dokladů v evidenci`) }
+  catch (error) { console.error(error); rows = []; renderAll(); setStatus(missingSchema(error) ? 'Databázové závazkové jádro zatím není nasazené.' : `Faktury se nepodařilo načíst: ${error.message}`,'error','Ukázková data se v ostrém provozu nezobrazují') }
+}
+
+async function updateInvoice(id,patch,successText){
+  if(preview){Object.assign(rows.find((row)=>row.id===id)||{},patch);renderAll();setStatus(successText,'success');return}
+  const {error}=await supabase.from('finance_received_invoices').update({...patch,updated_at:new Date().toISOString()}).eq('id',id)
+  if(error)throw error
+  await load();setStatus(successText,'success')
+}
+
+document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => { activeTab = button.dataset.tab; document.querySelectorAll('[data-tab]').forEach((item) => item.classList.toggle('active',item === button)); selected.clear(); renderTable() }))
+;['searchInput','categoryFilter','dueFilter','ownerFilter'].forEach((id) => $(id).addEventListener(id === 'searchInput' ? 'input' : 'change',renderTable))
+$('selectAll').addEventListener('change',() => { filteredRows().forEach((row) => $('selectAll').checked ? selected.add(row.id) : selected.delete(row.id)); renderTable() })
+$('drawerClose').addEventListener('click',closeDrawer); $('drawerBackdrop').addEventListener('click',(event) => { if (event.target === $('drawerBackdrop')) closeDrawer() })
+$('drawerApprove').addEventListener('click',() => { if (!activeRow) return; const row=activeRow; closeDrawer(); updateInvoice(row.id,{status:'ready_for_payment',approved_at:new Date().toISOString()},`${row.internal_number} je připravena k platbě.`).catch((error)=>setStatus(error.message,'error')) })
+$('drawerReturn').addEventListener('click',() => { if (!activeRow) return; const row=activeRow; closeDrawer(); updateInvoice(row.id,{status:'rejected'},`${row.internal_number} byla vrácena k doplnění.`).catch((error)=>setStatus(error.message,'error')) })
+$('batchBtn').addEventListener('click',openBatch); $('newBatchTopBtn').addEventListener('click',openBatch); $('batchClose').addEventListener('click',closeBatch); $('batchCancel').addEventListener('click',closeBatch); $('batchCreate').addEventListener('click',() => createBatch().catch((error) => setStatus(error.message,'error')))
+$('approveBtn').addEventListener('click',async() => { const ids=[...selected];if(!ids.length)return;try{if(preview){rows.filter((row)=>selected.has(row.id)).forEach((row)=>{row.status='ready_for_payment'})}else{const {error}=await supabase.from('finance_received_invoices').update({status:'ready_for_payment',approved_at:new Date().toISOString(),updated_at:new Date().toISOString()}).in('id',ids);if(error)throw error;await load()}selected.clear();renderAll();setStatus(`${ids.length} doklady byly schváleny.`,'success')}catch(error){setStatus(error.message,'error')}})
+$('assignBtn').addEventListener('click',() => setStatus('Hromadné přiřazení bude navázané na seznam odpovědných osob.','success'))
+$('syncBtn').addEventListener('click',load)
+if (window.OlvendSidebar) { window.OlvendSidebar.initMobileNav($('mobileNavShell')); window.OlvendSidebar.setActive('received-invoices') }
+if (preview) document.querySelectorAll('a[href="accountant-portal.html"]').forEach((link) => { link.href = 'accountant-portal.html?preview=1' })
+load()

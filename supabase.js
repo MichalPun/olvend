@@ -103,8 +103,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 
 // UI guard complements database authorization; it is not the security boundary.
 const publicPages = new Set(['', 'index.html', 'zebra-login.html', 'machine-qr.html', 'route-skip-approval.html', 'route-add-approval.html'])
+const restrictedPortalPages = new Set(['accountant-portal.html'])
+const internalFinancePages = new Set(['finance.html', 'received-invoices.html'])
 const pageName = window.location.pathname.split('/').pop()
-if (!publicPages.has(pageName)) {
+const localPreview = ['127.0.0.1', 'localhost'].includes(window.location.hostname) && new URL(window.location.href).searchParams.get('preview') === '1'
+if (!publicPages.has(pageName) && !localPreview) {
   const { data: sessionData } = await supabase.auth.getSession()
   if (!sessionData?.session) {
     window.location.replace('index.html')
@@ -113,11 +116,20 @@ if (!publicPages.has(pageName)) {
   // An existing local session may open cached PWA data without a network.
   // As soon as the device is online, the employee status is checked server-side again.
   if (typeof navigator === 'undefined' || navigator.onLine !== false) {
-    const { data: active, error } = await supabase.rpc('security_active_employee')
-    if (error || active !== true) {
-      if (!error || error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
+    const restrictedPortal = restrictedPortalPages.has(pageName)
+    const internalFinance = internalFinancePages.has(pageName)
+    const accessCheck = restrictedPortal || internalFinance
+      ? await supabase.rpc('finance_portal_scope_v1')
+      : await supabase.rpc('security_active_employee')
+    const active = restrictedPortal ? Boolean(accessCheck.data) : internalFinance ? accessCheck.data === 'internal' : accessCheck.data === true
+    if (accessCheck.error || !active) {
+      if ((restrictedPortal || internalFinance) && !accessCheck.error) {
+        window.location.replace(restrictedPortal ? 'finance.html' : 'dashboard.html')
+        throw new Error(restrictedPortal ? 'Přístup k portálu účetní není aktivní.' : 'Přístup k financím vyžaduje manažerské oprávnění.')
+      }
+      if (!accessCheck.error || accessCheck.error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
       window.location.replace('index.html')
-      throw new Error('Přístup vyžaduje aktivní zaměstnanecký účet.')
+      throw new Error(restrictedPortal ? 'Přístup k portálu účetní není aktivní.' : internalFinance ? 'Přístup k financím vyžaduje manažerské oprávnění.' : 'Přístup vyžaduje aktivní zaměstnanecký účet.')
     }
   }
 }
