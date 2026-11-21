@@ -80,7 +80,7 @@ function openDrawer(id) {
 
 function closeDrawer() { $('drawerBackdrop').classList.remove('show'); activeRow = null }
 function paymentCandidates() { const picked = rows.filter((row) => selected.has(row.id)); return (picked.length ? picked : rows.filter((row) => row.status === 'ready_for_payment')).filter((row) => row.payment_status === 'unpaid') }
-function openBatch() { const items = paymentCandidates(); $('batchCount').textContent = items.length; $('batchAmount').textContent = money(items.reduce((sum,row) => sum + Number(row.total_amount),0)); $('batchDate').textContent = date(items.map((row) => row.due_date).sort()[0]); $('batchWarnings').innerHTML = items.some((row) => !row.bank_account) ? '<div class="notice" style="border-color:#fecdca;background:#fff5f5;color:#b42318">Některému dokladu chybí bankovní účet.</div>' : ''; $('batchCreate').disabled = !items.length; $('batchModal').classList.add('show') }
+function openBatch() { const ids=rows.filter((row)=>selected.has(row.id)).map((row)=>row.id);location.href=`payment-orders.html${ids.length?`?invoices=${ids.join(',')}`:''}` }
 function closeBatch() { $('batchModal').classList.remove('show') }
 
 function openMoneyImport(){moneyImport={file:null,parsed:null,sha256:null};$('moneyXmlFile').value='';$('moneyPreviewCount').textContent='—';$('moneyPreviewUnpaid').textContent='—';$('moneyPreviewCredits').textContent='—';$('moneyPreviewTotal').textContent='—';$('moneyImportWarnings').innerHTML='';$('moneyImportPreview').style.display='none';$('moneyImportRun').disabled=true;$('moneyImportRun').textContent='Načíst do evidence';$('moneyImportModal').classList.add('show')}
