@@ -11,9 +11,15 @@ const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const ENCRYPTION_KEY_HEX = process.env.MAIL_CREDENTIAL_ENCRYPTION_KEY || ''
 const ALLOWED_ORIGIN = process.env.MAIL_ALLOWED_ORIGIN || 'https://olvend.onrender.com'
 const BODY_LIMIT = 28 * 1024 * 1024
+const FINANCE_MAILBOX = 'fakturace@olmika.cz'
+const FINANCE_SYNC_INTERVAL_MS = 5 * 60 * 1000
+const FINANCE_SYNC_COOLDOWN_MS = 90 * 1000
+const FINANCE_ATTACHMENT_LIMIT = 25 * 1024 * 1024
 const messageCache = new Map()
 const MESSAGE_CACHE_LIMIT = 12
 const deletedMessageTombstones = new Map()
+let financeSyncPromise = null
+let lastFinanceSyncTriggerAt = 0
 
 if (!SUPABASE_URL || !SERVICE_KEY || !/^[a-f0-9]{64}$/i.test(ENCRYPTION_KEY_HEX)) {
   console.warn('Mail service is missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or a 64-character MAIL_CREDENTIAL_ENCRYPTION_KEY.')
@@ -66,8 +72,15 @@ async function currentEmployee(req) {
   if (!token) throw Object.assign(new Error('Unauthorized.'), { status: 401 })
   const { data: { user }, error } = await admin.auth.getUser(token)
   if (error || !user) throw Object.assign(new Error('Unauthorized.'), { status: 401 })
-  const { data: employee, error: employeeError } = await admin.from('employees').select('id,name,surname,email,active').eq('auth_user_id', user.id).maybeSingle()
+  const { data: employee, error: employeeError } = await admin.from('employees').select('id,name,surname,email,role,active').eq('auth_user_id', user.id).maybeSingle()
   if (employeeError || !employee || employee.active === false) throw Object.assign(new Error('Employee account is not active.'), { status: 403 })
+  return employee
+}
+
+function requireFinanceManager(employee) {
+  if (!/(admin|manager|manaž|manaz|vedouc|majitel|finance|accountant|účet|ucet)/i.test(String(employee?.role || ''))) {
+    throw Object.assign(new Error('Finance mailbox requires manager access.'), { status: 403 })
+  }
   return employee
 }
 
@@ -89,7 +102,7 @@ function normalizeConfig(input = {}) {
 }
 
 async function accountFor(employeeId) {
-  const { data, error } = await admin.from('mail_accounts').select('*').eq('employee_id', employeeId).eq('active', true).order('created_at').limit(1).maybeSingle()
+  const { data, error } = await admin.from('mail_accounts').select('*').eq('employee_id', employeeId).eq('account_purpose', 'personal').eq('active', true).order('created_at').limit(1).maybeSingle()
   if (error) throw error
   if (!data) throw Object.assign(new Error('Mailbox is not connected.'), { status: 404 })
   return data
@@ -161,16 +174,200 @@ async function syncIndex(account, employeeId) {
   return messages
 }
 
+async function financeAccount(allowMissing = false) {
+  const { data, error } = await admin.from('mail_accounts').select('*').eq('account_purpose', 'finance_intake').eq('active', true).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+  if (error) throw error
+  if (!data && !allowMissing) throw Object.assign(new Error('Finance mailbox is not connected.'), { status: 404 })
+  return data || null
+}
+
+function safeFinanceAccount(account) {
+  if (!account) return null
+  const { password_ciphertext, ...safe } = account
+  return safe
+}
+
+function financeConfig(input = {}, existing = null) {
+  const config = normalizeConfig({ ...input, email_address: FINANCE_MAILBOX, username: input.username || FINANCE_MAILBOX })
+  if (config.email_address !== FINANCE_MAILBOX) throw Object.assign(new Error('Invalid finance mailbox.'), { status: 400 })
+  if (!config.password && existing) config.password = decrypt(existing.password_ciphertext)
+  return config
+}
+
+const supportedFinanceAttachment = attachment => {
+  const filename = String(attachment?.filename || '').toLowerCase()
+  const contentType = String(attachment?.contentType || '').toLowerCase()
+  return /\.(pdf|isdoc|isdocx|xml|jpg|jpeg|png|tif|tiff)$/.test(filename)
+    || ['application/pdf', 'application/isdoc', 'application/xml', 'text/xml', 'image/jpeg', 'image/png', 'image/tiff'].includes(contentType)
+}
+
+const safeFileName = value => String(value || 'priloha').normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'priloha'
+
+async function intakeStats() {
+  const { data, error } = await admin.from('finance_document_intake_queue').select('status')
+  if (error) throw error
+  const statuses = {}
+  for (const row of data || []) statuses[row.status] = (statuses[row.status] || 0) + 1
+  return { total: (data || []).length, statuses }
+}
+
+async function storeFinanceAttachment(account, parsed, attachment, attachmentIndex, uid) {
+  const content = Buffer.from(attachment.content || '')
+  if (!content.length || content.length > FINANCE_ATTACHMENT_LIMIT || !supportedFinanceAttachment(attachment)) return { ignored: 1 }
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex')
+  const { data: duplicate, error: duplicateError } = await admin.from('finance_document_intake_queue').select('id').eq('sha256', sha256).limit(1).maybeSingle()
+  if (duplicateError) throw duplicateError
+  if (duplicate) return { duplicate: 1 }
+
+  const receivedAt = parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime()) ? parsed.date : new Date()
+  const month = receivedAt.toISOString().slice(0, 7).replace('-', '/')
+  const filename = safeFileName(attachment.filename || `priloha-${attachmentIndex + 1}`)
+  const storagePath = `intake/${month}/${sha256}-${filename}`
+  const { error: uploadError } = await admin.storage.from('finance-private').upload(storagePath, content, { contentType: attachment.contentType || 'application/octet-stream', upsert: false })
+  if (uploadError && !/(already exists|duplicate)/i.test(String(uploadError.message || uploadError))) throw uploadError
+
+  const sender = parsed.from?.value?.[0] || {}
+  const row = {
+    source_kind: 'email', mail_account_uuid: account.id, mail_folder: 'INBOX', mail_uid: uid,
+    mail_message_id: parsed.messageId || null, sender_address: sender.address || null,
+    subject: parsed.subject || '(bez předmětu)', attachment_index: attachmentIndex,
+    file_name: filename, mime_type: attachment.contentType || 'application/octet-stream',
+    size_bytes: content.length, sha256, storage_path: storagePath, status: 'queued',
+    message_received_at: receivedAt.toISOString()
+  }
+  const { error: insertError } = await admin.from('finance_document_intake_queue').upsert(row, { onConflict: 'sha256', ignoreDuplicates: true })
+  if (insertError) throw insertError
+  return { queued: 1 }
+}
+
+async function syncFinanceIntake(account) {
+  const client = await imapClient(account)
+  const result = { scanned_messages: 0, queued: 0, duplicate: 0, ignored: 0, failed: 0 }
+  let latestUid = Number(account.finance_last_uid || 0)
+  const previousUidValidity = String(account.finance_uid_validity || '')
+  let uidValidity = previousUidValidity
+  try {
+    const lock = await client.getMailboxLock('INBOX')
+    try {
+      uidValidity = String(client.mailbox?.uidValidity || uidValidity || '')
+      if (previousUidValidity && uidValidity && previousUidValidity !== uidValidity) latestUid = 0
+      const since = new Date(Date.now() - Math.max(1, Number(account.sync_history_days || 90)) * 86400000)
+      const found = await client.search({ since }, { uid: true })
+      const uids = [...new Set((found || []).map(Number).filter(uid => Number.isFinite(uid) && uid > latestUid))].sort((a, b) => a - b).slice(-150)
+      for (const uid of uids) {
+        latestUid = Math.max(latestUid, uid)
+        const item = await client.fetchOne(uid, { source: true }, { uid: true })
+        if (!item?.source) continue
+        result.scanned_messages += 1
+        try {
+          const parsed = await simpleParser(item.source)
+          for (let index = 0; index < parsed.attachments.length; index += 1) {
+            try {
+              const stored = await storeFinanceAttachment(account, parsed, parsed.attachments[index], index, uid)
+              for (const [key, value] of Object.entries(stored)) result[key] = (result[key] || 0) + Number(value || 0)
+            } catch (error) {
+              result.failed += 1
+              console.warn(`Finance attachment ${uid}/${index} failed:`, error.message)
+            }
+          }
+        } catch (error) {
+          result.failed += 1
+          console.warn(`Finance message ${uid} could not be parsed:`, error.message)
+        }
+      }
+    } finally { lock.release() }
+  } finally { await client.logout().catch(() => {}) }
+
+  const syncedAt = new Date().toISOString()
+  const { error } = await admin.from('mail_accounts').update({
+    finance_last_uid: latestUid || null, finance_uid_validity: uidValidity || null,
+    finance_last_result: result, last_sync_at: syncedAt, last_error: null, updated_at: syncedAt
+  }).eq('id', account.id)
+  if (error) throw error
+  return { ...result, synced_at: syncedAt, stats: await intakeStats() }
+}
+
+function triggerFinanceSync(source = 'timer') {
+  const now = Date.now()
+  if (financeSyncPromise) return financeSyncPromise
+  if (source === 'health' && now - lastFinanceSyncTriggerAt < FINANCE_SYNC_COOLDOWN_MS) return null
+  lastFinanceSyncTriggerAt = now
+  financeSyncPromise = (async () => {
+    const account = await financeAccount(true)
+    if (!account) return null
+    return syncFinanceIntake(account)
+  })().catch(async error => {
+    console.error('Finance mailbox sync failed:', error)
+    const account = await financeAccount(true).catch(() => null)
+    if (account) await admin.from('mail_accounts').update({ last_error: String(error.message || error), updated_at: new Date().toISOString() }).eq('id', account.id)
+    return null
+  }).finally(() => { financeSyncPromise = null })
+  return financeSyncPromise
+}
+
 async function route(req, res) {
   if (req.method === 'OPTIONS') { res.writeHead(204, cors(req)); return res.end() }
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  if (req.method === 'GET' && url.pathname === '/healthz') return send(req, res, 200, { ok: true, service: 'olvend-mail-service' })
+  if (req.method === 'GET' && url.pathname === '/healthz') {
+    if (url.searchParams.get('finance') === '1') triggerFinanceSync('health')
+    return send(req, res, 200, { ok: true, service: 'olvend-mail-service' })
+  }
   const employee = await currentEmployee(req)
+
+  if (url.pathname.startsWith('/finance/')) requireFinanceManager(employee)
+  if (req.method === 'GET' && url.pathname === '/finance/account') {
+    const account = await financeAccount(true)
+    return send(req, res, 200, { account: safeFinanceAccount(account), stats: await intakeStats() })
+  }
+  if (req.method === 'POST' && url.pathname === '/finance/account/test') {
+    const existing = await financeAccount(true), config = financeConfig(await body(req), existing)
+    if (!config.password) throw new Error('Mailbox password is required.')
+    await testIncomingConnection(config)
+    return send(req, res, 200, { ok: true, imap: true, email_address: FINANCE_MAILBOX })
+  }
+  if (req.method === 'POST' && url.pathname === '/finance/account') {
+    const input = await body(req)
+    let existing = await financeAccount(true)
+    if (!existing) {
+      const { data, error } = await admin.from('mail_accounts').select('*').eq('email_address', FINANCE_MAILBOX).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+      if (error) throw error
+      existing = data || null
+    }
+    const config = financeConfig(input, existing)
+    if (!config.password) throw new Error('Mailbox password is required.')
+    await testIncomingConnection(config)
+    const row = {
+      employee_id: employee.id, email_address: FINANCE_MAILBOX, display_name: String(input.display_name || 'Fakturace OLMIKA').trim(),
+      username: config.username, password_ciphertext: input.password ? encrypt(config.password) : existing?.password_ciphertext,
+      imap_host: config.imap_host, imap_port: config.imap_port, imap_secure: config.imap_secure,
+      smtp_host: config.smtp_host, smtp_port: config.smtp_port, smtp_secure: config.smtp_secure,
+      sync_history_days: Math.min(3650, Math.max(1, Number(input.sync_history_days || 90))),
+      sync_folders: false, sync_deletions: false, download_attachments: true,
+      account_purpose: 'finance_intake', active: true, last_error: null, updated_at: new Date().toISOString()
+    }
+    let saved
+    if (existing?.id) {
+      const { data, error } = await admin.from('mail_accounts').update(row).eq('id', existing.id).select('*').single()
+      if (error) throw error
+      saved = data
+    } else {
+      const { data, error } = await admin.from('mail_accounts').insert(row).select('*').single()
+      if (error) throw error
+      saved = data
+    }
+    triggerFinanceSync('setup')
+    return send(req, res, 200, { account: safeFinanceAccount(saved), stats: await intakeStats() })
+  }
+  if (req.method === 'POST' && url.pathname === '/finance/sync') {
+    await financeAccount()
+    const result = await triggerFinanceSync('manual')
+    return send(req, res, 200, { ok: true, result, account: safeFinanceAccount(await financeAccount()) })
+  }
 
   if (req.method === 'GET' && url.pathname === '/account') {
     const { data, error } = await admin.from('mail_accounts')
       .select('id,employee_id,email_address,display_name,username,imap_host,imap_port,imap_secure,smtp_host,smtp_port,smtp_secure,sync_history_days,sync_folders,sync_deletions,download_attachments,last_sync_at,last_error,active,created_at,updated_at')
-      .eq('employee_id', employee.id).eq('active', true).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+      .eq('employee_id', employee.id).eq('account_purpose', 'personal').eq('active', true).order('updated_at', { ascending: false }).limit(1).maybeSingle()
     if (error) throw error
     return send(req, res, 200, { account: data })
   }
@@ -182,7 +379,7 @@ async function route(req, res) {
     const input = await body(req), config = normalizeConfig(input)
     if (!config.password) throw new Error('Mailbox password is required.')
     await testIncomingConnection(config)
-    const row = { employee_id: employee.id, ...config, password_ciphertext: encrypt(config.password), password: undefined, sync_history_days: Number(input.sync_history_days || 90), sync_folders: input.sync_folders !== false, sync_deletions: input.sync_deletions !== false, download_attachments: Boolean(input.download_attachments), updated_at: new Date().toISOString() }
+    const row = { employee_id: employee.id, ...config, password_ciphertext: encrypt(config.password), password: undefined, sync_history_days: Number(input.sync_history_days || 90), sync_folders: input.sync_folders !== false, sync_deletions: input.sync_deletions !== false, download_attachments: Boolean(input.download_attachments), account_purpose: 'personal', updated_at: new Date().toISOString() }
     delete row.password
     const { data, error } = await admin.from('mail_accounts').upsert(row, { onConflict: 'employee_id,email_address' }).select('id,email_address,display_name,last_sync_at').single()
     if (error) throw error
@@ -281,4 +478,8 @@ async function route(req, res) {
 http.createServer((req, res) => route(req, res).catch(error => {
   console.error(error)
   send(req, res, Number(error.status || 500), { error: error.message || 'Mail service error.' })
-})).listen(PORT, () => console.log(`OLVEND mail service listening on ${PORT}`))
+})).listen(PORT, () => {
+  console.log(`OLVEND mail service listening on ${PORT}`)
+  setTimeout(() => triggerFinanceSync('startup'), 15000).unref()
+  setInterval(() => triggerFinanceSync('timer'), FINANCE_SYNC_INTERVAL_MS).unref()
+})

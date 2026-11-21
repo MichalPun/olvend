@@ -104,7 +104,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 // UI guard complements database authorization; it is not the security boundary.
 const publicPages = new Set(['', 'index.html', 'zebra-login.html', 'machine-qr.html', 'route-skip-approval.html', 'route-add-approval.html'])
 const restrictedPortalPages = new Set(['accountant-portal.html'])
-const internalFinancePages = new Set(['finance.html', 'received-invoices.html'])
+const internalFinancePages = new Set(['finance.html', 'received-invoices.html', 'finance-settings.html'])
 const pageName = window.location.pathname.split('/').pop()
 const localPreview = ['127.0.0.1', 'localhost'].includes(window.location.hostname) && new URL(window.location.href).searchParams.get('preview') === '1'
 if (!publicPages.has(pageName) && !localPreview) {

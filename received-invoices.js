@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { mailApi } from './mail-api.js'
 
 const $ = (id) => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
@@ -16,7 +17,7 @@ const demoRows = [
   { id:6, internal_number:'PF26-00474', supplier_name:'BARBERA Caffè Czech s.r.o.', supplier_id:'27746275', document_number:'2026/000319', issue_date:'2026-11-11', taxable_date:'2026-11-11', due_date:'2026-11-25', category:'Zboží a materiál', cost_center:'BLUČINA', net_amount:137400, vat_amount:16488, total_amount:153888, variable_symbol:'2026000319', bank_account:'2401885102/2010', status:'in_payment_batch', payment_status:'ordered', owner:'Vedoucí skladu', confidence:98, source:'pracovní e-mail', attachment_name:'2026-000319.pdf', approval:'Dávka HP-2026-0118 · čeká na banku', note:'Příjem zboží spárován.' },
 ]
 
-let rows = [], activeTab = 'open', selected = new Set(), activeRow = null
+let rows = [], intakeRows = [], activeTab = 'open', selected = new Set(), activeRow = null
 const statusMap = { new:['Nová','info'], approval:['Ke schválení','warn'], ready_for_payment:['K platbě','good'], in_payment_batch:['V dávce','violet'], overdue:['Po splatnosti','bad'], handoff_ready:['Pro účetní','good'], exported:['Převzato účetní','good'], rejected:['Vráceno','bad'] }
 const paymentMap = { unpaid:['Neuhrazeno','warn'], ordered:['Příkaz vytvořen','violet'], paid:['Zaplaceno','good'], partially_paid:['Částečně','warn'] }
 
@@ -43,10 +44,15 @@ function filteredRows() {
 }
 
 function renderMetrics() {
-  $('metricNew').textContent = rows.filter((r) => r.status === 'new').length; $('metricReview').textContent = rows.filter((r) => r.status === 'approval').length
+  $('metricNew').textContent = intakeRows.filter((r)=>['queued','extracting','needs_review'].includes(r.status)).length + rows.filter((r) => r.status === 'new').length; $('metricReview').textContent = rows.filter((r) => r.status === 'approval').length
   $('metricReady').textContent = money(rows.filter((r) => r.status === 'ready_for_payment').reduce((s,r) => s + Number(r.total_amount), 0))
   $('metricOverdue').textContent = money(rows.filter((r) => r.payment_status !== 'paid' && daysTo(r.due_date) < 0).reduce((s,r) => s + Number(r.total_amount), 0))
   $('metricAccountant').textContent = rows.filter((r) => ['handoff_ready','exported'].includes(r.status)).length
+}
+
+function renderIntake(){
+  const status={queued:['Čeká na vytěžení','info'],extracting:['Vytěžuji','violet'],needs_review:['Ke kontrole','warn'],invoice_created:['Faktura založena','good'],ignored:['Ignorováno',''],failed:['Chyba','bad']}
+  $('intakeBody').innerHTML=intakeRows.length?intakeRows.map((row)=>`<tr><td><span class="cell-main">${escapeHtml(row.file_name)}</span><span class="cell-sub">${escapeHtml(row.mime_type||'soubor')} · ${Math.max(1,Math.round(Number(row.size_bytes||0)/1024)).toLocaleString('cs-CZ')} kB</span></td><td><span class="cell-main">${escapeHtml(row.sender_address||'—')}</span></td><td>${escapeHtml(row.subject||'Bez předmětu')}</td><td>${row.message_received_at?new Date(row.message_received_at).toLocaleString('cs-CZ'):'—'}</td><td>${badge(status,row.status)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="empty">Ze schránky zatím nebyla přijata žádná podporovaná příloha.</div></td></tr>'
 }
 
 function renderTable() {
@@ -80,12 +86,12 @@ async function createBatch() {
   closeBatch(); selected.clear(); await load(); setStatus(`Platební dávka ${data?.batch_number || ''} byla vytvořena.`, 'success', 'Čeká na autorizaci v bance')
 }
 
-function renderAll() { renderMetrics(); renderTable() }
+function renderAll() { renderMetrics(); renderIntake(); renderTable() }
 function missingSchema(error) { return /finance_received|schema cache|does not exist|could not find/i.test(String(error?.message || error || '')) }
 async function load() {
-  if (preview) { rows = [...demoRows]; renderAll(); setStatus('Vývojový náhled knihy přijatých faktur je připravený.', 'success', 'Ukázková data · bez zápisu'); return }
-  try { const { data,error } = await supabase.from('finance_received_invoice_overview_v1').select('*').order('due_date',{ascending:true}); if (error) throw error; rows = (data || []).map((row)=>({...row,supplier_id:row.supplier_company_id,confidence:row.extraction_confidence??0,source:row.source_provider,approval:row.approved_at?'Schváleno v OLVENDU':'Čeká na kontrolu'})); renderAll(); setStatus('Přijaté faktury jsou aktuální.','success',`${rows.length} dokladů v evidenci`) }
-  catch (error) { console.error(error); rows = []; renderAll(); setStatus(missingSchema(error) ? 'Databázové závazkové jádro zatím není nasazené.' : `Faktury se nepodařilo načíst: ${error.message}`,'error','Ukázková data se v ostrém provozu nezobrazují') }
+  if (preview) { rows = [...demoRows]; intakeRows=[{id:1,file_name:'faktura-2026-118.pdf',mime_type:'application/pdf',size_bytes:184220,sender_address:'dodavatel@example.cz',subject:'Faktura 2026-118',message_received_at:new Date().toISOString(),status:'queued'}]; renderAll(); setStatus('Vývojový náhled knihy přijatých faktur je připravený.', 'success', 'Ukázková data · bez zápisu'); return }
+  try { const [{data,error},{data:intake,error:intakeError}] = await Promise.all([supabase.from('finance_received_invoice_overview_v1').select('*').order('due_date',{ascending:true}),supabase.from('finance_document_intake_queue').select('id,file_name,mime_type,size_bytes,sender_address,subject,message_received_at,discovered_at,status,error_message').order('discovered_at',{ascending:false}).limit(20)]); if (error) throw error;if(intakeError)throw intakeError; rows = (data || []).map((row)=>({...row,supplier_id:row.supplier_company_id,confidence:row.extraction_confidence??0,source:row.source_provider,approval:row.approved_at?'Schváleno v OLVENDU':'Čeká na kontrolu'}));intakeRows=intake||[]; renderAll(); setStatus('Přijaté faktury jsou aktuální.','success',`${intakeRows.length} příloh · ${rows.length} dokladů v evidenci`) }
+  catch (error) { console.error(error); rows = []; intakeRows=[]; renderAll(); setStatus(missingSchema(error) ? 'Databázové závazkové jádro zatím není nasazené.' : `Faktury se nepodařilo načíst: ${error.message}`,'error','Ukázková data se v ostrém provozu nezobrazují') }
 }
 
 async function updateInvoice(id,patch,successText){
@@ -104,7 +110,7 @@ $('drawerReturn').addEventListener('click',() => { if (!activeRow) return; const
 $('batchBtn').addEventListener('click',openBatch); $('newBatchTopBtn').addEventListener('click',openBatch); $('batchClose').addEventListener('click',closeBatch); $('batchCancel').addEventListener('click',closeBatch); $('batchCreate').addEventListener('click',() => createBatch().catch((error) => setStatus(error.message,'error')))
 $('approveBtn').addEventListener('click',async() => { const ids=[...selected];if(!ids.length)return;try{if(preview){rows.filter((row)=>selected.has(row.id)).forEach((row)=>{row.status='ready_for_payment'})}else{const {error}=await supabase.from('finance_received_invoices').update({status:'ready_for_payment',approved_at:new Date().toISOString(),updated_at:new Date().toISOString()}).in('id',ids);if(error)throw error;await load()}selected.clear();renderAll();setStatus(`${ids.length} doklady byly schváleny.`,'success')}catch(error){setStatus(error.message,'error')}})
 $('assignBtn').addEventListener('click',() => setStatus('Hromadné přiřazení bude navázané na seznam odpovědných osob.','success'))
-$('syncBtn').addEventListener('click',load)
+$('syncBtn').addEventListener('click',async()=>{const button=$('syncBtn');button.disabled=true;button.textContent='Synchronizuji…';setStatus('Načítám nové přílohy z fakturace@olmika.cz…');try{if(!preview)await mailApi('/finance/sync',{method:'POST',timeoutMs:120000});await load()}catch(error){setStatus(`Synchronizace se nezdařila: ${error.message}`,'error','Zkontrolujte napojení schránky')}finally{button.disabled=false;button.textContent='Synchronizovat e-mail'}})
 if (window.OlvendSidebar) { window.OlvendSidebar.initMobileNav($('mobileNavShell')); window.OlvendSidebar.setActive('received-invoices') }
 if (preview) document.querySelectorAll('a[href="accountant-portal.html"]').forEach((link) => { link.href = 'accountant-portal.html?preview=1' })
 load()
