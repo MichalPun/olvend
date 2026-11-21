@@ -92,7 +92,8 @@ const labeledTaxSummary=extractInvoiceFields(`Dodavatel:\nNEJLEVNĚJŠÍ POLEPY 
 Odběratel: OLMIKA s.r.o.\nIČ: 04579968 DIČ: CZ04579968
 Sazba DPH Základ Výše DPH Celkem
 21 % 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč
-CELKEM 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč`,{file_name:'Vydana-faktura---20260657.pdf'})
+CELKEM 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč
+Množství 1,00`,{file_name:'Vydana-faktura---20260657.pdf'})
 assert.equal(labeledTaxSummary.document_number,'20260657')
 assert.equal(labeledTaxSummary.net_amount,9240)
 assert.equal(labeledTaxSummary.vat_amount,1940.4)
