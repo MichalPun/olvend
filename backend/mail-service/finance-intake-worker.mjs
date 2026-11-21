@@ -1,10 +1,15 @@
 import { PDFParse } from 'pdf-parse'
 import { extractInvoiceFields, extractInvoiceLineItems, findUniqueInvoiceMatch, isLikelyInlineImage, normalizeMatchKey } from './finance-intake-core.mjs'
+import { createFinanceOcrSession, needsInvoiceOcr } from './finance-intake-ocr.mjs'
 
 const invoiceColumns = 'id,internal_number,document_number,variable_symbol,money_internal_number,total_amount,supplier_name'
 
 function isPdf(row) {
   return String(row?.mime_type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(String(row?.file_name || ''))
+}
+
+function isImage(row) {
+  return String(row?.mime_type||'').toLowerCase().startsWith('image/')||/\.(png|jpe?g|tiff?)$/i.test(String(row?.file_name||''))
 }
 
 function originalKind(row,extracted) {
@@ -68,23 +73,66 @@ async function attachToInvoice(admin, row, invoice, extracted, catalog) {
   await saveInvoiceLines(admin,invoice,extracted,catalog)
   await updateQueue(admin,row.id,{
     invoice_id:invoice.id,status:'invoice_created',document_class:extracted.document_class,extraction_confidence:99,
-    extracted_payload:{...extracted,text_excerpt:undefined,matched_by:'pdf_text_exact_key',matched_invoice:invoice.internal_number},
+    extracted_payload:{...extracted,text_excerpt:undefined,matched_by:'existing_invoice_exact_key',matched_invoice:invoice.internal_number},
     warnings:[],error_message:null
   })
   return 'invoice_created'
 }
 
-async function extractPdf(admin, row) {
+async function downloadOriginal(admin,row){
   const { data,error } = await admin.storage.from('finance-private').download(row.storage_path)
   if (error) throw error
-  const parser = new PDFParse({data:new Uint8Array(await data.arrayBuffer())})
+  return new Uint8Array(await data.arrayBuffer())
+}
+
+function mergeOcrExtraction(textExtracted,ocrExtracted,useOcr){
+  const preferred=useOcr?ocrExtracted:textExtracted,fallback=useOcr?textExtracted:ocrExtracted
+  const merged={...preferred}
+  for(const key of ['supplier_name','supplier_company_id','supplier_tax_id','document_number','issue_date','taxable_date','due_date','currency','net_amount','vat_amount','total_amount','bank_account','iban','variable_symbol']){
+    if(merged[key]==null||merged[key]==='')merged[key]=fallback[key]
+  }
+  merged.reference_numbers=[...new Set([...(preferred.reference_numbers||[]),...(fallback.reference_numbers||[])])]
+  merged.confidence=Math.max(Number(preferred.confidence||0),Number(fallback.confidence||0))
+  return merged
+}
+
+async function extractPdf(admin, row, ocr) {
+  const bytes=await downloadOriginal(admin,row)
+  const parser = new PDFParse({data:bytes})
   try {
     const textResult = await parser.getText({first:8})
     const tableResult = await parser.getTable({first:8}).catch(()=>({pages:[]}))
-    return {...extractInvoiceFields(textResult.text,{file_name:row.file_name,subject:row.subject}),line_items:extractInvoiceLineItems(tableResult.pages)}
+    const textExtracted=extractInvoiceFields(textResult.text,{file_name:row.file_name,subject:row.subject})
+    const lineItems=extractInvoiceLineItems(tableResult.pages)
+    if(!needsInvoiceOcr(textResult.text))return {...textExtracted,line_items:lineItems,extraction_method:'pdf_text'}
+    try{
+      const screenshots=await parser.getScreenshot({first:Math.min(4,Math.max(1,Number(process.env.FINANCE_OCR_PDF_PAGES||3))),desiredWidth:1800,imageDataUrl:false,imageBuffer:true})
+      const results=[]
+      for(const page of screenshots.pages)results.push(await ocr.recognize(page.data))
+      const ocrText=results.map(result=>result.text).join('\n\n')
+      const ocrExtracted=extractInvoiceFields(ocrText,{file_name:row.file_name,subject:row.subject})
+      const average=results.length?results.reduce((sum,result)=>sum+result.confidence,0)/results.length:0
+      const merged=mergeOcrExtraction(textExtracted,ocrExtracted,true)
+      merged.line_items=lineItems
+      merged.text_excerpt=ocrText.slice(0,12000)
+      merged.extraction_method='pdf_ocr'
+      merged.ocr_confidence=Math.round(average*10)/10
+      merged.ocr_pages=results.length
+      if(average<55)merged.warnings=[...(merged.warnings||[]),'OCR má nízkou jistotu; porovnejte údaje s originálem']
+      return merged
+    }catch(error){
+      return {...textExtracted,line_items:lineItems,extraction_method:'pdf_text',warnings:[...(textExtracted.warnings||[]),`OCR se nepodařilo dokončit: ${String(error?.message||error).slice(0,180)}`]}
+    }
   } finally {
     await parser.destroy().catch(()=>{})
   }
+}
+
+async function extractImage(admin,row,ocr){
+  const bytes=await downloadOriginal(admin,row)
+  const result=await ocr.recognize(bytes)
+  const extracted=extractInvoiceFields(result.text,{file_name:row.file_name,subject:row.subject})
+  return {...extracted,line_items:[],text_excerpt:result.text.slice(0,12000),extraction_method:'image_ocr',ocr_confidence:Math.round(result.confidence*10)/10,ocr_pages:1,warnings:result.confidence<55?[...(extracted.warnings||[]),'OCR má nízkou jistotu; porovnejte údaje s originálem']:extracted.warnings}
 }
 
 async function claim(admin, id) {
@@ -95,7 +143,7 @@ async function claim(admin, id) {
   return data
 }
 
-async function processRow(admin, sourceRow, invoices, catalog) {
+async function processRow(admin, sourceRow, invoices, catalog, ocr) {
   const row = await claim(admin,sourceRow.id)
   if (!row) return 'skipped'
   try {
@@ -103,12 +151,12 @@ async function processRow(admin, sourceRow, invoices, catalog) {
       await updateQueue(admin,row.id,{status:'ignored',document_class:'other',extraction_confidence:100,extracted_payload:{classification:'inline_image'},warnings:['Drobný vložený obrázek nebo logo'],error_message:null})
       return 'ignored'
     }
-    if (!isPdf(row)) {
-      await updateQueue(admin,row.id,{status:'needs_review',document_class:'other',extraction_confidence:0,extracted_payload:{classification:'image_document'},warnings:['Obrazová příloha vyžaduje OCR nebo ruční kontrolu'],error_message:null})
+    if (!isPdf(row)&&!isImage(row)) {
+      await updateQueue(admin,row.id,{status:'needs_review',document_class:'other',extraction_confidence:0,extracted_payload:{classification:'unsupported_structured_document'},warnings:['Tento typ přílohy zatím vyžaduje ruční kontrolu'],error_message:null})
       return 'needs_review'
     }
-    const extracted = await extractPdf(admin,row)
-    if (!extracted.text_excerpt.trim()) extracted.warnings.push('PDF nemá čitelnou textovou vrstvu; bude potřeba OCR')
+    const extracted = isPdf(row)?await extractPdf(admin,row,ocr):await extractImage(admin,row,ocr)
+    if (!extracted.text_excerpt.trim()) extracted.warnings.push('V dokumentu se nepodařilo rozpoznat žádný text')
     if (['accounting_report','contract'].includes(extracted.document_class)) {
       await updateQueue(admin,row.id,{status:'ignored',document_class:extracted.document_class,extraction_confidence:95,extracted_payload:{...extracted,text_excerpt:undefined},warnings:['Dokument není přijatá faktura ani upomínka'],error_message:null})
       return 'ignored'
@@ -142,11 +190,16 @@ export async function processFinanceIntake(admin,{limit=8}={}) {
   if (supplierError) throw supplierError
   if (mappingError) throw mappingError
   const catalog={products:products||[],suppliers:suppliers||[],mappings:mappings||[]}
+  const ocr=createFinanceOcrSession()
   const summary={processed:0,invoice_created:0,needs_review:0,ignored:0,failed:0,skipped:0}
-  for (const row of rows || []) {
-    const status=await processRow(admin,row,invoices || [],catalog)
-    summary.processed+=status==='skipped'?0:1
-    summary[status]=(summary[status]||0)+1
+  try{
+    for (const row of rows || []) {
+      const status=await processRow(admin,row,invoices || [],catalog,ocr)
+      summary.processed+=status==='skipped'?0:1
+      summary[status]=(summary[status]||0)+1
+    }
+  }finally{
+    await ocr.terminate()
   }
   return summary
 }

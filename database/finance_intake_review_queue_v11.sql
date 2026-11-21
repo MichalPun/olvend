@@ -139,13 +139,13 @@ begin
 
   insert into public.finance_received_invoices(
     internal_number,source_provider,source_external_id,source_received_at,source_payload,
-    supplier_name,document_number,document_type,document_class,issue_date,taxable_date,due_date,
+    supplier_name,supplier_company_id,supplier_tax_id,document_number,document_type,document_class,issue_date,taxable_date,due_date,
     currency,net_amount,vat_amount,total_amount,bank_account,bank_code,iban,variable_symbol,
     category,cost_center,extraction_confidence,extraction_warnings,status,payment_status,handoff_status,note
   ) values (
     v_internal_number,'email','intake:'||v_queue.id,coalesce(v_queue.message_received_at,v_queue.discovered_at),
     jsonb_build_object('queue_id',v_queue.id,'sender_address',v_queue.sender_address,'subject',v_queue.subject,'extracted',v_payload),
-    v_supplier,v_document_number,v_document_type,v_class,v_issue_date,v_taxable_date,v_due_date,
+    v_supplier,nullif(coalesce(nullif(p_values->>'supplier_company_id',''),v_payload->>'supplier_company_id'),'') ,nullif(upper(coalesce(nullif(p_values->>'supplier_tax_id',''),v_payload->>'supplier_tax_id','')),'') ,v_document_number,v_document_type,v_class,v_issue_date,v_taxable_date,v_due_date,
     v_currency,v_net,v_vat,v_total,v_bank_account,case when v_bank_account like '%/%' then split_part(v_bank_account,'/',2) end,v_iban,v_variable_symbol,
     nullif(p_values->>'category',''),nullif(p_values->>'cost_center',''),v_queue.extraction_confidence,coalesce(v_queue.warnings,'[]'::jsonb),
     'approval','unpaid','not_ready','Založeno po ruční kontrole dokumentu z fakturačního e-mailu.'
