@@ -23,6 +23,11 @@ export function parseMoneyLiabilitiesXml(xml){
     const total=number(text(row,'Celkem'))
     const actual=number(text(row,'UhZbyva'))
     const orderable=number(text(row,'PUZbyva'))
+    const partner=blocks(row,'Adresa')[0]||''
+    const payeeName=text(partner,'ObchNazev')||text(partner,'Nazev')||null
+    const bankAccount=text(partner,'Ucet')||null
+    const bankCode=text(partner,'KodBanky')||null
+    const variableSymbol=text(row,'VarSym')||null
     return {
       internal_number:text(row,'Doklad')||`ZAVAZEK-${index+1}`,
       series:text(row,'DRada')||null,
@@ -40,6 +45,14 @@ export function parseMoneyLiabilitiesXml(xml){
       ordered_amount:Math.max(0,Math.round((actual-orderable)*100)/100),
       money_payment_date:date(text(row,'UhDatum')),
       money_payment_document:text(row,'UhDokl')||null,
+      payee_name:payeeName,
+      payee_guid:text(partner,'GUID')||null,
+      bank_account:bankAccount,
+      bank_code:bankCode,
+      variable_symbol:variableSymbol,
+      constant_symbol:text(row,'KonSym')||null,
+      specific_symbol:text(row,'SpecSym')||null,
+      payment_message:text(row,'Popis')||payeeName||null,
     }
   })
   const actualPaid=rows.filter(r=>Math.abs(r.actual_remaining_amount)<.01&&Math.abs(r.total_amount)>=.01).length
