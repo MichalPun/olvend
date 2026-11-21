@@ -1,5 +1,5 @@
 import {supabase} from './supabase.js'
-import {parseMoneyLiabilitiesXml,sha256Hex} from './money-liabilities-core.mjs?v=20261121finance-liabilities-v1'
+import {parseMoneyLiabilitiesXml,sha256Hex} from './money-liabilities-core.mjs?v=20261121finance-liability-payees-v2'
 
 const $=id=>document.getElementById(id)
 const preview=new URL(location.href).searchParams.get('preview')==='1'
@@ -27,8 +27,8 @@ function renderMetrics(){
 }
 function renderLiabilities(){
   const q=$('searchInput').value.trim().toLowerCase(),status=$('statusFilter').value,category=$('categoryFilter').value
-  const rows=liabilities.filter(r=>(!q||`${r.internal_number} ${r.description}`.toLowerCase().includes(q))&&(!status||r.payment_status===status)&&(!category||r.category===category))
-  $('liabilityBody').innerHTML=rows.length?rows.map(r=>`<tr><td><span class="cell-main">${escapeHtml(r.internal_number)}</span><span class="cell-sub">Money S3</span></td><td><span class="cell-main">${escapeHtml(r.description)}</span></td><td>${date(r.due_date)}</td><td>${escapeHtml(r.category)}</td><td class="money">${money(r.total_amount,r.currency)}</td><td class="money">${money(r.actual_remaining_amount,r.currency)}</td><td class="money">${money(r.ordered_amount,r.currency)}</td><td class="money">${money(r.orderable_remaining_amount,r.currency)}</td><td>${badge(paymentMap,r.payment_status)}</td><td>${badge(accountingMap,r.accounting_status)}</td></tr>`).join(''):'<tr><td colspan="10"><div class="empty">Pro zvolené filtry tu nejsou žádné závazky.</div></td></tr>'
+  const rows=liabilities.filter(r=>(!q||`${r.internal_number} ${r.description} ${r.payee_name||''} ${r.bank_account||''} ${r.variable_symbol||''}`.toLowerCase().includes(q))&&(!status||r.payment_status===status)&&(!category||r.category===category))
+  $('liabilityBody').innerHTML=rows.length?rows.map(r=>`<tr><td><span class="cell-main">${escapeHtml(r.internal_number)}</span><span class="cell-sub">Money S3</span></td><td><span class="cell-main">${escapeHtml(r.payee_name||r.description)}</span><span class="cell-sub">${r.payee_name?escapeHtml(r.description):''}</span></td><td>${date(r.due_date)}</td><td>${escapeHtml(r.category)}</td><td class="money">${money(r.total_amount,r.currency)}</td><td class="money">${money(r.actual_remaining_amount,r.currency)}</td><td class="money">${money(r.ordered_amount,r.currency)}</td><td class="money">${money(r.orderable_remaining_amount,r.currency)}</td><td>${badge(paymentMap,r.payment_status)}</td><td>${badge(accountingMap,r.accounting_status)}</td></tr>`).join(''):'<tr><td colspan="10"><div class="empty">Pro zvolené filtry tu nejsou žádné závazky.</div></td></tr>'
 }
 function renderOrders(){$('orderBody').innerHTML=orders.length?orders.map(r=>`<tr><td><span class="cell-main">${escapeHtml(r.batch_number)}</span><span class="cell-sub">${escapeHtml(r.bank_provider)}</span></td><td>${date(r.requested_execution_date)}</td><td>${integer(r.payment_count)}</td><td class="money">${money(r.total_amount,r.currency)}</td><td>${badge(orderMap,r.status)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="empty">Zatím nejsou evidované žádné platební příkazy.</div></td></tr>'}
 function renderBank(){
