@@ -88,11 +88,14 @@ function balancedTaxTriple(values) {
   for(let first=0;first<values.length;first+=1)for(let second=first+1;second<values.length;second+=1)for(let totalIndex=0;totalIndex<values.length;totalIndex+=1){
     if(totalIndex===first||totalIndex===second)continue
     const a=Math.abs(values[first]),b=Math.abs(values[second]),total=Math.abs(values[totalIndex])
-    if(a<=0||b<=0||total<=0||Math.abs(a+b-total)>1.01)continue
-    const candidate={net_amount:Math.max(a,b),vat_amount:Math.min(a,b),total_amount:total}
-    if(!best||candidate.total_amount>best.total_amount)best=candidate
+    const balanceError=Math.abs(a+b-total)
+    if(a<=0||b<=0||total<=Math.max(a,b)||balanceError>0.6)continue
+    const candidate={net_amount:Math.max(a,b),vat_amount:Math.min(a,b),total_amount:total,balance_error:balanceError}
+    if(!best||candidate.balance_error<best.balance_error-0.001||(Math.abs(candidate.balance_error-best.balance_error)<=0.001&&candidate.total_amount>best.total_amount))best=candidate
   }
-  return best
+  if(!best)return null
+  const {balance_error,...result}=best
+  return result
 }
 
 function taxSummary(text) {
@@ -200,14 +203,14 @@ export function extractInvoiceFields(text, context = {}) {
     /(?:faktura|daňový\s+doklad)(?:\s+(?:vydan[aá]|přijat[aá]))?(?:\s+(?:č(?:íslo)?\.?|number|no\.?))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:invoice)(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:číslo\s+dokladu|doklad\s+č\.?)\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i
-  ]),firstMatch(`${context.file_name || ''} ${context.subject || ''}`,[
+  ]),firstMatch(context.file_name || '',[/\b(\d{6,14}(?:[\/_-]\d{1,8})?)\b/i]),firstMatch(`${context.file_name || ''} ${context.subject || ''}`,[
     /(?:faktura|invoice)[^A-Z0-9]{0,20}([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /\b(\d{6,14}(?:[\/_-]\d{1,8})?)\b/i
   ])]
   const documentNumber=documentNumberCandidates.map(cleanedDocumentNumber).find(Boolean)||null
   const variableSymbol = digits(firstMatch(source,[/variabiln[ií]\s+symbol\s*[:#]?\s*([0-9][0-9 .\/-]{2,20})/i,/\bVS\s*[:#]\s*([0-9][0-9 .\/-]{2,20})/i])).slice(0,10) || null
   const iban = firstMatch(source,[/\bIBAN\s*[:#]?\s*(CZ\s*\d{2}(?:\s*\d){20})/i,/\bIBAN\s*[:#]?\s*([A-Z]{2}\s*\d{2}(?:\s*[A-Z0-9]){11,26})(?:\n|$)/i])?.replace(/\s/g,'').toUpperCase() || null
-  const accountRaw = firstMatch(source,[/(?:číslo\s+účtu|bankovní\s+účet|účet)\s*[:#]?\s*((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})/i,/(?:bankovní\s+účet)[^\n]*\n\s*((?:\d{1,6}-)?\d{2,10}\s+\d{4})/i,/\b((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})\b/])
+  const accountRaw = firstMatch(source,[/(?:číslo\s+účtu|bankovní\s+účet|účet)\s*[:#]?\s*((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})/i,/(?:bankovní\s+účet)[^\n]*\n\s*((?:\d{1,6}-)?\d{2,10}\s+\d{4})/i,/\b((?:\d{1,6}-)?\d{2,10}\s+\d{4})\s+Číslo\s+účtu/i,/\b((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})\b/])
   const account = accountRaw ? (accountRaw.includes('/')?accountRaw:accountRaw.replace(/\s+(\d{4})$/,'/$1')).replace(/\s/g,'') : null
   const summary=['invoice','credit_note'].includes(documentClass)?taxSummary(source):null
   let totalAmount = summary?.total_amount??labeledAmount(source)
