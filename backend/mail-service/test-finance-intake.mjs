@@ -49,6 +49,57 @@ assert.equal(detailed.net_amount,10000)
 assert.equal(detailed.vat_amount,2100)
 assert.equal(detailed.total_amount,12100)
 assert.equal(extractInvoiceFields('FAKTURA Dodavatel\nDIČ CZ04579968').document_number,null)
+
+const reorderedTaxTable=extractInvoiceFields(`FAKTURA - daňový doklad č. 1102603981
+Seyfor, a. s.
+IČ:\nFax:\nTel.:\n01572377\nCZ01572377\n+420 549 522 511\nDIČ :\n6253399002/5500
+Odběratel: OLMIKA s.r.o.\nIČ: 04579968 DIČ: CZ04579968
+Rozpis DPH uveden v měně CZK
+0,00 523,95 - 523,95 CELKEM
+3 018,95 523,95 2 495,00 základní 21 %
+Celková částka 3 018,95 Kč`)
+assert.equal(reorderedTaxTable.supplier_company_id,'01572377')
+assert.equal(reorderedTaxTable.supplier_tax_id,'CZ01572377')
+assert.equal(reorderedTaxTable.net_amount,2495)
+assert.equal(reorderedTaxTable.vat_amount,523.95)
+assert.equal(reorderedTaxTable.total_amount,3018.95)
+
+const moneySummary=extractInvoiceFields(`SIMANDL, spol. s r.o.\nIČ:\nDIČ:\n63319969\nCZ63319969
+Odběratel: OLMIKA s.r.o.\nIČ: 04579968\nDIČ: CZ04579968
+Faktura číslo: 26002070
+Bankovní účet: CEKO\n104458251 0300
+37 800,00\n4 536,00\n42 336,00
+Celkem:\nZáklad Výše DPH Včetně DPH`)
+assert.equal(moneySummary.supplier_company_id,'63319969')
+assert.equal(moneySummary.supplier_tax_id,'CZ63319969')
+assert.equal(moneySummary.bank_account,'104458251/0300')
+assert.equal(moneySummary.net_amount,37800)
+assert.equal(moneySummary.vat_amount,4536)
+assert.equal(moneySummary.total_amount,42336)
+
+const roundedTaxSummary=extractInvoiceFields(`DEKOS R, s.r.o.\nIČ: 25097733\nDIČ: CZ25097733
+Odběratel: OLMIKA s.r.o.\nDIČ: CZ04579968
+DAŇOVÝ DOKLAD - faktura č.\nOLMIKA s.r.o.
+DPH 21 %\n12 457,50\n15 074,00\n2 616,08\nZáklad DPH D P H : Sazba`,{file_name:'2026036928.pdf'})
+assert.equal(roundedTaxSummary.supplier_company_id,'25097733')
+assert.equal(roundedTaxSummary.supplier_tax_id,'CZ25097733')
+assert.equal(roundedTaxSummary.document_number,'2026036928')
+assert.equal(roundedTaxSummary.net_amount,12457.5)
+assert.equal(roundedTaxSummary.vat_amount,2616.08)
+assert.equal(roundedTaxSummary.total_amount,15074)
+
+const labeledTaxSummary=extractInvoiceFields(`Dodavatel:\nNEJLEVNĚJŠÍ POLEPY s.r.o.\nIČ: 08336563 DIČ: CZ08336563
+Odběratel: OLMIKA s.r.o.\nIČ: 04579968 DIČ: CZ04579968
+Sazba DPH Základ Výše DPH Celkem
+21 % 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč
+CELKEM 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč`,{file_name:'Vydana-faktura---20260657.pdf'})
+assert.equal(labeledTaxSummary.document_number,'20260657')
+assert.equal(labeledTaxSummary.net_amount,9240)
+assert.equal(labeledTaxSummary.vat_amount,1940.4)
+assert.equal(labeledTaxSummary.total_amount,11180.4)
+
+const numberFallback=extractInvoiceFields('DAŇOVÝ DOKLAD - faktura č.\nOLMIKA s.r.o.',{file_name:'2026036928.pdf'})
+assert.equal(numberFallback.document_number,'2026036928')
 assert.equal(needsInvoiceOcr('jen několik znaků'),true)
 assert.equal(needsInvoiceOcr('Faktura '.repeat(30)),false)
 let terminated=false

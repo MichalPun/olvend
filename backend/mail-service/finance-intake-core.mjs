@@ -42,7 +42,7 @@ function cleanedDocumentNumber(value) {
 
 function moneyAfterLabels(text, labels) {
   for (const label of labels) {
-    const regex=new RegExp(`${label}[^\\d-]{0,36}(-?\\d[\\d \\u00a0.]*[,.]\\d{2})\\s*(?:Kč|CZK|EUR|USD)?`,'i')
+    const regex=new RegExp(`${label}[^\\d-]{0,36}(-?\\d[\\d \\u00a0.]*[,.]\\d{2})(?!\\d)\\s*(?:Kč|CZK|EUR|USD)?`,'i')
     const raw=text.match(regex)?.[1]
     if(!raw)continue
     const parsed=amount(raw)
@@ -70,9 +70,41 @@ function supplierName(text) {
 }
 
 function supplierIdentifiers(text) {
-  const companyIds=[...String(text||'').matchAll(/\b(?:I[ČC]O?|ICO)\s*[:#]?\s*(\d{8})\b/gi)].map(match=>match[1]).filter(value=>value!==OLMIKA_COMPANY_ID)
-  const taxIds=[...String(text||'').matchAll(/\b(?:DI[ČC]|VAT(?:\s+ID)?)\s*[:#]?\s*((?:CZ)?\d{8,12}|[A-Z]{2}[A-Z0-9]{8,14})\b/gi)].map(match=>match[1].replace(/\s/g,'').toUpperCase()).filter(value=>value!==OLMIKA_TAX_ID)
-  return {supplier_company_id:companyIds[0]||null,supplier_tax_id:taxIds[0]||null}
+  const source=String(text||'')
+  const labeledCompanyIds=[...source.matchAll(/\b(?:I[ČC]O?|ICO)\s*[:#]?\s*(\d{8})\b/gi)].map(match=>match[1]).filter(value=>value!==OLMIKA_COMPANY_ID)
+  const labeledTaxIds=[...source.matchAll(/\b(?:DI[ČC]|VAT(?:\s+ID)?)\s*[:#]?\s*([A-Z]{2}[A-Z0-9]{8,14})\b/gi)].map(match=>match[1].replace(/\s/g,'').toUpperCase())
+  const visibleTaxIds=[...source.matchAll(/\b([A-Z]{2}\d{8,14})\b/g)].map(match=>match[1].toUpperCase())
+  const supplierTaxId=[...labeledTaxIds,...visibleTaxIds].find(value=>value!==OLMIKA_TAX_ID)||null
+  const companyIdFromTax=supplierTaxId?.match(/^CZ(\d{8})$/)?.[1]||null
+  return {supplier_company_id:companyIdFromTax||labeledCompanyIds[0]||null,supplier_tax_id:supplierTaxId}
+}
+
+function moneyValues(value) {
+  return [...String(value||'').matchAll(/-?\d[\d \u00a0.]*[,.]\d{2}(?!\d)/g)].map(match=>amount(match[0])).filter(value=>value!=null)
+}
+
+function balancedTaxTriple(values) {
+  let best=null
+  for(let first=0;first<values.length;first+=1)for(let second=first+1;second<values.length;second+=1)for(let totalIndex=0;totalIndex<values.length;totalIndex+=1){
+    if(totalIndex===first||totalIndex===second)continue
+    const a=Math.abs(values[first]),b=Math.abs(values[second]),total=Math.abs(values[totalIndex])
+    if(a<=0||b<=0||total<=0||Math.abs(a+b-total)>1.01)continue
+    const candidate={net_amount:Math.max(a,b),vat_amount:Math.min(a,b),total_amount:total}
+    if(!best||candidate.total_amount>best.total_amount)best=candidate
+  }
+  return best
+}
+
+function taxSummary(text) {
+  const lines=String(text||'').split('\n')
+  const candidates=[]
+  for(let index=0;index<lines.length;index+=1){
+    if(!/(sazba\s+dph|z[aá]klad.*(?:v[yý][šs]e\s+dph|d\s*p\s*h)|rozpis\s+dph|\bcelkem\b)/i.test(lines[index]))continue
+    const window=lines.slice(Math.max(0,index-7),Math.min(lines.length,index+8)).join('\n')
+    const candidate=balancedTaxTriple(moneyValues(window))
+    if(candidate)candidates.push(candidate)
+  }
+  return candidates.sort((a,b)=>b.total_amount-a.total_amount)[0]||null
 }
 
 function labeledDate(text, labels) {
@@ -90,7 +122,7 @@ function labeledAmount(text) {
     'grand\\s+total','total\\s+due','celkem\\s+s\\s+dph','celkem'
   ]
   for (const label of labels) {
-    const regex = new RegExp(`${label}[^\\d-]{0,30}(-?\\d[\\d \\u00a0.]*[,.]\\d{2})\\s*(?:Kč|CZK|EUR|USD)?`,'i')
+    const regex = new RegExp(`${label}[^\\d-]{0,30}(-?\\d[\\d \\u00a0.]*[,.]\\d{2})(?!\\d)\\s*(?:Kč|CZK|EUR|USD)?`,'i')
     const parsed = amount(text.match(regex)?.[1])
     if (parsed != null && parsed !== 0) return parsed
   }
@@ -164,21 +196,24 @@ export function isLikelyInlineImage(row) {
 export function extractInvoiceFields(text, context = {}) {
   const source = compact(String(text || '').replace(/\r/g,'\n').replace(/\n{2,}/g,'\n'))
   const documentClass=classifyDocument(source,context)
-  const extractedDocumentNumber = firstMatch(source,[
+  const documentNumberCandidates = [firstMatch(source,[
     /(?:faktura|daňový\s+doklad)(?:\s+(?:vydan[aá]|přijat[aá]))?(?:\s+(?:č(?:íslo)?\.?|number|no\.?))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:invoice)(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:číslo\s+dokladu|doklad\s+č\.?)\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i
-  ]) || firstMatch(`${context.file_name || ''} ${context.subject || ''}`,[
+  ]),firstMatch(`${context.file_name || ''} ${context.subject || ''}`,[
     /(?:faktura|invoice)[^A-Z0-9]{0,20}([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /\b(\d{6,14}(?:[\/_-]\d{1,8})?)\b/i
-  ])
-  const documentNumber=cleanedDocumentNumber(extractedDocumentNumber)
+  ])]
+  const documentNumber=documentNumberCandidates.map(cleanedDocumentNumber).find(Boolean)||null
   const variableSymbol = digits(firstMatch(source,[/variabiln[ií]\s+symbol\s*[:#]?\s*([0-9][0-9 .\/-]{2,20})/i,/\bVS\s*[:#]\s*([0-9][0-9 .\/-]{2,20})/i])).slice(0,10) || null
-  const iban = firstMatch(source,[/\bIBAN\s*[:#]?\s*([A-Z]{2}\s*[0-9A-Z](?:\s*[0-9A-Z]){13,32})/i])?.replace(/\s/g,'').toUpperCase() || null
-  const account = firstMatch(source,[/(?:číslo\s+účtu|bankovní\s+účet|účet)\s*[:#]?\s*((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})/i])?.replace(/\s/g,'') || null
-  const totalAmount = labeledAmount(source)
+  const iban = firstMatch(source,[/\bIBAN\s*[:#]?\s*(CZ\s*\d{2}(?:\s*\d){20})/i,/\bIBAN\s*[:#]?\s*([A-Z]{2}\s*\d{2}(?:\s*[A-Z0-9]){11,26})(?:\n|$)/i])?.replace(/\s/g,'').toUpperCase() || null
+  const accountRaw = firstMatch(source,[/(?:číslo\s+účtu|bankovní\s+účet|účet)\s*[:#]?\s*((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})/i,/(?:bankovní\s+účet)[^\n]*\n\s*((?:\d{1,6}-)?\d{2,10}\s+\d{4})/i,/\b((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})\b/])
+  const account = accountRaw ? (accountRaw.includes('/')?accountRaw:accountRaw.replace(/\s+(\d{4})$/,'/$1')).replace(/\s/g,'') : null
+  const summary=['invoice','credit_note'].includes(documentClass)?taxSummary(source):null
+  let totalAmount = summary?.total_amount??labeledAmount(source)
   let netAmount=moneyAfterLabels(source,['celkem\\s+bez\\s+dph','z[aá]klad\\s+dan[ěe]\\s+celkem','tax\\s+exclusive\\s+amount','subtotal'])
   let vatAmount=moneyAfterLabels(source,['dph\\s+celkem','da[nň]\\s+celkem','celkov[aá]\\s+v[yý][šs]e\\s+dph','tax\\s+amount','vat\\s+total'])
+  if(summary){netAmount=summary.net_amount;vatAmount=summary.vat_amount;totalAmount=summary.total_amount}
   if (totalAmount!=null&&netAmount!=null&&vatAmount==null) vatAmount=Math.round((totalAmount-netAmount)*100)/100
   if (totalAmount!=null&&vatAmount!=null&&netAmount==null) netAmount=Math.round((totalAmount-vatAmount)*100)/100
   if (totalAmount!=null&&netAmount!=null&&vatAmount!=null&&Math.abs(netAmount+vatAmount-totalAmount)>1) { netAmount=null;vatAmount=null }
