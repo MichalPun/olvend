@@ -1,9 +1,16 @@
 import { financeMailboxStatus, mailApi } from './mail-api.js?v=20261121finance-mail-status-v3'
+import { supabase } from './supabase.js'
 
 const $ = id => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
 const form = $('mailboxForm')
 let account = null
+let queue = []
+
+const statusMap={queued:['Čeká','info'],extracting:['Vytěžuje se','violet'],needs_review:['Ke kontrole','warn'],invoice_created:['Přiřazeno','good'],ignored:['Přeskočeno',''],failed:['Chyba','bad']}
+const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))
+const money=(value,currency='CZK')=>value==null?'—':new Intl.NumberFormat('cs-CZ',{style:'currency',currency:currency||'CZK',maximumFractionDigits:2}).format(Number(value))
+const badge=value=>{const item=statusMap[value]||[value||'—',''];return `<span class="badge ${item[1]}">${escapeHtml(item[0])}</span>`}
 
 function setStatus(text,type='',meta='Heslo není dostupné ve webové aplikaci'){
   $('statusText').textContent=text;$('statusMeta').textContent=meta;$('statusStrip').className=`status-strip ${type}`.trim()
@@ -25,9 +32,19 @@ function render(result={}){
     form.elements.imap_secure.checked=account.imap_secure!==false
   }
 }
+function renderQueue(){
+  $('queueCount').textContent=`${queue.length} souborů`
+  $('queueBody').innerHTML=queue.length?queue.map(row=>{const data=row.extracted_payload||{},warnings=Array.isArray(row.warnings)?row.warnings:[];return `<tr><td><span class="cell-main">${escapeHtml(row.file_name)}</span><span class="cell-sub">${dateTime(row.discovered_at)}</span></td><td><span class="cell-main">${escapeHtml(row.subject||'Bez předmětu')}</span><span class="cell-sub">${escapeHtml(row.sender_address||'—')}</span></td><td><span class="cell-main">${escapeHtml(data.document_number||'—')}</span><span class="cell-sub">${escapeHtml(data.due_date?`Splatnost ${data.due_date}`:warnings[0]||'Čeká na zpracování')}</span></td><td class="money">${money(data.total_amount,data.currency)}</td><td><span class="cell-main">${escapeHtml(data.bank_account||data.iban||'—')}</span><span class="cell-sub">VS ${escapeHtml(data.variable_symbol||'—')}</span></td><td>${data.confidence!=null?`${Number(data.confidence).toLocaleString('cs-CZ')} %`:'—'}</td><td>${badge(row.status)}${row.error_message?`<span class="cell-sub" style="color:#b42318">${escapeHtml(row.error_message)}</span>`:''}</td></tr>`}).join(''):'<tr><td colspan="7"><div class="empty">Ve fakturační schránce zatím nejsou žádné podporované přílohy.</div></td></tr>'
+}
+async function loadQueue(){
+  if(preview){queue=[{file_name:'faktura-2026036928.pdf',subject:'Faktura 2026036928',sender_address:'dodavatel@example.cz',discovered_at:new Date().toISOString(),status:'needs_review',extracted_payload:{document_number:'2026036928',total_amount:18456.70,currency:'CZK',bank_account:'123456789/5500',variable_symbol:'2026036928',due_date:'2026-11-26',confidence:95},warnings:[]}];renderQueue();return}
+  const {data,error}=await supabase.from('finance_document_intake_queue').select('id,file_name,mime_type,size_bytes,status,sender_address,subject,discovered_at,extraction_confidence,extracted_payload,warnings,error_message,invoice_id').order('discovered_at',{ascending:false}).limit(100)
+  if(error)throw error
+  queue=data||[];renderQueue()
+}
 async function load(){
-  if(preview){render({account:{email_address:'fakturace@olmika.cz',last_sync_at:new Date().toISOString(),imap_host:'imap.mail.webnode.com',imap_port:993,imap_secure:true,sync_history_days:90},stats:{statuses:{queued:4,invoice_created:12}}});setStatus('Vývojový náhled napojení je připravený.','success','Ukázkový stav · bez uložení hesla');return}
-  try{const result=await financeMailboxStatus();render(result);setStatus(result.account?'Fakturační schránka je připojená.':'Schránka zatím není připojená.',result.account?'success':'',result.verified_by==='database'?'Stav ověřen přímo z databáze · automatická kontrola běží':'Automatická kontrola každých 5 minut')}
+  if(preview){render({account:{email_address:'fakturace@olmika.cz',last_sync_at:new Date().toISOString(),imap_host:'imap.mail.webnode.com',imap_port:993,imap_secure:true,sync_history_days:90},stats:{statuses:{queued:4,invoice_created:12}}});await loadQueue();setStatus('Vývojový náhled napojení je připravený.','success','Ukázkový stav · bez uložení hesla');return}
+  try{const [result]=await Promise.all([financeMailboxStatus(),loadQueue()]);render(result);setStatus(result.account?'Fakturační schránka je připojená.':'Schránka zatím není připojená.',result.account?'success':'',result.verified_by==='database'?'Stav ověřen přímo z databáze · automatické vytěžení běží':'Automatická kontrola každých 5 minut')}
   catch(error){setStatus(`Stav schránky se nepodařilo načíst: ${error.message}`,'error')}
 }
 async function testConnection(){
@@ -44,7 +61,7 @@ async function save(event){
 }
 async function syncNow(){
   const button=$('syncNowBtn');button.disabled=true;button.textContent='Synchronizuji…';setStatus('Načítám nové přílohy z fakturační schránky…')
-  try{if(preview){await new Promise(resolve=>setTimeout(resolve,300));setStatus('Náhled synchronizace byl dokončen.','success');return}const result=await mailApi('/finance/sync',{method:'POST',timeoutMs:120000});account=result.account||account;render({account,stats:result.result?.stats});const queued=result.result?.queued||0;setStatus(`Synchronizace dokončena · ${queued} nových příloh.`, 'success', `${result.result?.duplicate||0} duplicit přeskočeno`)}
+  try{if(preview){await new Promise(resolve=>setTimeout(resolve,300));setStatus('Náhled synchronizace byl dokončen.','success');return}const result=await mailApi('/finance/sync',{method:'POST',timeoutMs:120000});account=result.account||account;const [freshStatus]=await Promise.all([financeMailboxStatus(),loadQueue()]);render(freshStatus);const queued=result.result?.queued||0,processed=result.result?.extraction?.processed||0;setStatus(`Synchronizace dokončena · ${queued} nových příloh.`, 'success', `${processed} příloh vytěženo · ${result.result?.duplicate||0} duplicit přeskočeno`)}
   catch(error){setStatus(`Synchronizace se nezdařila: ${error.message}`,'error')}
   finally{button.disabled=false;button.textContent='Synchronizovat nyní'}
 }
