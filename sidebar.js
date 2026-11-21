@@ -464,6 +464,7 @@
             { key: "purchases-overview", href: "purchases.html?view=received", label: "Skladové příjmy" },
             { key: "cash-collection", href: "cash-collection.html", label: "Svoz hotovosti" },
             { key: "budget", href: "budget.html", label: "Rozpočet" },
+            { key: "finance-settings", href: "finance-settings.html", label: "Napojení financí" },
             { key: "accountant-portal", href: "accountant-portal.html", label: "Portál účetní" }
           ]
         },
@@ -631,7 +632,7 @@
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'machine-calibration': 'tools', 'qr-labels': 'machine',
-    'finance-management': 'finance', 'finance-overview': 'finance', 'received-invoices': 'finance', 'accountant-portal': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
+    'finance-management': 'finance', 'finance-overview': 'finance', 'received-invoices': 'finance', 'finance-settings': 'settings', 'accountant-portal': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', 'meeting-calendar': 'calendar', employees: 'people',
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',

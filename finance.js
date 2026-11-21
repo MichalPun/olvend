@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { mailApi } from './mail-api.js'
 
 const $ = (id) => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
@@ -186,8 +187,12 @@ function renderLive(data){
     ['Připraveno účetní',data.handoff_count||0,'Doklady připravené k předání','good'],
   ]
   $('workflowList').innerHTML=workflow.map((row,index)=>`<div class="workflow-row ${row[3]}"><div class="workflow-icon">${index+1}</div><div><strong>${escapeHtml(row[0])}</strong><small>${escapeHtml(row[2])}</small></div><span class="badge ${row[3]}">${integer(row[1])}</span></div>`).join('')
+  const mailbox=data.mailbox||null
+  const mailboxDetail=mailbox?.account
+    ? `fakturace@olmika.cz · poslední synchronizace ${mailbox.account.last_sync_at?new Date(mailbox.account.last_sync_at).toLocaleString('cs-CZ'):'zatím neproběhla'} · ${Number(mailbox.stats?.statuses?.queued||0)} ve frontě`
+    : 'Schránka fakturace@olmika.cz čeká na bezpečné připojení'
   const integrations=[
-    ['Pracovní e-mail','Automatické načítání příloh ještě není spuštěné','warn','Nenapojeno'],
+    ['Pracovní e-mail',mailboxDetail,mailbox?.account&&!mailbox.account.last_error?'good':'warn',mailbox?.account&&!mailbox.account.last_error?'Připojeno':'Nenapojeno'],
     ['Vytěžení dokumentů','PDF a ISDOC zatím čekají na zpracovatelský backend','warn','Nenapojeno'],
     ['Raiffeisenbank','Účet a bankovní synchronizace nejsou nastavené','warn','Nenapojeno'],
     ['Money S3','Výsledovka čeká na pravidelný datový import','warn','Nenapojeno'],
@@ -202,9 +207,12 @@ async function load(){
   setStatus('Načítám finanční přehled…')
   try{
     const period=$('periodSelect').value
-    const {data,error}=await supabase.rpc('get_finance_dashboard_v1',{p_month:`${period}-01`})
+    const [{data,error},mailbox]=await Promise.all([
+      supabase.rpc('get_finance_dashboard_v1',{p_month:`${period}-01`}),
+      mailApi('/finance/account').catch(()=>({account:null,stats:{statuses:{}}}))
+    ])
     if(error)throw error
-    renderLive(data||{})
+    renderLive({ ...(data || {}), mailbox })
     setStatus('Finanční přehled je aktuální.','success','Závazky živě · výsledovka čeká na datové propojení')
   }catch(error){
     console.error(error);renderLive({})
