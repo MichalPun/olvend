@@ -1,5 +1,5 @@
 import { supabase } from './supabase.js'
-import { financeMailboxStatus } from './mail-api.js?v=20261121finance-mail-fallback-v2'
+import { financeMailboxStatus } from './mail-api.js?v=20261121finance-mail-status-v3'
 
 const $ = (id) => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
