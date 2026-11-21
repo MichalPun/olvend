@@ -64,6 +64,24 @@ const demo = {
   aging:[['Po splatnosti',48150,'bad'],['Dnes–7 dnů',214870,'amber'],['8–14 dnů',176300,'blue'],['15–30 dnů',168000,'violet'],['Později',77000,'green']],
 }
 
+const livePreview={
+  revenue_net:529319,issued_revenue_net:266300.4,telemetry_event_count:29962,issued_document_count:22,
+  invoice_cost_net:303996.02,liability_cost:77955.01,operational_costs:381951.03,management_result:147367.97,
+  bank_net_flow:58700.74,open_amount:1995324.45,open_count:131,overdue_amount:1729431.84,overdue_count:110,
+  due_soon_amount:94206.87,due_soon_count:9,paid_amount:264923.69,paid_count:11,new_count:0,approval_count:0,
+  ready_count:44,ordered_count:28,handoff_count:0,duplicate_order_warning_count:2,liability_count:266,
+  bank_transaction_count:1617,bank_last_booked_on:'2026-11-15',revenue_ytd:6219094.42,invoice_cost_ytd:6733234.42,liability_cost_ytd:2700176.3,
+  performance:[
+    ['2025-12-01',456386,30657.15,425728.85],['2026-01-01',517872,862518.99,-344646.99],
+    ['2026-02-01',515862,702720.75,-186858.75],['2026-03-01',582899,1344293.39,-761394.39],
+    ['2026-04-01',474336,793609.57,-319273.57],['2026-05-01',519455,656292.13,-136837.13],
+    ['2026-06-01',581612,891657.62,-310045.62],['2026-07-01',553950.35,944912,-390961.65],
+    ['2026-08-01',562853,801240.35,-238387.35],['2026-09-01',654954,1316184.76,-661230.76],
+    ['2026-10-01',725982.07,738030.13,-12048.06],['2026-11-01',529319,381951.03,147367.97],
+  ],
+  bank_flow:[['2026-05-01',4803.22],['2026-06-01',-47109.68],['2026-07-01',-86810.87],['2026-08-01',-75135.02],['2026-09-01',19177.11],['2026-10-01',58037.71],['2026-11-01',58700.74]],
+}
+
 let detailsCollapsed = false
 let resultRows = []
 
@@ -85,7 +103,8 @@ function renderPerformanceChart(rows){
   const step=plotW/rows.length,barW=Math.min(19,step*.28),y=(value)=>top+plotH-(value/max)*plotH
   const grid=[0,.25,.5,.75,1].map((ratio)=>{const value=max*ratio,py=y(value);return `<line x1="${left}" y1="${py}" x2="${width-right}" y2="${py}" class="chart-grid"/><text x="${left-9}" y="${py+4}" text-anchor="end" class="chart-axis">${Math.round(value/100)/10} mil.</text>`}).join('')
   const bars=rows.map((row,index)=>{const x=left+index*step+step/2;return `<rect x="${x-barW-2}" y="${y(row[1])}" width="${barW}" height="${top+plotH-y(row[1])}" rx="3" class="chart-bar revenue"><title>${escapeHtml(row[0])}: tržby ${compactMoney(row[1]*1000)}</title></rect><rect x="${x+2}" y="${y(row[2])}" width="${barW}" height="${top+plotH-y(row[2])}" rx="3" class="chart-bar costs"><title>${escapeHtml(row[0])}: náklady ${compactMoney(row[2]*1000)}</title></rect><text x="${x}" y="${height-18}" text-anchor="middle" class="chart-axis">${escapeHtml(row[0])}</text>`}).join('')
-  const resultMax=Math.max(...rows.map((row)=>row[3]),1)*1.25,resultY=(value)=>top+plotH-(value/resultMax)*plotH
+  const resultValues=rows.map((row)=>row[3]),resultMin=Math.min(0,...resultValues)*1.15,resultMax=Math.max(0,...resultValues)*1.15||1
+  const resultY=(value)=>top+plotH-((value-resultMin)/(resultMax-resultMin||1))*plotH
   const points=rows.map((row,index)=>`${left+index*step+step/2},${resultY(row[3])}`).join(' ')
   const dots=rows.map((row,index)=>`<circle cx="${left+index*step+step/2}" cy="${resultY(row[3])}" r="3.5" class="chart-dot"><title>${escapeHtml(row[0])}: výsledek ${compactMoney(row[3]*1000)}</title></circle>`).join('')
   $('performanceChart').innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Tržby, náklady a provozní výsledek za posledních dvanáct měsíců">${grid}${bars}<polyline points="${points}" class="chart-line"/>${dots}</svg>`
@@ -93,12 +112,12 @@ function renderPerformanceChart(rows){
 
 function renderCashflow(rows){
   const width=720,height=220,left=48,right=20,top=20,bottom=42,plotW=width-left-right,plotH=height-top-bottom
-  const values=rows.map((row)=>row[1]),min=Math.min(...values)*.9,max=Math.max(...values)*1.08
+  const values=rows.map((row)=>row[1]),rawMin=Math.min(0,...values),rawMax=Math.max(0,...values),padding=Math.max((rawMax-rawMin)*.08,1),min=rawMin-padding,max=rawMax+padding
   const x=(index)=>left+(index/(rows.length-1))*plotW,y=(value)=>top+plotH-((value-min)/(max-min))*plotH
   const points=rows.map((row,index)=>`${x(index)},${y(row[1])}`).join(' '),area=`${left},${top+plotH} ${points} ${width-right},${top+plotH}`
   const grid=[0,.5,1].map((ratio)=>{const value=min+(max-min)*ratio,py=y(value);return `<line x1="${left}" y1="${py}" x2="${width-right}" y2="${py}" class="chart-grid"/><text x="${left-8}" y="${py+4}" text-anchor="end" class="chart-axis">${(value/1000).toLocaleString('cs-CZ',{maximumFractionDigits:1})}m</text>`}).join('')
   const labels=rows.map((row,index)=>`<text x="${x(index)}" y="${height-16}" text-anchor="middle" class="chart-axis">${escapeHtml(row[0])}</text><circle cx="${x(index)}" cy="${y(row[1])}" r="4" class="cash-dot"><title>${escapeHtml(row[0])}: ${compactMoney(row[1]*1000)}</title></circle>`).join('')
-  $('cashflowChart').innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Výhled zůstatku hotovosti na osm týdnů">${grid}<polygon points="${area}" class="cash-area"/><polyline points="${points}" class="cash-line"/>${labels}</svg>`
+  $('cashflowChart').innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Čistý bankovní tok po měsících">${grid}<polygon points="${area}" class="cash-area"/><polyline points="${points}" class="cash-line"/>${labels}</svg>`
 }
 
 function renderBridge(rows){
@@ -136,9 +155,9 @@ function render(data){
   $('metricResultNote').textContent=`Plán ${money(company.plan_result)} · +${money(company.operating_result-company.plan_result)}`
   $('metricCash').textContent=money(company.cash)
   $('resultVsPlan').textContent=`+${money(company.operating_result-company.plan_result)} proti plánu`
-  $('metricOpen').textContent=money(data.open_amount);$('metricOpenNote').textContent=`${integer(data.open_count)} neuhrazených faktur`
-  $('metricOverdue').textContent=money(data.overdue_amount);$('metricOverdueNote').textContent=`${integer(data.overdue_count)} faktury po splatnosti`
-  $('metricDueSoon').textContent=money(data.due_soon_amount);$('metricDueSoonNote').textContent=`${integer(data.due_soon_count)} faktur do 7 dnů`
+  $('metricOpen').textContent=money(data.open_amount);$('metricOpenNote').textContent=`${integer(data.open_count)} otevřených faktur a závazků`
+  $('metricOverdue').textContent=money(data.overdue_amount);$('metricOverdueNote').textContent=`${integer(data.overdue_count)} dokladů po splatnosti`
+  $('metricDueSoon').textContent=money(data.due_soon_amount);$('metricDueSoonNote').textContent=`${integer(data.due_soon_count)} dokladů do 7 dnů`
   $('metricPaid').textContent=money(data.paid_amount);$('metricPaidNote').textContent=`${integer(data.paid_count)} spárovaných úhrad`
   $('metricCosts').textContent=money(data.cost_net)
   renderPerformanceChart(data.performance);renderCashflow(data.cashflow);renderBridge(data.bridge);renderAttention(data.attention);renderResultTable(data.pnl)
@@ -157,23 +176,56 @@ function emptyBlock(id,text){
 
 function renderLive(data){
   resultRows=[]
-  ;['trendRevenue','trendGross','trendOpex','resultTrend','trendCash'].forEach((id)=>{$(id).textContent='Čeká na data';$(id).className='trend info'})
-  $('sheetFileName').textContent='Čeká na import účetních dat';$('sheetStatus').innerHTML='<span class="status-dot"></span>Bez importovaných dat'
-  $('metricRevenue').textContent='—';$('metricRevenueNote').textContent='Zdroj tržeb čeká na propojení'
-  $('metricGrossProfit').textContent='—';$('metricMarginNote').textContent='Marže se zobrazí po propojení výnosů a nákladů'
-  $('metricOpex').textContent='—';$('metricOperatingResult').textContent='—';$('metricResultNote').textContent='Výsledovka čeká na import z účetnictví'
-  $('metricCash').textContent='—';$('resultVsPlan').textContent='Čeká na data'
-  $('metricOpen').textContent=money(data.open_amount);$('metricOpenNote').textContent=`${integer(data.open_count)} neuhrazených faktur`
-  $('metricOverdue').textContent=money(data.overdue_amount);$('metricOverdueNote').textContent=`${integer(data.overdue_count)} faktury po splatnosti`
-  $('metricDueSoon').textContent=money(data.due_soon_amount);$('metricDueSoonNote').textContent=`${integer(data.due_soon_count)} faktur do 7 dnů`
+  const revenue=Number(data.revenue_net||0),issued=Number(data.issued_revenue_net||0),costs=Number(data.operational_costs||0)
+  const managementResult=Number(data.management_result||0),bankFlow=Number(data.bank_net_flow||0)
+  const monthLabel=(value)=>new Intl.DateTimeFormat('cs-CZ',{month:'short'}).format(new Date(`${String(value).slice(0,10)}T12:00:00`)).replace('.','')
+  const performance=(data.performance||[]).map((row)=>[monthLabel(row[0]),Number(row[1]||0)/1000,Number(row[2]||0)/1000,Number(row[3]||0)/1000])
+  const previousRevenue=performance.length>1?performance[performance.length-2][1]*1000:0
+  const change=previousRevenue?((revenue-previousRevenue)/Math.abs(previousRevenue))*100:null
+  $('trendRevenue').textContent=change==null?'Telemetrie':`${change>=0?'+':''}${change.toLocaleString('cs-CZ',{maximumFractionDigits:1})} %`
+  $('trendRevenue').className=`trend ${change==null?'info':change>=0?'good':'warn'}`
+  $('trendGross').textContent='Vystavené';$('trendGross').className='trend info'
+  $('trendOpex').textContent='Money + faktury';$('trendOpex').className='trend warn'
+  $('resultTrend').textContent='Orientační';$('resultTrend').className=`trend ${managementResult>=0?'good':'warn'}`
+  $('trendCash').textContent='Bankovní výpis';$('trendCash').className=`trend ${bankFlow>=0?'good':'warn'}`
+  $('sheetFileName').textContent=`OLVEND_provozni_pohled_${$('periodSelect').value}.xlsx`;$('sheetStatus').innerHTML='<span class="status-dot"></span>Živá provozní data'
+  $('metricRevenue').textContent=money(revenue);$('metricRevenueNote').textContent=`${integer(data.telemetry_event_count)} telemetrických záznamů · bez odhadovaných cen`
+  $('metricGrossProfit').textContent=money(issued);$('metricMarginNote').textContent=`${integer(data.issued_document_count)} dokladů · kontrolní údaj, nepřičítá se znovu`
+  $('metricOpex').textContent=money(costs);$('metricOperatingResult').textContent=money(managementResult);$('metricResultNote').textContent='Telemetrické tržby − přijaté faktury − ostatní závazky'
+  $('metricCash').textContent=money(bankFlow);$('resultVsPlan').textContent='Bez MD/D · provozní pohled'
+  $('costPeriodBadge').textContent=new Intl.DateTimeFormat('cs-CZ',{month:'long'}).format(new Date(`${$('periodSelect').value}-01T12:00:00`)).replace(/^./,c=>c.toUpperCase())
+  $('metricOpen').textContent=money(data.open_amount);$('metricOpenNote').textContent=`${integer(data.open_count)} otevřených faktur a závazků`
+  $('metricOverdue').textContent=money(data.overdue_amount);$('metricOverdueNote').textContent=`${integer(data.overdue_count)} dokladů po splatnosti`
+  $('metricDueSoon').textContent=money(data.due_soon_amount);$('metricDueSoonNote').textContent=`${integer(data.due_soon_count)} dokladů do 7 dnů`
   $('metricPaid').textContent=money(data.paid_amount);$('metricPaidNote').textContent=`${integer(data.paid_count)} spárovaných úhrad`
-  $('metricCosts').textContent=money(data.cost_net)
-  emptyBlock('performanceChart','Vývoj firmy se zobrazí po pravidelném importu výsledovky z účetnictví.')
-  emptyBlock('resultBridge','Rozklad výsledku zatím nemá připojený účetní zdroj.')
-  emptyBlock('cashflowChart','Výhled se doplní po připojení banky a splatností pohledávek.')
-  emptyBlock('attentionList','Aktuálně nejsou dostupná propojená manažerská upozornění.')
-  $('resultTableBody').innerHTML='<tr><td colspan="9"><div class="empty">Výsledovka zatím nemá importovaná účetní data.</div></td></tr>'
-  emptyBlock('costChart','Rozpad nákladů vznikne z prvních zařazených přijatých faktur.')
+  $('metricCosts').textContent=money(costs)
+  if(performance.length)renderPerformanceChart(performance);else emptyBlock('performanceChart','Pro vybrané období nejsou dostupné telemetrické tržby.')
+  renderBridge([
+    ['Tržby z automatů',revenue,'total'],
+    ['Přijaté faktury',-Number(data.invoice_cost_net||0),'negative'],
+    ['Ostatní závazky',-Number(data.liability_cost||0),'negative'],
+    ['Manažerské saldo',managementResult,'result'],
+  ])
+  const bankRows=(data.bank_flow||[]).map((row)=>[monthLabel(row[0]),Number(row[1]||0)/1000])
+  if(bankRows.length)renderCashflow(bankRows);else emptyBlock('cashflowChart','Bankovní výpis zatím nemá data pro zvolené období.')
+  const attention=[]
+  if(Number(data.duplicate_order_warning_count||0))attention.push(['Možná duplicitní platba',`${integer(data.duplicate_order_warning_count)} faktury v příkazu`,'Na faktuře už je plná bankovní úhrada; příkaz je potřeba před odesláním prověřit.','bad'])
+  if(Number(data.overdue_count||0))attention.push(['Po splatnosti',`${integer(data.overdue_count)} dokladů · ${money(data.overdue_amount)}`,'Otevřené přijaté faktury a závazky po datu splatnosti.','warn'])
+  if(Number(data.ordered_count||0))attention.push(['Čeká na banku',`${integer(data.ordered_count)} dokladů`,'Příkaz existuje, ale úhrada zatím není potvrzená výpisem.','info'])
+  attention.push(['Účetní stav','Oddělený','Tento pohled neobsahuje MD/D ani nenahrazuje zaúčtování v Money S3.','good'])
+  renderAttention(attention)
+  const ytdCosts=Number(data.invoice_cost_ytd||0)+Number(data.liability_cost_ytd||0),ytdResult=Number(data.revenue_ytd||0)-ytdCosts
+  const liveRows=[
+    ['Tržby z automatů','group',revenue,Number(data.revenue_ytd||0)],
+    ['Vystavené doklady (kontrola)','detail',issued,null],
+    ['Přijaté faktury','detail',-Number(data.invoice_cost_net||0),-Number(data.invoice_cost_ytd||0)],
+    ['Ostatní závazky','detail',-Number(data.liability_cost||0),-Number(data.liability_cost_ytd||0)],
+    ['Manažerské saldo','result',managementResult,ytdResult],
+  ]
+  $('resultTableBody').innerHTML=liveRows.map((row,index)=>`<tr class="${row[1]}"><td class="row-index">${index+1}</td><td class="sticky-label"><span class="sheet-row-label">${row[1]==='detail'?'<i></i>':''}${escapeHtml(row[0])}</span></td><td class="money">—</td><td class="money">${money(row[2])}</td><td class="money">—</td><td class="money">—</td><td class="money">${row[3]==null?'—':money(row[3])}</td><td class="money">—</td><td class="money">—</td></tr>`).join('')
+  const liveCosts=[['Přijaté faktury bez DPH',Number(data.invoice_cost_net||0)],['Ostatní závazky',Number(data.liability_cost||0)]].filter((row)=>row[1]>.01)
+  const maxCost=Math.max(...liveCosts.map((row)=>row[1]),1)
+  $('costChart').innerHTML=liveCosts.length?liveCosts.map((row)=>`<div class="chart-row"><div class="chart-label"><span>${escapeHtml(row[0])}</span><strong>${money(row[1])}</strong></div><div class="bar"><span style="width:${row[1]/maxCost*100}%"></span></div></div>`).join(''):'<div class="empty">Pro vybrané období nejsou nákladové doklady.</div>'
   const open=Number(data.open_amount||0),overdue=Number(data.overdue_amount||0),soon=Number(data.due_soon_amount||0)
   const aging=[['Po splatnosti',overdue,'bad'],['Dnes–7 dnů',soon,'amber'],['Později',Math.max(0,open-overdue-soon),'blue']]
   const maxAging=Math.max(...aging.map((row)=>row[1]),1)
@@ -194,8 +246,8 @@ function renderLive(data){
   const integrations=[
     ['Pracovní e-mail',mailboxDetail,mailbox?.account&&!mailbox.account.last_error?'good':'warn',mailbox?.account&&!mailbox.account.last_error?'Připojeno':'Nenapojeno'],
     ['Vytěžení dokumentů','PDF a ISDOC zatím čekají na zpracovatelský backend','warn','Nenapojeno'],
-    ['Raiffeisenbank','Účet a bankovní synchronizace nejsou nastavené','warn','Nenapojeno'],
-    ['Money S3','Výsledovka čeká na pravidelný datový import','warn','Nenapojeno'],
+    ['Raiffeisenbank',data.bank_transaction_count?`${integer(data.bank_transaction_count)} pohybů · poslední ${data.bank_last_booked_on||'—'}`:'Výpis zatím není importovaný',data.bank_transaction_count?'good':'warn',data.bank_transaction_count?'Výpis načten':'Nenapojeno'],
+    ['Money S3',data.liability_count?`${integer(data.liability_count)} ostatních závazků v provozní evidenci`:'Čeká na import závazků',data.liability_count?'good':'warn',data.liability_count?'Čtení':'Nenapojeno'],
   ]
   $('integrationList').innerHTML=integrations.map((row)=>`<div class="integration"><div><strong>${escapeHtml(row[0])}</strong><span>${escapeHtml(row[1])}</span></div><span class="badge ${row[2]}">${escapeHtml(row[3])}</span></div>`).join('')
 }
@@ -203,12 +255,12 @@ function renderLive(data){
 function missingSchema(error){return /finance_received|schema cache|does not exist|could not find/i.test(String(error?.message||error||''))}
 
 async function load(){
-  if(preview){render(demo);setStatus('Modernizovaný finanční cockpit je připravený k prohlédnutí.','success','Ukázková data · propojený model výsledku firmy');return}
+  if(preview){renderLive(livePreview);setStatus('Modernizovaný finanční cockpit je připravený k prohlédnutí.','success','Ukázková data · telemetrie, doklady a banka odděleně');return}
   setStatus('Načítám finanční přehled…')
   try{
     const period=$('periodSelect').value
     const [{data,error},mailbox]=await Promise.all([
-      supabase.rpc('get_finance_dashboard_v1',{p_month:`${period}-01`}),
+      supabase.rpc('get_finance_dashboard_v2',{p_month:`${period}-01`}),
       financeMailboxStatus().catch((error)=>({account:null,stats:{statuses:{}},unavailable:true,api_error:error.message}))
     ])
     if(error)throw error
@@ -227,5 +279,8 @@ $('exportResultBtn').addEventListener('click',()=>setStatus('Export výsledovky 
 document.querySelectorAll('.sheet-tabs button').forEach((button)=>button.addEventListener('click',()=>{document.querySelectorAll('.sheet-tabs button').forEach((item)=>item.classList.toggle('active',item===button));$('formulaOutput').textContent=button.textContent==='Výsledovka'?'= Tržby − přímé náklady − provozní náklady':`${button.textContent} · připravovaný list`}))
 initializePeriods()
 if(window.OlvendSidebar){window.OlvendSidebar.initMobileNav($('mobileNavShell'));window.OlvendSidebar.setActive('finance-overview')}
-if(preview)document.querySelectorAll('a[href="received-invoices.html"]').forEach((link)=>{link.href='received-invoices.html?preview=1'})
+if(preview){
+  document.querySelectorAll('a[href="received-invoices.html"]').forEach((link)=>{link.href='received-invoices.html?preview=1'})
+  document.querySelectorAll('a[href="liabilities.html"]').forEach((link)=>{link.href='liabilities.html?preview=1'})
+}
 load()
