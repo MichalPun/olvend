@@ -29,6 +29,52 @@ function amount(value) {
   return Number.isFinite(result) ? Math.round(result * 100) / 100 : null
 }
 
+const OLMIKA_COMPANY_ID = '04579968'
+const OLMIKA_TAX_ID = 'CZ04579968'
+
+function cleanedDocumentNumber(value) {
+  const candidate=compact(value).replace(/\.(pdf|isdocx?|xml)$/i,'').replace(/^[#:]+|[.,;:]+$/g,'')
+  if (!candidate || !/\d/.test(candidate)) return null
+  const key=normalizeMatchKey(candidate)
+  if ([normalizeMatchKey(OLMIKA_COMPANY_ID),normalizeMatchKey(OLMIKA_TAX_ID)].includes(key)) return null
+  return /^(dodavatel|odberatel|supplier|customer|olmika)$/i.test(key) ? null : candidate
+}
+
+function moneyAfterLabels(text, labels) {
+  for (const label of labels) {
+    const regex=new RegExp(`${label}[^\\d-]{0,36}(-?\\d[\\d \\u00a0.]*[,.]\\d{2})\\s*(?:Kč|CZK|EUR|USD)?`,'i')
+    const raw=text.match(regex)?.[1]
+    if(!raw)continue
+    const parsed=amount(raw)
+    if (parsed!=null) return parsed
+  }
+  return null
+}
+
+function supplierName(text) {
+  const lines=String(text||'').split(/\n|\t/).map(compact).filter(Boolean)
+  const own=/\bOLMIKA\b/i
+  const usable=value=>{
+    const clean=compact(value).replace(/^(dodavatel|supplier|prod[aá]vaj[ií]c[ií])\s*[:\-]?\s*/i,'')
+    if (!clean || own.test(clean) || /^(i[čc]o?|di[čc]|adresa|s[ií]dlo|bankovn[ií]|telefon|e-?mail)\b/i.test(clean)) return null
+    return /(s\.?\s*r\.?\s*o\.?|a\.?\s*s\.?|spol\.?\s+s\.?\s*r\.?\s*o\.?|k\.?\s*s\.?|v\.?\s*o\.?\s*s\.?|gmbh|ltd\.?|limited|inc\.?|se)(?:$|[\s,])/i.test(clean) ? clean : null
+  }
+  for (let index=0;index<lines.length;index+=1) {
+    if (!/^(dodavatel|supplier|prod[aá]vaj[ií]c[ií])\b/i.test(lines[index])) continue
+    const inline=usable(lines[index])
+    if (inline) return inline
+    for (const line of lines.slice(index+1,index+6)) { const candidate=usable(line); if(candidate)return candidate }
+  }
+  for (const line of lines.slice(0,Math.min(lines.length,60))) { const candidate=usable(line); if(candidate)return candidate }
+  return null
+}
+
+function supplierIdentifiers(text) {
+  const companyIds=[...String(text||'').matchAll(/\b(?:I[ČC]O?|ICO)\s*[:#]?\s*(\d{8})\b/gi)].map(match=>match[1]).filter(value=>value!==OLMIKA_COMPANY_ID)
+  const taxIds=[...String(text||'').matchAll(/\b(?:DI[ČC]|VAT(?:\s+ID)?)\s*[:#]?\s*((?:CZ)?\d{8,12}|[A-Z]{2}[A-Z0-9]{8,14})\b/gi)].map(match=>match[1].replace(/\s/g,'').toUpperCase()).filter(value=>value!==OLMIKA_TAX_ID)
+  return {supplier_company_id:companyIds[0]||null,supplier_tax_id:taxIds[0]||null}
+}
+
 function labeledDate(text, labels) {
   for (const label of labels) {
     const match = text.match(new RegExp(`${label}[^\\d]{0,24}(\\d{1,2}[.\\/-]\\d{1,2}[.\\/-]\\d{2,4})`,'i'))
@@ -56,11 +102,11 @@ export function classifyDocument(text, context = {}) {
   if (/upom[ií]n|reminder|v[yý]zva\s+k\s+[uú]hrad|overdue\s+notice/i.test(source)) return 'reminder'
   if (/dobropis|credit\s+note/i.test(source)) return 'credit_note'
   if (/z[aá]lohov[aá]\s+faktura|proforma/i.test(source)) return 'advance_invoice'
-  if (/dodac[ií]\s+list|delivery\s+note/i.test(source)) return 'delivery_note'
   if (/rozvaha|v[yý]sledovka|da[nň]ov[eé]\s+p[řr]izn[aá]n[ií]|\bDPPO\b|[uú][čc]etn[ií]\s+z[aá]v[eě]rka/i.test(source)) return 'accounting_report'
   if (/r[aá]mcov[aá]\s+smlouva|smlouva\s+o|contract/i.test(source)) return 'contract'
   if (/spl[aá]tkov[yý]\s+kalend[aá][řr]|payment\s+schedule/i.test(source)) return 'payment_schedule'
-  if (/faktura|invoice|da[nň]ov[yý]\s+doklad/i.test(source)) return 'invoice'
+  if (/faktura|invoice|da[nň]ov[yý]\s+doklad/i.test(source.slice(0,1800))) return 'invoice'
+  if (/dodac[ií]\s+list|delivery\s+note/i.test(source)) return 'delivery_note'
   return 'other'
 }
 
@@ -118,34 +164,45 @@ export function isLikelyInlineImage(row) {
 export function extractInvoiceFields(text, context = {}) {
   const source = compact(String(text || '').replace(/\r/g,'\n').replace(/\n{2,}/g,'\n'))
   const documentClass=classifyDocument(source,context)
-  const documentNumber = firstMatch(source,[
+  const extractedDocumentNumber = firstMatch(source,[
     /(?:faktura|daňový\s+doklad)(?:\s+(?:vydan[aá]|přijat[aá]))?(?:\s+(?:č(?:íslo)?\.?|number|no\.?))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:invoice)(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:číslo\s+dokladu|doklad\s+č\.?)\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i
   ]) || firstMatch(`${context.file_name || ''} ${context.subject || ''}`,[
-    /(?:faktura|invoice)[^A-Z0-9]{0,20}([A-Z0-9][A-Z0-9./_-]{4,35})/i
+    /(?:faktura|invoice)[^A-Z0-9]{0,20}([A-Z0-9][A-Z0-9./_-]{3,35})/i,
+    /\b(\d{6,14}(?:[\/_-]\d{1,8})?)\b/i
   ])
+  const documentNumber=cleanedDocumentNumber(extractedDocumentNumber)
   const variableSymbol = digits(firstMatch(source,[/variabiln[ií]\s+symbol\s*[:#]?\s*([0-9][0-9 .\/-]{2,20})/i,/\bVS\s*[:#]\s*([0-9][0-9 .\/-]{2,20})/i])).slice(0,10) || null
   const iban = firstMatch(source,[/\bIBAN\s*[:#]?\s*([A-Z]{2}\s*[0-9A-Z](?:\s*[0-9A-Z]){13,32})/i])?.replace(/\s/g,'').toUpperCase() || null
   const account = firstMatch(source,[/(?:číslo\s+účtu|bankovní\s+účet|účet)\s*[:#]?\s*((?:\d{1,6}-)?\d{2,10}\s*\/\s*\d{4})/i])?.replace(/\s/g,'') || null
   const totalAmount = labeledAmount(source)
+  let netAmount=moneyAfterLabels(source,['celkem\\s+bez\\s+dph','z[aá]klad\\s+dan[ěe]\\s+celkem','tax\\s+exclusive\\s+amount','subtotal'])
+  let vatAmount=moneyAfterLabels(source,['dph\\s+celkem','da[nň]\\s+celkem','celkov[aá]\\s+v[yý][šs]e\\s+dph','tax\\s+amount','vat\\s+total'])
+  if (totalAmount!=null&&netAmount!=null&&vatAmount==null) vatAmount=Math.round((totalAmount-netAmount)*100)/100
+  if (totalAmount!=null&&vatAmount!=null&&netAmount==null) netAmount=Math.round((totalAmount-vatAmount)*100)/100
+  if (totalAmount!=null&&netAmount!=null&&vatAmount!=null&&Math.abs(netAmount+vatAmount-totalAmount)>1) { netAmount=null;vatAmount=null }
   const currency = /\bEUR\b|€/.test(source) ? 'EUR' : /\bUSD\b|\$/.test(source) ? 'USD' : 'CZK'
   const issueDate = labeledDate(source,['datum\\s+vystaven[ií]','vystaveno','issue\\s+date'])
   const taxableDate = labeledDate(source,['datum\\s+uskutečněn[ií].{0,12}plněn[ií]','duzp','tax\\s+date'])
   const dueDate = labeledDate(source,['datum\\s+splatnosti','splatnost','due\\s+date'])
   const documentType = documentClass==='credit_note'?'credit_note':documentClass==='advance_invoice'?'advance_invoice':documentClass==='invoice'?'invoice':'other'
+  const supplier=supplierName(String(text||'')),identifiers=supplierIdentifiers(source)
   const warnings = []
+  if (!supplier&&['invoice','credit_note','advance_invoice'].includes(documentClass)) warnings.push('Chybí dodavatel')
   if (!documentNumber) warnings.push('Chybí číslo dokladu')
   if (totalAmount == null) warnings.push('Chybí celková částka')
+  if (totalAmount!=null&&netAmount==null&&vatAmount==null&&['invoice','credit_note'].includes(documentClass)) warnings.push('Základ a DPH je potřeba ověřit')
   if (!account && !iban) warnings.push('Chybí bankovní účet')
   if (!dueDate) warnings.push('Chybí datum splatnosti')
-  const recognized = [documentNumber,totalAmount,account||iban,variableSymbol,dueDate].filter(value=>value!=null).length
+  const recognized = [documentNumber,totalAmount,account||iban,variableSymbol,dueDate,supplier,netAmount!=null||vatAmount!=null,identifiers.supplier_company_id||identifiers.supplier_tax_id].filter(value=>value!=null&&value!==false).length
   return {
     document_number:documentNumber,document_type:documentType,document_class:documentClass,
     reference_numbers:[...new Set([documentNumber,variableSymbol,...referenceNumbers(`${source} ${context.file_name||''} ${context.subject||''}`)].filter(Boolean))],
     issue_date:issueDate,taxable_date:taxableDate,due_date:dueDate,
-    currency,total_amount:totalAmount,bank_account:account,iban,variable_symbol:variableSymbol,
-    confidence:Math.min(95,35 + recognized * 12),warnings,text_excerpt:source.slice(0,8000)
+    supplier_name:supplier,...identifiers,
+    currency,net_amount:netAmount,vat_amount:vatAmount,total_amount:totalAmount,bank_account:account,iban,variable_symbol:variableSymbol,
+    confidence:Math.min(98,25 + recognized * 10),warnings,text_excerpt:source.slice(0,12000)
   }
 }
 
