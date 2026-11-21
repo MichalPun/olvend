@@ -34,12 +34,13 @@ export async function mailApi(path, options = {}) {
 }
 
 export async function financeMailboxStatus() {
+  const { data, error } = await supabase.rpc('get_finance_mailbox_status_v1')
+  if (!error) return { ...(data || {}), verified_by: 'database' }
+
   try {
-    return await mailApi('/finance/account')
+    return { ...(await mailApi('/finance/account')), verified_by: 'mail_service', database_error: error.message }
   } catch (apiError) {
-    const { data, error } = await supabase.rpc('get_finance_mailbox_status_v1')
-    if (error) throw apiError
-    return { ...(data || {}), degraded: true, api_error: apiError.message }
+    throw new Error(`Stav schránky nelze ověřit: ${error.message || apiError.message}`)
   }
 }
 
