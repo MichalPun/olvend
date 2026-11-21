@@ -1,4 +1,4 @@
-import { mailApi } from './mail-api.js'
+import { financeMailboxStatus, mailApi } from './mail-api.js?v=20261121finance-mail-fallback-v2'
 
 const $ = id => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
@@ -27,7 +27,7 @@ function render(result={}){
 }
 async function load(){
   if(preview){render({account:{email_address:'fakturace@olmika.cz',last_sync_at:new Date().toISOString(),imap_host:'imap.mail.webnode.com',imap_port:993,imap_secure:true,sync_history_days:90},stats:{statuses:{queued:4,invoice_created:12}}});setStatus('Vývojový náhled napojení je připravený.','success','Ukázkový stav · bez uložení hesla');return}
-  try{const result=await mailApi('/finance/account');render(result);setStatus(result.account?'Fakturační schránka je připojená.':'Schránka zatím není připojená.',result.account?'success':'','Automatická kontrola každých 5 minut')}
+  try{const result=await financeMailboxStatus();render(result);setStatus(result.account?'Fakturační schránka je připojená.':'Schránka zatím není připojená.',result.account?'success':'',result.degraded?'Stav ověřen bezpečně z databáze · automatická kontrola běží':'Automatická kontrola každých 5 minut')}
   catch(error){setStatus(`Stav schránky se nepodařilo načíst: ${error.message}`,'error')}
 }
 async function testConnection(){
