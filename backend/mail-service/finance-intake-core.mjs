@@ -51,6 +51,63 @@ function labeledAmount(text) {
   return null
 }
 
+export function classifyDocument(text, context = {}) {
+  const source = `${context.file_name || ''} ${context.subject || ''} ${text || ''}`
+  if (/upom[ií]n|reminder|v[yý]zva\s+k\s+[uú]hrad|overdue\s+notice/i.test(source)) return 'reminder'
+  if (/dobropis|credit\s+note/i.test(source)) return 'credit_note'
+  if (/z[aá]lohov[aá]\s+faktura|proforma/i.test(source)) return 'advance_invoice'
+  if (/dodac[ií]\s+list|delivery\s+note/i.test(source)) return 'delivery_note'
+  if (/rozvaha|v[yý]sledovka|da[nň]ov[eé]\s+p[řr]izn[aá]n[ií]|\bDPPO\b|[uú][čc]etn[ií]\s+z[aá]v[eě]rka/i.test(source)) return 'accounting_report'
+  if (/r[aá]mcov[aá]\s+smlouva|smlouva\s+o|contract/i.test(source)) return 'contract'
+  if (/spl[aá]tkov[yý]\s+kalend[aá][řr]|payment\s+schedule/i.test(source)) return 'payment_schedule'
+  if (/faktura|invoice|da[nň]ov[yý]\s+doklad/i.test(source)) return 'invoice'
+  return 'other'
+}
+
+function referenceNumbers(text) {
+  const matches = []
+  const patterns = [
+    /(?:faktura|invoice|doklad)(?:\s+(?:č(?:íslo)?\.?|number|no\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/gi,
+    /(?:variabiln[ií]\s+symbol|\bVS)\s*[:#]?\s*([0-9][0-9 .\/-]{2,20})/gi
+  ]
+  for (const pattern of patterns) for (const match of String(text || '').matchAll(pattern)) if (match[1]) matches.push(compact(match[1]).replace(/[.,;:]$/,''))
+  return [...new Set(matches)]
+}
+
+const headerKey = value => normalizeMatchKey(value)
+const cellAmount = value => amount(String(value || '').replace(/\s*(Kč|CZK|EUR|USD)\s*$/i,''))
+
+export function extractInvoiceLineItems(tablePages = []) {
+  const result=[]
+  const tables=[]
+  for (const page of tablePages || []) for (const table of page?.tables || []) if (Array.isArray(table)) tables.push(table)
+  for (const table of tables) {
+    const headerIndex=table.findIndex(row=>{const keys=(row||[]).map(headerKey);return keys.some(key=>/popis|nazev|polozka|description/.test(key))&&keys.some(key=>/mnozstvi|qty|quantity|pocet/.test(key))})
+    if (headerIndex<0) continue
+    const headers=table[headerIndex].map(headerKey)
+    const indexOf=patterns=>headers.findIndex(key=>patterns.some(pattern=>pattern.test(key)))
+    const descriptionIndex=indexOf([/popis/,/nazev/,/polozka/,/description/])
+    const quantityIndex=indexOf([/mnozstvi/,/qty/,/quantity/,/pocet/])
+    const unitIndex=indexOf([/^mj$/,/^jednotka$/,/^unit$/])
+    const unitPriceIndex=indexOf([/jednotk.*cena/,/cena.*mj/,/unitprice/,/^cena$/])
+    const totalIndex=indexOf([/celkem/,/total/])
+    const codeIndex=indexOf([/kod/,/code/,/artikl/])
+    const eanIndex=indexOf([/ean/,/barcode/])
+    for (const row of table.slice(headerIndex+1)) {
+      const description=compact(row?.[descriptionIndex])
+      const quantity=cellAmount(row?.[quantityIndex])
+      if (!description || quantity==null || quantity<=0) continue
+      const item={description,quantity,unit_code:unitIndex>=0?compact(row?.[unitIndex])||null:null,unit_price:unitPriceIndex>=0?cellAmount(row?.[unitPriceIndex]):null,total_amount:totalIndex>=0?cellAmount(row?.[totalIndex]):null,supplier_item_code:codeIndex>=0?compact(row?.[codeIndex])||null:null,ean:eanIndex>=0?digits(row?.[eanIndex])||null:null}
+      if (!item.ean) {
+        const inlineEan=description.match(/\b(\d{8}|\d{12,14})\b/)?.[1]
+        if (inlineEan)item.ean=inlineEan
+      }
+      result.push(item)
+    }
+  }
+  return result.slice(0,250)
+}
+
 export function isLikelyInlineImage(row) {
   const name = String(row?.file_name || '').toLowerCase()
   const size = Number(row?.size_bytes || 0)
@@ -60,6 +117,7 @@ export function isLikelyInlineImage(row) {
 
 export function extractInvoiceFields(text, context = {}) {
   const source = compact(String(text || '').replace(/\r/g,'\n').replace(/\n{2,}/g,'\n'))
+  const documentClass=classifyDocument(source,context)
   const documentNumber = firstMatch(source,[
     /(?:faktura|daňový\s+doklad)(?:\s+(?:vydan[aá]|přijat[aá]))?(?:\s+(?:č(?:íslo)?\.?|number|no\.?))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
     /(?:invoice)(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9./_-]{3,35})/i,
@@ -75,7 +133,7 @@ export function extractInvoiceFields(text, context = {}) {
   const issueDate = labeledDate(source,['datum\\s+vystaven[ií]','vystaveno','issue\\s+date'])
   const taxableDate = labeledDate(source,['datum\\s+uskutečněn[ií].{0,12}plněn[ií]','duzp','tax\\s+date'])
   const dueDate = labeledDate(source,['datum\\s+splatnosti','splatnost','due\\s+date'])
-  const documentType = /dobropis|credit\s+note/i.test(source) ? 'credit_note' : /z[aá]lohov[aá]\s+faktura|proforma/i.test(source) ? 'advance_invoice' : 'invoice'
+  const documentType = documentClass==='credit_note'?'credit_note':documentClass==='advance_invoice'?'advance_invoice':documentClass==='invoice'?'invoice':'other'
   const warnings = []
   if (!documentNumber) warnings.push('Chybí číslo dokladu')
   if (totalAmount == null) warnings.push('Chybí celková částka')
@@ -83,14 +141,16 @@ export function extractInvoiceFields(text, context = {}) {
   if (!dueDate) warnings.push('Chybí datum splatnosti')
   const recognized = [documentNumber,totalAmount,account||iban,variableSymbol,dueDate].filter(value=>value!=null).length
   return {
-    document_number:documentNumber,document_type:documentType,issue_date:issueDate,taxable_date:taxableDate,due_date:dueDate,
+    document_number:documentNumber,document_type:documentType,document_class:documentClass,
+    reference_numbers:[...new Set([documentNumber,variableSymbol,...referenceNumbers(`${source} ${context.file_name||''} ${context.subject||''}`)].filter(Boolean))],
+    issue_date:issueDate,taxable_date:taxableDate,due_date:dueDate,
     currency,total_amount:totalAmount,bank_account:account,iban,variable_symbol:variableSymbol,
     confidence:Math.min(95,35 + recognized * 12),warnings,text_excerpt:source.slice(0,8000)
   }
 }
 
 export function findUniqueInvoiceMatch(extracted, invoices = []) {
-  const keys = [extracted?.document_number,extracted?.variable_symbol].map(normalizeMatchKey).filter(key=>key.length>=5)
+  const keys = [extracted?.document_number,extracted?.variable_symbol,...(extracted?.reference_numbers||[])].map(normalizeMatchKey).filter(key=>key.length>=5)
   if (!keys.length) return null
   const matches = invoices.filter(invoice => {
     const invoiceKeys = [invoice.document_number,invoice.variable_symbol,invoice.money_internal_number].map(normalizeMatchKey).filter(Boolean)
