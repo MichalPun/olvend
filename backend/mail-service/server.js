@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 import { ImapFlow } from 'imapflow'
 import nodemailer from 'nodemailer'
 import { simpleParser } from 'mailparser'
+import { processFinanceIntake } from './finance-intake-worker.mjs'
 
 const PORT = Number(process.env.PORT || 10000)
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
@@ -19,6 +20,7 @@ const messageCache = new Map()
 const MESSAGE_CACHE_LIMIT = 12
 const deletedMessageTombstones = new Map()
 let financeSyncPromise = null
+let financeProcessingPromise = null
 let lastFinanceSyncTriggerAt = 0
 
 if (!SUPABASE_URL || !SERVICE_KEY || !/^[a-f0-9]{64}$/i.test(ENCRYPTION_KEY_HEX)) {
@@ -295,7 +297,9 @@ function triggerFinanceSync(source = 'timer') {
   financeSyncPromise = (async () => {
     const account = await financeAccount(true)
     if (!account) return null
-    return syncFinanceIntake(account)
+    const sync = await syncFinanceIntake(account)
+    const extraction = await triggerFinanceProcessing()
+    return { ...sync, extraction }
   })().catch(async error => {
     console.error('Finance mailbox sync failed:', error)
     const account = await financeAccount(true).catch(() => null)
@@ -303,6 +307,14 @@ function triggerFinanceSync(source = 'timer') {
     return null
   }).finally(() => { financeSyncPromise = null })
   return financeSyncPromise
+}
+
+function triggerFinanceProcessing() {
+  if (financeProcessingPromise) return financeProcessingPromise
+  financeProcessingPromise = processFinanceIntake(admin,{limit:8})
+    .catch(error=>{console.error('Finance attachment extraction failed:',error);return {failed:1,error:String(error?.message||error)}})
+    .finally(()=>{financeProcessingPromise=null})
+  return financeProcessingPromise
 }
 
 async function route(req, res) {
