@@ -89,7 +89,7 @@ function balancedTaxTriple(values) {
     if(totalIndex===first||totalIndex===second)continue
     const a=Math.abs(values[first]),b=Math.abs(values[second]),total=Math.abs(values[totalIndex])
     const balanceError=Math.abs(a+b-total)
-    if(a<=0||b<=0||total<=Math.max(a,b)||balanceError>0.6)continue
+    if(a<=0||b<=0||total<=Math.max(a,b)||Math.min(a,b)/total<0.01||balanceError>0.6)continue
     const candidate={net_amount:Math.max(a,b),vat_amount:Math.min(a,b),total_amount:total,balance_error:balanceError}
     if(!best||candidate.balance_error<best.balance_error-0.001||(Math.abs(candidate.balance_error-best.balance_error)<=0.001&&candidate.total_amount>best.total_amount))best=candidate
   }
@@ -103,7 +103,7 @@ function taxSummary(text) {
   const candidates=[]
   for(let index=0;index<lines.length;index+=1){
     if(!/(sazba\s+dph|z[aá]klad.*(?:v[yý][šs]e\s+dph|d\s*p\s*h)|rozpis\s+dph|\bcelkem\b)/i.test(lines[index]))continue
-    const window=lines.slice(Math.max(0,index-7),Math.min(lines.length,index+8)).join('\n')
+    const window=lines.slice(Math.max(0,index-16),Math.min(lines.length,index+10)).join('\n')
     const candidate=balancedTaxTriple(moneyValues(window))
     if(candidate)candidates.push(candidate)
   }
