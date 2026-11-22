@@ -33,6 +33,22 @@ export async function mailApi(path, options = {}) {
   }
 }
 
+export async function mailApiDownload(path, options = {}) {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) throw new Error('Nejste přihlášeni.')
+  const response = await fetch(`${MAIL_API_URL}${path}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${session.access_token}`, ...(options.headers || {}) }
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new Error(payload.error || `Stažení podkladu selhalo (${response.status}).`)
+  }
+  const disposition = response.headers.get('content-disposition') || ''
+  const fileName = disposition.match(/filename="([^"]+)"/i)?.[1] || 'faktura-evidence.pdf'
+  return { blob: await response.blob(), fileName }
+}
+
 export async function financeMailboxStatus() {
   const { data, error } = await supabase.rpc('get_finance_mailbox_status_v1')
   if (!error) return { ...(data || {}), verified_by: 'database' }

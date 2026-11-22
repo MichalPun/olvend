@@ -264,10 +264,10 @@ declare v_year text; v_seq integer;
 begin
   if new.internal_number is not null then return new; end if;
   v_year:=to_char(coalesce(new.issue_date,current_date),'YY');
-  perform pg_advisory_xact_lock(hashtext('finance-invoice-'||v_year));
-  select coalesce(max(substring(internal_number from 'PF[0-9]{2}-([0-9]+)')::integer),0)+1 into v_seq
-  from public.finance_received_invoices where internal_number like 'PF'||v_year||'-%';
-  new.internal_number:='PF'||v_year||'-'||lpad(v_seq::text,5,'0');
+  perform pg_advisory_xact_lock(hashtext('finance-money-invoice-'||v_year));
+  select coalesce(max(substring(internal_number from ('^FP'||v_year||'([0-9]+)$'))::integer),0)+1 into v_seq
+  from public.finance_received_invoices where internal_number~('^FP'||v_year||'[0-9]+$');
+  new.internal_number:='FP'||v_year||lpad(v_seq::text,4,'0');
   return new;
 end; $$;
 drop trigger if exists trg_finance_invoice_number on public.finance_received_invoices;

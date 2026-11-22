@@ -5,6 +5,7 @@ import { ImapFlow } from 'imapflow'
 import nodemailer from 'nodemailer'
 import { simpleParser } from 'mailparser'
 import { processFinanceIntake } from './finance-intake-worker.mjs'
+import { stampInvoicePdf, stampedInvoiceFileName } from './finance-invoice-stamp.mjs'
 
 const PORT = Number(process.env.PORT || 10000)
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
@@ -36,6 +37,7 @@ function cors(req) {
     'Access-Control-Allow-Origin': origin === ALLOWED_ORIGIN || origin.startsWith('http://localhost:') ? origin : ALLOWED_ORIGIN,
     'Access-Control-Allow-Headers': 'authorization, content-type',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Expose-Headers': 'Content-Disposition, X-OLVEND-Internal-Number',
     'Vary': 'Origin'
   }
 }
@@ -43,6 +45,18 @@ function cors(req) {
 function send(req, res, status, value) {
   res.writeHead(status, { ...cors(req), 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(value))
+}
+
+function sendPdf(req, res, bytes, fileName, internalNumber) {
+  res.writeHead(200, {
+    ...cors(req),
+    'Content-Type': 'application/pdf',
+    'Content-Length': bytes.byteLength,
+    'Content-Disposition': `attachment; filename="${fileName.replace(/["\r\n]/g, '')}"`,
+    'Cache-Control': 'private, no-store',
+    'X-OLVEND-Internal-Number': internalNumber
+  })
+  res.end(Buffer.from(bytes))
 }
 
 function body(req) {
@@ -69,14 +83,71 @@ function decrypt(ciphertext) {
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
 }
 
-async function currentEmployee(req) {
+async function authenticatedUser(req) {
   const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
   if (!token) throw Object.assign(new Error('Unauthorized.'), { status: 401 })
   const { data: { user }, error } = await admin.auth.getUser(token)
   if (error || !user) throw Object.assign(new Error('Unauthorized.'), { status: 401 })
+  return user
+}
+
+async function currentEmployee(req) {
+  const user = await authenticatedUser(req)
   const { data: employee, error: employeeError } = await admin.from('employees').select('id,name,surname,email,role,active').eq('auth_user_id', user.id).maybeSingle()
   if (employeeError || !employee || employee.active === false) throw Object.assign(new Error('Employee account is not active.'), { status: 403 })
   return employee
+}
+
+async function currentFinanceActor(req) {
+  const user = await authenticatedUser(req)
+  const { data: employee, error: employeeError } = await admin.from('employees').select('id,name,surname,email,role,active').eq('auth_user_id', user.id).maybeSingle()
+  if (employeeError) throw employeeError
+  if (employee?.active !== false && /(admin|manager|manaž|manaz|vedouc|majitel|finance|accountant|účet|ucet)/i.test(String(employee?.role || ''))) {
+    return { kind: 'internal', id: employee.id, authUserId: user.id }
+  }
+  const { data: portal, error: portalError } = await admin.from('finance_portal_users').select('id,active,access_from,access_until').eq('auth_user_id', user.id).maybeSingle()
+  if (portalError) throw portalError
+  const today = new Date().toISOString().slice(0, 10)
+  if (!portal?.active || (portal.access_from && portal.access_from > today) || (portal.access_until && portal.access_until < today)) {
+    throw Object.assign(new Error('K označeným účetním podkladům nemáte přístup.'), { status: 403 })
+  }
+  return { kind: 'accountant', id: portal.id, authUserId: user.id }
+}
+
+async function canDownloadInvoice(actor, invoiceId) {
+  if (actor.kind === 'internal') return true
+  const { data: items, error: itemError } = await admin.from('finance_accounting_package_items').select('package_id').eq('invoice_id', invoiceId)
+  if (itemError) throw itemError
+  const packageIds = [...new Set((items || []).map(item => item.package_id))]
+  if (!packageIds.length) return false
+  const { count, error: packageError } = await admin.from('finance_accounting_packages').select('id', { count: 'exact', head: true }).in('id', packageIds).neq('status', 'draft')
+  if (packageError) throw packageError
+  return Number(count || 0) > 0
+}
+
+async function stampedInvoice(req, res, url) {
+  const actor = await currentFinanceActor(req)
+  const invoiceId = Number(url.searchParams.get('id'))
+  if (!Number.isInteger(invoiceId) || invoiceId < 1) throw Object.assign(new Error('Neplatné ID faktury.'), { status: 400 })
+  if (!(await canDownloadInvoice(actor, invoiceId))) throw Object.assign(new Error('Faktura není součástí zpřístupněného účetního balíčku.'), { status: 403 })
+
+  const { data: invoice, error: invoiceError } = await admin.from('finance_received_invoices')
+    .select('id,internal_number,document_number').eq('id', invoiceId).maybeSingle()
+  if (invoiceError) throw invoiceError
+  if (!invoice) throw Object.assign(new Error('Faktura nebyla nalezena.'), { status: 404 })
+  const { data: attachment, error: attachmentError } = await admin.from('finance_invoice_attachments')
+    .select('storage_bucket,storage_path,file_name,mime_type').eq('invoice_id', invoiceId).eq('kind', 'original').order('id').limit(1).maybeSingle()
+  if (attachmentError) throw attachmentError
+  if (!attachment) throw Object.assign(new Error('Faktura nemá uložený originál.'), { status: 404 })
+  if (String(attachment.mime_type || '').toLowerCase() !== 'application/pdf' && !/\.pdf$/i.test(String(attachment.file_name || ''))) {
+    throw Object.assign(new Error('Označenou kopii lze zatím vytvořit jen z PDF originálu.'), { status: 422 })
+  }
+
+  const { data: original, error: downloadError } = await admin.storage.from(attachment.storage_bucket).download(attachment.storage_path)
+  if (downloadError) throw downloadError
+  const sourceBytes = new Uint8Array(await original.arrayBuffer())
+  const output = await stampInvoicePdf(sourceBytes, { internalNumber: invoice.internal_number, documentNumber: invoice.document_number })
+  return sendPdf(req, res, output, stampedInvoiceFileName(invoice.internal_number, attachment.file_name), invoice.internal_number)
 }
 
 function requireFinanceManager(employee) {
@@ -324,6 +395,7 @@ async function route(req, res) {
     if (url.searchParams.get('finance') === '1') triggerFinanceSync('health')
     return send(req, res, 200, { ok: true, service: 'olvend-mail-service' })
   }
+  if (req.method === 'GET' && url.pathname === '/finance/invoice-stamped') return stampedInvoice(req, res, url)
   const employee = await currentEmployee(req)
 
   if (url.pathname.startsWith('/finance/')) requireFinanceManager(employee)
