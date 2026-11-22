@@ -39,6 +39,7 @@ alter table public.finance_invoice_allocations
   add column if not exists supplier_item_code text,
   add column if not exists ean text,
   add column if not exists product_id bigint references public.products(id) on delete restrict,
+  add column if not exists stock_quantity_base_units numeric(18,3),
   add column if not exists stock_relevant boolean not null default false,
   add column if not exists mapping_confidence numeric(5,2),
   add column if not exists source_payload jsonb not null default '{}'::jsonb;
@@ -70,9 +71,9 @@ begin
   select * into v_location from public.stock_locations where id=p_stock_location_id and active and location_type='warehouse';
   if not found then raise exception 'Vyberte aktivní skladové místo.'; end if;
   select count(*) into v_item_count from public.finance_invoice_allocations
-    where invoice_id=p_invoice_id and stock_relevant and product_id is not null and coalesce(quantity,0)>0;
+    where invoice_id=p_invoice_id and stock_relevant and product_id is not null and coalesce(stock_quantity_base_units,quantity,0)>0;
   if v_item_count=0 then raise exception 'Faktura nemá žádné bezpečně spárované skladové položky.'; end if;
-  if exists(select 1 from public.finance_invoice_allocations where invoice_id=p_invoice_id and stock_relevant and (product_id is null or coalesce(quantity,0)<=0)) then
+  if exists(select 1 from public.finance_invoice_allocations where invoice_id=p_invoice_id and stock_relevant and (product_id is null or coalesce(stock_quantity_base_units,quantity,0)<=0)) then
     raise exception 'Nejdřív spárujte všechny skladové položky s kartami zásob.';
   end if;
 
@@ -94,11 +95,11 @@ begin
   ) returning id into v_order_id;
 
   insert into public.purchase_order_items(purchase_order_id,product_id,ordered_quantity,received_quantity,unit_cost,note)
-  select v_order_id,a.product_id,sum(a.quantity),0,
-    case when sum(a.quantity)>0 then round((sum(coalesce(a.total_amount,a.quantity*a.unit_price))/sum(a.quantity))::numeric,2) end,
+  select v_order_id,a.product_id,sum(coalesce(a.stock_quantity_base_units,a.quantity)),0,
+    case when sum(coalesce(a.stock_quantity_base_units,a.quantity))>0 then round((sum(coalesce(a.net_amount,a.quantity*a.unit_price))/sum(coalesce(a.stock_quantity_base_units,a.quantity)))::numeric,4) end,
     string_agg(coalesce(a.description,'Položka faktury'),E'\n' order by a.line_number)
   from public.finance_invoice_allocations a
-  where a.invoice_id=p_invoice_id and a.stock_relevant and a.product_id is not null and coalesce(a.quantity,0)>0
+  where a.invoice_id=p_invoice_id and a.stock_relevant and a.product_id is not null and coalesce(a.stock_quantity_base_units,a.quantity,0)>0
   group by a.product_id;
 
   update public.finance_received_invoices set purchase_order_id=v_order_id,stock_receipt_status='ordered',updated_at=now() where id=p_invoice_id;
