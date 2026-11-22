@@ -23,8 +23,6 @@ declare
   v_class text;
   v_document_type text;
   v_internal_number text;
-  v_year text;
-  v_sequence integer;
   v_supplier text;
   v_document_number text;
   v_currency text;
@@ -129,27 +127,20 @@ begin
   v_iban:=nullif(upper(regexp_replace(coalesce(nullif(p_values->>'iban',''),v_payload->>'iban',''),'\s','','g')),'');
   v_variable_symbol:=nullif(regexp_replace(coalesce(nullif(p_values->>'variable_symbol',''),v_payload->>'variable_symbol',''),'\D','','g'),'');
 
-  perform pg_advisory_xact_lock(hashtext('finance-intake-internal-number-'||to_char(coalesce(v_issue_date,current_date),'YYYY')));
-  v_year:=to_char(coalesce(v_issue_date,current_date),'YY');
-  select coalesce(max(substring(internal_number from ('^PF'||v_year||'-([0-9]+)$'))::integer),0)+1
-  into v_sequence
-  from public.finance_received_invoices
-  where internal_number~('^PF'||v_year||'-[0-9]+$');
-  v_internal_number:='PF'||v_year||'-'||lpad(v_sequence::text,5,'0');
-
   insert into public.finance_received_invoices(
     internal_number,source_provider,source_external_id,source_received_at,source_payload,
     supplier_name,supplier_company_id,supplier_tax_id,document_number,document_type,document_class,issue_date,taxable_date,due_date,
     currency,net_amount,vat_amount,total_amount,bank_account,bank_code,iban,variable_symbol,
     category,cost_center,extraction_confidence,extraction_warnings,status,payment_status,handoff_status,note
   ) values (
-    v_internal_number,'email','intake:'||v_queue.id,coalesce(v_queue.message_received_at,v_queue.discovered_at),
+    null,'email','intake:'||v_queue.id,coalesce(v_queue.message_received_at,v_queue.discovered_at),
     jsonb_build_object('queue_id',v_queue.id,'sender_address',v_queue.sender_address,'subject',v_queue.subject,'extracted',v_payload),
     v_supplier,nullif(coalesce(nullif(p_values->>'supplier_company_id',''),v_payload->>'supplier_company_id'),'') ,nullif(upper(coalesce(nullif(p_values->>'supplier_tax_id',''),v_payload->>'supplier_tax_id','')),'') ,v_document_number,v_document_type,v_class,v_issue_date,v_taxable_date,v_due_date,
     v_currency,v_net,v_vat,v_total,v_bank_account,case when v_bank_account like '%/%' then split_part(v_bank_account,'/',2) end,v_iban,v_variable_symbol,
     nullif(p_values->>'category',''),nullif(p_values->>'cost_center',''),v_queue.extraction_confidence,coalesce(v_queue.warnings,'[]'::jsonb),
     'approval','unpaid','not_ready','Založeno po ruční kontrole dokumentu z fakturačního e-mailu.'
   ) returning * into v_invoice;
+  v_internal_number:=v_invoice.internal_number;
 
   insert into public.finance_invoice_attachments(
     invoice_id,kind,storage_bucket,storage_path,file_name,mime_type,size_bytes,sha256,immutable,uploaded_by

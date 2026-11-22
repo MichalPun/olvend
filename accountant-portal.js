@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { mailApiDownload } from './mail-api.js'
 
 const $ = (id) => document.getElementById(id)
 const preview = new URL(location.href).searchParams.get('preview') === '1'
@@ -7,10 +8,10 @@ const date = (value) => value ? new Intl.DateTimeFormat('cs-CZ').format(new Date
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))
 
 const demoDocuments = [
-  {id:1,number:'PF26-00479',supplier:'Microsoft Ireland Operations Ltd.',file:'E0400P9N8K.pdf',taxable:'2026-11-16',category:'Software · licence Microsoft 365',center:'Správa',net:12980,vat:0,total:12980,payment:'Uhrazeno'},
-  {id:2,number:'PF26-00476',supplier:'T-Mobile Czech Republic a.s.',file:'9211008844.pdf',taxable:'2026-11-14',category:'Telekomunikace · mobilní služby',center:'Správa',net:18460,vat:3876.60,total:22336.60,payment:'Uhrazeno'},
-  {id:3,number:'PF26-00472',supplier:'ALZA.cz a.s.',file:'FV-12688421.pdf',taxable:'2026-11-10',category:'Technika · náhradní díly',center:'Technický úsek',net:24680,vat:5182.80,total:29862.80,payment:'Uhrazeno'},
-  {id:4,number:'PF26-00469',supplier:'UNIQA pojišťovna, a.s.',file:'P-2026-4811.pdf',taxable:'2026-11-08',category:'Pojištění vozidel',center:'Vozový park',net:38200,vat:0,total:38200,payment:'Příkaz vytvořen'},
+  {id:1,number:'FP260572',supplier:'Microsoft Ireland Operations Ltd.',file:'E0400P9N8K.pdf',taxable:'2026-11-16',category:'Software · licence Microsoft 365',center:'Správa',net:12980,vat:0,total:12980,payment:'Uhrazeno'},
+  {id:2,number:'FP260571',supplier:'T-Mobile Czech Republic a.s.',file:'9211008844.pdf',taxable:'2026-11-14',category:'Telekomunikace · mobilní služby',center:'Správa',net:18460,vat:3876.60,total:22336.60,payment:'Uhrazeno'},
+  {id:3,number:'FP260570',supplier:'ALZA.cz a.s.',file:'FV-12688421.pdf',taxable:'2026-11-10',category:'Technika · náhradní díly',center:'Technický úsek',net:24680,vat:5182.80,total:29862.80,payment:'Uhrazeno'},
+  {id:4,number:'FP260569',supplier:'UNIQA pojišťovna, a.s.',file:'P-2026-4811.pdf',taxable:'2026-11-08',category:'Pojištění vozidel',center:'Vozový park',net:38200,vat:0,total:38200,payment:'Příkaz vytvořen'},
 ]
 
 let documents = [], packageData = null, selected = new Set()
@@ -26,9 +27,19 @@ function render(){
   $('metricVat').textContent=money(packageData?.vat_total??vat)
   $('metricAccepted').textContent=packageData?.status==='accepted'?(packageData.document_count||documents.length):0
   $('metricReturned').textContent=documents.filter((row)=>row.status==='returned').length
-  $('documentBody').innerHTML=documents.length?documents.map((row)=>`<tr class="${selected.has(row.id)?'selected':''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id)?'checked':''}></td><td><span class="cell-main">${escapeHtml(row.number)}</span></td><td><span class="cell-main">${escapeHtml(row.supplier)}</span><span class="cell-sub">${escapeHtml(row.file)}</span></td><td>${date(row.taxable)}</td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.center)}</td><td class="money">${money(row.net)}</td><td class="money">${money(row.vat)}</td><td class="money">${money(row.total)}</td><td><span class="badge ${row.payment==='Uhrazeno'?'good':'violet'}">${escapeHtml(row.payment)}</span></td></tr>`).join(''):'<tr><td colspan="10"><div class="empty">Žádný balíček zatím není připravený.</div></td></tr>'
+  $('documentBody').innerHTML=documents.length?documents.map((row)=>`<tr class="${selected.has(row.id)?'selected':''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id)?'checked':''}></td><td><span class="cell-main">${escapeHtml(row.number)}</span></td><td><span class="cell-main">${escapeHtml(row.supplier)}</span><span class="cell-sub">${escapeHtml(row.file)}</span></td><td>${date(row.taxable)}</td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.center)}</td><td class="money">${money(row.net)}</td><td class="money">${money(row.vat)}</td><td class="money">${money(row.total)}</td><td><span class="badge ${row.payment==='Uhrazeno'?'good':'violet'}">${escapeHtml(row.payment)}</span></td><td><button class="btn secondary stamped-download" data-id="${row.id}" type="button" style="padding:7px 10px;white-space:nowrap">PDF s razítkem</button></td></tr>`).join(''):'<tr><td colspan="11"><div class="empty">Žádný balíček zatím není připravený.</div></td></tr>'
   document.querySelectorAll('.row-check').forEach((element)=>element.addEventListener('change',()=>{element.checked?selected.add(Number(element.dataset.id)):selected.delete(Number(element.dataset.id));render()}))
+  document.querySelectorAll('.stamped-download').forEach((element)=>element.addEventListener('click',()=>downloadStampedInvoice(Number(element.dataset.id)).catch((error)=>setStatus(error.message,'error'))))
   $('selectAll').checked=documents.length>0&&selected.size===documents.length
+}
+
+async function downloadStampedInvoice(invoiceId){
+  const row=documents.find((item)=>item.id===invoiceId)
+  if(preview){setStatus(`Označená kopie ${row?.number||''} je v ostrém provozu připravená ke stažení.`,'success','Náhled · originál zůstává nezměněný');return}
+  setStatus(`Připravuji označenou kopii ${row?.number||''}…`,'','Originál zůstává nezměněný')
+  const {blob,fileName}=await mailApiDownload(`/finance/invoice-stamped?id=${encodeURIComponent(invoiceId)}`)
+  const href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=fileName;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(href),30000)
+  setStatus(`Označená kopie ${row?.number||''} byla stažena.`,'success','Evidenční číslo je vložené do horního pruhu PDF')
 }
 
 async function downloadBatch(){
