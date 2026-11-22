@@ -5,6 +5,8 @@ export function normalizeMatchKey(value) {
   return String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
 }
 
+const AUTO_EVIDENCE_VERSION = '2026-11-v1'
+
 function firstMatch(text, patterns) {
   for (const pattern of patterns) {
     const match = text.match(pattern)
@@ -119,6 +121,23 @@ function labeledDate(text, labels) {
   return null
 }
 
+function groupedInvoiceDates(text) {
+  const source=String(text||'')
+  const start=source.search(/datum\s+uskute[čc]n[eě]n[ií].{0,30}pln[eě]n[ií]/i)
+  if(start<0)return null
+  const window=source.slice(start,start+420)
+  if(!/datum\s+vystaven[ií]/i.test(window)||!/datum\s+splatnosti/i.test(window))return null
+  const dates=[...window.matchAll(/\b\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}\b/g)].map(match=>isoDate(match[0])).filter(Boolean).slice(0,3)
+  if(dates.length<3)return null
+  const counts=new Map(dates.map(value=>[value,dates.filter(item=>item===value).length]))
+  const repeated=[...counts.entries()].find(([,count])=>count>=2)?.[0]
+  if(!repeated)return null
+  const due=[...dates].sort().at(-1)
+  const issue=new Date(`${repeated}T12:00:00Z`),dueDate=new Date(`${due}T12:00:00Z`)
+  if(dueDate<issue||(dueDate-issue)>180*24*60*60*1000)return null
+  return {issue_date:repeated,taxable_date:repeated,due_date:due}
+}
+
 function labeledAmount(text) {
   const labels = [
     'celkem\\s+k\\s+[uú]hrad[ěe]','částka\\s+k\\s+[uú]hrad[ěe]','k\\s+[uú]hrad[ěe]',
@@ -130,6 +149,13 @@ function labeledAmount(text) {
     if (parsed != null && parsed !== 0) return parsed
   }
   return null
+}
+
+function hasMaterialPrepayment(text) {
+  const source=String(text||'')
+  if(/odpo[čc]et\s+z[aá]lohy/i.test(source))return true
+  const paid=source.match(/uhrazeno\s+z[aá]lohou[^\d-]{0,36}(-?\d[\d \u00a0.]*[,.]\d{2})/i)
+  return paid ? Math.abs(amount(paid[1])||0)>0.01 : /uhrazeno\s+z[aá]lohou/i.test(source)
 }
 
 export function classifyDocument(text, context = {}) {
@@ -221,9 +247,10 @@ export function extractInvoiceFields(text, context = {}) {
   if (totalAmount!=null&&vatAmount!=null&&netAmount==null) netAmount=Math.round((totalAmount-vatAmount)*100)/100
   if (totalAmount!=null&&netAmount!=null&&vatAmount!=null&&Math.abs(netAmount+vatAmount-totalAmount)>1) { netAmount=null;vatAmount=null }
   const currency = /\bEUR\b|€/.test(source) ? 'EUR' : /\bUSD\b|\$/.test(source) ? 'USD' : 'CZK'
-  const issueDate = labeledDate(source,['datum\\s+vystaven[ií]','vystaveno','issue\\s+date'])
-  const taxableDate = labeledDate(source,['datum\\s+uskutečněn[ií].{0,12}plněn[ií]','duzp','tax\\s+date'])
-  const dueDate = labeledDate(source,['datum\\s+splatnosti','splatnost','due\\s+date'])
+  const groupedDates=groupedInvoiceDates(source)
+  const issueDate = groupedDates?.issue_date||labeledDate(source,['(?:datum\\s+)?vystaven[ií]','vystaveno','issue\\s+date'])
+  const taxableDate = groupedDates?.taxable_date||labeledDate(source,['datum\\s+uskutečněn[ií].{0,12}plněn[ií]','duzp','tax\\s+date'])
+  const dueDate = groupedDates?.due_date||labeledDate(source,['datum\\s+splatnosti','splatnost','due\\s+date'])
   const documentType = documentClass==='credit_note'?'credit_note':documentClass==='advance_invoice'?'advance_invoice':documentClass==='invoice'?'invoice':'other'
   const supplier=supplierName(String(text||'')),identifiers=supplierIdentifiers(source)
   const warnings = []
@@ -232,7 +259,9 @@ export function extractInvoiceFields(text, context = {}) {
   if (totalAmount == null) warnings.push('Chybí celková částka')
   if (totalAmount!=null&&netAmount==null&&vatAmount==null&&['invoice','credit_note'].includes(documentClass)) warnings.push('Základ a DPH je potřeba ověřit')
   if (!account && !iban) warnings.push('Chybí bankovní účet')
+  if (!issueDate) warnings.push('Chybí datum vystavení')
   if (!dueDate) warnings.push('Chybí datum splatnosti')
+  if (hasMaterialPrepayment(source)) warnings.push('Doklad obsahuje vyúčtování zálohy; úhradu je potřeba ověřit')
   const recognized = [documentNumber,totalAmount,account||iban,variableSymbol,dueDate,supplier,netAmount!=null||vatAmount!=null,identifiers.supplier_company_id||identifiers.supplier_tax_id].filter(value=>value!=null&&value!==false).length
   return {
     document_number:documentNumber,document_type:documentType,document_class:documentClass,
@@ -242,6 +271,47 @@ export function extractInvoiceFields(text, context = {}) {
     currency,net_amount:netAmount,vat_amount:vatAmount,total_amount:totalAmount,bank_account:account,iban,variable_symbol:variableSymbol,
     confidence:Math.min(98,25 + recognized * 10),warnings,text_excerpt:source.slice(0,12000)
   }
+}
+
+function validIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null
+  const date = new Date(`${value}T12:00:00Z`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function invoiceKeyMatches(extracted, invoice) {
+  const sourceKeys=[extracted?.document_number,extracted?.variable_symbol].map(normalizeMatchKey).filter(key=>key.length>=5)
+  const invoiceKeys=[invoice?.document_number,invoice?.variable_symbol,invoice?.money_internal_number].map(normalizeMatchKey).filter(key=>key.length>=5)
+  if (!sourceKeys.some(key=>invoiceKeys.includes(key))) return false
+  return Math.abs(Math.abs(Number(invoice?.total_amount || 0))-Math.abs(Number(extracted?.total_amount || 0)))<=1
+}
+
+export function assessAutoEvidence(extracted, invoices = [], context = {}) {
+  const reasons=[]
+  const requiredText=(value)=>String(value || '').trim()
+  const total=Number(extracted?.total_amount),net=Number(extracted?.net_amount),vat=Number(extracted?.vat_amount)
+  const issueDate=validIsoDate(extracted?.issue_date),dueDate=validIsoDate(extracted?.due_date)
+  const receivedAt=context.received_at ? new Date(context.received_at) : null
+  if (extracted?.document_class!=='invoice') reasons.push('Automaticky se evidují pouze běžné faktury')
+  if (Number(extracted?.confidence || 0)<95) reasons.push('Jistota vytěžení je nižší než 95 %')
+  if (!requiredText(extracted?.supplier_name)) reasons.push('Chybí dodavatel')
+  if (!requiredText(extracted?.supplier_company_id) && !requiredText(extracted?.supplier_tax_id)) reasons.push('Chybí jednoznačný identifikátor dodavatele')
+  if (normalizeMatchKey(extracted?.document_number).length<4) reasons.push('Chybí použitelné číslo dokladu')
+  if (!Number.isFinite(total) || total<=0) reasons.push('Celková částka není kladná a jednoznačná')
+  if (!Number.isFinite(net) || !Number.isFinite(vat) || Math.abs(net+vat-total)>1) reasons.push('Rozpad základu, DPH a celku není vyvážený')
+  if (!issueDate) reasons.push('Chybí platné datum vystavení')
+  if (!dueDate) reasons.push('Chybí platné datum splatnosti')
+  if (issueDate&&dueDate&&dueDate<issueDate) reasons.push('Datum splatnosti je před datem vystavení')
+  if (issueDate&&receivedAt&&!Number.isNaN(receivedAt.getTime())) {
+    const deltaDays=(issueDate-receivedAt)/(24*60*60*1000)
+    if (deltaDays>31 || deltaDays< -550) reasons.push('Datum vystavení je mimo bezpečné období vůči přijetí e-mailu')
+  }
+  if (!requiredText(extracted?.bank_account) && !requiredText(extracted?.iban)) reasons.push('Chybí účet dodavatele')
+  if (!/^[A-Z]{3}$/.test(requiredText(extracted?.currency))) reasons.push('Měna není jednoznačná')
+  if (String(extracted?.extraction_method || '').includes('ocr') && Number(extracted?.ocr_confidence || 0)<75) reasons.push('OCR má jistotu nižší než 75 %')
+  if ((extracted?.warnings || []).length) reasons.push(...extracted.warnings.map(value=>String(value)))
+  if (invoices.some(invoice=>invoiceKeyMatches(extracted,invoice))) reasons.push('Doklad se shoduje s fakturou, která už je v evidenci')
+  return {version:AUTO_EVIDENCE_VERSION,eligible:reasons.length===0,reasons:[...new Set(reasons)]}
 }
 
 export function findUniqueInvoiceMatch(extracted, invoices = []) {

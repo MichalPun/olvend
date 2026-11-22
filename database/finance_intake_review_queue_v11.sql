@@ -39,6 +39,7 @@ declare
   v_line_number integer := 0;
   v_line_count integer := 0;
   v_reason text;
+  v_automatic boolean := false;
 begin
   if not public.finance_can_manage_v1() then
     raise exception 'Přístup odepřen.' using errcode='42501';
@@ -52,6 +53,10 @@ begin
 
   p_action:=lower(trim(coalesce(p_action,'')));
   v_payload:=coalesce(v_queue.extracted_payload,'{}'::jsonb);
+  v_automatic:=coalesce(p_values->>'evidence_mode','')='automatic';
+  if v_automatic and coalesce(auth.role(),'')<>'service_role' then
+    raise exception 'Automatické zaevidování může provést pouze serverová služba.' using errcode='42501';
+  end if;
 
   if p_action='ignore' then
     if v_queue.invoice_id is not null then raise exception 'Přiřazený dokument už nelze ignorovat.'; end if;
@@ -138,7 +143,7 @@ begin
     v_supplier,nullif(coalesce(nullif(p_values->>'supplier_company_id',''),v_payload->>'supplier_company_id'),'') ,nullif(upper(coalesce(nullif(p_values->>'supplier_tax_id',''),v_payload->>'supplier_tax_id','')),'') ,v_document_number,v_document_type,v_class,v_issue_date,v_taxable_date,v_due_date,
     v_currency,v_net,v_vat,v_total,v_bank_account,case when v_bank_account like '%/%' then split_part(v_bank_account,'/',2) end,v_iban,v_variable_symbol,
     nullif(p_values->>'category',''),nullif(p_values->>'cost_center',''),v_queue.extraction_confidence,coalesce(v_queue.warnings,'[]'::jsonb),
-    'approval','unpaid','not_ready','Založeno po ruční kontrole dokumentu z fakturačního e-mailu.'
+    'approval','unpaid','not_ready',case when v_automatic then 'Automaticky zaevidováno z jednoznačně vytěžené faktury.' else 'Založeno po ruční kontrole dokumentu z fakturačního e-mailu.' end
   ) returning * into v_invoice;
   v_internal_number:=v_invoice.internal_number;
 
@@ -170,12 +175,19 @@ begin
 
   update public.finance_document_intake_queue set
     invoice_id=v_invoice.id,status='invoice_created',document_class=v_class,processed_at=now(),error_message=null,
-    extracted_payload=v_payload||jsonb_build_object('matched_by','manual_review_create','reviewed_by',auth.uid(),'reviewed_at',now(),'internal_number',v_internal_number)
+    extracted_payload=v_payload||jsonb_build_object(
+      'matched_by',case when v_automatic then 'automatic_evidence' else 'manual_review_create' end,
+      'reviewed_by',auth.uid(),'reviewed_at',now(),'internal_number',v_internal_number
+    )
   where id=p_queue_id;
   insert into public.finance_invoice_events(invoice_id,event_type,to_status,note,metadata,actor_user_id)
-  values(v_invoice.id,'created_from_intake_review','approval','Doklad byl založen po ruční kontrole e-mailové přílohy.',jsonb_build_object('queue_id',p_queue_id,'file_name',v_queue.file_name,'line_count',v_line_count),auth.uid());
+  values(
+    v_invoice.id,case when v_automatic then 'auto_evidenced_from_intake' else 'created_from_intake_review' end,'approval',
+    case when v_automatic then 'Jednoznačná faktura byla automaticky zaevidována; věcné schválení zůstává otevřené.' else 'Doklad byl založen po ruční kontrole e-mailové přílohy.' end,
+    jsonb_build_object('queue_id',p_queue_id,'file_name',v_queue.file_name,'line_count',v_line_count,'evidence_mode',case when v_automatic then 'automatic' else 'manual' end),auth.uid()
+  );
 
-  return jsonb_build_object('queue_id',p_queue_id,'status','invoice_created','invoice_id',v_invoice.id,'internal_number',v_internal_number,'line_count',v_line_count,'action','create');
+  return jsonb_build_object('queue_id',p_queue_id,'status','invoice_created','invoice_id',v_invoice.id,'internal_number',v_internal_number,'line_count',v_line_count,'action',case when v_automatic then 'auto_create' else 'create' end);
 end;
 $$;
 
