@@ -1,5 +1,5 @@
 import { PDFParse } from 'pdf-parse'
-import { assessAutoEvidence, extractInvoiceFields, extractInvoiceLineItems, findUniqueInvoiceMatch, isLikelyInlineImage, normalizeMatchKey } from './finance-intake-core.mjs'
+import { assessAutoEvidence, extractInvoiceFields, extractInvoiceLineItems, extractInvoiceTextLineItems, findUniqueInvoiceMatch, isLikelyInlineImage, looksLikeItemizedInvoice, normalizeMatchKey } from './finance-intake-core.mjs'
 import { createFinanceOcrSession, needsInvoiceOcr } from './finance-intake-ocr.mjs'
 
 const invoiceColumns = 'id,internal_number,document_number,variable_symbol,money_internal_number,total_amount,supplier_name,supplier_company_id,supplier_tax_id'
@@ -51,16 +51,14 @@ function mappedProduct(line,invoice,catalog) {
 async function saveInvoiceLines(admin,invoice,extracted,catalog) {
   if(extracted.document_class!=='invoice'||!extracted.line_items?.length)return
   const rows=extracted.line_items.map((line,index)=>{
-    const match=mappedProduct(line,invoice,catalog),rawTotal=line.total_amount??(Number(line.quantity||0)*Number(line.unit_price||0)),total=Number(rawTotal||0)
-    return {invoice_id:invoice.id,line_number:index+1,description:line.description,quantity:line.quantity,unit_code:line.unit_code,unit_price:line.unit_price,supplier_item_code:line.supplier_item_code,ean:line.ean,product_id:match?.product_id||null,stock_relevant:Boolean(match),mapping_confidence:match?.confidence||null,net_amount:total,vat_amount:0,total_amount:total,source_payload:{mapping_method:match?.method||null}}
+    const match=mappedProduct(line,invoice,catalog),rawGross=line.total_amount??(Number(line.quantity||0)*Number(line.unit_price||0)),gross=Number(rawGross||0),net=Number(line.net_amount??gross),vat=Number(line.vat_amount??(gross-net))
+    return {invoice_id:invoice.id,line_number:index+1,description:line.description,quantity:line.quantity,unit_code:line.unit_code,unit_price:line.unit_price,supplier_item_code:line.supplier_item_code,ean:line.ean,product_id:match?.product_id||null,stock_relevant:true,mapping_confidence:match?.confidence||null,vat_rate:line.vat_rate??null,net_amount:net,vat_amount:vat,total_amount:gross,source_payload:{mapping_method:match?.method||null,extraction_source:line.source||'structured_table'}}
   })
   const {error}=await admin.from('finance_invoice_allocations').upsert(rows,{onConflict:'invoice_id,line_number'})
   if(error)throw error
   const mapped=rows.filter(item=>item.product_id).length
-  if(mapped){
-    const {error:updateError}=await admin.from('finance_received_invoices').update({stock_receipt_status:mapped===rows.length?'ready':'needs_mapping'}).eq('id',invoice.id).neq('stock_receipt_status','ordered').neq('stock_receipt_status','received')
-    if(updateError)throw updateError
-  }
+  const {error:updateError}=await admin.from('finance_received_invoices').update({stock_receipt_status:mapped===rows.length?'ready':'needs_mapping'}).eq('id',invoice.id).neq('stock_receipt_status','ordered').neq('stock_receipt_status','received')
+  if(updateError)throw updateError
 }
 
 async function attachToInvoice(admin, row, invoice, extracted, catalog) {
@@ -96,6 +94,16 @@ function mergeOcrExtraction(textExtracted,ocrExtracted,useOcr){
   return merged
 }
 
+function withLineItemSafety(extracted,text,lineItems){
+  const result={...extracted,line_items:lineItems}
+  if(looksLikeItemizedInvoice(text)&&!lineItems.length)result.warnings=[...(result.warnings||[]),'Doklad vypadá jako položková faktura, ale řádky se nepodařilo bezpečně rozpoznat']
+  if(lineItems.length&&Number.isFinite(Number(extracted.total_amount))){
+    const lineTotal=lineItems.reduce((sum,line)=>sum+Number(line.total_amount||0),0)
+    if(Math.abs(lineTotal-Number(extracted.total_amount))>1)result.warnings=[...(result.warnings||[]),`Součet rozpoznaných položek ${lineTotal.toFixed(2)} neodpovídá celku faktury ${Number(extracted.total_amount).toFixed(2)}`]
+  }
+  return result
+}
+
 async function extractPdf(admin, row, ocr) {
   const bytes=await downloadOriginal(admin,row)
   const parser = new PDFParse({data:bytes})
@@ -103,8 +111,8 @@ async function extractPdf(admin, row, ocr) {
     const textResult = await parser.getText({first:8})
     const tableResult = await parser.getTable({first:8}).catch(()=>({pages:[]}))
     const textExtracted=extractInvoiceFields(textResult.text,{file_name:row.file_name,subject:row.subject})
-    const lineItems=extractInvoiceLineItems(tableResult.pages)
-    if(!needsInvoiceOcr(textResult.text))return {...textExtracted,line_items:lineItems,extraction_method:'pdf_text'}
+    const lineItems=extractInvoiceLineItems(tableResult.pages),textLineItems=extractInvoiceTextLineItems(textResult.text),resolvedLineItems=lineItems.length?lineItems:textLineItems
+    if(!needsInvoiceOcr(textResult.text))return {...withLineItemSafety(textExtracted,textResult.text,resolvedLineItems),extraction_method:'pdf_text'}
     try{
       const screenshots=await parser.getScreenshot({first:Math.min(4,Math.max(1,Number(process.env.FINANCE_OCR_PDF_PAGES||3))),desiredWidth:1800,imageDataUrl:false,imageBuffer:true})
       const results=[]
@@ -113,12 +121,15 @@ async function extractPdf(admin, row, ocr) {
       const ocrExtracted=extractInvoiceFields(ocrText,{file_name:row.file_name,subject:row.subject})
       const average=results.length?results.reduce((sum,result)=>sum+result.confidence,0)/results.length:0
       const merged=mergeOcrExtraction(textExtracted,ocrExtracted,true)
-      merged.line_items=lineItems
+      const ocrLineItems=extractInvoiceTextLineItems(ocrText)
+      const resolvedOcrLineItems=resolvedLineItems.length?resolvedLineItems:ocrLineItems
+      merged.line_items=resolvedOcrLineItems
       merged.text_excerpt=ocrText.slice(0,12000)
       merged.extraction_method='pdf_ocr'
       merged.ocr_confidence=Math.round(average*10)/10
       merged.ocr_pages=results.length
       if(average<55)merged.warnings=[...(merged.warnings||[]),'OCR má nízkou jistotu; porovnejte údaje s originálem']
+      if(looksLikeItemizedInvoice(ocrText)&&!resolvedOcrLineItems.length)merged.warnings=[...(merged.warnings||[]),'Doklad vypadá jako položková faktura, ale řádky se nepodařilo bezpečně rozpoznat']
       return merged
     }catch(error){
       return {...textExtracted,line_items:lineItems,extraction_method:'pdf_text',warnings:[...(textExtracted.warnings||[]),`OCR se nepodařilo dokončit: ${String(error?.message||error).slice(0,180)}`]}
@@ -132,7 +143,8 @@ async function extractImage(admin,row,ocr){
   const bytes=await downloadOriginal(admin,row)
   const result=await ocr.recognize(bytes)
   const extracted=extractInvoiceFields(result.text,{file_name:row.file_name,subject:row.subject})
-  return {...extracted,line_items:[],text_excerpt:result.text.slice(0,12000),extraction_method:'image_ocr',ocr_confidence:Math.round(result.confidence*10)/10,ocr_pages:1,warnings:result.confidence<55?[...(extracted.warnings||[]),'OCR má nízkou jistotu; porovnejte údaje s originálem']:extracted.warnings}
+  const lineItems=extractInvoiceTextLineItems(result.text),safe=withLineItemSafety(extracted,result.text,lineItems)
+  return {...safe,text_excerpt:result.text.slice(0,12000),extraction_method:'image_ocr',ocr_confidence:Math.round(result.confidence*10)/10,ocr_pages:1,warnings:result.confidence<55?[...(safe.warnings||[]),'OCR má nízkou jistotu; porovnejte údaje s originálem']:safe.warnings}
 }
 
 async function claim(admin, id, expectedStatus = 'queued') {
@@ -215,7 +227,8 @@ async function reconsiderReviewRow(admin,sourceRow,invoices,catalog){
   try{
     const stored=row.extracted_payload||{}
     const refreshed=stored.text_excerpt?extractInvoiceFields(stored.text_excerpt,{file_name:row.file_name,subject:row.subject}):stored
-    const extracted={...stored,...refreshed,line_items:stored.line_items||[],text_excerpt:stored.text_excerpt,
+    const refreshedLines=stored.line_items?.length?stored.line_items:extractInvoiceTextLineItems(stored.text_excerpt||'')
+    const extracted={...stored,...withLineItemSafety(refreshed,stored.text_excerpt||'',refreshedLines),text_excerpt:stored.text_excerpt,
       extraction_method:stored.extraction_method,ocr_confidence:stored.ocr_confidence,ocr_pages:stored.ocr_pages,
       warnings:[...(refreshed.warnings||row.warnings||[])]}
     if(!Array.isArray(extracted.line_items))extracted.line_items=[]

@@ -158,13 +158,14 @@ begin
       v_line_number:=v_line_number+1;
       if coalesce(trim(v_line->>'description'),'')='' then continue; end if;
       insert into public.finance_invoice_allocations(
-        invoice_id,line_number,description,quantity,unit_code,unit_price,supplier_item_code,ean,
+        invoice_id,line_number,description,quantity,unit_code,unit_price,supplier_item_code,ean,vat_rate,
         stock_relevant,net_amount,vat_amount,total_amount,source_payload
       ) values (
         v_invoice.id,v_line_number,v_line->>'description',nullif(v_line->>'quantity','')::numeric,nullif(v_line->>'unit_code',''),
-        nullif(v_line->>'unit_price','')::numeric,nullif(v_line->>'supplier_item_code',''),nullif(v_line->>'ean',''),
-        true,coalesce(nullif(v_line->>'total_amount','')::numeric,0),0,coalesce(nullif(v_line->>'total_amount','')::numeric,0),
-        jsonb_build_object('source','intake_review','queue_id',v_queue.id)
+        nullif(v_line->>'unit_price','')::numeric,nullif(v_line->>'supplier_item_code',''),nullif(v_line->>'ean',''),nullif(v_line->>'vat_rate','')::numeric,
+        true,coalesce(nullif(v_line->>'net_amount','')::numeric,nullif(v_line->>'total_amount','')::numeric,0),
+        coalesce(nullif(v_line->>'vat_amount','')::numeric,0),coalesce(nullif(v_line->>'total_amount','')::numeric,0),
+        jsonb_build_object('source','intake_review','queue_id',v_queue.id,'extraction_source',v_line->>'source')
       );
       v_line_count:=v_line_count+1;
     end loop;

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {assessAutoEvidence,classifyDocument,extractInvoiceFields,extractInvoiceLineItems,findUniqueInvoiceMatch,isLikelyInlineImage} from './finance-intake-core.mjs'
+import {assessAutoEvidence,classifyDocument,extractInvoiceFields,extractInvoiceLineItems,extractInvoiceTextLineItems,findUniqueInvoiceMatch,isLikelyInlineImage,looksLikeItemizedInvoice} from './finance-intake-core.mjs'
 import {createFinanceOcrSession,needsInvoiceOcr} from './finance-intake-ocr.mjs'
 
 const text=`FAKTURA vydaná číslo 2026036928
@@ -39,6 +39,20 @@ assert.equal(lines.length,2)
 assert.equal(lines[0].quantity,12)
 assert.equal(lines[0].supplier_item_code,'K01')
 assert.equal(lines[1].ean,'8591234567890')
+
+const moneyTextRows=`Označení dodávky Katalog Počet M.J. M.J. Cena za M.J. DPH % bez DPH s DPH
+200,00 DARKOFF VEN White choco vending 1 Kg 980 ks 12 72,000 16 128,00 14 400,00
+200,00 DARKOFF VEN Choco drink 15 1 Kg 983 ks 12 72,000 16 128,00 14 400,00
+200,00 DARKOFF VEN. Čaj LEMON 1 Kg 652/A ks 12 45,000 10 080,00 9 000,00`
+const moneyLines=extractInvoiceTextLineItems(moneyTextRows)
+assert.equal(looksLikeItemizedInvoice(moneyTextRows),true)
+assert.equal(moneyLines.length,3)
+assert.deepEqual(moneyLines.map(line=>[line.supplier_item_code,line.quantity,line.unit_price,line.net_amount,line.vat_amount,line.total_amount]),[
+  ['980',72,200,14400,1728,16128],['983',72,200,14400,1728,16128],['652/A',45,200,9000,1080,10080]
+])
+assert.equal(moneyLines.reduce((sum,line)=>sum+line.net_amount,0),37800)
+assert.equal(moneyLines.reduce((sum,line)=>sum+line.vat_amount,0),4536)
+assert.equal(moneyLines.reduce((sum,line)=>sum+line.total_amount,0),42336)
 
 const detailed=extractInvoiceFields(`Dodavatel:\nACME servis s.r.o.\nIČO: 12345678\nDIČ: CZ12345678\nOdběratel: OLMIKA s.r.o.\nIČO: 04579968\nDIČ: CZ04579968\nFaktura číslo FV-2026-991\nDatum splatnosti: 30.11.2026\nCelkem bez DPH 10 000,00 Kč\nDPH celkem 2 100,00 Kč\nCelkem k úhradě 12 100,00 Kč`)
 assert.equal(detailed.supplier_name,'ACME servis s.r.o.')
