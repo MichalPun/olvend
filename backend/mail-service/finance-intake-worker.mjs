@@ -52,7 +52,7 @@ async function saveInvoiceLines(admin,invoice,extracted,catalog) {
   if(extracted.document_class!=='invoice'||!extracted.line_items?.length)return
   const rows=extracted.line_items.map((line,index)=>{
     const match=mappedProduct(line,invoice,catalog),rawGross=line.total_amount??(Number(line.quantity||0)*Number(line.unit_price||0)),gross=Number(rawGross||0),net=Number(line.net_amount??gross),vat=Number(line.vat_amount??(gross-net))
-    return {invoice_id:invoice.id,line_number:index+1,description:line.description,quantity:line.quantity,unit_code:line.unit_code,unit_price:line.unit_price,supplier_item_code:line.supplier_item_code,ean:line.ean,product_id:match?.product_id||null,stock_relevant:true,mapping_confidence:match?.confidence||null,vat_rate:line.vat_rate??null,net_amount:net,vat_amount:vat,total_amount:gross,source_payload:{mapping_method:match?.method||null,extraction_source:line.source||'structured_table'}}
+    return {invoice_id:invoice.id,line_number:index+1,description:line.description,quantity:line.quantity,unit_code:line.unit_code,unit_price:line.unit_price,supplier_item_code:line.supplier_item_code,ean:line.ean,product_id:match?.product_id||null,stock_relevant:true,mapping_confidence:match?.confidence||null,vat_rate:line.vat_rate??null,net_amount:net,vat_amount:vat,total_amount:gross,source_payload:{mapping_method:match?.method||null,extraction_source:line.source||'structured_table',source_unit_code:line.source_unit_code||line.unit_code||null}}
   })
   const {error}=await admin.from('finance_invoice_allocations').upsert(rows,{onConflict:'invoice_id,line_number'})
   if(error)throw error
