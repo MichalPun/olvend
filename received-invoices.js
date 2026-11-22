@@ -209,10 +209,21 @@ async function openDrawer(id) {
   if(stockStatus!=='not_applicable'){
     if(preview){activeAllocations=[{id:201,invoice_id:activeRow.id,line_number:1,description:'White chocolate vending 1 kg',quantity:72,unit_code:'kg',unit_price:200,supplier_item_code:'980',product_id:null,stock_relevant:true,stock_quantity_base_units:null,total_amount:16128},{id:202,invoice_id:activeRow.id,line_number:2,description:'Čaj Lemon 1 kg',quantity:45,unit_code:'kg',unit_price:200,supplier_item_code:'652/A',product_id:null,stock_relevant:true,stock_quantity_base_units:null,total_amount:10080}];renderStockMapping();return}
     const requestedInvoiceId=activeRow.id
-    const {data,error}=await supabase.from('finance_invoice_allocations').select('id,invoice_id,line_number,description,quantity,unit_code,unit_price,supplier_item_code,ean,product_id,stock_relevant,stock_quantity_base_units,net_amount,vat_amount,total_amount').eq('invoice_id',requestedInvoiceId).eq('stock_relevant',true).order('line_number')
-    if(error)throw error
-    if(activeRow?.id!==requestedInvoiceId)return
-    activeAllocations=data||[];renderStockMapping()
+    try{
+      const {data,error}=await supabase.rpc('finance_get_invoice_stock_lines_v1',{p_invoice_id:requestedInvoiceId})
+      if(error)throw error
+      if(activeRow?.id!==requestedInvoiceId)return
+      activeAllocations=data||[];renderStockMapping()
+    }catch(error){
+      if(activeRow?.id===requestedInvoiceId){
+        const host=$('stockMappingHost')
+        if(host){
+          host.innerHTML='<div class="stock-mapping-empty"><strong>Položky faktury se nepodařilo načíst.</strong><br>Obnovte načtení; pokud problém trvá, fakturu zatím neschvalujte.<div class="row-actions" style="justify-content:center;margin-top:12px"><button class="btn secondary small" id="retryStockMappingBtn" type="button">Načíst znovu</button></div></div>'
+          $('retryStockMappingBtn')?.addEventListener('click',()=>openDrawer(requestedInvoiceId).catch(retryError=>setStatus(retryError.message,'error')))
+        }
+      }
+      throw error
+    }
   }
 }
 
