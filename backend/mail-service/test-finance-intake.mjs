@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {classifyDocument,extractInvoiceFields,extractInvoiceLineItems,findUniqueInvoiceMatch,isLikelyInlineImage} from './finance-intake-core.mjs'
+import {assessAutoEvidence,classifyDocument,extractInvoiceFields,extractInvoiceLineItems,findUniqueInvoiceMatch,isLikelyInlineImage} from './finance-intake-core.mjs'
 import {createFinanceOcrSession,needsInvoiceOcr} from './finance-intake-ocr.mjs'
 
 const text=`FAKTURA vydaná číslo 2026036928
@@ -100,6 +100,44 @@ assert.equal(labeledTaxSummary.document_number,'20260657')
 assert.equal(labeledTaxSummary.net_amount,9240)
 assert.equal(labeledTaxSummary.vat_amount,1940.4)
 assert.equal(labeledTaxSummary.total_amount,11180.4)
+
+const datedInvoice=extractInvoiceFields(`Faktura číslo 20260657
+Dodavatel: NEJLEVNĚJŠÍ POLEPY s.r.o.
+IČ: 08336563 DIČ: CZ08336563
+Bankovní účet: 289322907/0300
+variabilní: 20260657 vystavení: 23.09.2026
+splatnosti: 26.09.2026
+CELKEM 9 240,00 Kč 1 940,40 Kč 11 180,40 Kč`)
+assert.equal(datedInvoice.issue_date,'2026-09-23')
+assert.equal(datedInvoice.due_date,'2026-09-26')
+
+const groupedDatesInvoice=extractInvoiceFields(`FAKTURA-DAŇOVÝ DOKLAD Faktura číslo: 26002070
+SIMANDL, spol. s r.o. IČ: 63319969 DIČ: CZ63319969
+Datum uskutečnění zdanitelného plnění:
+Datum vystavení:
+Datum splatnosti:
+převodem
+11.11.2026
+11.12.2026
+11.11.2026
+Bankovní účet: 104458251 0300
+Celkem: 37 800,00 4 536,00 42 336,00`)
+assert.equal(groupedDatesInvoice.issue_date,'2026-11-11')
+assert.equal(groupedDatesInvoice.taxable_date,'2026-11-11')
+assert.equal(groupedDatesInvoice.due_date,'2026-12-11')
+
+const eligibleAssessment=assessAutoEvidence({
+  document_class:'invoice',confidence:98,supplier_name:'ACME s.r.o.',supplier_company_id:'12345678',supplier_tax_id:'CZ12345678',
+  document_number:'FV-2026-991',issue_date:'2026-11-20',due_date:'2026-12-04',currency:'CZK',net_amount:10000,
+  vat_amount:2100,total_amount:12100,bank_account:'123456789/5500',extraction_method:'pdf_text',warnings:[]
+},[],{received_at:'2026-11-21T10:00:00Z'})
+assert.equal(eligibleAssessment.eligible,true)
+assert.equal(assessAutoEvidence({...datedInvoice,warnings:['Doklad obsahuje vyúčtování zálohy; úhradu je potřeba ověřit']},[],{received_at:'2026-09-24T10:00:00Z'}).eligible,false)
+assert.equal(assessAutoEvidence({
+  document_class:'invoice',confidence:98,supplier_name:'ACME s.r.o.',supplier_company_id:'12345678',document_number:'FV-2026-991',
+  issue_date:'2026-11-20',due_date:'2026-12-04',currency:'CZK',net_amount:10000,vat_amount:2100,total_amount:12100,
+  bank_account:'123456789/5500',extraction_method:'pdf_text',warnings:[]
+},[{document_number:'FV-2026-991',total_amount:12100}],{received_at:'2026-11-21T10:00:00Z'}).eligible,false)
 
 const numberFallback=extractInvoiceFields('DAŇOVÝ DOKLAD - faktura č.\nOLMIKA s.r.o.',{file_name:'2026036928.pdf'})
 assert.equal(numberFallback.document_number,'2026036928')

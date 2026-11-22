@@ -94,7 +94,7 @@ function renderIntake(){
   renderIntakeCounts()
   const visible=filteredIntakeRows()
   $('intakeBody').innerHTML=visible.length?visible.map((row)=>{
-    const payload=row.extracted_payload||{},warnings=Array.isArray(row.warnings)?row.warnings:[],received=row.message_received_at||row.discovered_at
+    const payload=row.extracted_payload||{},warnings=[...(Array.isArray(row.warnings)?row.warnings:[]),...((payload.auto_evidence?.reasons||[]).filter(reason=>!(row.warnings||[]).includes(reason)))],received=row.message_received_at||row.discovered_at
     const amountValue=payload.total_amount==null?'—':money(payload.total_amount,payload.currency||'CZK')
     const warningItems=row.error_message?[row.error_message,...warnings]:warnings
     const warningMarkup=warningItems.length?`<div class="intake-warnings">${warningItems.slice(0,2).map((item)=>`<span>${escapeHtml(item)}</span>`).join('')}${warningItems.length>2?`<small>+${warningItems.length-2} další</small>`:''}</div>`:'<span class="intake-ok">Bez upozornění</span>'
@@ -111,7 +111,7 @@ function intakeInput(id,label,value='',type='text',extra=''){
 
 function openIntakeDrawer(id){
   activeIntakeRow=intakeRows.find((row)=>row.id===id);if(!activeIntakeRow)return
-  const row=activeIntakeRow,payload=row.extracted_payload||{},warnings=Array.isArray(row.warnings)?row.warnings:[],lineItems=Array.isArray(payload.line_items)?payload.line_items:[]
+  const row=activeIntakeRow,payload=row.extracted_payload||{},warnings=[...(Array.isArray(row.warnings)?row.warnings:[]),...((payload.auto_evidence?.reasons||[]).filter(reason=>!(row.warnings||[]).includes(reason)))],lineItems=Array.isArray(payload.line_items)?payload.line_items:[]
   const assignedInvoice=rows.find((invoice)=>invoice.id===row.invoice_id)
   const canDecide=row.status==='needs_review',canReopen=['ignored','failed'].includes(row.status)&&!row.invoice_id
   const canCreate=canDecide&&['invoice','credit_note','advance_invoice'].includes(row.document_class)
