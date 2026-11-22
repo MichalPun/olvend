@@ -38,6 +38,8 @@ const lines=extractInvoiceLineItems([{tables:[[
 assert.equal(lines.length,2)
 assert.equal(lines[0].quantity,12)
 assert.equal(lines[0].supplier_item_code,'K01')
+assert.equal(lines[0].unit_code,'kg')
+assert.equal(lines[0].source_unit_code,'ks')
 assert.equal(lines[1].ean,'8591234567890')
 
 const moneyTextRows=`Označení dodávky Katalog Počet M.J. M.J. Cena za M.J. DPH % bez DPH s DPH
@@ -47,6 +49,7 @@ const moneyTextRows=`Označení dodávky Katalog Počet M.J. M.J. Cena za M.J. D
 const moneyLines=extractInvoiceTextLineItems(moneyTextRows)
 assert.equal(looksLikeItemizedInvoice(moneyTextRows),true)
 assert.equal(moneyLines.length,3)
+assert.deepEqual(moneyLines.map(line=>[line.unit_code,line.source_unit_code]),[['kg','ks'],['kg','ks'],['kg','ks']])
 assert.deepEqual(moneyLines.map(line=>[line.supplier_item_code,line.quantity,line.unit_price,line.net_amount,line.vat_amount,line.total_amount]),[
   ['980',72,200,14400,1728,16128],['983',72,200,14400,1728,16128],['652/A',45,200,9000,1080,10080]
 ])

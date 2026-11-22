@@ -204,7 +204,9 @@ export function extractInvoiceLineItems(tablePages = []) {
       const description=compact(row?.[descriptionIndex])
       const quantity=cellAmount(row?.[quantityIndex])
       if (!description || quantity==null || quantity<=0) continue
-      const item={description,quantity,unit_code:unitIndex>=0?compact(row?.[unitIndex])||null:null,unit_price:unitPriceIndex>=0?cellAmount(row?.[unitPriceIndex]):null,total_amount:totalIndex>=0?cellAmount(row?.[totalIndex]):null,supplier_item_code:codeIndex>=0?compact(row?.[codeIndex])||null:null,ean:eanIndex>=0?digits(row?.[eanIndex])||null:null}
+      const sourceUnitCode=unitIndex>=0?compact(row?.[unitIndex]).toLowerCase()||null:null
+      const unitCode=sourceUnitCode==='ks'&&/\b1\s*kg\b/i.test(description)?'kg':sourceUnitCode
+      const item={description,quantity,unit_code:unitCode,source_unit_code:sourceUnitCode,unit_price:unitPriceIndex>=0?cellAmount(row?.[unitPriceIndex]):null,total_amount:totalIndex>=0?cellAmount(row?.[totalIndex]):null,supplier_item_code:codeIndex>=0?compact(row?.[codeIndex])||null:null,ean:eanIndex>=0?digits(row?.[eanIndex])||null:null}
       if (!item.ean) {
         const inlineEan=description.match(/\b(\d{8}|\d{12,14})\b/)?.[1]
         if (inlineEan)item.ean=inlineEan
@@ -227,8 +229,10 @@ export function extractInvoiceTextLineItems(text = '') {
     const net=Math.min(Math.abs(firstTotal),Math.abs(secondTotal)),gross=Math.max(Math.abs(firstTotal),Math.abs(secondTotal))
     const expectedNet=quantity*unitPrice,expectedGross=net*(1+vatRate/100)
     if(Math.abs(expectedNet-net)>Math.max(1,net*0.02)||Math.abs(expectedGross-gross)>Math.max(1,gross*0.02))continue
+    const description=compact(match[2]),sourceUnitCode=compact(match[4]).toLowerCase()
+    const unitCode=sourceUnitCode==='ks'&&/\b1\s*kg\b/i.test(description)?'kg':sourceUnitCode
     result.push({
-      description:compact(match[2]),supplier_item_code:compact(match[3]),unit_code:compact(match[4]).toLowerCase(),
+      description,supplier_item_code:compact(match[3]),unit_code:unitCode,source_unit_code:sourceUnitCode,
       quantity,unit_price:unitPrice,vat_rate:vatRate,net_amount:Math.round(net*100)/100,
       vat_amount:Math.round((gross-net)*100)/100,total_amount:Math.round(gross*100)/100,source:'money_s3_text_row'
     })

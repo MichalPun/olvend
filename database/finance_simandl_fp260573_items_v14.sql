@@ -14,12 +14,12 @@ begin
     invoice_id,line_number,description,quantity,unit_code,unit_price,supplier_item_code,vat_rate,
     product_id,stock_relevant,mapping_confidence,net_amount,vat_amount,total_amount,source_payload
   ) values
-    (v_invoice_id,1,'DARKOFF VEN White choco vending 1 Kg',72,'ks',200,'980',12,null,true,null,14400,1728,16128,
-      jsonb_build_object('source','money_s3_text_row','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14')),
-    (v_invoice_id,2,'DARKOFF VEN Choco drink 15 1 Kg',72,'ks',200,'983',12,null,true,null,14400,1728,16128,
-      jsonb_build_object('source','money_s3_text_row','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14')),
-    (v_invoice_id,3,'DARKOFF VEN. Čaj LEMON 1 Kg',45,'ks',200,'652/A',12,null,true,null,9000,1080,10080,
-      jsonb_build_object('source','money_s3_text_row','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14'))
+    (v_invoice_id,1,'DARKOFF VEN White choco vending 1 Kg',72,'kg',200,'980',12,null,true,null,14400,1728,16128,
+      jsonb_build_object('source','money_s3_text_row','source_unit_code','ks','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14')),
+    (v_invoice_id,2,'DARKOFF VEN Choco drink 15 1 Kg',72,'kg',200,'983',12,null,true,null,14400,1728,16128,
+      jsonb_build_object('source','money_s3_text_row','source_unit_code','ks','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14')),
+    (v_invoice_id,3,'DARKOFF VEN. Čaj LEMON 1 Kg',45,'kg',200,'652/A',12,null,true,null,9000,1080,10080,
+      jsonb_build_object('source','money_s3_text_row','source_unit_code','ks','queue_id',35,'recovered_by','finance_simandl_fp260573_items_v14'))
   on conflict(invoice_id,line_number) do update set
     description=excluded.description,quantity=excluded.quantity,unit_code=excluded.unit_code,unit_price=excluded.unit_price,
     supplier_item_code=excluded.supplier_item_code,vat_rate=excluded.vat_rate,stock_relevant=true,
@@ -47,9 +47,9 @@ begin
 
   update public.finance_document_intake_queue
   set extracted_payload=jsonb_set(extracted_payload,'{line_items}',jsonb_build_array(
-    jsonb_build_object('description','DARKOFF VEN White choco vending 1 Kg','supplier_item_code','980','unit_code','ks','quantity',72,'unit_price',200,'vat_rate',12,'net_amount',14400,'vat_amount',1728,'total_amount',16128,'source','money_s3_text_row'),
-    jsonb_build_object('description','DARKOFF VEN Choco drink 15 1 Kg','supplier_item_code','983','unit_code','ks','quantity',72,'unit_price',200,'vat_rate',12,'net_amount',14400,'vat_amount',1728,'total_amount',16128,'source','money_s3_text_row'),
-    jsonb_build_object('description','DARKOFF VEN. Čaj LEMON 1 Kg','supplier_item_code','652/A','unit_code','ks','quantity',45,'unit_price',200,'vat_rate',12,'net_amount',9000,'vat_amount',1080,'total_amount',10080,'source','money_s3_text_row')
+    jsonb_build_object('description','DARKOFF VEN White choco vending 1 Kg','supplier_item_code','980','unit_code','kg','source_unit_code','ks','quantity',72,'unit_price',200,'vat_rate',12,'net_amount',14400,'vat_amount',1728,'total_amount',16128,'source','money_s3_text_row'),
+    jsonb_build_object('description','DARKOFF VEN Choco drink 15 1 Kg','supplier_item_code','983','unit_code','kg','source_unit_code','ks','quantity',72,'unit_price',200,'vat_rate',12,'net_amount',14400,'vat_amount',1728,'total_amount',16128,'source','money_s3_text_row'),
+    jsonb_build_object('description','DARKOFF VEN. Čaj LEMON 1 Kg','supplier_item_code','652/A','unit_code','kg','source_unit_code','ks','quantity',45,'unit_price',200,'vat_rate',12,'net_amount',9000,'vat_amount',1080,'total_amount',10080,'source','money_s3_text_row')
   ),true),processed_at=now()
   where invoice_id=v_invoice_id;
 end;
