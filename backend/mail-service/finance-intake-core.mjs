@@ -215,6 +215,31 @@ export function extractInvoiceLineItems(tablePages = []) {
   return result.slice(0,250)
 }
 
+export function extractInvoiceTextLineItems(text = '') {
+  const result=[]
+  const unitPattern='(?:ks|kg|g|l|ml|bal|balení|kart|krab|sada|m)'
+  const rowPattern=new RegExp(`^(-?\\d[\\d \\u00a0.]*[,.]\\d{2})\\s+(.+?)\\s+([A-Z0-9][A-Z0-9./_-]{0,20})\\s+(${unitPattern})\\s+(\\d{1,2}(?:[,.]\\d+)?)\\s+(\\d[\\d \\u00a0.]*[,.]\\d{3})\\s+(-?\\d[\\d \\u00a0.]*[,.]\\d{2})\\s+(-?\\d[\\d \\u00a0.]*[,.]\\d{2})$`,'i')
+  for(const rawLine of String(text||'').split(/\r?\n/)){
+    const line=compact(rawLine),match=line.match(rowPattern)
+    if(!match)continue
+    const unitPrice=amount(match[1]),quantity=amount(match[6]),vatRate=amount(match[5]),firstTotal=amount(match[7]),secondTotal=amount(match[8])
+    if([unitPrice,quantity,vatRate,firstTotal,secondTotal].some(value=>value==null)||quantity<=0||unitPrice<=0||vatRate<0||vatRate>30)continue
+    const net=Math.min(Math.abs(firstTotal),Math.abs(secondTotal)),gross=Math.max(Math.abs(firstTotal),Math.abs(secondTotal))
+    const expectedNet=quantity*unitPrice,expectedGross=net*(1+vatRate/100)
+    if(Math.abs(expectedNet-net)>Math.max(1,net*0.02)||Math.abs(expectedGross-gross)>Math.max(1,gross*0.02))continue
+    result.push({
+      description:compact(match[2]),supplier_item_code:compact(match[3]),unit_code:compact(match[4]).toLowerCase(),
+      quantity,unit_price:unitPrice,vat_rate:vatRate,net_amount:Math.round(net*100)/100,
+      vat_amount:Math.round((gross-net)*100)/100,total_amount:Math.round(gross*100)/100,source:'money_s3_text_row'
+    })
+  }
+  return result.slice(0,250)
+}
+
+export function looksLikeItemizedInvoice(text = '') {
+  return /(ozna[čc]en[ií]\s+dod[aá]vky|popis\s+polo[žz]ky|katalog).{0,100}(po[čc]et|mno[žz]stv[ií]).{0,100}(cena\s+za|jednotkov[aá]\s+cena)/is.test(String(text||''))
+}
+
 export function isLikelyInlineImage(row) {
   const name = String(row?.file_name || '').toLowerCase()
   const size = Number(row?.size_bytes || 0)
