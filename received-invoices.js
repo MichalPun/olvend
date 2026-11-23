@@ -22,6 +22,8 @@ const demoRows = [
 let rows = [], intakeRows = [], stockLocations = [], stockProducts = [], activeAllocations = [], activeTab = 'all', activeIntakeTab = 'review', selected = new Set(), activeRow = null, activeIntakeRow = null
 let moneyImport = { file:null, parsed:null, sha256:null }
 let productMappingAllocationId = null
+let invoiceSort = { key:'internal_number', direction:'asc' }, focusedRowId = null
+const invoiceCollator = new Intl.Collator('cs-CZ',{numeric:true,sensitivity:'base'})
 const statusMap = { new:['Nová','info'], approval:['Ke schválení','warn'], ready_for_payment:['K platbě','good'], in_payment_batch:['V příkazu','violet'], settled:['Uhrazeno','good'], overdue:['Po splatnosti','bad'], handoff_ready:['Pro účetní','good'], exported:['Uzavřeno','good'], rejected:['Vráceno','bad'], cancelled:['Nulový doklad',''] }
 const paymentMap = { unpaid:['Neuhrazeno','warn'], ordered:['Příkaz vytvořen','violet'], paid:['Zaplaceno','good'], partially_paid:['Částečně','warn'], cancelled:['Bez úhrady',''] }
 const accountingMap = { not_prepared:['Nepředáno účetní',''], prepared:['Připraveno účetní','info'], downloaded:['Staženo účetní','violet'], booked:['Zaúčtováno účetní','good'], returned:['Vráceno účetní','bad'] }
@@ -34,6 +36,7 @@ function badge(map, value) { const item = map[value] || [value || '—','']; ret
 function daysTo(value) { return value ? Math.ceil((new Date(`${value}T12:00:00`) - today) / 86400000) : Number.POSITIVE_INFINITY }
 function dayWord(value) { const days=Math.abs(value);return days===1?'den':days>=2&&days<=4?'dny':'dnů' }
 function dueMarkup(row) { if(!row.due_date)return '<span class="deadline warn">Bez data</span><span class="cell-sub">Doplnit splatnost</span>'; const days = daysTo(row.due_date); const cls = row.payment_status === 'paid' ? '' : days < 0 ? 'bad' : days <= 7 ? 'warn' : ''; const note = row.payment_status === 'paid' ? 'Uhrazeno' : days < 0 ? `${Math.abs(days)} ${dayWord(days)} po splatnosti` : days === 0 ? 'Dnes' : `Za ${days} ${dayWord(days)}`; return `<span class="deadline ${cls}">${date(row.due_date)}</span><span class="cell-sub">${note}</span>` }
+function remainingAmount(row){return Number(row.operational_remaining_amount??row.money_remaining_amount??(row.payment_status==='paid'?0:Math.abs(Number(row.total_amount||0))))}
 
 function matchesTab(row) {
   if (activeTab === 'all') return true
@@ -48,7 +51,13 @@ function matchesTab(row) {
 
 function filteredRows() {
   const query = $('searchInput').value.trim().toLowerCase(); const category = $('categoryFilter').value; const owner = $('ownerFilter').value; const due = $('dueFilter').value
-  return rows.filter((row) => matchesTab(row) && (!query || `${row.internal_number} ${row.document_number} ${row.supplier_name} ${row.variable_symbol}`.toLowerCase().includes(query)) && (!category || row.category === category) && (!owner || row.owner === owner) && (!due || (due === 'overdue' ? daysTo(row.due_date) < 0 && row.payment_status !== 'paid' : daysTo(row.due_date) >= 0 && daysTo(row.due_date) <= Number(due))))
+  const visible=rows.filter((row) => matchesTab(row) && (!query || `${row.internal_number} ${row.document_number} ${row.supplier_name} ${row.variable_symbol} ${row.bank_account||''} ${row.category||''}`.toLowerCase().includes(query)) && (!category || row.category === category) && (!owner || row.owner === owner) && (!due || (due === 'overdue' ? daysTo(row.due_date) < 0 && row.payment_status !== 'paid' : daysTo(row.due_date) >= 0 && daysTo(row.due_date) <= Number(due))))
+  const value=(row)=>invoiceSort.key==='remaining'?remainingAmount(row):row[invoiceSort.key]
+  return visible.sort((left,right)=>{
+    const a=value(left),b=value(right)
+    const result=['total_amount','remaining'].includes(invoiceSort.key)?Number(a||0)-Number(b||0):invoiceCollator.compare(String(a??''),String(b??''))
+    return invoiceSort.direction==='asc'?result:-result
+  })
 }
 
 function renderMetrics() {
@@ -100,6 +109,7 @@ function renderIntakeCounts(){
   $('intakeTabIgnoredCount').textContent=count(['ignored'])
   $('intakeTabFailedCount').textContent=count(['failed'])
   $('intakeTabAllCount').textContent=intakeRows.length
+  $('workspaceInboxCount').textContent=review
 }
 
 function renderIntake(){
@@ -174,11 +184,18 @@ async function reviewIntake(action){
 
 function renderTable() {
   const visible = filteredRows()
-  $('invoiceBody').innerHTML = visible.length ? visible.map((row) => `<tr data-id="${row.id}" class="${selected.has(row.id) ? 'selected' : ''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id) ? 'checked' : ''}></td><td><span class="cell-main">${escapeHtml(row.internal_number)}</span><span class="cell-sub">${escapeHtml(row.document_number)} · VS ${escapeHtml(row.variable_symbol || '—')}</span></td><td><span class="cell-main">${escapeHtml(row.supplier_name)}</span><span class="cell-sub">IČ ${escapeHtml(row.supplier_id || '—')} · ${row.source_provider==='money_s3'?'<b>Money S3</b> · ':''}${escapeHtml(row.attachment_name || 'bez originálu')}</span></td><td>${date(row.issue_date)}<span class="cell-sub">DUZP ${date(row.taxable_date)}</span></td><td>${dueMarkup(row)}</td><td><span class="cell-main">${escapeHtml(row.category || 'Nezařazeno')}</span><span class="cell-sub">${badge(stockMap,row.stock_receipt_status||'not_applicable')}</span></td><td class="money">${money(row.net_amount,row.currency)}</td><td class="money">${money(row.total_amount,row.currency)}</td><td>${badge(statusMap,row.payment_status !== 'paid' && daysTo(row.due_date) < 0 ? 'overdue' : row.status)}</td><td>${badge(paymentMap,row.payment_status)}</td><td><button class="btn ghost small open-row" data-id="${row.id}" type="button">Detail</button></td></tr>`).join('') : '<tr><td colspan="11"><div class="empty">Pro zvolené filtry tu nejsou žádné faktury.</div></td></tr>'
+  $('invoiceBody').innerHTML = visible.length ? visible.map((row) => {
+    const remaining=remainingAmount(row),sourceMark=row.source_provider==='money_s3'?'<span class="invoice-source-mark">Money</span>':'',attachmentMark=row.attachment_name?'<span class="invoice-source-mark attachment" title="Doklad má originální přílohu">● příloha</span>':''
+    return `<tr data-id="${row.id}" class="${selected.has(row.id)?'selected ':''}${focusedRowId===row.id?'focused':''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id)?'checked':''}></td><td><span class="cell-main">${escapeHtml(row.internal_number)}</span>${sourceMark}${attachmentMark}</td><td><span class="cell-main">${escapeHtml(row.document_number||'—')}</span><span class="cell-sub">${escapeHtml(row.document_class==='credit_note'?'Dobropis':'Faktura')}</span></td><td><span class="cell-main">${escapeHtml(row.supplier_name)}</span><span class="cell-sub">IČ ${escapeHtml(row.supplier_id||'—')}</span></td><td>${escapeHtml(row.variable_symbol||'—')}</td><td>${date(row.issue_date)}<span class="cell-sub">DUZP ${date(row.taxable_date)}</span></td><td>${dueMarkup(row)}</td><td class="money">${money(row.total_amount,row.currency)}</td><td class="money ${remaining>.01?'agenda-remaining':''}">${money(remaining,row.currency)}</td><td>${badge(paymentMap,row.payment_status)}</td><td>${badge(stockMap,row.stock_receipt_status||'not_applicable')}</td><td>${badge(accountingMap,row.accounting_status||'not_prepared')}</td><td><button class="btn ghost small open-row" data-id="${row.id}" type="button">Otevřít</button></td></tr>`
+  }).join('') : '<tr><td colspan="13"><div class="empty">Pro zvolený filtr nejsou žádné faktury.</div></td></tr>'
   document.querySelectorAll('.row-check').forEach((el) => el.addEventListener('change', () => toggleSelection(Number(el.dataset.id), el.checked)))
   document.querySelectorAll('.open-row').forEach((el) => el.addEventListener('click', () => openDrawer(Number(el.dataset.id)).catch(error=>setStatus(error.message,'error'))))
-  document.querySelectorAll('tbody tr[data-id]').forEach((el) => el.addEventListener('dblclick', () => openDrawer(Number(el.dataset.id)).catch(error=>setStatus(error.message,'error'))))
+  document.querySelectorAll('#invoiceBody tr[data-id]').forEach((el) => {el.addEventListener('click',(event)=>{if(event.target.closest('button,input'))return;focusedRowId=Number(el.dataset.id);document.querySelectorAll('#invoiceBody tr').forEach((row)=>row.classList.toggle('focused',row===el))});el.addEventListener('dblclick', () => openDrawer(Number(el.dataset.id)).catch(error=>setStatus(error.message,'error')))})
   $('selectAll').checked = visible.length > 0 && visible.every((row) => selected.has(row.id)); updateSelectionBar()
+  $('invoiceVisibleCount').textContent=integer(visible.length)
+  $('invoiceVisibleTotal').textContent=money(visible.reduce((sum,row)=>sum+Number(row.total_amount||0),0))
+  $('invoiceVisibleRemaining').textContent=money(visible.reduce((sum,row)=>sum+remainingAmount(row),0))
+  document.querySelectorAll('.sort-button').forEach((button)=>{button.classList.toggle('active',button.dataset.sort===invoiceSort.key);button.classList.toggle('desc',button.dataset.sort===invoiceSort.key&&invoiceSort.direction==='desc')})
 }
 
 function updateSelectionBar() { const count = selected.size; $('selectionBar').classList.toggle('show', count > 0); $('selectionText').textContent = `${count} ${count === 1 ? 'vybraná faktura' : count < 5 ? 'vybrané faktury' : 'vybraných faktur'}` }
@@ -302,8 +319,11 @@ async function updateInvoice(id,patch,successText){
 }
 
 document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => { activeTab = button.dataset.tab; document.querySelectorAll('[data-tab]').forEach((item) => item.classList.toggle('active',item === button)); selected.clear(); renderTable() }))
+document.querySelectorAll('[data-workspace]').forEach((button)=>button.addEventListener('click',()=>{const inbox=button.dataset.workspace==='inbox';$('invoiceWorkspace').hidden=inbox;$('intakeReviewPanel').hidden=!inbox;document.querySelectorAll('[data-workspace]').forEach((item)=>item.classList.toggle('active',item===button));if(inbox)renderIntake();else renderTable()}))
+document.querySelectorAll('.sort-button').forEach((button)=>button.addEventListener('click',()=>{const key=button.dataset.sort;invoiceSort=invoiceSort.key===key?{key,direction:invoiceSort.direction==='asc'?'desc':'asc'}:{key,direction:'asc'};renderTable()}))
 document.querySelectorAll('[data-intake-tab]').forEach((button)=>button.addEventListener('click',()=>{activeIntakeTab=button.dataset.intakeTab;document.querySelectorAll('[data-intake-tab]').forEach((item)=>item.classList.toggle('active',item===button));renderIntake()}))
 ;['searchInput','categoryFilter','dueFilter','ownerFilter'].forEach((id) => $(id).addEventListener(id === 'searchInput' ? 'input' : 'change',renderTable))
+$('resetFiltersBtn').addEventListener('click',()=>{$('searchInput').value='';$('categoryFilter').value='';$('dueFilter').value='';$('ownerFilter').value='';activeTab='all';invoiceSort={key:'internal_number',direction:'asc'};document.querySelectorAll('[data-tab]').forEach((item)=>item.classList.toggle('active',item.dataset.tab==='all'));renderTable()})
 ;$('intakeSearchInput').addEventListener('input',renderIntake);$('intakeClassFilter').addEventListener('change',renderIntake);$('intakeRefreshBtn').addEventListener('click',()=>load())
 $('selectAll').addEventListener('change',() => { filteredRows().forEach((row) => $('selectAll').checked ? selected.add(row.id) : selected.delete(row.id)); renderTable() })
 $('drawerClose').addEventListener('click',closeDrawer); $('drawerBackdrop').addEventListener('click',(event) => { if (event.target === $('drawerBackdrop')) closeDrawer() })
@@ -316,7 +336,7 @@ $('batchBtn').addEventListener('click',openBatch); $('newBatchTopBtn').addEventL
 $('moneyImportBtn').addEventListener('click',openMoneyImport);$('moneyImportClose').addEventListener('click',closeMoneyImport);$('moneyImportCancel').addEventListener('click',closeMoneyImport);$('moneyImportModal').addEventListener('click',(event)=>{if(event.target===$('moneyImportModal'))closeMoneyImport()});$('moneyXmlFile').addEventListener('change',previewMoneyFile);$('moneyImportRun').addEventListener('click',runMoneyImport)
 $('approveBtn').addEventListener('click',async() => { const ids=[...selected];if(!ids.length)return;try{if(preview){rows.filter((row)=>selected.has(row.id)).forEach((row)=>{row.status='ready_for_payment'})}else{const {error}=await supabase.from('finance_received_invoices').update({status:'ready_for_payment',approved_at:new Date().toISOString(),updated_at:new Date().toISOString()}).in('id',ids);if(error)throw error;await load()}selected.clear();renderAll();setStatus(`${ids.length} doklady byly schváleny.`,'success')}catch(error){setStatus(error.message,'error')}})
 $('assignBtn').addEventListener('click',() => setStatus('Hromadné přiřazení bude navázané na seznam odpovědných osob.','success'))
-$('syncBtn').addEventListener('click',async()=>{const button=$('syncBtn');button.disabled=true;button.textContent='Synchronizuji…';setStatus('Načítám nové přílohy z fakturace@olmika.cz…');try{if(!preview)await mailApi('/finance/sync',{method:'POST',timeoutMs:120000});await load()}catch(error){setStatus(`Synchronizace se nezdařila: ${error.message}`,'error','Zkontrolujte napojení schránky')}finally{button.disabled=false;button.textContent='Synchronizovat e-mail'}})
+$('syncBtn').addEventListener('click',async()=>{const button=$('syncBtn'),original=button.innerHTML;button.disabled=true;button.innerHTML='<span class="agenda-tool-icon">…</span><span><b>Synchronizuji</b><small>Čekejte prosím</small></span>';setStatus('Načítám nové přílohy z fakturace@olmika.cz…');try{if(!preview)await mailApi('/finance/sync',{method:'POST',timeoutMs:120000});await load()}catch(error){setStatus(`Synchronizace se nezdařila: ${error.message}`,'error','Zkontrolujte napojení schránky')}finally{button.disabled=false;button.innerHTML=original}})
 if (window.OlvendSidebar) { window.OlvendSidebar.initMobileNav($('mobileNavShell')); window.OlvendSidebar.setActive('received-invoices') }
 if (preview) document.querySelectorAll('a[href="accountant-portal.html"]').forEach((link) => { link.href = 'accountant-portal.html?preview=1' })
 load()
