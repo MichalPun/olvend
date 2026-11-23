@@ -276,6 +276,7 @@ $('refreshBtn').addEventListener('click',load)
 $('periodSelect').addEventListener('change',load)
 $('collapseRowsBtn').addEventListener('click',()=>{detailsCollapsed=!detailsCollapsed;$('collapseRowsBtn').textContent=detailsCollapsed?'Rozbalit skupiny':'Sbalit skupiny';if(resultRows.length)renderResultTable(resultRows)})
 $('exportResultBtn').addEventListener('click',()=>setStatus('Export výsledovky bude navázaný na stejná živá data jako tento přehled.','success','Náhled · soubor se zatím nevytváří'))
+$('exportResultTopBtn').addEventListener('click',()=>$('exportResultBtn').click())
 document.querySelectorAll('.sheet-tabs button').forEach((button)=>button.addEventListener('click',()=>{document.querySelectorAll('.sheet-tabs button').forEach((item)=>item.classList.toggle('active',item===button));$('formulaOutput').textContent=button.textContent==='Výsledovka'?'= Tržby − přímé náklady − provozní náklady':`${button.textContent} · připravovaný list`}))
 initializePeriods()
 if(window.OlvendSidebar){window.OlvendSidebar.initMobileNav($('mobileNavShell'));window.OlvendSidebar.setActive('finance-overview')}

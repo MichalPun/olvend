@@ -27,6 +27,9 @@ function render(){
   $('metricVat').textContent=money(packageData?.vat_total??vat)
   $('metricAccepted').textContent=packageData?.status==='accepted'?(packageData.document_count||documents.length):0
   $('metricReturned').textContent=documents.filter((row)=>row.status==='returned').length
+  $('accountantVisibleCount').textContent=documents.length
+  $('accountantVisibleTotal').textContent=money(documents.reduce((sum,row)=>sum+Number(row.total||0),0))
+  $('accountantSelectedCount').textContent=selected.size
   $('documentBody').innerHTML=documents.length?documents.map((row)=>`<tr class="${selected.has(row.id)?'selected':''}"><td><input class="check row-check" data-id="${row.id}" type="checkbox" ${selected.has(row.id)?'checked':''}></td><td><span class="cell-main">${escapeHtml(row.number)}</span></td><td><span class="cell-main">${escapeHtml(row.supplier)}</span><span class="cell-sub">${escapeHtml(row.file)}</span></td><td>${date(row.taxable)}</td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.center)}</td><td class="money">${money(row.net)}</td><td class="money">${money(row.vat)}</td><td class="money">${money(row.total)}</td><td><span class="badge ${row.payment==='Uhrazeno'?'good':'violet'}">${escapeHtml(row.payment)}</span></td><td><button class="btn secondary stamped-download" data-id="${row.id}" type="button" style="padding:7px 10px;white-space:nowrap">PDF s razítkem</button></td></tr>`).join(''):'<tr><td colspan="11"><div class="empty">Žádný balíček zatím není připravený.</div></td></tr>'
   document.querySelectorAll('.row-check').forEach((element)=>element.addEventListener('change',()=>{element.checked?selected.add(Number(element.dataset.id)):selected.delete(Number(element.dataset.id));render()}))
   document.querySelectorAll('.stamped-download').forEach((element)=>element.addEventListener('click',()=>downloadStampedInvoice(Number(element.dataset.id)).catch((error)=>setStatus(error.message,'error'))))
@@ -55,6 +58,7 @@ function closeReturn(){$('returnModal').classList.remove('show')}
 $('selectAll').addEventListener('change',()=>{selected=$('selectAll').checked?new Set(documents.map((row)=>row.id)):new Set();render()})
 $('downloadReadyBtn').addEventListener('click',()=>downloadBatch().catch((error)=>setStatus(error.message,'error')))
 $('acceptBatchBtn').addEventListener('click',()=>{if(preview)setStatus('Převzetí balíčku bylo potvrzeno v náhledu.','success','Náhled · bez zápisu')})
+$('acceptBatchTopBtn').addEventListener('click',()=>$('acceptBatchBtn').click())
 $('returnSelectedBtn').addEventListener('click',openReturn);$('returnClose').addEventListener('click',closeReturn);$('returnCancel').addEventListener('click',closeReturn)
 $('returnConfirm').addEventListener('click',()=>{const reason=$('returnReason').value.trim();if(!reason){setStatus('Doplňte důvod vrácení.','error');return}closeReturn();setStatus(`${selected.size} doklady byly v náhledu vráceny k doplnění.`,'success',reason);selected.clear();render()})
 
