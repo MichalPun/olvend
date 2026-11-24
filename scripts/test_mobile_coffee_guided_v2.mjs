@@ -47,6 +47,7 @@ assert.match(html, /accepted: true,[\s\S]*?physicalChecked: true[\s\S]*?await sa
 assert.match(html, /async saveContainer\(containerId, actualBefore, packages, addOutsidePicklist\)[\s\S]*?allPhysicallyChecked[\s\S]*?refillReviewed = true[\s\S]*?saveCoffeePreparation\(operatorRouteStopId, 'machine'\)/, 'Po fyzické kontrole všech zásobníků bez doplnění musí aplikace přejít k hotovosti')
 assert.match(operatorPicklist, /liveCall\('saveContainer',item\.id,before,packages/, 'Operátorské doplnění musí volat jedinou ukládací operaci')
 assert.match(operatorPicklist, /physicalChecked:Boolean\(container\.physicalChecked\)/, 'OLVEND Operátor musí převzít fyzické potvrzení ze živého enginu')
+assert.match(operatorPicklist, /prepared:container\.picked\?Number\(container\.packages\|\|0\)/, 'Volba Nevzít nesmí po načtení obnovit původní doporučené množství')
 assert.match(operatorPicklist, /zeroRefillReview=snapshot\.stage==='refill'&&!mapped\.some\(item=>item\.prepared>0\)/, 'Při návštěvě bez doplnění musí OLVEND Operátor projít všechny skutečné zásobníky')
 assert.match(operatorPicklist, /zeroRefillReview\?items\.findIndex\(item=>!item\.physicalChecked\)/, 'Po potvrzení položky bez doplnění musí OLVEND Operátor otevřít další nezkontrolovaný zásobník')
 assert.equal((operatorPicklist.match(/querySelector\('\[data-confirm\]'\)\.addEventListener\('click'/g) || []).length, 1, 'Jedno potvrzení doplnění smí obsluhovat jen jeden click handler')
