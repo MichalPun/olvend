@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v262-shift-start-weather';
+const CACHE_NAME = 'olvend-v263-mobile-vehicle-picker';
 const APP_SHELL = [
   './',
   './index.html',
@@ -35,6 +35,11 @@ const APP_SHELL = [
   './icons/warehouse-192.png',
   './icons/warehouse-512.png',
   './icons/warehouse-maskable-512.png',
+  './assets/vehicles/fiat-doblo-2012.png',
+  './assets/vehicles/fiat-doblo-modern.png',
+  './assets/vehicles/opel-combo-2024-passenger.png',
+  './assets/vehicles/opel-movano-older.png',
+  './assets/vehicles/renault-kangoo-2019.png',
   './mobile-personal-zone.js',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
