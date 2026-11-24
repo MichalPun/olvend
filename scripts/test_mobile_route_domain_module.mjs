@@ -45,6 +45,21 @@ assert.equal(domain.getRouteStopStatus(stops[1]), 'arrived')
 assert.deepEqual(domain.getRouteStops(plans[1]).map((stop) => stop.id), ['s1', 's2', 's3'],
   'Rozpracovaná zastávka se nesmí přeřadit pod nově schválený automat')
 
+visits.push(
+  { id: 12, route_plan_stop_id: 's2', route_plan_id: 'p1', machine_id: 'm2', status: 'arrived', arrived_at: '2026-10-21T08:40:00Z' },
+  { id: 11, route_plan_stop_id: 's2', route_plan_id: 'p1', machine_id: 'm2', status: 'arrived', arrived_at: '2026-10-21T08:35:00Z' }
+)
+assert.equal(domain.getRouteVisitForStop(stops[1]).id, 12,
+  'Při duplicitní návštěvě stejné zastávky se musí použít nejnovější záznam bez ohledu na pořadí cache')
+
+const fallbackStop = { id: 'legacy-stop', route_plan_id: 'p1', machine_id: 'm4' }
+visits.push(
+  { id: 21, route_plan_id: 'p1', machine_id: 'm4', status: 'arrived' },
+  { id: 20, route_plan_id: 'p1', machine_id: 'm4', status: 'arrived' }
+)
+assert.equal(domain.getRouteVisitForStop(fallbackStop).id, 21,
+  'Také starší návštěvy bez vazby na zastávku musí vybrat nejnovější záznam')
+
 function createClient(handler) {
   return {
     from(table) {

@@ -25,11 +25,30 @@ export function createRouteDomain({
   }
 
   function getRouteVisitForStop(stop) {
-    return getVisits().find((visit) => String(visit.route_plan_stop_id || '') === String(stop?.id || ''))
-      || getVisits().find((visit) => (
+    const pickNewestVisit = (visits) => visits.reduce((newest, visit) => {
+      if (!newest) return visit
+
+      // Production visits use an increasing numeric primary key. Prefer it
+      // over timestamps because a late sync can update an older duplicate.
+      const newestId = Number(newest.id)
+      const visitId = Number(visit.id)
+      if (Number.isFinite(newestId) && Number.isFinite(visitId) && newestId !== visitId) {
+        return visitId > newestId ? visit : newest
+      }
+
+      const newestTime = Date.parse(newest.created_at || newest.offline_created_at || newest.arrived_at || '')
+      const visitTime = Date.parse(visit.created_at || visit.offline_created_at || visit.arrived_at || '')
+      if (Number.isFinite(newestTime) && Number.isFinite(visitTime) && newestTime !== visitTime) {
+        return visitTime > newestTime ? visit : newest
+      }
+      return String(visit.id || '').localeCompare(String(newest.id || '')) > 0 ? visit : newest
+    }, null)
+
+    return pickNewestVisit(getVisits().filter((visit) => String(visit.route_plan_stop_id || '') === String(stop?.id || '')))
+      || pickNewestVisit(getVisits().filter((visit) => (
         String(visit.machine_id || '') === String(stop?.machine_id || '')
         && String(visit.route_plan_id || '') === String(stop?.route_plan_id || '')
-      ))
+      )))
       || null
   }
 
