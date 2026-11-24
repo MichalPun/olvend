@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v264-mobile-shift-clarity';
+const CACHE_NAME = 'olvend-v265-mobile-home-pda-style';
 const APP_SHELL = [
   './',
   './index.html',
