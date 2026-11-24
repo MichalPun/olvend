@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v260-all-negative-load';
+const CACHE_NAME = 'olvend-v261-route-visit-identity';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,7 +8,7 @@ const APP_SHELL = [
   './mobile-coffee-domain.js?v=20261026-initial-count-v3',
   './mobile-food-visit.js?v=20261116-data-guard-v1',
   './mobile-food-domain.js?v=20261021-food-domain-v1',
-  './mobile-route-domain.js?v=20261021-route-domain-v1',
+  './mobile-route-domain.js?v=20261124-visit-identity-v2',
   './mobile-control.html',
   './control-route-protocol.html',
   './controlling.html',
