@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v261-route-visit-identity';
+const CACHE_NAME = 'olvend-v262-shift-start-weather';
 const APP_SHELL = [
   './',
   './index.html',
