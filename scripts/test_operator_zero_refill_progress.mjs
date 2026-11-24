@@ -20,8 +20,13 @@ assert.match(
   'Poslední fyzická kontrola bez doplnění musí uzavřít refill krok.'
 )
 assert.match(
+  mobile,
+  /async completeZeroRefillReview\(\)[\s\S]*?guided-confirm-no-refill/,
+  'Rozpracovaná návštěva z doby před opravou musí umět dokončit už provedenou fyzickou kontrolu.'
+)
+assert.match(
   operator,
-  /prepared:container\.picked\?Number\(container\.packages\|\|0\)[\s\S]*?physicalChecked:Boolean\(container\.physicalChecked\)[\s\S]*?zeroRefillReview=snapshot\.stage==='refill'&&!mapped\.some\(item=>item\.prepared>0\)[\s\S]*?zeroRefillReview\?items\.findIndex\(item=>!item\.physicalChecked\)/,
+  /prepared:container\.picked\?Number\(container\.packages\|\|0\)[\s\S]*?physicalChecked:Boolean\(container\.physicalChecked\)[\s\S]*?zeroRefillReview=snapshot\.stage==='refill'&&!mapped\.some\(item=>item\.prepared>0\)[\s\S]*?zeroRefillReview\?items\.findIndex\(item=>!item\.physicalChecked\)[\s\S]*?completeZeroRefillReview/,
   'OLVEND Operátor musí po potvrzení otevřít další fyzicky nezkontrolovaný zásobník.'
 )
 
