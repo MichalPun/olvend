@@ -21,7 +21,7 @@ assert.match(
 )
 assert.match(
   operator,
-  /physicalChecked:Boolean\(container\.physicalChecked\)[\s\S]*?zeroRefillReview=snapshot\.stage==='refill'&&!mapped\.some\(item=>item\.prepared>0\)[\s\S]*?zeroRefillReview\?items\.findIndex\(item=>!item\.physicalChecked\)/,
+  /prepared:container\.picked\?Number\(container\.packages\|\|0\)[\s\S]*?physicalChecked:Boolean\(container\.physicalChecked\)[\s\S]*?zeroRefillReview=snapshot\.stage==='refill'&&!mapped\.some\(item=>item\.prepared>0\)[\s\S]*?zeroRefillReview\?items\.findIndex\(item=>!item\.physicalChecked\)/,
   'OLVEND Operátor musí po potvrzení otevřít další fyzicky nezkontrolovaný zásobník.'
 )
 
