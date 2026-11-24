@@ -128,13 +128,33 @@
     return count + ' fyzických zastávek'
   }
 
+  function newestVisitForStop(routeVisits, stopId) {
+    return (routeVisits || []).filter(function (visit) {
+      return String(visit.route_plan_stop_id) === String(stopId)
+    }).reduce(function (newest, visit) {
+      if (!newest) return visit
+      var newestId = Number(newest.id)
+      var visitId = Number(visit.id)
+      if (Number.isFinite(newestId) && Number.isFinite(visitId) && newestId !== visitId) {
+        return visitId > newestId ? visit : newest
+      }
+      var newestTime = Date.parse(newest.completed_at || newest.arrived_at || '')
+      var visitTime = Date.parse(visit.completed_at || visit.arrived_at || '')
+      return Number.isFinite(visitTime) && (!Number.isFinite(newestTime) || visitTime > newestTime) ? visit : newest
+    }, null)
+  }
+
   function visitFor(stop) {
-    return visits.find(function (visit) { return String(visit.route_plan_stop_id) === String(stop.id) }) || null
+    return newestVisitForStop(visits, stop && stop.id)
   }
 
   function stopStatus(stop) {
+    var savedStopStatus = String(stop && stop.status || '').toLowerCase()
+    // The route stop is the durable route state. An older duplicated visit
+    // must never reopen a stop that the server already closed.
+    if (['done', 'completed', 'skipped'].indexOf(savedStopStatus) !== -1) return savedStopStatus
     var visit = visitFor(stop)
-    return String(visit && visit.status || stop.status || 'planned').toLowerCase()
+    return String(visit && visit.status || savedStopStatus || 'planned').toLowerCase()
   }
 
   function isClosed(stop) {

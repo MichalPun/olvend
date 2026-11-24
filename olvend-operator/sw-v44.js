@@ -1,7 +1,7 @@
 (function () {
   'use strict'
 
-  var CACHE_NAME = 'olvend-operator-v57-production-audit'
+  var CACHE_NAME = 'olvend-operator-v58-latest-route-visit'
   var APP_SHELL = [
     './',
     './index.html',
@@ -20,7 +20,7 @@
     './approved-home-v35.js?v=20261119-unrestricted-shift-start-v2',
     './operator-dashboard-v1.css?v=20261117-1',
     './operator-dashboard-v1.js?v=20261120-live-regression-v1',
-    './operator-route.js?v=20261120-live-regression-v1',
+    './operator-route.js?v=20261124-latest-visit-v2',
     './operator-warehouse.js?v=20261120-live-regression-v1',
     './operator-warehouse-v2.css',
     './operator-profile-v11.js',
