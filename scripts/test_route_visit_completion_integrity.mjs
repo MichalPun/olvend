@@ -5,6 +5,7 @@ const mobile = fs.readFileSync(new URL('../mobile.html', import.meta.url), 'utf8
 const completionModule = fs.readFileSync(new URL('../mobile-route-completion.js', import.meta.url), 'utf8')
 const routeDomain = fs.readFileSync(new URL('../mobile-route-domain.js', import.meta.url), 'utf8')
 const sql = fs.readFileSync(new URL('../database/route_stock_integrity_monitor_v64.sql', import.meta.url), 'utf8')
+const duplicateSyncSql = fs.readFileSync(new URL('../database/route_visit_duplicate_sync_v67.sql', import.meta.url), 'utf8')
 
 assert.match(mobile, /if \(!\(detail\.containers \|\| \[\]\)\.length\)/)
 assert.match(mobile, /nemá nastavený plánogram zásobníků/)
@@ -28,5 +29,9 @@ assert.match(sql, /machine_planogram_slots[\s\S]+slot\.active = true/)
 assert.match(sql, /item\.planogram_slot_id = slot\.id[\s\S]+item\.accepted_at is not null/)
 assert.match(sql, /using errcode = '23514'/)
 assert.match(sql, /before insert on public\.route_machine_visits/)
+
+assert.match(duplicateSyncSql, /create or replace function public\.sync_route_visit_state_from_stop\(\)/)
+assert.match(duplicateSyncSql, /where visit\.id = \([\s\S]+order by candidate\.id desc[\s\S]+limit 1/)
+assert.doesNotMatch(duplicateSyncSql, /where visit\.route_plan_stop_id = new\.id/)
 
 console.log('PASS: mobile and database both block incomplete route-visit completion')
