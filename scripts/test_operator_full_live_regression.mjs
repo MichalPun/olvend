@@ -34,13 +34,21 @@ assert.match(food, /photo\.addEventListener\('error'/)
 assert.match(route, /Trasa zahájena v/)
 assert.match(route, /locationCountLabel/)
 assert.match(route, /machineCountLabel/)
+const newestVisitSource = route.match(/function newestVisitForStop\(routeVisits, stopId\) \{[\s\S]*?\n  \}/)?.[0]
+assert.ok(newestVisitSource, 'OLVEND Operátor musí vybírat nejnovější návštěvu zastávky')
+const newestVisitForStop = Function(`return (${newestVisitSource})`)()
+assert.equal(newestVisitForStop([
+  { id: 2008, route_plan_stop_id: 2821, status: 'arrived' },
+  { id: 2010, route_plan_stop_id: 2821, status: 'completed' }
+], 2821).id, 2010)
+assert.match(route, /if \(\['done', 'completed', 'skipped'\]\.indexOf\(savedStopStatus\) !== -1\) return savedStopStatus/)
 assert.match(warehouse, /metric\('UPRAVENO',changed/)
 assert.match(vehicle, /totals\[category\]\[unit\]/)
 assert.match(vehicle, /alt="' \+ escapeHtml\(row\.product_name\)/)
 assert.match(dashboard, /Math\.max\(number\(vehicle\.current_odometer_km\),Math\.round\(start\+plannedDriven\)\)/)
 assert.match(dashboard, /group\.stops\.every/)
 assert.match(vehicle, /estimatedVehicleOdometer\(\) - Number\(log\.start_odometer_km/)
-assert.match(worker, /olvend-operator-v57-production-audit/)
+assert.match(worker, /olvend-operator-v58-latest-route-visit/)
 assert.ok(existsSync(new URL('../assets/product-images/200001.png', import.meta.url)))
 assert.ok(existsSync(new URL('../assets/product-images/265.jpg', import.meta.url)))
 
