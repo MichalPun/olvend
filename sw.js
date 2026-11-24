@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v263-mobile-vehicle-picker';
+const CACHE_NAME = 'olvend-v264-mobile-shift-clarity';
 const APP_SHELL = [
   './',
   './index.html',
