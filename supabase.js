@@ -102,7 +102,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 })
 
 // UI guard complements database authorization; it is not the security boundary.
-const publicPages = new Set(['', 'index.html', 'zebra-login.html', 'machine-qr.html', 'route-skip-approval.html', 'route-add-approval.html'])
+const publicPages = new Set(['', 'index.html', 'accountant-login.html', 'zebra-login.html', 'machine-qr.html', 'route-skip-approval.html', 'route-add-approval.html'])
 const restrictedPortalPages = new Set(['accountant-portal.html'])
 const internalFinancePages = new Set(['finance.html', 'received-invoices.html', 'finance-settings.html'])
 const pageName = window.location.pathname.split('/').pop()
@@ -110,7 +110,7 @@ const localPreview = ['127.0.0.1', 'localhost'].includes(window.location.hostnam
 if (!publicPages.has(pageName) && !localPreview) {
   const { data: sessionData } = await supabase.auth.getSession()
   if (!sessionData?.session) {
-    window.location.replace('index.html')
+    window.location.replace(restrictedPortalPages.has(pageName) ? 'accountant-login.html' : 'index.html')
     throw new Error('Pro pokračování se přihlaste.')
   }
   // An existing local session may open cached PWA data without a network.
@@ -124,7 +124,8 @@ if (!publicPages.has(pageName) && !localPreview) {
     const active = restrictedPortal ? Boolean(accessCheck.data) : internalFinance ? accessCheck.data === 'internal' : accessCheck.data === true
     if (accessCheck.error || !active) {
       if ((restrictedPortal || internalFinance) && !accessCheck.error) {
-        window.location.replace(restrictedPortal ? 'finance.html' : 'dashboard.html')
+        if (restrictedPortal) await supabase.auth.signOut({ scope: 'local' })
+        window.location.replace(restrictedPortal ? 'accountant-login.html' : accessCheck.data === 'accountant' ? 'accountant-portal.html' : 'dashboard.html')
         throw new Error(restrictedPortal ? 'Přístup k portálu účetní není aktivní.' : 'Přístup k financím vyžaduje manažerské oprávnění.')
       }
       if (!accessCheck.error || accessCheck.error.code === '42501') await supabase.auth.signOut({ scope: 'local' })
