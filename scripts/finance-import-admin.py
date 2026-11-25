@@ -72,70 +72,76 @@ def gpc_date(value: str) -> str | None:
 def gpc_rows(path: Path) -> tuple[list[dict], str, int]:
     import_sha = hashlib.sha256(path.read_bytes()).hexdigest()
     rows: list[dict] = []
-    with zipfile.ZipFile(path) as archive:
-        members = sorted(name for name in archive.namelist() if name.lower().endswith(".gpc"))
-        for name in members:
-            raw = archive.read(name)
-            source_sha = hashlib.sha256(raw).hexdigest()
-            lines = raw.decode("cp1250").splitlines()
-            header = next((line for line in lines if line.startswith("074")), None)
-            if not header:
-                continue
-            account_id = header[3:19].lstrip("0") or "0"
-            statement_number = header[105:108].strip()
-            currency_match = re.search(r"_(CZK|EUR)_", name, re.I)
-            currency = currency_match.group(1).upper() if currency_match else "CZK"
-            current: dict | None = None
-            sequence = 0
-            for line in lines:
-                if line.startswith("075"):
-                    if current:
-                        rows.append(current)
-                    sequence += 1
-                    code = line[60:61]
-                    amount = Decimal(line[48:60] or "0") / 100
-                    if code in {"1", "4"}:
-                        amount = -amount
-                    counter_account = line[19:35].lstrip("0") or None
-                    bank_code = line[73:77].strip() or None
-                    variable_symbol = line[61:71].strip().lstrip("0") or None
-                    name_value = line[97:117].strip() or None
-                    booked_on = gpc_date(line[122:128]) or gpc_date(header[108:114])
-                    value_on = gpc_date(line[91:97])
-                    fingerprint = f"{account_id}|{name}|{sequence}|{line}".encode("utf-8")
-                    current = {
-                        "account_id": account_id,
-                        "external_id": hashlib.sha256(fingerprint).hexdigest(),
-                        "booked_on": booked_on,
-                        "value_on": value_on,
-                        "amount": float(amount),
-                        "currency": currency,
-                        "counterparty_name": name_value,
-                        "counterparty_account": counter_account,
-                        "counterparty_bank_code": bank_code,
-                        "variable_symbol": variable_symbol,
-                        "message": None,
-                        "statement_number": statement_number,
-                        "booking_code": code,
-                        "source_file_name": name,
-                        "source_file_sha256": source_sha,
-                        "source_sequence": sequence,
-                        "import_sha256": import_sha,
-                    }
-                elif current and line[:3] in {"078", "079"}:
-                    addition = line[3:].strip()
-                    if addition:
-                        current["message"] = " ".join(filter(None, [current.get("message"), addition]))
-            if current:
-                rows.append(current)
-    return rows, import_sha, len(members)
+    if path.suffix.lower() == ".gpc":
+        sources = [(path.name, path.read_bytes())]
+    else:
+        with zipfile.ZipFile(path) as archive:
+            sources = [
+                (name, archive.read(name))
+                for name in sorted(archive.namelist())
+                if name.lower().endswith(".gpc")
+            ]
+    for name, raw in sources:
+        source_sha = hashlib.sha256(raw).hexdigest()
+        lines = raw.decode("cp1250").splitlines()
+        header = next((line for line in lines if line.startswith("074")), None)
+        if not header:
+            continue
+        account_id = header[3:19].lstrip("0") or "0"
+        statement_number = header[105:108].strip()
+        currency_match = re.search(r"_(CZK|EUR)_", name, re.I)
+        currency = currency_match.group(1).upper() if currency_match else "CZK"
+        current: dict | None = None
+        sequence = 0
+        for line in lines:
+            if line.startswith("075"):
+                if current:
+                    rows.append(current)
+                sequence += 1
+                code = line[60:61]
+                amount = Decimal(line[48:60] or "0") / 100
+                if code in {"1", "4"}:
+                    amount = -amount
+                counter_account = line[19:35].lstrip("0") or None
+                bank_code = line[73:77].strip() or None
+                variable_symbol = line[61:71].strip().lstrip("0") or None
+                name_value = line[97:117].strip() or None
+                booked_on = gpc_date(line[122:128]) or gpc_date(header[108:114])
+                value_on = gpc_date(line[91:97])
+                fingerprint = f"{account_id}|{name}|{sequence}|{line}".encode("utf-8")
+                current = {
+                    "account_id": account_id,
+                    "external_id": hashlib.sha256(fingerprint).hexdigest(),
+                    "booked_on": booked_on,
+                    "value_on": value_on,
+                    "amount": float(amount),
+                    "currency": currency,
+                    "counterparty_name": name_value,
+                    "counterparty_account": counter_account,
+                    "counterparty_bank_code": bank_code,
+                    "variable_symbol": variable_symbol,
+                    "message": None,
+                    "statement_number": statement_number,
+                    "booking_code": code,
+                    "source_file_name": name,
+                    "source_file_sha256": source_sha,
+                    "source_sequence": sequence,
+                    "import_sha256": import_sha,
+                }
+            elif current and line[:3] in {"078", "079"}:
+                addition = line[3:].strip()
+                if addition:
+                    current["message"] = " ".join(filter(None, [current.get("message"), addition]))
+        if current:
+            rows.append(current)
+    return rows, import_sha, len(sources)
 
 
 def sql_text(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def emit_calls(function: str, rows: list[dict], chunk_size: int, trailing_args, final_args) -> None:
+def emit_calls(function: str, rows: list[dict], chunk_size: int, trailing_args, final_args, post_calls=None) -> None:
     print("begin;")
     print("select set_config('request.jwt.claim.role','service_role',true);")
     chunks = [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
@@ -144,6 +150,8 @@ def emit_calls(function: str, rows: list[dict], chunk_size: int, trailing_args, 
         args = [f"$payload${payload}$payload$::jsonb", *trailing_args]
         args.extend(final_args(index == len(chunks) - 1))
         print(f"select public.{function}({','.join(args)});")
+    for call in post_calls or []:
+        print(call)
     print("commit;")
 
 
@@ -153,7 +161,7 @@ def main() -> None:
     liabilities = subparsers.add_parser("liabilities-sql")
     liabilities.add_argument("xml", type=Path)
     bank = subparsers.add_parser("bank-sql")
-    bank.add_argument("zip", type=Path)
+    bank.add_argument("source", type=Path, help="Soubor .gpc nebo ZIP obsahující výpisy .gpc")
     args = parser.parse_args()
 
     if args.command == "liabilities-sql":
@@ -167,13 +175,14 @@ def main() -> None:
         )
         return
 
-    rows, sha, statements = gpc_rows(args.zip)
+    rows, sha, statements = gpc_rows(args.source)
     emit_calls(
         "finance_import_gpc_transactions_v1",
         rows,
         125,
-        [sql_text(sha), sql_text(args.zip.name), str(statements), str(len(rows))],
+        [sql_text(sha), sql_text(args.source.name), str(statements), str(len(rows))],
         lambda final: ["true" if final else "false"],
+        [f"select public.finance_reconcile_bank_import_v2({sql_text(sha)});"],
     )
 
 
