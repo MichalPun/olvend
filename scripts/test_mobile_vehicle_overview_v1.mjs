@@ -27,8 +27,8 @@ const vehicleSection = html.match(/<section class="screen" data-screen="vehicle-
 assert.doesNotMatch(vehicleSection, /Kontrola před výjezdem/i, 'cancelled pre-departure check must not return')
 
 assert.match(moduleScript, /function renderMobileHeader\(\) \{\s*els\.mobileHeaderEyebrow\.textContent = 'Dnešní směna'\s*els\.screenTitle\.innerHTML = '<b>OLVEND<\/b> Operátor'/, 'all tabs must keep the same approved header')
-assert.match(html, /pwa\.js\?v=20261124-mobile-vehicle-v2/, 'mobile HTML must request the new PWA bootstrap')
-assert.match(pwa, /20261124-mobile-vehicle-v2/, 'PWA bootstrap must refresh the service worker')
-assert.match(serviceWorker, /olvend-v267-mobile-vehicle-operator-km/, 'service worker cache must be bumped for production phones')
+assert.match(html, /pwa\.js\?v=20261125-mobile-receipt-negative-v1/, 'mobile HTML must request the new PWA bootstrap')
+assert.match(pwa, /20261125-mobile-receipt-negative-v1/, 'PWA bootstrap must refresh the service worker')
+assert.match(serviceWorker, /olvend-v268-mobile-receipt-negative/, 'service worker cache must be bumped for production phones')
 
 console.log('PASS: production mobile vehicle overview, navigation, header and actions')

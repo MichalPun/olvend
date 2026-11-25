@@ -19,6 +19,7 @@ for (const file of ['inventory.html', 'mobile.html']) {
     assert.equal(rows.reduce((n,r)=>n+r.quantity_base_units,0),12);
     assert.equal(rows[0].batch_id,7);
     assert.equal(rows[0].quantity_base_units,5);
+    assert.equal(rows.every((row)=>row.allow_negative_source===true),true,'Every row from a physical load must tolerate a stale or already consumed source snapshot');
     assert.equal(rows[1].batch_id,null,'Do not invent a dated batch for unrecorded stock');
     assert.equal(rows[1].quantity_base_units,7);
     assert.equal(rows[1].allow_negative_source,true);
