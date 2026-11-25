@@ -16,7 +16,11 @@ assert.match(html, /data-open-screen="vehicle"[^>]*>[\s\S]*?<span>Trasa<\/span>/
 assert.match(html, /id="mobileVehicleFuel"/, 'vehicle overview must show live fuel')
 assert.match(html, /id="mobileVehicleTelemetry"/, 'vehicle overview must show telemetry')
 assert.match(html, /id="mobileVehiclePhoto"/, 'vehicle overview must show the vehicle image')
+assert.match(html, /id="mobileVehicleStockDetail"/, 'vehicle overview must expose the actual product stock list')
+assert.match(html, /id="mobileVehicleStockList"/, 'vehicle stock detail must have a rendered item list')
+assert.match(html, /id="mobileVehicleMileageSummary"/, 'vehicle ride tab must compare planned, actual and allowed extra mileage')
 assert.match(html, /create_operational_request_v18/, 'vehicle requests must use the production operational request flow')
+assert.match(html, /get_my_vehicle_mileage_summary_v61/, 'vehicle overview must load the production mileage allowance summary')
 assert.match(html, /function saveMobileVehicleFuel\(/, 'vehicle overview tanking form must save data')
 assert.match(html, /function saveMobileVehicleKilometres\(/, 'vehicle overview mileage form must save data')
 assert.match(html, /function loadVehicleOverviewData\(/, 'vehicle overview must load live production data')
@@ -27,8 +31,8 @@ const vehicleSection = html.match(/<section class="screen" data-screen="vehicle-
 assert.doesNotMatch(vehicleSection, /Kontrola před výjezdem/i, 'cancelled pre-departure check must not return')
 
 assert.match(moduleScript, /function renderMobileHeader\(\) \{\s*els\.mobileHeaderEyebrow\.textContent = 'Dnešní směna'\s*els\.screenTitle\.innerHTML = '<b>OLVEND<\/b> Operátor'/, 'all tabs must keep the same approved header')
-assert.match(html, /pwa\.js\?v=20261125-mobile-receipt-negative-v1/, 'mobile HTML must request the new PWA bootstrap')
-assert.match(pwa, /20261125-mobile-receipt-negative-v1/, 'PWA bootstrap must refresh the service worker')
-assert.match(serviceWorker, /olvend-v268-mobile-receipt-negative/, 'service worker cache must be bumped for production phones')
+assert.match(html, /pwa\.js\?v=20261125-vehicle-stock-km-v1/, 'mobile HTML must request the new PWA bootstrap')
+assert.match(pwa, /20261125-vehicle-stock-km-v1/, 'PWA bootstrap must refresh the service worker')
+assert.match(serviceWorker, /olvend-v269-vehicle-stock-km/, 'service worker cache must be bumped for production phones')
 
 console.log('PASS: production mobile vehicle overview, navigation, header and actions')
