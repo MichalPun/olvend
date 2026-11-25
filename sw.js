@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v267-mobile-vehicle-operator-km';
+const CACHE_NAME = 'olvend-v268-mobile-receipt-negative';
 const APP_SHELL = [
   './',
   './index.html',
