@@ -61,6 +61,9 @@ assert.equal(suggestion.duplicateSafeAlternatives.length, 0)
 
 assert.match(html, /const plannedReplacementFill = Boolean\(planogramChange\?\.productChanged && replacementFill\)/)
 assert.doesNotMatch(html, /const replacementProduct = replacementFill \? selectedProduct/)
+assert.match(html, /const finalizedPrimarySku = planogramChange\?\.productChanged/)
+assert.match(html, /primary_product_sku: finalizedPrimarySku/)
+assert.doesNotMatch(html, /primary_product_sku: finalizedProductSku/)
 assert.match(html, /Nouzová duplicitní náhrada; jiný schválený druh nebyl ve vozidle/)
 assert.doesNotMatch(correctionSql, /if p\.id<>f\.product_id then\s+update machine_planogram_slots set product_sku/)
 
