@@ -2469,6 +2469,11 @@
     .mobile-vehicle-stock-detail-head strong{font-size:12px;font-weight:950}
     .mobile-vehicle-stock-detail-head button{min-height:36px;padding:0 11px;border:1px solid #d0d5dd;border-radius:9px;color:#344054;background:#fff;font-size:9px;font-weight:900}
     .mobile-vehicle-stock-items{display:grid;gap:6px}
+    .mobile-vehicle-stock-group{display:grid;gap:6px}
+    .mobile-vehicle-stock-group+.mobile-vehicle-stock-group{margin-top:5px;padding-top:10px;border-top:1px solid #e4e7ec}
+    .mobile-vehicle-stock-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .mobile-vehicle-stock-group-head strong{font-size:10px;font-weight:950}
+    .mobile-vehicle-stock-group-head span{color:#667085;font-size:8px;font-weight:850}
     .mobile-vehicle-stock-item{padding:8px;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:9px;align-items:center;border-radius:11px;background:#f5f6f8}
     .mobile-vehicle-stock-item-photo{width:44px;height:44px;display:grid;place-items:center;overflow:hidden;border-radius:9px;color:#667085;background:#fff;font-size:18px}
     .mobile-vehicle-stock-item-photo img{width:100%;height:100%;object-fit:contain}
@@ -5921,7 +5926,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261125-vehicle-stock-km-v1" defer></script>
+  <script src="./pwa.js?v=20261126-vehicle-stock-groups-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import {
@@ -13481,19 +13486,64 @@
       return state.products.find((product) => String(product.id) === String(nested.id || row?.product_id || '')) || nested
     }
 
+    function getAggregatedVehicleStockBalances() {
+      const grouped = new Map()
+      state.vehicleStockBalances.forEach((row) => {
+        const product = getVehicleStockProduct(row)
+        const key = product.id != null
+          ? `id:${product.id}`
+          : `fallback:${normalizeText([product.sku, product.name].filter(Boolean).join(' '))}`
+        const current = grouped.get(key) || {
+          ...row,
+          products: product,
+          quantity_on_hand: 0,
+          reserved_quantity: 0,
+          balance_record_count: 0
+        }
+        current.quantity_on_hand += Number(row.quantity_on_hand || 0)
+        current.reserved_quantity += Number(row.reserved_quantity || 0)
+        current.balance_record_count += 1
+        grouped.set(key, current)
+      })
+      return [...grouped.values()].filter((row) => Number(row.quantity_on_hand || 0) > 0)
+    }
+
+    function getVehicleStockGroup(row) {
+      const product = getVehicleStockProduct(row)
+      const category = normalizeText(product.product_category || '')
+      const usage = normalizeText(product.usage_type || '')
+      const name = normalizeText(product.name || '')
+      const key = [category, usage, name].join(' ')
+      if (['food ready', 'baget', 'chlazen', 'sendvic'].some((match) => key.includes(match))) return { key: 'fresh', label: 'Bagety a čerstvé', order: 1 }
+      if (['beverage', 'napoj', 'drink', 'voda', 'water', 'limon', 'cola', 'pepsi', 'juice'].some((match) => key.includes(match))) return { key: 'drinks', label: 'Nápoje a vody', order: 2 }
+      if (usage.includes('consumable') || ['kelimek', 'vick', 'michatko', 'sacek'].some((match) => name.includes(match))) return { key: 'supplies', label: 'Spotřební materiál', order: 4 }
+      if (usage.includes('ingredient') || category.includes('ingredient') || ['kava', 'coffee', 'creamer', 'mleko susene', 'caj instant'].some((match) => name.includes(match))) return { key: 'ingredients', label: 'Suroviny', order: 3 }
+      if (['snack ready', 'snack', 'cukrov', 'tycink', 'oplat', 'bonbon', 'mentos', 'donut', 'susenk'].some((match) => key.includes(match))) return { key: 'sweets', label: 'Cukrovinky a snacky', order: 5 }
+      return { key: 'other', label: 'Ostatní', order: 6 }
+    }
+
     function renderVehicleStockDetail() {
       if (!els.mobileVehicleStockList) return
-      const rows = [...state.vehicleStockBalances]
-        .filter((row) => Number(row.quantity_on_hand || 0) > 0)
-        .sort((a, b) => String(getVehicleStockProduct(a).name || '').localeCompare(String(getVehicleStockProduct(b).name || ''), 'cs'))
+      const rows = getAggregatedVehicleStockBalances()
+      const groups = new Map()
+      rows.forEach((row) => {
+        const group = getVehicleStockGroup(row)
+        if (!groups.has(group.key)) groups.set(group.key, { ...group, rows: [] })
+        groups.get(group.key).rows.push(row)
+      })
       els.mobileVehicleStockList.innerHTML = rows.length
-        ? rows.map((row) => {
-          const product = getVehicleStockProduct(row)
-          const imageUrl = getMobileProductImageUrl(product)
-          const quantity = Number(row.quantity_on_hand || 0)
-          const reserved = Number(row.reserved_quantity || 0)
-          const unit = product.base_unit || 'ks'
-          return `<article class="mobile-vehicle-stock-item"><span class="mobile-vehicle-stock-item-photo">${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(product.name || 'Produkt')}" onerror="this.hidden=true;this.parentElement.textContent='□'">` : '□'}</span><span><strong>${escapeHtml(product.name || 'Neznámý produkt')}</strong><small>${escapeHtml([product.sku ? `SKU ${product.sku}` : '', reserved > 0 ? `rezervováno ${formatNumber(reserved)} ${unit}` : 'skutečný stav vozidla'].filter(Boolean).join(' · '))}</small></span><b>${escapeHtml(formatNumber(quantity))} ${escapeHtml(unit)}</b></article>`
+        ? [...groups.values()].sort((a, b) => a.order - b.order).map((group) => {
+          const itemRows = group.rows
+            .sort((a, b) => String(getVehicleStockProduct(a).name || '').localeCompare(String(getVehicleStockProduct(b).name || ''), 'cs'))
+            .map((row) => {
+              const product = getVehicleStockProduct(row)
+              const imageUrl = getMobileProductImageUrl(product)
+              const quantity = Number(row.quantity_on_hand || 0)
+              const reserved = Number(row.reserved_quantity || 0)
+              const unit = product.base_unit || 'ks'
+              return `<article class="mobile-vehicle-stock-item"><span class="mobile-vehicle-stock-item-photo">${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(product.name || 'Produkt')}" onerror="this.hidden=true;this.parentElement.textContent='□'">` : '□'}</span><span><strong>${escapeHtml(product.name || 'Neznámý produkt')}</strong><small>${escapeHtml([product.sku ? `SKU ${product.sku}` : '', reserved > 0 ? `rezervováno ${formatNumber(reserved)} ${unit}` : 'skutečný stav vozidla'].filter(Boolean).join(' · '))}</small></span><b>${escapeHtml(formatNumber(quantity))} ${escapeHtml(unit)}</b></article>`
+            }).join('')
+          return `<section class="mobile-vehicle-stock-group"><div class="mobile-vehicle-stock-group-head"><strong>${escapeHtml(group.label)}</strong><span>${escapeHtml(String(group.rows.length))} ${group.rows.length === 1 ? 'produkt' : group.rows.length < 5 ? 'produkty' : 'produktů'}</span></div>${itemRows}</section>`
         }).join('')
         : '<div class="mobile-vehicle-empty">V tomto vozidle teď není evidovaná žádná kladná zásoba.</div>'
     }
@@ -13593,19 +13643,12 @@
       }
       els.mobileVehicleAlerts.innerHTML = alerts.map((alert) => '<article class="mobile-vehicle-alert ' + alert.cls + '"><span class="mobile-vehicle-alert-icon">' + escapeHtml(alert.icon) + '</span><span><strong>' + escapeHtml(alert.title) + '</strong><span>' + escapeHtml(alert.copy) + '</span></span></article>').join('')
 
-      const balances = state.vehicleStockBalances
-      const stockSum = (matches) => balances.reduce((sum, row) => {
-        const product = row.products || {}
-        const key = normalizeText([product.product_category, product.usage_type, product.name].filter(Boolean).join(' '))
-        return matches.some((match) => key.includes(match)) ? sum + Number(row.quantity_on_hand || 0) : sum
-      }, 0)
-      const fresh = stockSum(['food ready', 'baget', 'chlazen'])
-      const drinks = stockSum(['beverage ready', 'napoj', 'drink'])
-      const ingredients = balances.filter((row) => {
-        const key = normalizeText([row.products?.product_category, row.products?.usage_type].filter(Boolean).join(' '))
-        return key.includes('ingredient') || key.includes('consumable')
-      }).length
-      const sweets = stockSum(['snack ready', 'cukrov', 'tycink', 'oplat'])
+      const balances = getAggregatedVehicleStockBalances()
+      const stockSum = (groupKey) => balances.reduce((sum, row) => getVehicleStockGroup(row).key === groupKey ? sum + Number(row.quantity_on_hand || 0) : sum, 0)
+      const fresh = stockSum('fresh')
+      const drinks = stockSum('drinks')
+      const ingredients = balances.filter((row) => ['ingredients', 'supplies'].includes(getVehicleStockGroup(row).key)).length
+      const sweets = stockSum('sweets')
       els.mobileVehicleStockFresh.textContent = formatNumber(fresh) + ' ks'
       els.mobileVehicleStockSweets.textContent = formatNumber(sweets) + ' ks'
       els.mobileVehicleStockDrinks.textContent = formatNumber(drinks) + ' ks'
@@ -14038,7 +14081,7 @@
           .from('stock_location_balances')
           .select('quantity_on_hand, reserved_quantity, products(id, name, base_unit, product_category, usage_type)')
           .eq('stock_location_id', locationResult.data.id)
-          .gt('quantity_on_hand', 0)
+          .neq('quantity_on_hand', 0)
         if (!error) state.vehicleStockBalances = data || []
       }
     }
