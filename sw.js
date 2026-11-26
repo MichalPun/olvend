@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v269-vehicle-stock-km';
+const CACHE_NAME = 'olvend-v270-vehicle-stock-bagette-plan';
 const APP_SHELL = [
   './',
   './index.html',
