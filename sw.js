@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v274-route-gps-eta';
+const CACHE_NAME = 'olvend-v275-food-slot-reassignment';
 const APP_SHELL = [
   './',
   './index.html',
