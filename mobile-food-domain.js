@@ -100,6 +100,17 @@ export function createFoodDomain({
     remaining = Math.max(0, Math.floor(remaining))
     if (!remaining) return 0
 
+    // Operátor už stojí u tohoto automatu. Pokud je jeho pozice prázdná,
+    // nesmí ji plánování zásoby pro pozdější zastávky nechat bez doplnění.
+    // Aktuální prázdná pozice má před budoucí trasou přednost; skutečný počet
+    // kusů i tak omezí fyzická zásoba vozidla a volná kapacita pozice.
+    const currentSlot = getFoodPlanningSlot(slot, detail)
+    const currentMachineOrder = Number(context.stopOrderByMachine.get(String(currentSlot?.machine_id)) ?? Number.MAX_SAFE_INTEGER)
+    const currentUnits = isExpiryExpired(currentSlot?.expiry_date) ? 0 : Math.max(0, Number(currentSlot?.current_units || 0))
+    if (currentMachineOrder === 0 && currentUnits <= 0) {
+      return Math.max(0, Math.min(requested, remaining))
+    }
+
     const empty = candidates
       .filter((candidate) => candidate.current <= 0)
       .sort((a, b) => a.order - b.order || b.dailySales - a.dailySales)

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v271-vehicle-stock-groups';
+const CACHE_NAME = 'olvend-v272-route-stock-visible-override';
 const APP_SHELL = [
   './',
   './index.html',

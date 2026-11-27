@@ -36,6 +36,22 @@ assert.equal(domain.getFoodRequiredFillQuantity(slot, detail), 11)
 assert.equal(domain.getFoodRouteAllocatedQuantity(detail, 's1', slot, { id: 'p1', sku: 'BAG' }, 11), 10,
   'Dvě rezervované položky z dávky nesmí být znovu přiděleny')
 
+const currentEmpty = { ...slot, id: 2, machine_id: 20, current_units: 0, capacity_units: 6, target_units: 6 }
+const futureEmpty = { ...slot, id: 3, machine_id: 30, current_units: 0, capacity_units: 6, target_units: 6 }
+const scarceDetail = {
+  draft: { slots: {} },
+  routePlanningContext: {
+    loaded: true,
+    routeSlots: [currentEmpty, futureEmpty],
+    sold28ByMachineSku: new Map([['20:BAG', 0], ['30:BAG', 28]]),
+    stopOrderByMachine: new Map([['20', 0], ['30', 1]])
+  },
+  vehicleBatches: {},
+  vehicleStock: { 'p1': 3 }
+}
+assert.equal(domain.getFoodRouteAllocatedQuantity(scarceDetail, 'current-stop', currentEmpty, { id: 'p1', sku: 'BAG' }, 6), 3,
+  'Prázdná pozice u aktuálního automatu musí dostat dostupnou zásobu před budoucími zastávkami')
+
 detail.draft.slots['1'] = { actualBefore: 9, capacityUnits: 20, existingExpiryDate: 'expired', accepted: false }
 const planningSlot = domain.getFoodPlanningSlot(slot, detail)
 assert.equal(planningSlot.current_units, 9)
