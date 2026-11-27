@@ -1,8 +1,9 @@
-const CACHE_NAME = 'olvend-v272-route-stock-visible-override';
+const CACHE_NAME = 'olvend-v273-route-time-consistency';
 const APP_SHELL = [
   './',
   './index.html',
   './mobile.html',
+  './route-time-core.mjs?v=20261127-route-time-v1',
   './mobile-route-completion.js?v=20261026-initial-count-v2',
   './mobile-coffee-visit.js?v=20261021-coffee-visit-v1',
   './mobile-coffee-domain.js?v=20261026-initial-count-v3',

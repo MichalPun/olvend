@@ -308,7 +308,9 @@ Deno.serve(async (req) => {
       destination: waypoint(destinationPoint),
       intermediates: stops.map((stop) => waypoint(stop)).filter(Boolean),
       travelMode: "DRIVE",
-      routingPreference: "TRAFFIC_AWARE",
+      // Pevné pořadí dovoluje nejpřesnější dopravní režim. Google optimalizaci
+      // waypointů s TRAFFIC_AWARE_OPTIMAL naopak nepovoluje.
+      routingPreference: preserveOrder ? "TRAFFIC_AWARE_OPTIMAL" : "TRAFFIC_AWARE",
       optimizeWaypointOrder: !preserveOrder,
       languageCode: "cs",
       units: "METRIC",
@@ -381,7 +383,7 @@ Deno.serve(async (req) => {
     return json({
       provider: "google_routes",
       mode: preserveOrder ? "ordered" : "optimize",
-      routingPreference: "TRAFFIC_AWARE",
+      routingPreference: preserveOrder ? "TRAFFIC_AWARE_OPTIMAL" : "TRAFFIC_AWARE",
       orderedStops,
       optimizedIntermediateWaypointIndex: orderedStops.map((stop) => Number(stop.originalIndex)),
       businessPriorityApplied,
