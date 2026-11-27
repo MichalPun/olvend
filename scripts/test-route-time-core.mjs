@@ -54,7 +54,7 @@ const base = {
 {
   const timing = calculateCanonicalRouteTiming({
     ...base,
-    now: '2026-11-27T07:30:00+01:00',
+    now: '2026-11-27T20:30:00+01:00',
     recalculation: {
       updated_at: '2026-11-27T07:00:00+01:00',
       estimated_return_at: '2026-11-27T08:40:00+01:00',
@@ -62,6 +62,19 @@ const base = {
     },
   })
   assert.notEqual(timing.forecastSource, 'google_live')
+}
+
+{
+  const timing = calculateCanonicalRouteTiming({
+    ...base,
+    now: '2026-11-27T07:30:00+01:00',
+    recalculation: {
+      updated_at: '2026-11-27T07:00:00+01:00',
+      estimated_return_at: '2026-11-27T08:40:00+01:00',
+      stop_schedule: [{ stop_id: 2 }],
+    },
+  })
+  assert.equal(timing.forecastSource, 'google_live')
 }
 
 console.log('route-time-core: ok')

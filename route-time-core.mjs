@@ -1,5 +1,8 @@
 const MINUTE_MS = 60 * 1000
-const LIVE_RECALC_MAX_AGE_MS = 15 * MINUTE_MS
+// A live forecast is tied to the exact set and order of remaining stops. Keep it
+// for the working day instead of discarding it after a few minutes and falling
+// back to a projection from the last completed stop.
+const LIVE_RECALC_MAX_AGE_MS = 12 * 60 * MINUTE_MS
 
 function asDate(value) {
   if (!value) return null
