@@ -231,6 +231,17 @@
     .route-time-metric.warn strong { color: #b54708; }
     .route-time-metric.bad strong { color: #b42318; }
 
+    .route-time-breakdown { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 12px; border-bottom: 1px solid #e6e9ee; background: #fcfcfd; }
+    .route-time-breakdown-card { min-width: 0; padding: 9px 10px; border: 1px solid #e3e7ec; border-radius: 6px; background: #fff; }
+    .route-time-breakdown-card span { display: block; color: #667085; font-size: 9px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
+    .route-time-breakdown-card strong { display: block; margin-top: 4px; color: #17212b; font-size: 15px; }
+    .route-time-breakdown-card small { display: block; margin-top: 3px; color: #667085; font-size: 10px; line-height: 1.35; }
+    .route-time-breakdown-card.bad strong { color: #b42318; }
+    .route-time-breakdown-card.good strong { color: #067647; }
+    .route-time-causes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: #475467; font-size: 10px; }
+    .route-time-cause { padding: 4px 7px; border-radius: 999px; color: #b42318; background: #fef3f2; font-weight: 850; }
+    .route-time-source { margin-left: auto; color: #667085; }
+
     .route-time-table { overflow-x: auto; }
     .route-time-table table { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
     .route-time-table th, .route-time-table td { padding: 6px 8px; border-right: 1px solid #e3e7ec; border-bottom: 1px solid #dfe3e8; text-align: left; vertical-align: middle; font-size: 12px; }
@@ -876,6 +887,8 @@
       }
 
       .route-time-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .route-time-breakdown { grid-template-columns: 1fr; }
+      .route-time-causes { grid-column: 1; }
       .route-time-metric:nth-child(2) { border-right: 0; }
       .route-time-metric:nth-child(-n+2) { border-bottom: 1px solid #e6e9ee; }
     }
@@ -957,6 +970,7 @@
   <script type="module">
     import { supabase } from './supabase.js'
     import { openRouteVisitCorrection } from './route-visit-correction.js?v=66'
+    import { calculateCanonicalRouteTiming } from './route-time-core.mjs?v=20261127-route-time-v1'
 
     const LOCAL_STORAGE_KEY = 'olvendRoutePilotPlans'
     const statusLine = document.getElementById('statusLine')
@@ -1209,6 +1223,18 @@
           completed: Boolean(timing.completedAt),
         }
       })
+      const liveSchedule = Array.isArray(plan?.route_payload?.mobile_recalculation?.stop_schedule)
+        ? plan.route_payload.mobile_recalculation.stop_schedule
+        : []
+      rows.forEach((row) => {
+        if (row.actualArrival) return
+        const live = liveSchedule.find((item) => String(item.stop_id || '') === String(row.stop.id || ''))
+        if (!live) return
+        const liveArrival = new Date(live.arrival_at)
+        const liveDeparture = new Date(live.departure_at)
+        if (!Number.isNaN(liveArrival.getTime())) row.forecastArrival = liveArrival
+        if (!Number.isNaN(liveDeparture.getTime())) row.forecastDeparture = liveDeparture
+      })
       const plannedMinutes = preparationMinutes + totalDriveMinutes + totalServiceMinutes
       const plannedEnd = new Date(plannedStart.getTime() + plannedMinutes * 60000)
       const returnDriveMinutes = Math.max(0, Number(routeLegs.returnLeg || 0))
@@ -1231,27 +1257,86 @@
       const projectedFieldMinutes = effectiveActualStart
         ? minutesBetween(effectiveActualStart, plan?.completed_at ? actualEnd : forecastEnd)
         : null
-      const overallDiff = projectedFieldMinutes == null
-        ? progressDiff
-        : Math.round(projectedFieldMinutes - plannedFieldMinutes)
-      return { departure, plannedStart, plannedEnd, forecastEnd, plannedMinutes, plannedFieldMinutes, projectedFieldMinutes, totalServiceMinutes, returnDriveMinutes, actualStart: effectiveActualStart ? new Date(effectiveActualStart) : null, actualEnd, actualMinutes, actualServiceTotal, overallDiff, rows }
+      const canonical = calculateCanonicalRouteTiming({
+        plannedStart,
+        startedAt: plan.started_at,
+        completedAt: plan.completed_at,
+        plannedDriveMinutes: totalDriveMinutes,
+        plannedServiceMinutes: totalServiceMinutes,
+        preparationMinutes,
+        returnToStart: plan.return_to_start,
+        startLatitude: plan.start_latitude,
+        startLongitude: plan.start_longitude,
+        recalculation: plan?.route_payload?.mobile_recalculation,
+        googleStops: (Array.isArray(plan?.route_payload?.google?.orderedStops) ? plan.route_payload.google.orderedStops : []).map((stop) => ({
+          ...stop,
+          machineId: stop.machineId ?? stop.machine_id ?? stop.id,
+        })),
+        stops: rows.map((row, index) => ({
+          id: row.stop.id,
+          machineId: row.stop.machine_id ?? row.stop.machineId,
+          order: row.stop.stop_order ?? index + 1,
+          label: getStopPlaceDisplay(row.stop, index).primary,
+          status: row.stop.status,
+          serviceMinutes: row.plannedServiceMinutes,
+          arrivedAt: row.actualArrival,
+          completedAt: row.completed ? row.actualDeparture : null,
+          skippedAt: row.stop.skipped_at,
+          latitude: row.stop.latitude,
+          longitude: row.stop.longitude,
+        })),
+      })
+      return {
+        departure,
+        plannedStart,
+        plannedEnd,
+        forecastEnd: canonical.forecastEnd || forecastEnd,
+        plannedMinutes,
+        plannedFieldMinutes: canonical.plannedFieldMinutes,
+        projectedFieldMinutes: canonical.projectedFieldMinutes,
+        totalServiceMinutes,
+        returnDriveMinutes,
+        actualStart: canonical.actualStart,
+        actualEnd: canonical.actualEnd,
+        actualMinutes: canonical.actualElapsedMinutes,
+        actualServiceTotal: canonical.breakdown.serviceActualMinutes,
+        overallDiff: canonical.deviationMinutes ?? progressDiff,
+        breakdown: canonical.breakdown,
+        forecastSource: canonical.forecastSource,
+        liveTrafficDelayMinutes: canonical.liveTrafficDelayMinutes,
+        rows,
+      }
     }
 
     function renderRouteTimePlan(plan) {
       const schedule = getRouteTimePlan(plan)
       const tolerance = Number(state.timeToleranceMinutes || 10)
       const overall = routeDeviationMeta(schedule.overallDiff, tolerance, schedule.actualMinutes == null)
+      const breakdown = schedule.breakdown || {}
+      const signed = (value) => `${Number(value || 0) > 0 ? '+' : ''}${Math.round(Number(value || 0))} min`
+      const forecastSource = schedule.forecastSource === 'google_live'
+        ? 'Živý Google odhad podle aktuální dopravy a pořadí'
+        : schedule.forecastSource === 'actual'
+          ? 'Skutečně uzavřená trasa'
+          : 'Náhradní odhad – čeká na nový Google přepočet'
+      const causes = (breakdown.overruns || []).slice(0, 3)
       return `
         <section class="route-time-plan">
           <div class="route-time-head">
-            <div><h3>Časový plán trasy</h3><p>Odchylka se počítá od skutečného výjezdu. Pozdější zahájení samo o sobě není zpoždění práce.</p></div>
+            <div><h3>Časový plán trasy</h3><p>Odchylka se počítá od skutečného zahájení trasy proti celé plánované době včetně přípravy.</p></div>
             <div class="route-time-tolerance"><span>Upozornit od</span>${[5, 10, 15].map((minutes) => `<button type="button" data-time-tolerance="${minutes}" class="${tolerance === minutes ? 'active' : ''}">${minutes} min</button>`).join('')}</div>
           </div>
           <div class="route-time-metrics">
             <div class="route-time-metric"><span>Plán trasy</span><strong>${escapeHtml(formatClock(schedule.plannedStart))}–${escapeHtml(formatClock(schedule.plannedEnd))}</strong><small>${escapeHtml(formatDurationWords(schedule.plannedMinutes))}</small></div>
             <div class="route-time-metric"><span>Skutečnost</span><strong>${schedule.actualStart ? `${escapeHtml(formatClock(schedule.actualStart))}–${escapeHtml(formatClock(schedule.actualEnd))}` : 'Ještě nezačala'}</strong><small>${schedule.actualMinutes == null ? 'Čeká na převzetí trasy' : escapeHtml(formatDurationWords(schedule.actualMinutes))}</small></div>
-            <div class="route-time-metric ${overall.cls}"><span>${plan.completed_at ? 'Výsledek trasy' : 'Délka od výjezdu'}</span><strong>${escapeHtml(overall.label)}</strong><small>${schedule.actualStart ? `${escapeHtml(formatDurationWords(schedule.projectedFieldMinutes))} od skutečného výjezdu · konec ${escapeHtml(formatClock(schedule.forecastEnd))}` : `tolerance ${tolerance} minut`}</small></div>
+            <div class="route-time-metric ${overall.cls}"><span>${plan.completed_at ? 'Výsledek trasy' : 'Délka od zahájení'}</span><strong>${escapeHtml(overall.label)}</strong><small>${schedule.actualStart ? `${escapeHtml(formatDurationWords(schedule.projectedFieldMinutes))} od skutečného zahájení · konec ${escapeHtml(formatClock(schedule.forecastEnd))}` : `tolerance ${tolerance} minut`}</small></div>
             <div class="route-time-metric"><span>Práce na místě</span><strong>${escapeHtml(formatDurationWords(schedule.actualServiceTotal))}</strong><small>plán ${escapeHtml(formatDurationWords(schedule.totalServiceMinutes))}</small></div>
+          </div>
+          <div class="route-time-breakdown">
+            <div class="route-time-breakdown-card ${Number(breakdown.travelDeltaMinutes || 0) > tolerance ? 'bad' : 'good'}"><span>Výjezd, přesuny a čekání</span><strong>${escapeHtml(signed(breakdown.travelDeltaMinutes))}</strong><small>skutečnost ${escapeHtml(formatDurationWords(breakdown.travelActualMinutes))} · plán včetně přípravy ${escapeHtml(formatDurationWords(breakdown.travelPlannedMinutes))}</small></div>
+            <div class="route-time-breakdown-card ${Number(breakdown.serviceDeltaMinutes || 0) > tolerance ? 'bad' : 'good'}"><span>Obsluha automatů</span><strong>${escapeHtml(signed(breakdown.serviceDeltaMinutes))}</strong><small>skutečnost ${escapeHtml(formatDurationWords(breakdown.serviceActualMinutes))} · plán ${escapeHtml(formatDurationWords(breakdown.servicePlannedMinutes))}</small></div>
+            <div class="route-time-breakdown-card"><span>Vliv živé dopravy</span><strong>${schedule.liveTrafficDelayMinutes == null ? '—' : escapeHtml(signed(schedule.liveTrafficDelayMinutes))}</strong><small>${schedule.liveTrafficDelayMinutes == null ? 'Google zatím neposlal srovnání s plynulým provozem' : 'oproti trase bez aktuálního provozu'}</small></div>
+            <div class="route-time-causes"><strong>Kde se čas nabral:</strong>${causes.length ? causes.map((item) => `<span class="route-time-cause">${escapeHtml(item.label)} · +${escapeHtml(Math.round(item.deltaMinutes))} min</span>`).join('') : '<span>Zatím bez překročení jednotlivých úseků.</span>'}<span class="route-time-source">${escapeHtml(forecastSource)} · první úsek zahrnuje přípravu; bez průběžné GPS nelze oddělit kolonu od stání nebo zajížďky.</span></div>
           </div>
           <div class="route-time-table">
             <table><thead><tr><th>Místo</th><th>Původní plán</th><th>Aktuální odhad</th><th>Skutečnost</th><th>Odchylka</th></tr></thead><tbody>
@@ -2765,6 +2850,16 @@
     }
 
     initializePage()
+    window.setInterval(async () => {
+      if (document.hidden || !state.plan || ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName || '')) return
+      if (!['assigned','in_progress','started','open'].includes(String(state.plan.execution_status || ''))) return
+      try {
+        await loadPlan()
+        renderDetail()
+      } catch (error) {
+        console.warn('Průběžná aktualizace detailu trasy selhala:', error)
+      }
+    }, 60000)
   </script>
 </body>
 </html>

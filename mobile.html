@@ -2635,6 +2635,11 @@
     .route-time-mobile-alert.bad { color: #b42318; background: #fef3f2; }
     .route-time-mobile-alert.neutral { color: #475467; background: #f2f4f7; }
     .route-time-mobile-alert strong { font-size: 14px; }
+    .route-time-mobile-breakdown { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
+    .route-time-mobile-breakdown div { min-width:0; padding:9px 8px; border:1px solid #e4e7ec; border-radius:12px; background:#fff; }
+    .route-time-mobile-breakdown span { display:block; color:#667085; font-size:8px; font-weight:950; letter-spacing:.04em; text-transform:uppercase; }
+    .route-time-mobile-breakdown strong { display:block; margin-top:4px; color:#17212b; font-size:12px; line-height:1.2; }
+    .route-time-mobile-source { margin:0; color:#667085; font-size:10px; font-weight:750; line-height:1.4; }
 
     .route-stop-time {
       display: grid;
@@ -5926,9 +5931,10 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261126-vehicle-stock-groups-v1" defer></script>
+  <script src="./pwa.js?v=20261127-route-time-consistency-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
+    import { calculateCanonicalRouteTiming, sameOrder } from './route-time-core.mjs?v=20261127-route-time-v1'
     import {
       completeRouteVisitRecord,
       persistUnchangedCoffeeContainerStates
@@ -10131,29 +10137,70 @@
           : getSignedRouteMinutesBetween(progressRow.arrival, progressRow.actualArrival)
             + Math.max(0, Number(progressRow.actualMinutes || 0) - Number(progressRow.serviceMinutes || 0))
         : actualStartValue ? getSignedRouteMinutesBetween(schedule.routeStart, actualStartValue) : null
-      const overallDiff = plan?.completed_at
-        ? getSignedRouteMinutesBetween(schedule.routeEnd, actualEnd)
-        : progressDiff
-      return { ...schedule, rows, actualStart: actualStartValue ? new Date(actualStartValue) : null, actualEnd, actualMinutes, plannedMinutes, overallDiff }
+      const canonical = calculateCanonicalRouteTiming({
+        plannedStart: schedule.routeStart,
+        startedAt: plan?.started_at,
+        completedAt: plan?.completed_at,
+        plannedDriveMinutes: plan?.estimated_drive_minutes,
+        plannedServiceMinutes: schedule.scheduledStops.reduce((sum, item) => sum + Number(item.serviceMinutes || 0), 0),
+        preparationMinutes: schedule.preparationMinutes,
+        returnToStart: schedule.returnToStart,
+        startLatitude: plan?.start_latitude,
+        startLongitude: plan?.start_longitude,
+        recalculation: getRouteRecalculation(plan),
+        googleStops: (Array.isArray(plan?.route_payload?.google?.orderedStops) ? plan.route_payload.google.orderedStops : []).map((stop) => ({
+          ...stop,
+          machineId: stop.machineId ?? stop.machine_id ?? stop.id,
+        })),
+        stops: rows.map((row, index) => ({
+          id: row.stop.id,
+          machineId: row.stop.machine_id,
+          order: row.stop.stop_order ?? index + 1,
+          label: getRouteStopTitle(row.stop),
+          status: getRouteStopStatus(row.stop),
+          serviceMinutes: row.serviceMinutes,
+          arrivedAt: row.actualArrival,
+          completedAt: row.completed ? row.actualDeparture : null,
+          skippedAt: row.stop.skipped_at || row.visit?.skipped_at,
+          latitude: row.stop.latitude,
+          longitude: row.stop.longitude,
+        })),
+      })
+      return {
+        ...schedule,
+        rows,
+        actualStart: canonical.actualStart,
+        actualEnd: canonical.actualEnd,
+        actualMinutes: canonical.actualElapsedMinutes,
+        plannedMinutes: canonical.plannedFieldMinutes,
+        overallDiff: canonical.deviationMinutes ?? progressDiff,
+        forecastEnd: canonical.forecastEnd,
+        forecastSource: canonical.forecastSource,
+        breakdown: canonical.breakdown,
+        liveTrafficDelayMinutes: canonical.liveTrafficDelayMinutes,
+      }
     }
 
     function renderMobileRouteTimeSummary(plan) {
       const timing = getMobileRouteTimePlan(plan)
-      const recalculation = getRouteRecalculation(plan)
       const result = getMobileRouteDeviation(timing.overallDiff, timing.actualMinutes == null)
-      const statusLabel = result.cls === 'good' ? 'Směna běží podle plánu' : result.label
+      const statusLabel = result.cls === 'good' ? 'Návrat vychází podle plánu' : `Odhad návratu ${result.label}`
       const returnLabel = timing.actualMinutes == null ? 'Plánovaný návrat' : timing.actualEnd && plan?.completed_at ? 'Skutečný konec' : 'Odhad návratu'
-      const returnTime = recalculation?.estimated_return_at && !plan?.completed_at
-        ? formatRouteClock(recalculation.estimated_return_at)
-        : timing.actualMinutes == null || plan?.completed_at
-        ? formatRouteClock(timing.actualMinutes == null ? timing.routeEnd : timing.actualEnd)
-        : formatRouteClock(new Date(timing.routeEnd.getTime() + Number(timing.overallDiff || 0) * 60000))
+      const returnTime = formatRouteClock(timing.actualMinutes == null ? timing.routeEnd : timing.forecastEnd || timing.actualEnd)
+      const breakdown = timing.breakdown || {}
+      const signed = (value) => `${Number(value || 0) > 0 ? '+' : ''}${Math.round(Number(value || 0))} min`
+      const source = timing.forecastSource === 'google_live'
+        ? 'Živý Google odhad se současnou dopravou.'
+        : timing.forecastSource === 'actual'
+          ? 'Trasa je uzavřená podle skutečného návratu.'
+          : 'Náhradní odhad; aplikace čeká na čerstvý Google přepočet.'
       return `
         <div class="route-time-mobile-summary">
-          <div class="route-time-mobile-metric"><span>Plán trasy</span><strong>${escapeHtml(formatRouteClock(timing.routeStart))}–${escapeHtml(formatRouteClock(timing.routeEnd))}</strong><small>${escapeHtml(formatRouteDurationWords(timing.plannedMinutes))}</small></div>
+          <div class="route-time-mobile-metric"><span>Plán trasy</span><strong>${escapeHtml(formatRouteClock(timing.routeStart))}–${escapeHtml(formatRouteClock(timing.routeEnd))}</strong><small>${escapeHtml(formatRouteDurationWords(timing.plannedMinutes))} včetně přípravy</small></div>
           <div class="route-time-mobile-metric"><span>${escapeHtml(returnLabel)}</span><strong>${escapeHtml(returnTime)}</strong><small>${timing.actualMinutes == null ? 'Trasa ještě nezačala' : escapeHtml(formatRouteDurationWords(timing.actualMinutes))}</small></div>
         </div>
         <div class="route-time-mobile-alert ${result.cls}"><strong>${escapeHtml(statusLabel)}</strong></div>
+        ${timing.actualMinutes == null ? '' : `<div class="route-time-mobile-breakdown"><div><span>Výjezd / přesuny / čekání</span><strong>${escapeHtml(signed(breakdown.travelDeltaMinutes))}</strong></div><div><span>Obsluha</span><strong>${escapeHtml(signed(breakdown.serviceDeltaMinutes))}</strong></div><div><span>Živá doprava</span><strong>${timing.liveTrafficDelayMinutes == null ? '—' : escapeHtml(signed(timing.liveTrafficDelayMinutes))}</strong></div></div><p class="route-time-mobile-source">${escapeHtml(source)} První údaj zahrnuje přípravu výjezdu a případné čekání mezi zastávkami; bez průběžné GPS je nelze rozdělit.</p>`}
       `
     }
 
@@ -10240,7 +10287,11 @@
     }
 
     function getRouteRecalculation(plan) {
-      return plan?.route_payload?.mobile_recalculation || null
+      const recalculation = plan?.route_payload?.mobile_recalculation || null
+      if (!recalculation || !Array.isArray(recalculation.stop_schedule)) return null
+      const openIds = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop)).map((stop) => stop.id)
+      const scheduleIds = recalculation.stop_schedule.map((item) => item.stop_id)
+      return sameOrder(openIds, scheduleIds) ? recalculation : null
     }
 
     function formatRouteDistanceMeters(meters) {
@@ -10417,15 +10468,15 @@
       const closed = getRouteStops(plan).filter(isRouteStopClosed).map((stop) => `${stop.id}:${stop.completed_at || stop.skipped_at || getRouteVisitForStop(stop)?.completed_at || getRouteVisitForStop(stop)?.skipped_at || getRouteStopStatus(stop)}`)
       const decisions = getRouteSkipRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}`)
       const additions = getRouteAddMachineRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}:${request.added_route_plan_stop_id || ''}`)
-      const openOrder = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop)).map((stop) => stop.id).join(',')
+      const openOrder = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop)).map((stop) => stop.id)
       const liveWindow = Math.floor(Date.now() / 300000)
-      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|order:${openOrder}|live:${liveWindow}`
+      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|order:${openOrder.join(',')}|live:${liveWindow}`
     }
 
     async function recalculateRemainingRoute(plan = getAssignedRoutePlan()) {
       if (!navigator.onLine || !plan?.id || routeRecalculationBusy || getActiveRouteSkipRequest(plan)) return false
       const remaining = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop))
-      if (remaining.length < 2) return false
+      if (remaining.length < 1) return false
       if (remaining.some((stop) => getRouteStopStatus(stop) === 'arrived')) return false
       const lastClosed = [...getRouteStops(plan)].filter(isRouteStopClosed).sort((a, b) => String(getRouteVisitForStop(b)?.completed_at || getRouteVisitForStop(b)?.skipped_at || b.completed_at || b.skipped_at || '').localeCompare(String(getRouteVisitForStop(a)?.completed_at || getRouteVisitForStop(a)?.skipped_at || a.completed_at || a.skipped_at || '')))[0]
       // The first manager-approved stop is operationally binding once the driver departs.
@@ -10467,8 +10518,9 @@
         const distanceSaved = Math.max(0, Number(baseline.route?.distanceMeters || 0) - Number(optimized.route?.distanceMeters || 0))
         const timeSaved = Math.max(0, Number(baseline.route?.durationSeconds || 0) - Number(optimized.route?.durationSeconds || 0))
         const serviceSeconds = remaining.reduce((sum, stop) => sum + Number(stop.estimated_service_minutes || 0) * 60, 0)
-        const returnEstimate = new Date(Date.now() + (Number(optimized.route?.durationSeconds || 0) + serviceSeconds) * 1000).toISOString()
-        let scheduleCursor = new Date()
+        const recalculationStart = new Date(Date.now() + 120000)
+        const returnEstimate = new Date(recalculationStart.getTime() + (Number(optimized.route?.durationSeconds || 0) + serviceSeconds) * 1000).toISOString()
+        let scheduleCursor = new Date(recalculationStart)
         const stopSchedule = (optimized.orderedStops || []).map((optimizedStop) => {
           scheduleCursor = new Date(scheduleCursor.getTime() + Number(optimizedStop.googleLegDurationSeconds || 0) * 1000)
           const arrivalAt = scheduleCursor.toISOString()
@@ -10492,6 +10544,8 @@
           saved_distance_meters: distanceSaved,
           baseline_duration_seconds: Number(baseline.route?.durationSeconds || 0),
           duration_seconds: Number(optimized.route?.durationSeconds || 0),
+          static_duration_seconds: Number(optimized.route?.staticDurationSeconds || 0),
+          traffic_delay_seconds: Math.max(0, Number(optimized.route?.durationSeconds || 0) - Number(optimized.route?.staticDurationSeconds || 0)),
           saved_duration_seconds: timeSaved,
           estimated_return_at: returnEstimate,
           next_stop_id: orderedIds[0] || null,
@@ -10507,6 +10561,13 @@
         return true
       } catch (error) {
         console.warn('Průběžný přepočet trasy se nepodařil:', error)
+        if (/ručně|rucne|pořadí.*vedením|poradi.*vedenim|obnov trasu/i.test(String(error?.message || error || ''))) {
+          await loadAssignedRoutePlans()
+          renderAssignedRoute()
+          renderTodayRouteSummary()
+          showMessage('Pořadí trasy změnilo vedení. Načetl jsem aktuální pořadí a starý mobilní přepočet jsem zahodil.', 'info', { scroll: false })
+          return false
+        }
         showMessage('Trasu se teď nepodařilo přepočítat. Pokračuj podle zobrazeného pořadí; aplikace to zkusí znovu po obnovení nebo návratu signálu.', 'error', { scroll: false })
         return false
       } finally {

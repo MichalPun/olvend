@@ -5058,6 +5058,7 @@
   <script src="./vendor/leaflet/leaflet.js"></script>
   <script type="module">
     import { supabase } from './supabase.js'
+    import { calculateCanonicalRouteTiming, routeTimingStatus } from './route-time-core.mjs?v=20261127-route-time-v1'
 
     const DASHBOARD_DATA = {
       service: {
@@ -9710,7 +9711,7 @@
     async function fetchDashboardRoutePlans(today) {
       const primary = await supabase
         .from("route_plans")
-        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, started_at, completed_at, return_to_start, route_payload, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, estimated_service_minutes)")
+        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, started_at, completed_at, return_to_start, start_latitude, start_longitude, route_payload, route_plan_stops(id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes)")
         .eq("planning_date", today)
         .order("created_at", { ascending: false });
 
@@ -9721,7 +9722,7 @@
 
       const fallback = await supabase
         .from("route_plans")
-        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, started_at, completed_at, route_payload, route_plan_stops(id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, estimated_service_minutes)")
+        .select("id, title, planning_date, planned_departure_time, planned_employee_id, vehicle_id, execution_status, stop_count, estimated_distance_km, estimated_drive_minutes, estimated_service_minutes, started_at, completed_at, return_to_start, start_latitude, start_longitude, route_payload, route_plan_stops(id, machine_id, stop_order, status, arrived_at, completed_at, skipped_at, title, address_snapshot, city_snapshot, latitude, longitude, estimated_service_minutes)")
         .eq("planning_date", today)
         .order("created_at", { ascending: false });
 
@@ -9774,40 +9775,45 @@
               : "Bez zastávek";
 
       const departure = String(plan?.planned_departure_time || plan?.route_payload?.planned_departure_time || "07:00").slice(0, 5);
-      const plannedStart = new Date(`${plan.planning_date}T${departure}:00`);
-      const preparation = Math.max(0, Number(plan?.route_payload?.preparation_minutes || plan?.route_payload?.route_time_budget?.preparation_minutes || 0));
-      const totalService = stops.reduce((sum, stop) => sum + Math.max(0, Number(stop.estimated_service_minutes || 0)), 0);
-      const plannedEnd = new Date(plannedStart.getTime() + (preparation + Number(plan?.estimated_drive_minutes || 0) + totalService) * 60000);
-      let cursor = plan?.started_at ? new Date(plan.started_at) : new Date(plannedStart.getTime() + preparation * 60000);
-      stops.forEach((stop, index) => {
-        const driveMinutes = routeLegMinutes(plan, index, stops.length);
-        const serviceMinutes = Math.max(0, Number(stop.estimated_service_minutes || 0));
-        if (stop.completed_at || stop.skipped_at) {
-          cursor = new Date(stop.completed_at || stop.skipped_at);
-        } else if (stop.arrived_at) {
-          cursor = new Date(Math.max(Date.now(), new Date(stop.arrived_at).getTime() + serviceMinutes * 60000));
-        } else {
-          cursor = new Date(cursor.getTime() + (driveMinutes + serviceMinutes) * 60000);
-        }
+      const googleStops = (Array.isArray(plan?.route_payload?.google?.orderedStops) ? plan.route_payload.google.orderedStops : []).map((stop) => ({
+        ...stop,
+        machineId: stop.machineId ?? stop.machine_id ?? stop.id,
+      }));
+      const canonical = calculateCanonicalRouteTiming({
+        plannedStart: new Date(`${plan.planning_date}T${departure}:00`),
+        startedAt: plan.started_at,
+        completedAt: plan.completed_at,
+        plannedDriveMinutes: plan.estimated_drive_minutes,
+        plannedServiceMinutes: plan.estimated_service_minutes,
+        preparationMinutes: plan?.route_payload?.preparation_minutes || plan?.route_payload?.route_time_budget?.preparation_minutes || 0,
+        returnToStart: plan.return_to_start,
+        startLatitude: plan.start_latitude,
+        startLongitude: plan.start_longitude,
+        recalculation: plan?.route_payload?.mobile_recalculation,
+        googleStops,
+        stops: stops.map((stop) => ({
+          id: stop.id,
+          machineId: stop.machine_id,
+          order: stop.stop_order,
+          label: placeLabel(stop),
+          status: stop.status,
+          serviceMinutes: stop.estimated_service_minutes,
+          arrivedAt: stop.arrived_at,
+          completedAt: stop.completed_at,
+          skippedAt: stop.skipped_at,
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+        })),
       });
-      const returnMinutes = plan?.return_to_start ? routeLegMinutes(plan, stops.length, stops.length) : 0;
-      const forecastEnd = plan?.completed_at ? new Date(plan.completed_at) : new Date(cursor.getTime() + returnMinutes * 60000);
-      const plannedFieldMinutes = preparation + Number(plan?.estimated_drive_minutes || 0) + totalService;
-      const projectedFieldMinutes = plan?.started_at && !Number.isNaN(forecastEnd.getTime())
-        ? Math.round((forecastEnd.getTime() - new Date(plan.started_at).getTime()) / 60000)
-        : null;
-      const diffMinutes = projectedFieldMinutes != null
-        ? projectedFieldMinutes - plannedFieldMinutes
-        : null;
+      const diffMinutes = canonical.deviationMinutes;
       const tolerance = 10;
-      const timing = diffMinutes == null
-        ? { label: "Čeká", cls: "blue" }
-        : Math.abs(diffMinutes) <= tolerance
-          ? { label: "Tempo v plánu", cls: "green" }
-          : diffMinutes > 0
-            ? { label: `Tempo +${diffMinutes} min`, cls: "red" }
-            : { label: `Tempo ${diffMinutes} min`, cls: "orange" };
-      return { total, done, where, forecastEnd, timing };
+      const status = routeTimingStatus(diffMinutes, tolerance);
+      const timing = status.cls === 'neutral'
+        ? { label: 'Čeká', cls: 'blue' }
+        : status.cls === 'good'
+          ? { label: 'Tempo v plánu', cls: 'green' }
+          : { label: `Tempo ${status.label}`, cls: status.cls === 'bad' ? 'red' : 'orange' };
+      return { total, done, where, forecastEnd: canonical.forecastEnd, timing, canonical };
     }
 
     async function loadServiceDashboardData({ forceReload = false } = {}) {
@@ -10076,12 +10082,22 @@
           const employee = employeeMap.get(String(plan.planned_employee_id));
           const vehicleLabel = vehicleMap.get(String(plan.vehicle_id)) || "Bez vozidla";
           const live = getLiveRouteSummary(plan);
+          const breakdown = live.canonical?.breakdown;
+          const sourceLabel = live.canonical?.forecastSource === 'google_live' ? 'živý Google odhad' : 'náhradní odhad';
+          const delayParts = breakdown ? [
+            `výjezd/přesuny/čekání ${breakdown.travelDeltaMinutes >= 0 ? '+' : ''}${breakdown.travelDeltaMinutes} min`,
+            `obsluha ${breakdown.serviceDeltaMinutes >= 0 ? '+' : ''}${breakdown.serviceDeltaMinutes} min`,
+          ] : [];
           return {
             title: employee ? getEmployeeLabel(employee) : "Bez přiřazení",
             subtitle: `${live.where} · ${vehicleLabel}`,
             badgeClass: live.timing.cls,
             badge: live.timing.label,
-            meta: [`${live.done}/${live.total} hotovo`, plan.started_at ? `výjezd ${formatClock(plan.started_at)} · odhad konce ${formatClock(live.forecastEnd)}` : "trasa ještě nezačala"],
+            meta: [
+              `${live.done}/${live.total} hotovo`,
+              plan.started_at ? `zahájeno ${formatClock(plan.started_at)} · odhad návratu ${formatClock(live.forecastEnd)} · ${sourceLabel}` : "trasa ještě nezačala",
+              ...(plan.started_at && delayParts.length ? [delayParts.join(' · ')] : []),
+            ],
             href: `routes-detail.html?id=${encodeURIComponent(plan.id)}`,
             ctaLabel: "Detail"
           };
