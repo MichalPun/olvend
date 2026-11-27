@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v273-route-time-consistency';
+const CACHE_NAME = 'olvend-v274-route-gps-eta';
 const APP_SHELL = [
   './',
   './index.html',

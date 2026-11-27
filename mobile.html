@@ -5931,10 +5931,10 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261127-route-time-consistency-v1" defer></script>
+  <script src="./pwa.js?v=20261127-route-gps-eta-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
-    import { calculateCanonicalRouteTiming, sameOrder } from './route-time-core.mjs?v=20261127-route-time-v1'
+    import { calculateCanonicalRouteTiming, sameOrder } from './route-time-core.mjs?v=20261127-route-time-v2'
     import {
       completeRouteVisitRecord,
       persistUnchangedCoffeeContainerStates
@@ -6208,6 +6208,8 @@
     const COFFEE_OFFLINE_STOCK_KEY = 'olvendCoffeeOfflineStockV1'
     const COFFEE_OFFLINE_SERVICE_KEY = 'olvendCoffeeOfflineServiceV1'
     const OPERATOR_PRICE_OFFLINE_KEY = 'olvendOperatorPriceRequestsV1'
+    const ROUTE_GPS_MAX_AGE_MS = 15 * 60 * 1000
+    const ROUTE_GPS_REFRESH_MS = 60 * 1000
     const aggregateMachinesWarehouseCode = 'AUTOMATY'
     let activeSignatureCanvas = null
     let lastSignaturePoint = null
@@ -6223,6 +6225,7 @@
     let selectedAddRouteMachineId = null
     let routeSkipApprovalTimer = null
     let routeRecalculationBusy = false
+    let routeGpsPositionCache = { vehicleId: null, checkedAt: 0, row: null }
 
     const els = {
       messageArea: document.getElementById('messageArea'),
@@ -10200,7 +10203,7 @@
           <div class="route-time-mobile-metric"><span>${escapeHtml(returnLabel)}</span><strong>${escapeHtml(returnTime)}</strong><small>${timing.actualMinutes == null ? 'Trasa ještě nezačala' : escapeHtml(formatRouteDurationWords(timing.actualMinutes))}</small></div>
         </div>
         <div class="route-time-mobile-alert ${result.cls}"><strong>${escapeHtml(statusLabel)}</strong></div>
-        ${timing.actualMinutes == null ? '' : `<div class="route-time-mobile-breakdown"><div><span>Výjezd / přesuny / čekání</span><strong>${escapeHtml(signed(breakdown.travelDeltaMinutes))}</strong></div><div><span>Obsluha</span><strong>${escapeHtml(signed(breakdown.serviceDeltaMinutes))}</strong></div><div><span>Živá doprava</span><strong>${timing.liveTrafficDelayMinutes == null ? '—' : escapeHtml(signed(timing.liveTrafficDelayMinutes))}</strong></div></div><p class="route-time-mobile-source">${escapeHtml(source)} První údaj zahrnuje přípravu výjezdu a případné čekání mezi zastávkami; bez průběžné GPS je nelze rozdělit.</p>`}
+        ${timing.actualMinutes == null ? '' : `<div class="route-time-mobile-breakdown"><div><span>Výjezd / přesuny / čekání</span><strong>${escapeHtml(signed(breakdown.travelDeltaMinutes))}</strong></div><div><span>Obsluha</span><strong>${escapeHtml(signed(breakdown.serviceDeltaMinutes))}</strong></div><div><span>Živá doprava</span><strong>${timing.liveTrafficDelayMinutes == null ? '—' : escapeHtml(signed(timing.liveTrafficDelayMinutes))}</strong></div></div><p class="route-time-mobile-source">${escapeHtml(source)} Aktuální návrat se počítá z čerstvé GPS polohy vozidla; první údaj zahrnuje přípravu výjezdu a čekání mezi zastávkami.</p>`}
       `
     }
 
@@ -10464,13 +10467,46 @@
       return urgency
     }
 
-    function getRouteRecalculationTriggerKey(plan) {
+    function getRouteRecalculationTriggerKey(plan, livePosition = null) {
       const closed = getRouteStops(plan).filter(isRouteStopClosed).map((stop) => `${stop.id}:${stop.completed_at || stop.skipped_at || getRouteVisitForStop(stop)?.completed_at || getRouteVisitForStop(stop)?.skipped_at || getRouteStopStatus(stop)}`)
       const decisions = getRouteSkipRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}`)
       const additions = getRouteAddMachineRequests(plan).filter((request) => request.decided_at).map((request) => `${request.id}:${request.status}:${request.decided_at}:${request.added_route_plan_stop_id || ''}`)
       const openOrder = getRouteStops(plan).filter((stop) => !isRouteStopClosed(stop)).map((stop) => stop.id)
-      const liveWindow = Math.floor(Date.now() / 300000)
-      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|order:${openOrder.join(',')}|live:${liveWindow}`
+      const gpsMoment = livePosition?.source_updated_at || livePosition?.ingested_at || ''
+      const gpsTime = new Date(gpsMoment).getTime()
+      const gpsKey = Number.isFinite(gpsTime)
+        ? `|gps:${Math.floor(gpsTime / 300000)}:${Number(livePosition.latitude).toFixed(4)}:${Number(livePosition.longitude).toFixed(4)}`
+        : ''
+      return `${[...closed, ...decisions, ...additions].join('|') || 'route-start'}|order:${openOrder.join(',')}${gpsKey}`
+    }
+
+    async function getFreshRouteVehiclePosition(plan) {
+      const vehicleId = Number(plan?.vehicle_id || getCurrentVehicleId() || 0)
+      if (!vehicleId) return null
+      const now = Date.now()
+      if (String(routeGpsPositionCache.vehicleId || '') === String(vehicleId) && now - routeGpsPositionCache.checkedAt < ROUTE_GPS_REFRESH_MS) {
+        return routeGpsPositionCache.row
+      }
+      const { data, error } = await supabase
+        .from('vehicle_live_positions')
+        .select('vehicle_id, latitude, longitude, is_online, is_parked, source_updated_at, ingested_at')
+        .eq('vehicle_id', vehicleId)
+        .order('ingested_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (error) {
+        console.warn('Živou GPS polohu vozidla se nepodařilo načíst:', error)
+        routeGpsPositionCache = { vehicleId, checkedAt: now, row: null }
+        return null
+      }
+      const measuredAt = new Date(data?.source_updated_at || data?.ingested_at || '').getTime()
+      const valid = Number.isFinite(Number(data?.latitude))
+        && Number.isFinite(Number(data?.longitude))
+        && Number.isFinite(measuredAt)
+        && Math.max(0, now - measuredAt) <= ROUTE_GPS_MAX_AGE_MS
+      const row = valid ? data : null
+      routeGpsPositionCache = { vehicleId, checkedAt: now, row }
+      return row
     }
 
     async function recalculateRemainingRoute(plan = getAssignedRoutePlan()) {
@@ -10479,13 +10515,20 @@
       if (remaining.length < 1) return false
       if (remaining.some((stop) => getRouteStopStatus(stop) === 'arrived')) return false
       const lastClosed = [...getRouteStops(plan)].filter(isRouteStopClosed).sort((a, b) => String(getRouteVisitForStop(b)?.completed_at || getRouteVisitForStop(b)?.skipped_at || b.completed_at || b.skipped_at || '').localeCompare(String(getRouteVisitForStop(a)?.completed_at || getRouteVisitForStop(a)?.skipped_at || a.completed_at || a.skipped_at || '')))[0]
-      // The first manager-approved stop is operationally binding once the driver departs.
-      if (!lastClosed) return false
-      const triggerKey = getRouteRecalculationTriggerKey(plan)
+      const livePosition = await getFreshRouteVehiclePosition(plan)
+      // Bez čerstvé GPS lze počítat od dokončené zastávky jen bezprostředně po
+      // jejím dokončení. Později už by řidič byl na cestě a počátek by byl chybný.
+      const lastClosedMoment = lastClosed
+        ? new Date(getRouteVisitForStop(lastClosed)?.completed_at || getRouteVisitForStop(lastClosed)?.skipped_at || lastClosed.completed_at || lastClosed.skipped_at || '').getTime()
+        : NaN
+      if (!livePosition && (!lastClosed || !Number.isFinite(lastClosedMoment) || Date.now() - lastClosedMoment > ROUTE_GPS_MAX_AGE_MS)) return false
+      const triggerKey = getRouteRecalculationTriggerKey(plan, livePosition)
       if (String(getRouteRecalculation(plan)?.trigger_key || '') === triggerKey) return false
       const start = getRouteStartPoint(plan)
-      const origin = lastClosed && Number.isFinite(Number(lastClosed.latitude)) && Number.isFinite(Number(lastClosed.longitude))
-        ? { latitude: Number(lastClosed.latitude), longitude: Number(lastClosed.longitude), label: getRouteStopTitle(lastClosed) }
+      const origin = livePosition
+        ? { latitude: Number(livePosition.latitude), longitude: Number(livePosition.longitude), label: 'Aktuální poloha vozidla' }
+        : lastClosed && Number.isFinite(Number(lastClosed.latitude)) && Number.isFinite(Number(lastClosed.longitude))
+          ? { latitude: Number(lastClosed.latitude), longitude: Number(lastClosed.longitude), label: getRouteStopTitle(lastClosed) }
         : start
       if (!start.valid || !Number.isFinite(Number(origin.latitude)) || !Number.isFinite(Number(origin.longitude)) || remaining.some((stop) => !Number.isFinite(Number(stop.latitude)) || !Number.isFinite(Number(stop.longitude)))) {
         console.warn('Přepočet trasy přeskočen: některému bodu chybí souřadnice.')
@@ -10536,6 +10579,11 @@
           trigger_key: triggerKey,
           updated_at: new Date().toISOString(),
           provider: 'google_routes',
+          origin_source: livePosition ? 'vehicle_gps' : 'completed_stop',
+          origin_vehicle_id: livePosition ? Number(livePosition.vehicle_id) : null,
+          origin_measured_at: livePosition ? (livePosition.source_updated_at || livePosition.ingested_at || null) : null,
+          origin_latitude: Number(origin.latitude),
+          origin_longitude: Number(origin.longitude),
           reason,
           order_changed: orderChanged,
           business_priority_applied: Boolean(optimized.businessPriorityApplied),
