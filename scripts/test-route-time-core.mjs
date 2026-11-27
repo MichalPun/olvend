@@ -31,6 +31,8 @@ const base = {
     },
   })
   assert.equal(timing.forecastSource, 'google_live')
+  assert.equal(timing.plannedFieldMinutes, 190)
+  assert.equal(timing.plannedEnd.toISOString(), '2026-11-27T07:40:00.000Z')
   assert.equal(timing.projectedFieldMinutes, 210)
   assert.equal(timing.deviationMinutes, 20)
   assert.equal(timing.liveTrafficDelayMinutes, 10)

@@ -195,7 +195,7 @@ export function calculateCanonicalRouteTiming(input) {
   const plannedStart = asDate(input.plannedStart)
   const plannedFieldMinutes = preparationMinutes + plannedDriveMinutes + plannedServiceMinutes
   const plannedEnd = plannedStart
-    ? new Date(plannedStart.getTime() + (preparationMinutes + plannedFieldMinutes) * MINUTE_MS)
+    ? new Date(plannedStart.getTime() + plannedFieldMinutes * MINUTE_MS)
     : null
   const firstArrival = stops.map((stop) => asDate(stop.arrivedAt)).find(Boolean) || null
   const actualStart = asDate(input.startedAt) || firstArrival
