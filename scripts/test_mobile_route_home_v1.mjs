@@ -34,8 +34,9 @@ assert.match(edge, /mapDataUrl/, 'edge function must return the protected map im
 assert.match(html, /route-stop-machine/, 'every stop card must contain a machine photo row')
 assert.match(html, /route-stop-time-compact/, 'stop timing must remain compact on a phone')
 assert.match(html, /route-machine-photo-shell/, 'machine images and fallbacks must occupy one grid cell')
-assert.match(html, /pwa\.js\?v=20261128-route-home-v5/, 'mobile must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-route-home-v5/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v300-route-photo-shell/, 'service worker cache must be bumped')
+assert.doesNotMatch(html, /data-route-action="navigate"/, 'stop cards must not duplicate location navigation')
+assert.match(html, /pwa\.js\?v=20261128-route-home-v6/, 'mobile must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-route-home-v6/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v301-route-actions/, 'service worker cache must be bumped')
 
 console.log('PASS: production route home states, map, weather, machine photos and Google navigation')
