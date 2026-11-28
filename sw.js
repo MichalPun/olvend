@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v275-food-slot-reassignment';
+const CACHE_NAME = 'olvend-v276-mobile-stock-returns';
 const APP_SHELL = [
   './',
   './index.html',

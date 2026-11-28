@@ -589,6 +589,89 @@
       line-height: 1.3;
     }
 
+    .product-search-option.has-image {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .product-search-option-image {
+      width: 48px;
+      height: 48px;
+      padding: 3px;
+      border: 1px solid #e1e5eb;
+      border-radius: 10px;
+      background: #fff;
+      object-fit: contain;
+    }
+
+    .product-search-option-copy { min-width: 0; }
+
+    .stock-product-search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .stock-product-search-row button {
+      min-height: 46px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 10px;
+      color: #fff;
+      background: #182330;
+      font-size: 10px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .stock-product-categories {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .stock-product-categories[hidden] { display: none; }
+
+    .stock-product-categories button {
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid #dfe3ea;
+      border-radius: 999px;
+      color: #4f5d6d;
+      background: #fff;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .stock-product-categories button.active {
+      color: #d5101a;
+      border-color: #f0b2b7;
+      background: #fff0f1;
+    }
+
+    .stock-receipt-product {
+      display: grid;
+      grid-template-columns: 60px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .stock-receipt-product.no-image { grid-template-columns: minmax(0, 1fr); }
+
+    .stock-receipt-product-image {
+      width: 60px;
+      height: 60px;
+      padding: 3px;
+      border: 1px solid #e1e5eb;
+      border-radius: 10px;
+      background: #fff;
+      object-fit: contain;
+    }
+
     .draft-line {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -5392,9 +5475,19 @@
                 </label>
                 <label class="stock-form-full" data-stock-manual-entry>
                   Produkt
-                  <input id="stockProductInput" autocomplete="off" placeholder="Název, SKU nebo EAN" />
+                  <span class="stock-product-search-row">
+                    <input id="stockProductInput" autocomplete="off" placeholder="Název, SKU nebo EAN" />
+                    <button id="scanStockBarcodeButton" type="button">Skenovat kód</button>
+                  </span>
                   <datalist id="productOptions"></datalist>
                 </label>
+                <div class="stock-product-categories stock-form-full" id="stockProductCategoryFilters" data-stock-manual-entry hidden>
+                  <button type="button" data-stock-product-category="ingredients">Suroviny</button>
+                  <button type="button" data-stock-product-category="supplies">Obaly</button>
+                  <button type="button" data-stock-product-category="drinks">Nápoje</button>
+                  <button type="button" data-stock-product-category="sweets">Snacky</button>
+                  <button type="button" data-stock-product-category="fresh">Bagety</button>
+                </div>
                 <div class="product-search-panel stock-form-full" id="stockProductSearchPanel" data-stock-manual-entry hidden></div>
                 <label data-stock-manual-entry>
                   Množství
@@ -5931,7 +6024,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261127-route-gps-eta-v1" defer></script>
+  <script src="./pwa.js?v=20261128-mobile-stock-returns-v1" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import { calculateCanonicalRouteTiming, sameOrder } from './route-time-core.mjs?v=20261127-route-time-v2'
@@ -6030,6 +6123,7 @@
       operationalRequestSelectionMade: false,
       showAllStockRequests: false,
       stockDraftItems: [],
+      stockProductCategoryFilter: '',
       vehicleUnloadBalances: [],
       vehicleLivePosition: null,
       vehicleOperationalRequests: [],
@@ -6402,6 +6496,8 @@
       stockRequestDateLabel: document.getElementById('stockRequestDateLabel'),
       stockRequestDateInput: document.getElementById('stockRequestDateInput'),
       stockProductInput: document.getElementById('stockProductInput'),
+      scanStockBarcodeButton: document.getElementById('scanStockBarcodeButton'),
+      stockProductCategoryFilters: document.getElementById('stockProductCategoryFilters'),
       productOptions: document.getElementById('productOptions'),
       stockProductSearchPanel: document.getElementById('stockProductSearchPanel'),
       stockQuantityInput: document.getElementById('stockQuantityInput'),
@@ -8537,12 +8633,16 @@
     function getProductSearchResults(query) {
       const normalized = query.trim().toLowerCase()
       const unloadProductIds = new Set(state.vehicleUnloadBalances.map((row) => String(row.product_id)))
+      const searchesVehicleStock = state.selectedStockType === 'vehicle_unload'
+        || (state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged')
       const searchableProducts = state.products.filter((product) => product.active !== false && (
-        state.selectedStockType !== 'vehicle_unload' || unloadProductIds.has(String(product.id))
+        !searchesVehicleStock || unloadProductIds.has(String(product.id))
       ) && (
         !(state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad) || isFoodReadyProduct(product)
+      ) && (
+        !state.stockProductCategoryFilter || getVehicleStockGroup({ products: product }).key === state.stockProductCategoryFilter
       ))
-      if (state.selectedStockType === 'vehicle_unload' && !normalized) return []
+      if (searchesVehicleStock && !normalized && !state.stockProductCategoryFilter) return []
       const rows = normalized
         ? searchableProducts.filter((product) => [product.name, product.sku, product.ean].filter(Boolean).join(' · ').toLowerCase().includes(normalized))
         : searchableProducts
@@ -8566,6 +8666,14 @@
         const defaultUnit = getStockEntryUnitOption(product, getDefaultStockEntryUnitMode(product))
         const available = Number(state.freshWarehouseAvailability[String(product.id)] || 0)
         const availabilityKnown = freshLoad && state.freshWarehouseAvailabilityLoaded
+        const searchesVehicleStock = state.selectedStockType === 'vehicle_unload'
+          || (state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged')
+        const vehicleQuantity = state.vehicleUnloadBalances
+          .filter((row) => String(row.product_id) === String(product.id))
+          .reduce((sum, row) => sum + Number(row.quantity_on_hand || 0), 0)
+        const vehicleAvailabilityLabel = searchesVehicleStock
+          ? `ve vozidle ${formatStockQuantityValue(vehicleQuantity, product.base_unit || 'ks')}`
+          : ''
         const freshAvailabilityLabel = !freshLoad
           ? ''
           : !availabilityKnown
@@ -8576,12 +8684,14 @@
           product.ean ? `EAN ${product.ean}` : '',
           defaultUnit?.value !== 'base' ? `zadání ${defaultUnit.unit}` : product.base_unit || 'ks',
           defaultUnit?.value !== 'base' ? `skladově ${formatStockQuantityValue(defaultUnit.stockQuantity, product.base_unit || 'ks')}` : '',
+          vehicleAvailabilityLabel,
           freshAvailabilityLabel
         ].filter(Boolean).join(' · ')
+        const imageUrl = getMobileProductImageUrl(product)
         return `
-          <button class="product-search-option" type="button" data-product-id="${escapeHtml(String(product.id))}">
-            <strong>${escapeHtml(product.name || 'Produkt')}</strong>
-            <span>${escapeHtml(meta || 'Bez kódu')}</span>
+          <button class="product-search-option ${imageUrl ? 'has-image' : ''}" type="button" data-product-id="${escapeHtml(String(product.id))}">
+            ${imageUrl ? `<img class="product-search-option-image" src="${escapeHtml(imageUrl)}" alt="" onerror="this.hidden=true;this.parentElement.classList.remove('has-image')">` : ''}
+            <span class="product-search-option-copy"><strong>${escapeHtml(product.name || 'Produkt')}</strong><span>${escapeHtml(meta || 'Bez kódu')}</span></span>
           </button>
         `
       }).join('')
@@ -8880,6 +8990,8 @@
       const isPreparedLoadMode = state.selectedStockType === 'vehicle_load' && !state.manualVehicleLoad
       const isManualLoadMode = state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad
       const isRouteWasteUnloadMode = state.selectedStockType === 'vehicle_writeoff'
+      const isDamagedWriteoffMode = isRouteWasteUnloadMode && state.routeWasteFilter === 'damaged'
+      const searchesVehicleStock = state.selectedStockType === 'vehicle_unload' || isDamagedWriteoffMode
       const stockScreenActive = document.querySelector('.screen[data-screen="stock"]')?.classList.contains('active')
       if (isManualLoadMode && stockScreenActive && !state.freshRouteRecommendationLoaded) {
         state.freshRouteRecommendationLoaded = true
@@ -8925,7 +9037,9 @@
           : state.selectedStockType === 'vehicle_unload'
             ? { title: 'Vyložit použitelné zboží', help: 'Vyber skutečné množství, které vracíš z auta zpět do skladu.', badge: 'Auto → sklad' }
             : state.selectedStockType === 'vehicle_writeoff'
-              ? { title: 'Odevzdat neprodejné zboží', help: 'Zkontroluj položky po expiraci nebo poškození načtené z dnešní trasy.', badge: 'K odevzdání' }
+              ? isDamagedWriteoffMode
+                ? { title: 'Poškozené zboží', help: 'Potvrď odpis z trasy nebo vyhledej další poškozený produkt ve vozidle.', badge: 'Odpis · poškození' }
+                : { title: 'Po expiraci', help: 'Zkontroluj položky po expiraci načtené z dnešní trasy.', badge: 'Odpis · expirace' }
               : { title: 'Převzít vychystané', help: 'Zobrazí se pouze doklady, které skladník označil jako připravené.', badge: `${readyLoadCount} připraveno` }
       els.stockTypeBadge.textContent = stockModePresentation.badge
       if (els.stockFormTitle) {
@@ -8938,12 +9052,16 @@
           : state.selectedStockType === 'vehicle_unload'
             ? 'Vybírej jen použitelné zboží. Potvrzené množství se odečte z auta a připíše zpět do skladu.'
             : state.selectedStockType === 'vehicle_writeoff'
-              ? 'Záznamy po expiraci nebo poškození se načtou z trasy. Před odevzdáním zkontroluj skutečné kusy.'
+              ? isDamagedWriteoffMode
+                ? 'Celé vozidlo se nezobrazuje. Vyhledej produkt, naskenuj kód nebo otevři jen jeho skupinu.'
+                : 'Záznamy po expiraci se načtou z trasy. Před odevzdáním zkontroluj skutečné kusy.'
               : 'Zkontroluj připravený doklad a potvrď skutečně převzaté množství.'
       }
       if (els.addStockDraftItemButton) {
         els.addStockDraftItemButton.textContent = state.selectedStockType === 'vehicle_unload'
           ? 'Přidat k vrácení'
+          : isDamagedWriteoffMode
+            ? 'Přidat k odpisu'
           : 'Přidat do nakládky'
       }
       if (els.openStockManualEntryButton) {
@@ -8965,15 +9083,14 @@
           els.stockRequestDateInput.value = isOrderMode ? getIsoDateOffset(1) : todayIso
         }
       }
-      if (els.loadWholeVehicleButton) {
-        els.loadWholeVehicleButton.style.display = state.selectedStockType === 'vehicle_unload' ? '' : 'none'
-      }
+      if (els.loadWholeVehicleButton) els.loadWholeVehicleButton.style.display = 'none'
       document.querySelectorAll('[data-stock-manual-entry]').forEach((element) => {
-        element.hidden = isRouteWasteUnloadMode
+        element.hidden = isRouteWasteUnloadMode && !isDamagedWriteoffMode
       })
       if (els.openStockManualEntryButton) els.openStockManualEntryButton.hidden = isRouteWasteUnloadMode || state.selectedStockType === 'vehicle_unload'
       if (els.routeWasteUnloadPanel) els.routeWasteUnloadPanel.hidden = !isRouteWasteUnloadMode
-      if (els.stockDraftList) els.stockDraftList.hidden = isRouteWasteUnloadMode
+      if (els.stockDraftList) els.stockDraftList.hidden = isRouteWasteUnloadMode && !isDamagedWriteoffMode
+      if (els.stockProductCategoryFilters) els.stockProductCategoryFilters.hidden = !searchesVehicleStock
       if (els.stockVehicleField) els.stockVehicleField.hidden = Boolean(getCurrentVehicleId())
       els.stockRequestSectionTitle.textContent = isPreparedLoadMode ? 'Připravené nakládky' : 'Historie skladových dokladů'
       els.stockRequestSectionBadge.textContent = isPreparedLoadMode ? `${readyLoadCount} k převzetí` : `${state.stockRequests.length} dokladů`
@@ -9048,7 +9165,8 @@
 
     function renderStockDraft() {
       if (!els.stockDraftList) return
-      if (state.selectedStockType === 'vehicle_writeoff') {
+      const isDamagedWriteoff = state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged'
+      if (state.selectedStockType === 'vehicle_writeoff' && !isDamagedWriteoff) {
         const checked = state.routeWasteItems.filter((item) => state.routeWasteDrafts[String(item.id)]?.verified).length
         els.createStockRequestButton.disabled = !state.routeWasteItems.length || !state.routeWasteTableAvailable || checked !== state.routeWasteItems.length
         els.createStockRequestButton.textContent = checked === state.routeWasteItems.length && checked
@@ -9057,8 +9175,20 @@
         return
       }
       const positiveDraftItems = state.stockDraftItems.filter((item) => Number(item.quantity || 0) > 0)
+      const verifiedWasteItems = state.routeWasteItems.filter((item) => state.routeWasteDrafts[String(item.id)]?.verified).length
+      const allWasteItemsVerified = verifiedWasteItems === state.routeWasteItems.length
       const pendingExpiryChecks = positiveDraftItems.reduce((sum, item) => sum + (item.expiry_allocations || []).filter((allocation) => !allocation.verified).length, 0)
-      els.createStockRequestButton.disabled = (!positiveDraftItems.length && !els.stockProductInput.value.trim()) || pendingExpiryChecks > 0
+      els.createStockRequestButton.disabled = isDamagedWriteoff
+        ? (!positiveDraftItems.length && !state.routeWasteItems.length) || (state.routeWasteItems.length > 0 && !state.routeWasteTableAvailable) || !allWasteItemsVerified
+        : (!positiveDraftItems.length && !els.stockProductInput.value.trim()) || pendingExpiryChecks > 0
+      if (isDamagedWriteoff) {
+        const totalItems = positiveDraftItems.length + state.routeWasteItems.length
+        els.createStockRequestButton.textContent = !allWasteItemsVerified
+          ? `Nejdřív potvrď svoz · ${verifiedWasteItems}/${state.routeWasteItems.length}`
+          : totalItems
+            ? `Potvrdit poškození · ${totalItems} ${totalItems === 1 ? 'položka' : totalItems < 5 ? 'položky' : 'položek'}`
+            : 'Vyber poškozený produkt'
+      }
       if (state.manualVehicleLoad) {
         els.createStockRequestButton.textContent = pendingExpiryChecks
           ? `Nejdřív zkontroluj expirace · ${pendingExpiryChecks}`
@@ -9070,24 +9200,27 @@
           : 'Vyber, co vracíš do skladu'
       }
       if (!state.stockDraftItems.length) {
-        els.stockDraftList.innerHTML = `<div class="empty">${state.selectedStockType === 'vehicle_unload' ? 'Vyhledej v zásobách vozidla položku, kterou skutečně vracíš.' : 'Zatím není vybrané žádné zboží.'}</div>`
+        els.stockDraftList.innerHTML = `<div class="empty">${isDamagedWriteoff ? 'Vyhledej nebo naskenuj poškozený produkt ve vozidle.' : state.selectedStockType === 'vehicle_unload' ? 'Vyhledej v zásobách vozidla položku, kterou skutečně vracíš.' : 'Zatím není vybrané žádné zboží.'}</div>`
         return
       }
 
       els.stockDraftList.innerHTML = `
-        <div class="section-head"><h2>${state.selectedStockType === 'vehicle_unload' ? 'Zásoby ve vozidle' : 'Skutečná nakládka'}</h2><span>${state.selectedStockType === 'vehicle_unload' ? `${positiveDraftItems.length} vybráno` : `${state.stockDraftItems.length} ${state.stockDraftItems.length === 1 ? 'položka' : state.stockDraftItems.length < 5 ? 'položky' : 'položek'}`}</span></div>
+        <div class="section-head"><h2>${isDamagedWriteoff ? 'Vybrané poškozené zboží' : state.selectedStockType === 'vehicle_unload' ? 'Zásoby ve vozidle' : 'Skutečná nakládka'}</h2><span>${state.selectedStockType === 'vehicle_unload' || isDamagedWriteoff ? `${positiveDraftItems.length} vybráno` : `${state.stockDraftItems.length} ${state.stockDraftItems.length === 1 ? 'položka' : state.stockDraftItems.length < 5 ? 'položky' : 'položek'}`}</span></div>
         <div class="stock-receipt-list">
-        ${state.stockDraftItems.map((item, index) => `
+        ${state.stockDraftItems.map((item, index) => {
+          const product = state.products.find((row) => String(row.id) === String(item.product_id))
+          const imageUrl = getMobileProductImageUrl(product)
+          return `
           <article class="stock-receipt-card ${Number(item.quantity || 0) > 0 || item.skipped ? 'verified' : ''}" data-stock-draft-index="${index}">
-            <div class="stock-receipt-card-head"><div><strong>${escapeHtml(item.product_name)}</strong><small>${escapeHtml([item.sku ? `SKU ${item.sku}` : '', item.skipped ? `Nevzato · ${item.skip_reason}` : state.selectedStockType === 'vehicle_unload' && item.max_quantity != null ? `v autě ${formatNumber(item.max_quantity)} ${item.unit || 'ks'}` : item.note || 'Skutečné množství'].filter(Boolean).join(' · '))}</small></div><div class="stock-receipt-quantity">${item.skipped ? 'Nevzato' : escapeHtml(formatStockRequestItemQuantity(item))}</div></div>
+            <div class="stock-receipt-card-head"><div class="stock-receipt-product">${imageUrl ? `<img class="stock-receipt-product-image" src="${escapeHtml(imageUrl)}" alt="">` : '<span class="stock-receipt-product-image no-image" aria-hidden="true">□</span>'}<div><strong>${escapeHtml(item.product_name)}</strong><small>${escapeHtml([item.sku ? `SKU ${item.sku}` : '', item.skipped ? `Nevzato · ${item.skip_reason}` : (state.selectedStockType === 'vehicle_unload' || isDamagedWriteoff) && item.max_quantity != null ? `v autě ${formatNumber(item.max_quantity)} ${item.unit || 'ks'}` : item.note || 'Skutečné množství'].filter(Boolean).join(' · '))}</small></div></div><div class="stock-receipt-quantity">${item.skipped ? 'Nevzato' : escapeHtml(formatStockRequestItemQuantity(item))}</div></div>
             ${!item.skipped && item.allows_negative_warehouse && item.warehouse_available_at_selection !== null && Number(item.stock_quantity_base_units || 0) > Number(item.warehouse_available_at_selection || 0) ? `<div class="stock-receipt-expiry">Sklad po naložení: −${escapeHtml(formatStockQuantityValue(Number(item.stock_quantity_base_units || 0) - Number(item.warehouse_available_at_selection || 0), item.unit || 'ks'))} · pohyb bude uložený k operátorovi a vozidlu</div>` : ''}
             ${!item.skipped && item.batch_id && !item.expiry_allocations?.length ? `<div class="stock-receipt-expiry">Expirace ${escapeHtml(item.expiry_date ? new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'neuvedena')} · šarže ${escapeHtml(item.batch_code || String(item.batch_id))}</div>` : ''}
             ${!item.skipped && item.expiry_allocations?.length ? `<div class="stock-expiry-control"><strong>Povinná kontrola expirací</strong><span>Klepni na každé datum po porovnání s obalem.</span>${item.expiry_allocations.map((allocation, allocationIndex) => `<button class="${allocation.verified ? 'verified' : ''}" data-stock-expiry-index="${allocationIndex}" type="button"><span class="stock-expiry-mark">${allocation.verified ? 'OK' : '!'}</span><span><b>${escapeHtml(allocation.expiry_date ? new Date(`${allocation.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ') : 'Expirace neevidována')}</b><small>${allocation.verified ? 'Zkontrolováno' : 'Porovnej datum na obalu'}</small></span><em>${formatNumber(allocation.quantity)} ${escapeHtml(item.unit || 'ks')}</em></button>`).join('')}</div>` : ''}
             ${!item.skipped ? `<div class="stock-receipt-stepper"><button data-stock-draft-step="-1" type="button" aria-label="Ubrat">−</button><output>${escapeHtml(formatStockRequestItemQuantity(item))}</output><button data-stock-draft-step="1" type="button" aria-label="Přidat">+</button></div>` : ''}
-            <button class="stock-receipt-remove" data-remove-draft-index="${index}" type="button">${item.skipped ? 'Vrátit do nakládky' : state.selectedStockType === 'vehicle_unload' ? 'Nevracet tuto položku' : 'Nevzít tuto položku'}</button>
+            <button class="stock-receipt-remove" data-remove-draft-index="${index}" type="button">${item.skipped ? 'Vrátit do nakládky' : isDamagedWriteoff ? 'Odebrat z odpisu' : state.selectedStockType === 'vehicle_unload' ? 'Nevracet tuto položku' : 'Nevzít tuto položku'}</button>
             ${item.skip_open && !item.skipped ? `<div class="stock-skip-panel"><select data-stock-skip-reason><option value="">Vyber důvod</option><option>Není skladem</option><option>Mám dostatečnou zásobu v autě</option><option>Po dohodě dnes nenakládám</option><option>Jiný důvod</option></select><button data-stock-confirm-skip type="button">Potvrdit, že neberu</button></div>` : ''}
           </article>
-        `).join('')}
+        `}).join('')}
         </div>
       `
     }
@@ -9154,7 +9287,9 @@
       els.routeWasteUnloadList.innerHTML = `<div class="route-prefill">Načteno z dnešní trasy. Zkontroluj skutečné kusy a potvrď každý řádek.</div><div class="stock-receipt-list">${state.routeWasteItems.map((item) => {
         const draft = state.routeWasteDrafts[String(item.id)] || { quantity: Number(item.quantity || 0), verified: false }
         state.routeWasteDrafts[String(item.id)] = draft
-        return `<article class="stock-receipt-card ${draft.verified ? 'verified' : ''}" data-route-waste-id="${item.id}"><div class="stock-receipt-card-head"><div><strong>${escapeHtml(item.product_name || item.product_sku || 'Produkt')}</strong><small>${escapeHtml([routeWasteReasonLabels[item.reason] || item.reason || 'Odpis', item.machine_name, item.location_name, item.expiry_date ? `expirace ${new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ')}` : ''].filter(Boolean).join(' · '))}</small></div><div class="stock-receipt-quantity">${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</div></div><div class="stock-receipt-stepper"><button data-route-waste-step="-1" type="button">−</button><output>${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</output><button data-route-waste-step="1" type="button">+</button></div><button class="stock-receipt-remove" data-route-waste-confirm type="button">${draft.verified ? 'Množství potvrzeno' : `Potvrdit: skutečně ${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}`}</button></article>`
+        const product = state.products.find((row) => String(row.id) === String(item.product_id))
+        const imageUrl = getMobileProductImageUrl(product)
+        return `<article class="stock-receipt-card ${draft.verified ? 'verified' : ''}" data-route-waste-id="${item.id}"><div class="stock-receipt-card-head"><div class="stock-receipt-product">${imageUrl ? `<img class="stock-receipt-product-image" src="${escapeHtml(imageUrl)}" alt="">` : '<span class="stock-receipt-product-image no-image" aria-hidden="true">□</span>'}<div><strong>${escapeHtml(item.product_name || item.product_sku || 'Produkt')}</strong><small>${escapeHtml([routeWasteReasonLabels[item.reason] || item.reason || 'Odpis', item.machine_name, item.location_name, item.expiry_date ? `expirace ${new Date(`${item.expiry_date}T00:00:00`).toLocaleDateString('cs-CZ')}` : ''].filter(Boolean).join(' · '))}</small></div></div><div class="stock-receipt-quantity">${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</div></div><div class="stock-receipt-stepper"><button data-route-waste-step="-1" type="button">−</button><output>${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}</output><button data-route-waste-step="1" type="button">+</button></div><button class="stock-receipt-remove" data-route-waste-confirm type="button">${draft.verified ? 'Množství potvrzeno' : `Potvrdit: skutečně ${formatNumber(draft.quantity)} ${escapeHtml(item.unit || 'ks')}`}</button></article>`
       }).join('')}</div>`
     }
 
@@ -14835,6 +14970,8 @@
     function closeStockDetail() {
       state.activeStockDetail = null
       state.activeStockRequestId = null
+      state.stockProductCategoryFilter = ''
+      els.stockProductCategoryFilters?.querySelectorAll('[data-stock-product-category]').forEach((button) => button.classList.remove('active'))
       if (els.stockManualEntryPanel) els.stockManualEntryPanel.hidden = true
       if (els.stockProductSearchPanel) els.stockProductSearchPanel.hidden = true
       syncStockDetailPanels()
@@ -14845,8 +14982,13 @@
     function activateStockType(type, options = {}) {
       state.selectedStockType = type
       state.manualVehicleLoad = Boolean(options.manualLoad)
-      if (type === 'vehicle_unload') state.vehicleUnloadBalances = []
       state.routeWasteFilter = type === 'vehicle_writeoff' ? (options.wasteFilter || null) : null
+      const searchesVehicleStock = type === 'vehicle_unload' || (type === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged')
+      if (searchesVehicleStock) state.vehicleUnloadBalances = []
+      state.stockProductCategoryFilter = ''
+      els.stockProductCategoryFilters?.querySelectorAll('[data-stock-product-category]').forEach((button) => button.classList.remove('active'))
+      if (els.stockProductInput) els.stockProductInput.value = ''
+      if (els.stockManualEntryPanel) els.stockManualEntryPanel.hidden = true
       openStockDetail(state.manualVehicleLoad ? 'fresh' : type === 'vehicle_unload' ? 'unload' : type === 'vehicle_writeoff' ? 'writeoff' : 'prepared')
       if (type === 'vehicle_writeoff' && state.routeWasteFilter) {
         const expired = state.routeWasteFilter === 'expired'
@@ -14859,8 +15001,8 @@
       if (type === 'vehicle_writeoff') {
         loadPendingRouteWaste().catch(handleError)
       }
-      if (type === 'vehicle_unload') {
-        loadWholeVehicleForUnload({ prefillStaleChangeovers: true, silent: true }).catch(handleError)
+      if (searchesVehicleStock) {
+        loadWholeVehicleForUnload({ silent: true }).catch(handleError)
       }
       if (type === 'vehicle_load' && !state.manualVehicleLoad) {
         els.stockRequestDetails.open = true
@@ -20344,14 +20486,22 @@
       }
       const unitOption = getStockEntryUnitOption(product, els.stockUnitSelect?.value || getDefaultStockEntryUnitMode(product))
       const stockQuantityBaseUnits = unitOption?.pack ? convertMobilePackageQuantityToBase(product, quantity, unitOption.pack) : quantity
-      const unloadBalance = state.selectedStockType === 'vehicle_unload'
-        ? state.vehicleUnloadBalances.find((row) => String(row.product_id) === String(product?.id || ''))
+      const usesVehicleBalance = state.selectedStockType === 'vehicle_unload'
+        || (state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged')
+      const matchingUnloadBalances = usesVehicleBalance
+        ? state.vehicleUnloadBalances.filter((row) => String(row.product_id) === String(product?.id || ''))
+        : []
+      const unloadBalance = matchingUnloadBalances.length
+        ? {
+            ...matchingUnloadBalances[0],
+            quantity_on_hand: matchingUnloadBalances.reduce((sum, row) => sum + Number(row.quantity_on_hand || 0), 0)
+          }
         : null
-      if (state.selectedStockType === 'vehicle_unload' && !unloadBalance) {
+      if (usesVehicleBalance && !unloadBalance) {
         showMessage('Vyber produkt ze zásoby vozidla.', 'error')
         return false
       }
-      const alreadySelectedBaseUnits = state.selectedStockType === 'vehicle_unload'
+      const alreadySelectedBaseUnits = usesVehicleBalance
         ? state.stockDraftItems.filter((item) => String(item.product_id) === String(product?.id || '')).reduce((sum, item) => sum + Number(item.stock_quantity_base_units || 0), 0)
         : 0
       if (unloadBalance && stockQuantityBaseUnits + alreadySelectedBaseUnits > Number(unloadBalance.quantity_on_hand || 0)) {
@@ -20382,7 +20532,7 @@
           ? Number((Number(unloadBalance.quantity_on_hand || 0) / Math.max(1, Number(unitOption?.stockQuantity || 1))).toFixed(3))
           : null,
         note: unloadBalance
-          ? `V autě ${formatStockQuantityValue(unloadBalance.quantity_on_hand, product?.base_unit || 'ks')}`
+          ? `${state.selectedStockType === 'vehicle_writeoff' ? 'Poškozené · ' : ''}v autě ${formatStockQuantityValue(unloadBalance.quantity_on_hand, product?.base_unit || 'ks')}`
           : negativeWarehouseAfterLoad > 0
             ? `Naloženo nad evidenční stav · sklad po naložení −${formatStockQuantityValue(negativeWarehouseAfterLoad, product?.base_unit || 'ks')}`
             : els.stockNoteInput.value.trim() || null,
@@ -20414,7 +20564,9 @@
 
     async function createStockRequest() {
       if (state.stockRequestSubmitting) return
-      if (state.selectedStockType === 'vehicle_writeoff') {
+      const isDamagedWriteoff = state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged'
+      const hasManualDamagedItems = isDamagedWriteoff && state.stockDraftItems.some((item) => Number(item.quantity || 0) > 0)
+      if (state.selectedStockType === 'vehicle_writeoff' && !hasManualDamagedItems) {
         state.stockRequestSubmitting = true
         const originalButtonText = els.createStockRequestButton.textContent
         els.createStockRequestButton.disabled = true
@@ -20437,6 +20589,10 @@
         showMessage('Přidej alespoň jednu položku.', 'error')
         return
       }
+      if (isDamagedWriteoff && state.routeWasteItems.some((item) => !state.routeWasteDrafts[String(item.id)]?.verified)) {
+        showMessage('Nejdřív potvrď skutečné množství u položek svezených z trasy.', 'error')
+        return
+      }
       const uncheckedExpiries = draftItems.reduce((sum, item) => sum + (item.expiry_allocations || []).filter((allocation) => !allocation.verified).length, 0)
       if (uncheckedExpiries) {
         showMessage(`Nejdřív zkontroluj všechny expirace. Zbývá ${uncheckedExpiries}.`, 'error')
@@ -20446,7 +20602,7 @@
       const needsApproval = state.selectedStockType === 'vehicle_order' || state.selectedStockType === 'vehicle_writeoff'
       const appliesImmediately = !needsApproval
       const skippedSummary = state.stockDraftItems.filter((item) => item.skipped).map((item) => `${item.product_name}: ${item.skip_reason}`).join('; ')
-      const note = [els.stockNoteInput.value.trim(), skippedSummary ? `Nevzato z doporučení: ${skippedSummary}` : ''].filter(Boolean).join(' · ') || null
+      const note = [isDamagedWriteoff ? 'Odpis poškozeného zboží' : '', els.stockNoteInput.value.trim(), skippedSummary ? `Nevzato z doporučení: ${skippedSummary}` : ''].filter(Boolean).join(' · ') || null
       const vehicleId = els.stockVehicleSelect?.value || getCurrentVehicleId() || null
       const requestedForDate = state.selectedStockType === 'vehicle_order'
         ? (els.stockRequestDateInput?.value || getIsoDateOffset(1))
@@ -20460,6 +20616,7 @@
       els.createStockRequestButton.disabled = true
       els.createStockRequestButton.textContent = appliesImmediately ? 'Zapisuji sklad...' : 'Odesílám...'
       try {
+        if (isDamagedWriteoff && state.routeWasteItems.length) await confirmPendingRouteWasteUnload()
         const requestPayload = {
             request_type: state.selectedStockType,
             status: needsApproval ? 'requested' : 'picking',
@@ -20472,17 +20629,22 @@
             note
         }
 
-        const itemRows = draftItems.map((item) => ({
-          product_id: item.product_id,
-          product_name: item.product_name,
-          sku: item.sku,
-          unit: item.unit,
-          requested_quantity: item.quantity,
-          prepared_quantity: appliesImmediately ? item.quantity : null,
-          confirmed_quantity: null,
-          note: item.note,
-          batch_id: item.batch_id || null
-        }))
+        const itemRows = draftItems.map((item) => {
+          const storesVehicleBaseQuantity = ['vehicle_unload', 'vehicle_writeoff'].includes(state.selectedStockType)
+          const product = state.products.find((row) => String(row.id) === String(item.product_id))
+          const savedQuantity = storesVehicleBaseQuantity ? Number(item.stock_quantity_base_units || item.quantity || 0) : item.quantity
+          return {
+            product_id: item.product_id,
+            product_name: item.product_name,
+            sku: item.sku,
+            unit: storesVehicleBaseQuantity ? (product?.base_unit || 'ks') : item.unit,
+            requested_quantity: savedQuantity,
+            prepared_quantity: appliesImmediately ? savedQuantity : null,
+            confirmed_quantity: null,
+            note: item.note,
+            batch_id: item.batch_id || null
+          }
+        })
 
         const { data: createdDocument, error: createError } = await supabase.rpc(
           'create_mobile_stock_request_with_items_v22',
@@ -21659,11 +21821,14 @@
       if (state.selectedStockType === 'vehicle_load' && state.manualVehicleLoad) {
         loadFreshWarehouseAvailability().catch(handleError)
       }
-      if (state.selectedStockType === 'vehicle_unload') {
+      const searchesVehicleStock = state.selectedStockType === 'vehicle_unload'
+        || (state.selectedStockType === 'vehicle_writeoff' && state.routeWasteFilter === 'damaged')
+      if (searchesVehicleStock) {
         state.vehicleUnloadBalances = []
         state.stockDraftItems = []
-        if (els.stockManualEntryPanel) els.stockManualEntryPanel.hidden = true
+        state.stockProductCategoryFilter = ''
         renderStockDraft()
+        loadWholeVehicleForUnload({ silent: true }).catch(handleError)
       }
       if (state.selectedStockType === 'vehicle_writeoff') loadPendingRouteWaste().catch(handleError)
     })
@@ -21684,6 +21849,39 @@
         renderStockDraft()
       })
       els.stockProductInput.addEventListener('focus', renderProductSearchPanel)
+      els.stockProductInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return
+        const results = getProductSearchResults(els.stockProductInput.value || '')
+        if (results.length !== 1) return
+        event.preventDefault()
+        selectStockProduct(results[0].id)
+      })
+      els.scanStockBarcodeButton?.addEventListener('click', () => {
+        state.stockProductCategoryFilter = ''
+        if (els.stockProductCategoryFilters) {
+          els.stockProductCategoryFilters.querySelectorAll('[data-stock-product-category]').forEach((button) => button.classList.remove('active'))
+        }
+        els.stockProductInput.value = ''
+        els.stockProductInput.placeholder = 'Naskenuj kód bočním tlačítkem PDA'
+        els.stockProductInput.focus({ preventScroll: true })
+        renderProductSearchPanel()
+        showMessage('Skener je připravený. Naskenuj EAN bočním tlačítkem PDA.', 'info', { scroll: false })
+      })
+      els.stockProductInput.addEventListener('blur', () => {
+        window.setTimeout(() => { els.stockProductInput.placeholder = 'Název, SKU nebo EAN' }, 120)
+      })
+      els.stockProductCategoryFilters?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-stock-product-category]')
+        if (!button) return
+        const category = button.dataset.stockProductCategory || ''
+        state.stockProductCategoryFilter = state.stockProductCategoryFilter === category ? '' : category
+        els.stockProductCategoryFilters.querySelectorAll('[data-stock-product-category]').forEach((item) => {
+          item.classList.toggle('active', item.dataset.stockProductCategory === state.stockProductCategoryFilter)
+        })
+        els.stockProductInput.value = ''
+        els.stockProductInput.focus({ preventScroll: true })
+        renderProductSearchPanel()
+      })
       els.stockQuantityInput.addEventListener('input', () => updateStockQuantityHelp())
       els.stockUnitSelect?.addEventListener('change', () => updateStockQuantityHelp())
       els.stockProductSearchPanel.addEventListener('click', (event) => {
