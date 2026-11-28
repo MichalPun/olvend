@@ -39,6 +39,7 @@ assert.doesNotMatch(html, /Nejdřív potvrď skutečné množství u všech polo
 assert.doesNotMatch(html, /Nejdřív potvrď množství · \$\{checked\}/, 'writeoff action must not require item-by-item confirmations')
 assert.doesNotMatch(html, /data-receipt-accept-all|data-route-waste-confirm/, 'legacy per-item confirmation controls must be removed')
 assert.match(html, /function openStockDetail\(detail\) \{\s*showMessage\(''\)/, 'stock detail navigation must clear stale messages from the previous step')
+assert.doesNotMatch(html, /Zobrazit moje inventury|openStockInventoriesButton/, 'warehouse document history must not mix in vehicle inventories')
 
 assert.match(html, /id="instructionCenter"/, 'daily instructions must have one overview')
 assert.match(html, /\.instruction-center-card \{ position: relative; z-index: 1;/, 'instruction cards must render above the dark backdrop')
@@ -64,8 +65,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-stock-details-v2/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-details-v2/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v288-stock-details/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-stock-details-v3/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-details-v3/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v289-stock-details/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
