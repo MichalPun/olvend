@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v292-stock-multi-return';
+const CACHE_NAME = 'olvend-v293-stock-multi-return';
 const APP_SHELL = [
   './',
   './index.html',
