@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v298-route-summary-compact';
+const CACHE_NAME = 'olvend-v299-route-cards-modern';
 const APP_SHELL = [
   './',
   './index.html',

@@ -16,7 +16,7 @@ assert.match(html, /Trasa je připravená/, 'pre-acceptance state must explain t
 assert.match(html, /Převzít trasu a začít/, 'route acceptance must remain an explicit operator action')
 assert.match(html, /Prohlédnout pořadí zastávek/, 'route order must be reviewable before acceptance')
 assert.match(html, /function renderRouteActiveHero\(/, 'active route must have a dedicated next-stop state')
-assert.match(html, /Otevřít Google Maps/, 'next stop must offer direct Google Maps navigation')
+assert.match(html, />Navigovat</, 'next stop must offer direct navigation')
 assert.match(html, /Jsem na místě/, 'next stop must retain the arrival workflow')
 assert.match(html, /travelmode=driving&dir_action=navigate/, 'Google Maps URL must start driving navigation')
 assert.match(html, /function getMobileMachineImageUrl\(/, 'machine photos must use the approved model assets')
@@ -31,8 +31,10 @@ assert.match(edge, /maps\.googleapis\.com\/maps\/api\/staticmap/, 'map preview m
 assert.match(edge, /TRAFFIC_AWARE_OPTIMAL/, 'preview travel time must include current traffic')
 assert.match(edge, /mapDataUrl/, 'edge function must return the protected map image')
 
-assert.match(html, /pwa\.js\?v=20261128-route-home-v1/, 'mobile must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-route-home-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v296-route-home/, 'service worker cache must be bumped')
+assert.match(html, /route-stop-machine/, 'every stop card must contain a machine photo row')
+assert.match(html, /route-stop-time-compact/, 'stop timing must remain compact on a phone')
+assert.match(html, /pwa\.js\?v=20261128-route-home-v4/, 'mobile must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-route-home-v4/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v299-route-cards-modern/, 'service worker cache must be bumped')
 
 console.log('PASS: production route home states, map, weather, machine photos and Google navigation')
