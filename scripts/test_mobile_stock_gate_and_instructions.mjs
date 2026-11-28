@@ -28,6 +28,16 @@ assert.match(html, /<strong>Čerstvé bagety<\/strong>/, 'stock home must expose
 assert.match(html, /function renderStockHomeV2\(\)/, 'stock home must be populated from live shift data')
 assert.match(html, /\.stock-home-inventory\[hidden\] \{ display:none; \}/, 'stock home must not show an empty inventory card')
 assert.doesNotMatch(html, /<h3>Skladové operace<\/h3>|<h3>Čeká na tebe<\/h3>/, 'legacy stock hub must be removed rather than hidden')
+assert.match(html, /class="stock-detail-eyebrow"/, 'all stock details must use the approved modern heading')
+assert.match(html, /id="stockDetailVehiclePhoto"/, 'stock details must retain the real vehicle photo')
+assert.match(html, /data-receipt-quantity/, 'prepared goods must support direct quantity entry')
+assert.match(html, /data-stock-draft-quantity/, 'fresh and returned goods must support direct quantity entry')
+assert.match(html, /data-route-waste-quantity/, 'route writeoffs must support direct quantity entry')
+assert.match(html, /\.stock-receipt-product-image \{ width:68px; height:68px;/, 'stock item cards must reserve a visible product photo')
+assert.match(html, /data-stock-back = returnsBack \? 'return' : 'home'|dataset\.stockBack = returnsBack \? 'return' : 'home'/, 'return item detail must lead back to the return type selector')
+assert.doesNotMatch(html, /Nejdřív potvrď skutečné množství u všech položek/, 'writeoff must use one final confirmation instead of per-row confirmations')
+assert.doesNotMatch(html, /Nejdřív potvrď množství · \$\{checked\}/, 'writeoff action must not require item-by-item confirmations')
+assert.doesNotMatch(html, /data-receipt-accept-all|data-route-waste-confirm/, 'legacy per-item confirmation controls must be removed')
 
 assert.match(html, /id="instructionCenter"/, 'daily instructions must have one overview')
 assert.match(html, /\.instruction-center-card \{ position: relative; z-index: 1;/, 'instruction cards must render above the dark backdrop')
@@ -53,8 +63,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-stock-home-v2/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-home-v2/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v286-stock-home-hidden/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-stock-details-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-details-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v287-stock-details/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
