@@ -12,6 +12,8 @@ new vm.SourceTextModule(moduleScript, { identifier: 'mobile.html' })
 
 assert.match(html, /id="stockPrerequisite"/, 'stock must provide a readable prerequisite screen')
 assert.match(html, /class="stock-prerequisite-icon"[\s\S]*?<svg viewBox="0 0 24 24">/, 'stock prerequisite must show a real visible pictogram')
+assert.match(html, /\.stock-prerequisite-hero \{[\s\S]*?background: #182330;/, 'stock prerequisite must use a dark visual anchor instead of one large white form')
+assert.match(html, /\.stock-prerequisite-top div > span,\s*\.stock-prerequisite-top strong \{ display: block; \}/, 'text styles must not override icon centering')
 assert.match(html, /function renderStockAvailabilityGate\(\)/, 'stock must evaluate shift and vehicle prerequisites')
 assert.match(html, /const blocked = !running \|\| !hasVehicle/, 'stock must stay blocked without an active shift or vehicle')
 assert.match(html, /preShiftAllowedScreens = \[[^\]]*'stock'/, 'operators must be able to open the stock prerequisite screen before their shift')
@@ -34,8 +36,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-shift-instruction-gate-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-shift-instruction-gate-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v280-shift-instruction-gate/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-stock-gate-visual-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-gate-visual-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v281-stock-gate-visual/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
