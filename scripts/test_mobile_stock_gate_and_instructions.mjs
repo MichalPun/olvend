@@ -20,6 +20,13 @@ assert.match(html, /preShiftAllowedScreens = \[[^\]]*'stock'/, 'operators must b
 assert.match(html, /preShiftAllowedScreens = \[[^\]]*'inventory'/, 'instruction-linked inventory detail must stay readable before shift start')
 assert.match(html, /if \(renderStockAvailabilityGate\(\)\) return/, 'stock operations must not render while prerequisites are missing')
 assert.match(html, /Sklad pracuje se zásobou konkrétního auta/, 'vehicle dependency must be explained in plain language')
+assert.match(html, /id="stockHomeV2"/, 'stock must use the approved modern home screen')
+assert.match(html, /<h1>Sklad a nakládka<\/h1>/, 'stock home must name the warehouse workflow clearly')
+assert.match(html, /id="stockHomeVehiclePhoto"/, 'stock home must show the assigned vehicle photo')
+assert.match(html, /<strong>Vychystané zboží<\/strong>/, 'stock home must expose prepared goods as a live step')
+assert.match(html, /<strong>Čerstvé bagety<\/strong>/, 'stock home must expose fresh bagettes as a live step')
+assert.match(html, /function renderStockHomeV2\(\)/, 'stock home must be populated from live shift data')
+assert.doesNotMatch(html, /<h3>Skladové operace<\/h3>|<h3>Čeká na tebe<\/h3>/, 'legacy stock hub must be removed rather than hidden')
 
 assert.match(html, /id="instructionCenter"/, 'daily instructions must have one overview')
 assert.match(html, /\.instruction-center-card \{ position: relative; z-index: 1;/, 'instruction cards must render above the dark backdrop')
@@ -45,8 +52,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-instruction-detail-v3/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-instruction-detail-v3/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v284-instruction-return/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-stock-home-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-home-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v285-stock-home/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
