@@ -382,10 +382,32 @@ function triggerFinanceSync(source = 'timer') {
 
 function triggerFinanceProcessing() {
   if (financeProcessingPromise) return financeProcessingPromise
-  financeProcessingPromise = processFinanceIntake(admin,{limit:8})
+  financeProcessingPromise = processFinanceDocuments({limit:8})
     .catch(error=>{console.error('Finance attachment extraction failed:',error);return {failed:1,error:String(error?.message||error)}})
     .finally(()=>{financeProcessingPromise=null})
   return financeProcessingPromise
+}
+
+async function processFinanceDocuments({limit=8}={}) {
+  const health=await admin.functions.invoke('finance-document-ai',{body:{action:'health'}})
+  if (health.error || !health.data?.openai_configured) {
+    const fallback=await processFinanceIntake(admin,{limit})
+    return {...fallback,engine:'deterministic_fallback',ai_configured:false}
+  }
+  const queued=await admin.from('finance_document_intake_queue').select('id,file_name').eq('status','queued').order('discovered_at',{ascending:true}).limit(limit)
+  if (queued.error) throw queued.error
+  const result={processed:0,failed:0,engine:'openai_finance_document',items:[]}
+  for (const item of queued.data || []) {
+    const invoked=await admin.functions.invoke('finance-document-ai',{body:{queue_id:item.id}})
+    if (invoked.error || invoked.data?.error) {
+      result.failed+=1
+      result.items.push({queue_id:item.id,file_name:item.file_name,error:invoked.data?.error || invoked.error?.message || 'AI processing failed'})
+    } else {
+      result.processed+=1
+      result.items.push({queue_id:item.id,file_name:item.file_name,invoice_id:invoked.data?.invoice_id,state:invoked.data?.state})
+    }
+  }
+  return result
 }
 
 async function route(req, res) {

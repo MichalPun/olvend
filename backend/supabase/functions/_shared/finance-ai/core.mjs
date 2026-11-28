@@ -150,4 +150,3 @@ export function outputText(response) {
   }
   return ''
 }
-
