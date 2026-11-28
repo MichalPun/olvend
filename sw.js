@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v279-home-instruction-click';
+const CACHE_NAME = 'olvend-v280-shift-instruction-gate';
 const APP_SHELL = [
   './',
   './index.html',
