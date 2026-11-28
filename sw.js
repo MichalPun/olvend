@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v278-instruction-layer-fix';
+const CACHE_NAME = 'olvend-v279-home-instruction-click';
 const APP_SHELL = [
   './',
   './index.html',

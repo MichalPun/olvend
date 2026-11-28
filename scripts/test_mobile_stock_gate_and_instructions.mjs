@@ -21,13 +21,14 @@ assert.match(html, /Sklad pracuje se zásobou konkrétního auta/, 'vehicle depe
 assert.match(html, /id="instructionCenter"/, 'daily instructions must have one overview')
 assert.match(html, /\.instruction-center-card \{ position: relative; z-index: 1;/, 'instruction cards must render above the dark backdrop')
 assert.match(html, /function openInstructionCenter\(\)/, 'the instruction overview must be openable from the app')
+assert.match(html, /document\.querySelector\('\.screen\[data-screen="today"\]'\)\?\.addEventListener\('click'/, 'all home instruction cards must share the click handler')
 assert.match(html, /<strong>Aktuální<\/strong>/, 'instruction overview must show current instructions')
 assert.match(html, /<strong>Potvrzené<\/strong>/, 'instruction overview must retain acknowledged instructions')
 assert.match(html, /if \(action === 'instruction'\) return openInstructionCenter\(\)/, 'instruction actions must open the overview instead of an arbitrary first item')
 assert.match(html, /state\.instructionReturnToCenter = true/, 'closing an instruction detail must return to the overview')
 
-assert.match(html, /pwa\.js\?v=20261128-instruction-layer-fix-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-instruction-layer-fix-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v278-instruction-layer-fix/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-home-instruction-click-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-home-instruction-click-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v279-home-instruction-click/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
