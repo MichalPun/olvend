@@ -32,6 +32,9 @@ assert.match(html, /state\.instructionReturnToCenter = true/, 'closing an instru
 assert.match(html, /\.instruction-sheet \{[\s\S]*?align-items: stretch;/, 'instruction detail must open as a full-height workspace instead of a bottom popup')
 assert.match(html, /\.instruction-sheet-card \{[\s\S]*?background: #f7f8fa;/, 'instruction detail must use the readable light design on every app screen')
 assert.match(html, /data-open-inventory-from-instruction/, 'inventory-result instructions must open their in-app audit detail')
+assert.match(html, /inventoryReturnInstructionId/, 'inventory detail must remember which instruction opened it')
+assert.match(html, /data-inventory-workspace-action="\$\{backAction\}"/, 'inventory review back action must respect its opening context')
+assert.match(html, /if \(action === 'instruction'\)/, 'instruction-linked inventory detail must return to the instruction instead of the stock hub')
 assert.match(html, /attachment\.extension === 'PDF' \? 'Zobrazit PDF přílohu'/, 'PDF instructions must retain a clear PDF attachment action')
 assert.doesNotMatch(html, /Příloha \$\{escapeHtml\(attachment\.extension\)\}/, 'instruction overview must not expose technical attachment extensions')
 assert.match(html, /class="shift-editor-icon"[\s\S]*?<svg viewBox="0 0 24 24">/, 'vehicle receipt must use a real vehicle pictogram')
@@ -42,8 +45,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-instruction-detail-v2/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-instruction-detail-v2/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v283-instruction-inventory/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-instruction-detail-v3/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-instruction-detail-v3/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v284-instruction-return/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
