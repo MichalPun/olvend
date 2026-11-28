@@ -72,8 +72,10 @@ assert.match(html, /Vybrané k vrácení/, 'multi-product returns must show one 
 assert.match(html, /#stockReturnChoicePanel \.stock-workflow \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/, 'return-type choices must use one readable full-width column')
 assert.match(html, /stock-entry-panel\.is-multi-return/, 'return forms must use the modern multi-product picker')
 assert.match(html, /Přidat další produkt/, 'return flow must explicitly support adding another product type')
-assert.match(html, /pwa\.js\?v=20261128-stock-multi-return-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-multi-return-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v291-stock-multi-return/, 'service worker cache must be bumped')
+assert.match(html, /selectedReturnProductIds/, 'a product already selected for return must not be offered as a duplicate row')
+assert.match(html, /if \(els\.stockBatchLabel && !isManualLoadMode\) els\.stockBatchLabel\.hidden = true/, 'return form must not expose the loading-only batch selector')
+assert.match(html, /pwa\.js\?v=20261128-stock-multi-return-v2/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-multi-return-v2/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v292-stock-multi-return/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
