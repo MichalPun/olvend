@@ -28,6 +28,11 @@ assert.match(html, /<strong>Aktuální<\/strong>/, 'instruction overview must sh
 assert.match(html, /<strong>Potvrzené<\/strong>/, 'instruction overview must retain acknowledged instructions')
 assert.match(html, /if \(action === 'instruction'\) return openInstructionCenter\(\)/, 'instruction actions must open the overview instead of an arbitrary first item')
 assert.match(html, /state\.instructionReturnToCenter = true/, 'closing an instruction detail must return to the overview')
+assert.match(html, /\.instruction-sheet \{[\s\S]*?align-items: stretch;/, 'instruction detail must open as a full-height workspace instead of a bottom popup')
+assert.match(html, /\.instruction-sheet-card \{[\s\S]*?background: #f7f8fa;/, 'instruction detail must use the readable light design on every app screen')
+assert.match(html, /data-open-inventory-from-instruction/, 'inventory-result instructions must open their in-app audit detail')
+assert.match(html, /attachment\.extension === 'PDF' \? 'Zobrazit PDF přílohu'/, 'PDF instructions must retain a clear PDF attachment action')
+assert.doesNotMatch(html, /Příloha \$\{escapeHtml\(attachment\.extension\)\}/, 'instruction overview must not expose technical attachment extensions')
 assert.match(html, /class="shift-editor-icon"[\s\S]*?<svg viewBox="0 0 24 24">/, 'vehicle receipt must use a real vehicle pictogram')
 assert.match(html, /data-open-shift-instructions>Otevřít a potvrdit pokyny/, 'vehicle receipt must offer one explicit instruction action')
 assert.match(html, /els\.vehicleSelectLabel\.hidden = instructionsBlocked/, 'vehicle selection must stay hidden until required instructions are confirmed')
@@ -36,8 +41,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-stock-gate-visual-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-gate-visual-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v281-stock-gate-visual/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-instruction-detail-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-instruction-detail-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v282-instruction-detail/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
