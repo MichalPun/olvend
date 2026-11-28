@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olvend-v300-route-photo-shell';
+const CACHE_NAME = 'olvend-v301-route-actions';
 const APP_SHELL = [
   './',
   './index.html',
