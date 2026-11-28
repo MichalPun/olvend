@@ -21,11 +21,11 @@ type RouteStopPayload = {
 };
 
 type RoutePlanPayload = {
-  mode?: "optimize" | "ordered" | "distance" | "matrix";
+  mode?: "optimize" | "ordered" | "distance" | "matrix" | "preview";
   origin: LatLngPoint;
   points?: LatLngPoint[];
   destination?: LatLngPoint;
-  stops: RouteStopPayload[];
+  stops?: RouteStopPayload[];
   returnToStart?: boolean;
   departureTime?: string | null;
 };
@@ -135,6 +135,50 @@ async function requireManager(req: Request) {
   return profile?.active !== false && /admin|manager|manaž|manaz|vedouc|majitel/i.test(String(profile?.role || ""));
 }
 
+async function requireAuthenticated(req: Request) {
+  const authorization = req.headers.get("Authorization") || "";
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+  if (!authorization || !supabaseUrl || !anonKey) return false;
+  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers: { apikey: anonKey, Authorization: authorization },
+  });
+  if (!response.ok) return false;
+  const user = await response.json();
+  return Boolean(user?.id);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function fetchStaticRouteMap(apiKey: string, origin: LatLngPoint, destination: LatLngPoint, encodedPolyline: string) {
+  if (!hasLatLng(origin) || !hasLatLng(destination) || !encodedPolyline) return null;
+  const params = new URLSearchParams({
+    size: "640x360",
+    scale: "2",
+    format: "png",
+    maptype: "roadmap",
+    language: "cs",
+    region: "cz",
+    key: apiKey,
+  });
+  params.append("markers", `size:mid|color:0x17212b|label:A|${Number(origin.latitude)},${Number(origin.longitude)}`);
+  params.append("markers", `size:mid|color:0xe30613|label:B|${Number(destination.latitude)},${Number(destination.longitude)}`);
+  params.append("path", `weight:5|color:0xe30613ff|enc:${encodedPolyline}`);
+  const response = await fetch(`https://maps.googleapis.com/maps/api/staticmap?${params}`);
+  if (!response.ok) throw new Error(`Google Static Maps HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "image/png";
+  if (!contentType.startsWith("image/")) throw new Error("Google Static Maps nevrátil obrázek.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return `data:${contentType};base64,${bytesToBase64(bytes)}`;
+}
+
 function parseMatrixEntries(text: string) {
   try {
     const parsed = JSON.parse(text || "[]");
@@ -230,6 +274,51 @@ Deno.serve(async (req) => {
 
     if (!origin || !waypoint(origin)) {
       return json({ error: "Origin coordinates or address are required." }, 400);
+    }
+
+    if (payload.mode === "preview") {
+      if (!await requireAuthenticated(req)) return json({ error: "Náhled trasy je dostupný pouze přihlášenému uživateli." }, 401);
+      const destination = payload.destination;
+      if (!destination || !waypoint(destination)) {
+        return json({ error: "Destination coordinates or address are required." }, 400);
+      }
+
+      let route;
+      try {
+        route = await computeGoogleRoute(googleMapsApiKey, {
+          origin: waypoint(origin),
+          destination: waypoint(destination),
+          travelMode: "DRIVE",
+          routingPreference: "TRAFFIC_AWARE_OPTIMAL",
+          languageCode: "cs",
+          units: "METRIC",
+          polylineQuality: "OVERVIEW",
+          departureTime: payload.departureTime || new Date(Date.now() + 120000).toISOString(),
+        });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "Google Routes API request failed." }, 400);
+      }
+
+      let mapDataUrl: string | null = null;
+      let mapError = "";
+      try {
+        mapDataUrl = await fetchStaticRouteMap(googleMapsApiKey, origin, destination, String(route?.polyline?.encodedPolyline || ""));
+      } catch (error) {
+        mapError = error instanceof Error ? error.message : "Statický náhled mapy se nepodařilo načíst.";
+      }
+
+      return json({
+        provider: "google_routes",
+        mode: "preview",
+        routingPreference: "TRAFFIC_AWARE_OPTIMAL",
+        route: {
+          distanceMeters: Number(route?.distanceMeters || 0),
+          durationSeconds: parseDurationSeconds(route?.duration),
+          staticDurationSeconds: parseDurationSeconds(route?.staticDuration),
+        },
+        mapDataUrl,
+        mapError,
+      });
     }
 
     if (payload.mode === "distance") {
