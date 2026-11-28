@@ -26,6 +26,7 @@ assert.match(html, /id="stockHomeVehiclePhoto"/, 'stock home must show the assig
 assert.match(html, /<strong>Vychystané zboží<\/strong>/, 'stock home must expose prepared goods as a live step')
 assert.match(html, /<strong>Čerstvé bagety<\/strong>/, 'stock home must expose fresh bagettes as a live step')
 assert.match(html, /function renderStockHomeV2\(\)/, 'stock home must be populated from live shift data')
+assert.match(html, /\.stock-home-inventory\[hidden\] \{ display:none; \}/, 'stock home must not show an empty inventory card')
 assert.doesNotMatch(html, /<h3>Skladové operace<\/h3>|<h3>Čeká na tebe<\/h3>/, 'legacy stock hub must be removed rather than hidden')
 
 assert.match(html, /id="instructionCenter"/, 'daily instructions must have one overview')
@@ -52,8 +53,8 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-stock-home-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-home-v1/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v285-stock-home/, 'service worker cache must be bumped')
+assert.match(html, /pwa\.js\?v=20261128-stock-home-v2/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-home-v2/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v286-stock-home-hidden/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
