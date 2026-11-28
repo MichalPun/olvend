@@ -67,8 +67,13 @@ assert.match(html, /if \(missingInstructions\.length\) \{[\s\S]*?openInstruction
 assert.doesNotMatch(html, /id="instructionAckSelect"|function acknowledgeRequiredInstructions\(/, 'vehicle receipt must not duplicate or silently confirm instructions')
 assert.match(html, /renderShiftState\(\)\s*renderShiftVehicleEditor\(\)/, 'confirming an instruction must immediately unlock the vehicle step')
 
-assert.match(html, /pwa\.js\?v=20261128-stock-details-v4/, 'mobile HTML must request the refreshed PWA bootstrap')
-assert.match(pwa, /20261128-stock-details-v4/, 'PWA bootstrap must refresh installed phones')
-assert.match(serviceWorker, /olvend-v290-stock-details/, 'service worker cache must be bumped')
+assert.match(html, /keepReturnPickerOpen = state\.selectedStockType === 'vehicle_unload'/, 'saleable returns must keep the product picker open for another product')
+assert.match(html, /Vybrané k vrácení/, 'multi-product returns must show one shared selected-items section')
+assert.match(html, /#stockReturnChoicePanel \.stock-workflow \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/, 'return-type choices must use one readable full-width column')
+assert.match(html, /stock-entry-panel\.is-multi-return/, 'return forms must use the modern multi-product picker')
+assert.match(html, /Přidat další produkt/, 'return flow must explicitly support adding another product type')
+assert.match(html, /pwa\.js\?v=20261128-stock-multi-return-v1/, 'mobile HTML must request the refreshed PWA bootstrap')
+assert.match(pwa, /20261128-stock-multi-return-v1/, 'PWA bootstrap must refresh installed phones')
+assert.match(serviceWorker, /olvend-v291-stock-multi-return/, 'service worker cache must be bumped')
 
 console.log('PASS: mobile stock prerequisites and daily instruction center')
