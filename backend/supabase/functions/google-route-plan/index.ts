@@ -179,6 +179,71 @@ async function fetchStaticRouteMap(apiKey: string, origin: LatLngPoint, destinat
   return `data:${contentType};base64,${bytesToBase64(bytes)}`;
 }
 
+function decodePolyline(encoded: string) {
+  const points: Array<{ latitude: number; longitude: number }> = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+  while (index < encoded.length) {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < encoded.length);
+    latitude += result & 1 ? ~(result >> 1) : result >> 1;
+
+    result = 0;
+    shift = 0;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < encoded.length);
+    longitude += result & 1 ? ~(result >> 1) : result >> 1;
+    points.push({ latitude: latitude / 1e5, longitude: longitude / 1e5 });
+  }
+  return points;
+}
+
+function routeOverviewDataUrl(encodedPolyline: string, distanceMeters: number) {
+  const points = decodePolyline(encodedPolyline);
+  if (points.length < 2) return null;
+  const width = 640;
+  const height = 360;
+  const padding = 44;
+  const minLat = Math.min(...points.map((point) => point.latitude));
+  const maxLat = Math.max(...points.map((point) => point.latitude));
+  const minLng = Math.min(...points.map((point) => point.longitude));
+  const maxLng = Math.max(...points.map((point) => point.longitude));
+  const latSpan = Math.max(maxLat - minLat, 0.0001);
+  const lngSpan = Math.max(maxLng - minLng, 0.0001);
+  const scale = Math.min((width - padding * 2) / lngSpan, (height - padding * 2) / latSpan);
+  const offsetX = (width - lngSpan * scale) / 2;
+  const offsetY = (height - latSpan * scale) / 2;
+  const coordinates = points.map((point) => {
+    const x = offsetX + (point.longitude - minLng) * scale;
+    const y = height - offsetY - (point.latitude - minLat) * scale;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const first = coordinates[0].split(",");
+  const last = coordinates[coordinates.length - 1].split(",");
+  const kilometers = Math.max(0, distanceMeters / 1000).toLocaleString("cs-CZ", { maximumFractionDigits: 1 });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef4f7"/><stop offset="1" stop-color="#dfe8ee"/></linearGradient><filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".2"/></filter></defs>
+    <rect width="640" height="360" rx="22" fill="url(#bg)"/>
+    <path d="M0 90H640M0 180H640M0 270H640M128 0V360M256 0V360M384 0V360M512 0V360" stroke="#fff" stroke-width="2" opacity=".42"/>
+    <polyline points="${coordinates.join(" ")}" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+    <polyline points="${coordinates.join(" ")}" fill="none" stroke="#e30613" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)"/>
+    <circle cx="${first[0]}" cy="${first[1]}" r="12" fill="#172331" stroke="#fff" stroke-width="5"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="12" fill="#e30613" stroke="#fff" stroke-width="5"/>
+    <g font-family="Arial,sans-serif"><rect x="18" y="18" width="154" height="35" rx="12" fill="#fff" opacity=".94"/><text x="34" y="41" font-size="15" font-weight="700" fill="#172331">TRASA ${kilometers} km</text></g>
+  </svg>`;
+  return `data:image/svg+xml;base64,${bytesToBase64(new TextEncoder().encode(svg))}`;
+}
+
 function parseMatrixEntries(text: string) {
   try {
     const parsed = JSON.parse(text || "[]");
@@ -299,12 +364,22 @@ Deno.serve(async (req) => {
         return json({ error: error instanceof Error ? error.message : "Google Routes API request failed." }, 400);
       }
 
+      const encodedPolyline = String(route?.polyline?.encodedPolyline || "");
       let mapDataUrl: string | null = null;
+      let mapProvider = "";
       let mapError = "";
       try {
-        mapDataUrl = await fetchStaticRouteMap(googleMapsApiKey, origin, destination, String(route?.polyline?.encodedPolyline || ""));
+        mapDataUrl = await fetchStaticRouteMap(googleMapsApiKey, origin, destination, encodedPolyline);
+        if (mapDataUrl) mapProvider = "google_static_maps";
       } catch (error) {
         mapError = error instanceof Error ? error.message : "Statický náhled mapy se nepodařilo načíst.";
+      }
+      if (!mapDataUrl) {
+        mapDataUrl = routeOverviewDataUrl(encodedPolyline, Number(route?.distanceMeters || 0));
+        if (mapDataUrl) {
+          mapProvider = "google_routes_overview";
+          mapError = "";
+        }
       }
 
       return json({
@@ -317,6 +392,7 @@ Deno.serve(async (req) => {
           staticDurationSeconds: parseDurationSeconds(route?.staticDuration),
         },
         mapDataUrl,
+        mapProvider,
         mapError,
       });
     }
