@@ -6234,7 +6234,7 @@
     </nav>
   </div>
 
-  <script src="./pwa.js?v=20261128-instruction-detail-v2" defer></script>
+  <script src="./pwa.js?v=20261128-instruction-detail-v3" defer></script>
   <script type="module">
     import { supabase, syncOfflineRequests, getOfflineRequestCount } from './supabase.js?v=20260815-offline-auth-refresh-v4'
     import { calculateCanonicalRouteTiming, sameOrder } from './route-time-core.mjs?v=20261127-route-time-v2'
@@ -6304,6 +6304,8 @@
       payslipItems: [],
       inventoryView: 'history',
       activeInventoryAuditId: null,
+      inventoryReturnInstructionId: null,
+      inventoryReturnToInstructionCenter: false,
       inventoryItemFilter: 'all',
       inventoryCaseFilter: 'all',
       editingInventoryItemId: null,
@@ -10336,9 +10338,11 @@
       return new Intl.DateTimeFormat('cs-CZ', { month: 'long', year: 'numeric' }).format(new Date(`${String(value).slice(0, 7)}-01T12:00:00`))
     }
 
-    function openInventoryWorkspace(auditId = null, view = 'history') {
+    function openInventoryWorkspace(auditId = null, view = 'history', options = {}) {
       state.activeInventoryAuditId = auditId == null ? null : String(auditId)
       state.inventoryView = view
+      state.inventoryReturnInstructionId = options.returnInstructionId == null ? null : String(options.returnInstructionId)
+      state.inventoryReturnToInstructionCenter = Boolean(options.returnToInstructionCenter)
       state.inventoryItemFilter = 'all'
       state.inventoryCaseFilter = 'all'
       state.editingInventoryItemId = null
@@ -10441,6 +10445,9 @@
       const shortage = getInventoryShortageValue(audit)
       const editable = audit.status === 'assigned'
       const isClosed = audit.status === 'closed' || audit.status === 'cancelled'
+      const returnsToInstruction = Boolean(state.inventoryReturnInstructionId)
+      const backAction = returnsToInstruction ? 'instruction' : editable ? 'count' : 'history'
+      const backLabel = returnsToInstruction ? 'Zpět k pokynu' : 'Zpět'
       const accountabilityCopy = isClosed
         ? (audit.responsibility_status === 'operator'
             ? 'Vedoucí uzavřel prověření s odpovědností operátora.'
@@ -10451,12 +10458,12 @@
           ? 'Tvoje vysvětlení bylo odesláno. Vedoucí nyní rozdíly prověřuje.'
           : 'Před rozhodnutím můžeš v Moje inventury doplnit vysvětlení.'
       els.inventoryWorkspace.innerHTML = `
-        <div class="inventory-workspace-head"><div><h2>Výsledek inventury</h2><p>${editable ? 'Projdi pouze nalezené rozdíly.' : escapeHtml(getVehicleInventoryStatusLabel(audit.status))}</p></div><button class="inventory-back-btn" type="button" data-inventory-workspace-action="${editable ? 'count' : 'history'}">Zpět</button></div>
+        <div class="inventory-workspace-head"><div><h2>Výsledek inventury</h2><p>${editable ? 'Projdi pouze nalezené rozdíly.' : escapeHtml(getVehicleInventoryStatusLabel(audit.status))}</p></div><button class="inventory-back-btn" type="button" data-inventory-workspace-action="${backAction}">${backLabel}</button></div>
         <div class="inventory-review-summary"><div class="inventory-review-stat"><strong>${items.length}</strong><span>Spočítáno</span></div><div class="inventory-review-stat good"><strong>${matching}</strong><span>Sedí</span></div><div class="inventory-review-stat warn"><strong>${differences.length}</strong><span>Rozdíly</span></div></div>
         ${differences.length ? `<div class="inventory-accountability"><div class="inventory-accountability-head"><span class="inventory-accountability-icon">!</span><div><strong>${differences.length === 1 ? '1 rozdíl' : `${differences.length} rozdílů`}</strong><p>${escapeHtml(accountabilityCopy)}</p></div></div><div class="inventory-accountability-facts"><div><span>Předběžný schodek</span><strong>${escapeHtml(formatInventoryMoney(shortage))}</strong></div><div><span>Rozhodnutí</span><strong>${escapeHtml(audit.responsibility_status === 'operator' ? 'Odpovědnost operátora' : audit.responsibility_status === 'not_operator' ? 'Bez odpovědnosti' : 'Čeká na vedoucího')}</strong></div></div><div class="inventory-accountability-safe">${editable ? 'Odesláním inventury nepotvrzuješ odpovědnost ani souhlas s dopadem do prémie.' : 'Záznam inventury je uložený a už ho nelze znovu odeslat.'}</div></div>` : '<div class="success-box"><strong>Všechno sedí</strong><span>Fyzické stavy odpovídají evidenci.</span></div>'}
         <div class="inventory-section-head"><h3>${differences.length ? 'Co nesedí' : 'Kontrola dokončena'}</h3><span class="meta">${differences.length}</span></div>
         <div>${differences.map((row, index) => renderInventoryReviewCard(row, index, editable)).join('')}</div>
-        <button class="inventory-primary-action" type="button" data-inventory-workspace-action="${editable ? 'submit-audit' : 'history'}">${editable ? 'Odeslat inventuru ke kontrole' : 'Zpět na Moje inventury'}</button>
+        <button class="inventory-primary-action" type="button" data-inventory-workspace-action="${editable ? 'submit-audit' : returnsToInstruction ? 'instruction' : 'history'}">${editable ? 'Odeslat inventuru ke kontrole' : returnsToInstruction ? 'Zpět k dennímu pokynu' : 'Zpět na Moje inventury'}</button>
       `
     }
 
@@ -22042,6 +22049,8 @@
         const button = event.target.closest('[data-open-inventory-from-instruction]')
         if (!button) return
         const auditId = button.dataset.openInventoryFromInstruction
+        const instructionId = state.activeInstructionId
+        const returnToInstructionCenter = state.instructionReturnToCenter
         button.disabled = true
         let audit = state.inventoryAudits.find((item) => String(item.id) === String(auditId))
         if (!audit) {
@@ -22059,7 +22068,10 @@
         }
         closeInstructionSheet({ reopenCenter: false })
         closeInstructionCenter()
-        openInventoryWorkspace(audit.id, 'review')
+        openInventoryWorkspace(audit.id, 'review', {
+          returnInstructionId: instructionId,
+          returnToInstructionCenter
+        })
       })
       els.instructionSheetBackdrop?.addEventListener('click', closeInstructionSheet)
       els.instructionSheetClose?.addEventListener('click', closeInstructionSheet)
@@ -23066,6 +23078,20 @@
         try {
           if (action === 'stock') {
             openScreen('stock')
+            return
+          }
+          if (action === 'instruction') {
+            const instructionId = state.inventoryReturnInstructionId
+            const returnToInstructionCenter = state.inventoryReturnToInstructionCenter
+            state.inventoryReturnInstructionId = null
+            state.inventoryReturnToInstructionCenter = false
+            if (!instructionId) {
+              openScreen('today')
+              return
+            }
+            openScreen('today')
+            state.instructionReturnToCenter = returnToInstructionCenter
+            openInstructionSheet(instructionId)
             return
           }
           if (action === 'history') {
