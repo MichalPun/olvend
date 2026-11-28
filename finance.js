@@ -240,12 +240,13 @@ function renderLive(data){
   ]
   $('workflowList').innerHTML=workflow.map((row,index)=>`<div class="workflow-row ${row[3]}"><div class="workflow-icon">${index+1}</div><div><strong>${escapeHtml(row[0])}</strong><small>${escapeHtml(row[2])}</small></div><span class="badge ${row[3]}">${integer(row[1])}</span></div>`).join('')
   const mailbox=data.mailbox||null
+  const ai=data.ai||null
   const mailboxDetail=mailbox?.account
     ? `fakturace@olmika.cz · poslední synchronizace ${mailbox.account.last_sync_at?new Date(mailbox.account.last_sync_at).toLocaleString('cs-CZ'):'zatím neproběhla'} · ${Number(mailbox.stats?.statuses?.queued||0)} ve frontě`
     : 'Schránka fakturace@olmika.cz čeká na bezpečné připojení'
   const integrations=[
     ['Pracovní e-mail',mailboxDetail,mailbox?.account&&!mailbox.account.last_error?'good':'warn',mailbox?.account&&!mailbox.account.last_error?'Připojeno':'Nenapojeno'],
-    ['Vytěžení dokumentů','PDF a ISDOC zatím čekají na zpracovatelský backend','warn','Nenapojeno'],
+    ['Dokladová AI',ai?.openai_configured?`Placený model ${ai.model} · přesný ISDOC parser · audit provozních akcí`:'Jádro je nasazené; chybí serverový OPENAI_API_KEY',ai?.openai_configured?'good':'warn',ai?.openai_configured?'Připojeno':'Chybí klíč'],
     ['Raiffeisenbank',data.bank_transaction_count?`${integer(data.bank_transaction_count)} pohybů · poslední ${data.bank_last_booked_on||'—'}`:'Výpis zatím není importovaný',data.bank_transaction_count?'good':'warn',data.bank_transaction_count?'Výpis načten':'Nenapojeno'],
     ['Money S3',data.liability_count?`${integer(data.liability_count)} ostatních závazků v provozní evidenci`:'Čeká na import závazků',data.liability_count?'good':'warn',data.liability_count?'Čtení':'Nenapojeno'],
   ]
@@ -259,12 +260,13 @@ async function load(){
   setStatus('Načítám finanční přehled…')
   try{
     const period=$('periodSelect').value
-    const [{data,error},mailbox]=await Promise.all([
+    const [{data,error},mailbox,aiResult]=await Promise.all([
       supabase.rpc('get_finance_dashboard_v2',{p_month:`${period}-01`}),
-      financeMailboxStatus().catch((error)=>({account:null,stats:{statuses:{}},unavailable:true,api_error:error.message}))
+      financeMailboxStatus().catch((error)=>({account:null,stats:{statuses:{}},unavailable:true,api_error:error.message})),
+      supabase.functions.invoke('finance-document-ai',{body:{action:'health'}}).catch(()=>({data:null,error:true}))
     ])
     if(error)throw error
-    renderLive({ ...(data || {}), mailbox })
+    renderLive({ ...(data || {}), mailbox, ai:aiResult?.data || null })
     setStatus('Finanční přehled je aktuální.','success','Závazky živě · výsledovka čeká na datové propojení')
   }catch(error){
     console.error(error);renderLive({})

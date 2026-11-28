@@ -460,6 +460,7 @@
           children: [
             { key: "finance-overview", href: "finance.html", label: "Přehled financí" },
             { key: "sales-invoices", href: "issued-invoices.html", label: "Vystavené faktury" },
+            { key: "finance-ai", href: "finance-ai.html", label: "AI doklady a závazky" },
             { key: "received-invoices", href: "received-invoices.html", label: "Přijaté faktury" },
             { key: "liabilities", href: "liabilities.html", label: "Ostatní závazky" },
             { key: "payment-orders", href: "payment-orders.html", label: "Příkazy k úhradě" },
@@ -634,7 +635,7 @@
     'logistics-management': 'routes', routes: 'routes', controlling: 'tasks', operations: 'routes', fleet: 'routes',
     'stock-management': 'stock', inventory: 'stock', 'operational-requests': 'stock', 'purchases-recurring': 'stock',
     'technical-management': 'tools', 'technical-jobs': 'tools', 'service-requests': 'tools', 'machine-calibration': 'tools', 'qr-labels': 'machine',
-    'finance-management': 'finance', 'finance-overview': 'finance', 'received-invoices': 'finance', liabilities: 'finance', 'payment-orders': 'finance', 'finance-settings': 'settings', 'accountant-portal': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
+    'finance-management': 'finance', 'finance-overview': 'finance', 'finance-ai': 'finance', 'received-invoices': 'finance', liabilities: 'finance', 'payment-orders': 'finance', 'finance-settings': 'settings', 'accountant-portal': 'finance', 'sales-invoices': 'finance', 'purchases-overview': 'finance', 'cash-collection': 'finance', budget: 'reports',
     'management-work': 'tasks', approvals: 'tasks', tasks: 'tasks', mail: 'mail',
     'management-people': 'people', hr: 'people', 'hr-planning': 'people', 'meeting-calendar': 'calendar', employees: 'people',
     'management-reports': 'reports', reporty: 'reports', payroll: 'payroll',
